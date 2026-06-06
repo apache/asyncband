@@ -136,6 +136,21 @@ impl<T> Arena<T> {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &T> {
+        self.slots.iter().filter_map(|slot| match slot {
+            Slot::Occupied(value) => Some(value),
+            Slot::Vacant { .. } => None,
+        })
+    }
+
     /// Removes the value stored at `id`.
     ///
     /// # Panics
@@ -193,11 +208,6 @@ impl<T> Arena<T> {
         self.next_vacant = 0;
         self.len = 0;
         values.into_iter()
-    }
-
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.len
     }
 }
 

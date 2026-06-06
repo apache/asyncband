@@ -20,6 +20,7 @@ pub(crate) mod atomic_waker;
 
 #[cfg(any(
     feature = "barrier",
+    feature = "broadcast",
     feature = "latch",
     feature = "mpsc",
     feature = "mutex",
@@ -30,7 +31,7 @@ pub(crate) mod atomic_waker;
 // `WaitList` and `WaitSet` use different `Arena` operations. A single-primitive build therefore
 // leaves part of this shared API unused, while the all-feature build uses it.
 #[allow(dead_code)]
-mod arena;
+pub(crate) mod arena;
 
 #[cfg(any(feature = "latch", feature = "once", feature = "waitgroup"))]
 // `waitgroup` increments and decrements the countdown, while `latch` and `once` only decrement it.
@@ -52,6 +53,7 @@ pub(crate) mod value_cell;
 
 #[cfg(any(
     feature = "barrier",
+    feature = "broadcast",
     feature = "latch",
     feature = "mpsc",
     feature = "mutex",
@@ -83,6 +85,7 @@ pub(crate) mod waitlist;
 
 #[cfg(any(
     feature = "barrier",
+    feature = "broadcast",
     feature = "latch",
     feature = "once",
     feature = "waitgroup",

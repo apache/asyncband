@@ -15,9 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[cfg(feature = "broadcast")]
-pub mod broadcast;
-#[cfg(feature = "mpsc")]
-pub mod mpsc;
-#[cfg(feature = "oneshot")]
-pub mod oneshot;
+//! Multi-producer, multi-consumer broadcast channels.
+
+pub mod unbounded;

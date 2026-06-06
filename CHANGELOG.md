@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
+* Implement `broadcast::unbounded`, an unbounded broadcast channel that retains messages until all active receivers consume them or are dropped.
 * Add an opt-in `asyncband::blocking::FutureExt` bridge with `block_on` and `wait_timeout` methods for waiting on runtime-agnostic futures from synchronous code.
 * Add opt-in bounded and unbounded runtime-agnostic object pools under `asyncband::pool`.
 * Add opt-in `asyncband::once::LazyCell` for values that own one asynchronous initializer and preserve its in-flight future across caller cancellation.

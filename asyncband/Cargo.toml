@@ -46,6 +46,7 @@ default = []
 
 barrier = []
 blocking = []
+broadcast = []
 condvar = ["mutex"]
 latch = []
 lazy-cell = ["mutex"]

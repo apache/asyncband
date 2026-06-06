@@ -18,6 +18,7 @@
 use std::cell::Cell;
 
 use asyncband::barrier::Barrier;
+use asyncband::broadcast;
 use asyncband::condvar::Condvar;
 use asyncband::latch::Latch;
 use asyncband::mpsc;
@@ -85,6 +86,10 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<OwnedRwLockReadGuard<i64>>();
     assert_send_and_sync::<RwLockReadGuard<'_, i64>>();
     assert_send_and_sync::<RwLockWriteGuard<'_, i64>>();
+    assert_send_and_sync::<broadcast::unbounded::Sender<i64>>();
+    assert_send_and_sync::<broadcast::unbounded::Receiver<i64>>();
+    assert_send_and_sync::<broadcast::unbounded::RecvError>();
+    assert_send_and_sync::<broadcast::unbounded::TryRecvError>();
     assert_send_and_sync::<oneshot::SendError<i64>>();
     assert_send_and_sync::<oneshot::Sender<i64>>();
     assert_send_and_sync::<pool::bounded::Pool<PoolManager>>();
@@ -132,6 +137,10 @@ fn public_types_are_unpin() {
     assert_unpin::<RwLock<i64>>();
     assert_unpin::<RwLockReadGuard<'_, i64>>();
     assert_unpin::<RwLockWriteGuard<'_, i64>>();
+    assert_unpin::<broadcast::unbounded::Sender<i64>>();
+    assert_unpin::<broadcast::unbounded::Receiver<i64>>();
+    assert_unpin::<broadcast::unbounded::RecvError>();
+    assert_unpin::<broadcast::unbounded::TryRecvError>();
     assert_unpin::<oneshot::Sender<i64>>();
     assert_unpin::<oneshot::SendError<i64>>();
     assert_unpin::<oneshot::Receiver<i64>>();

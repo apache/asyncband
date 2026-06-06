@@ -56,7 +56,7 @@
 //! | Protect shared state       | [`mutex::Mutex`], [`rwlock::RwLock`], [`condvar::Condvar`]                            | `mutex`, `rwlock`, `condvar`                |
 //! | Initialize values once     | [`once::Once`], [`once::OnceCell`], [`once::LazyCell`], [`once::OnceMap`]             | `once`, `once-cell`, `lazy-cell`, `once-map` |
 //! | Coordinate tasks           | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`]        | `barrier`, `latch`, `waitgroup`, `shutdown` |
-//! | Send values                | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`]                          | `oneshot`, `mpsc`                           |
+//! | Send values                | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`], [`broadcast::unbounded`] | `oneshot`, `mpsc`, `broadcast`              |
 //! | Reuse objects              | [`pool::bounded`], [`pool::unbounded`]                                                | `pool`                                      |
 //! | Coordinate workloads       | [`semaphore::Semaphore`], [`singleflight::Group`]                                     | `semaphore`, `singleflight`                 |
 //! | Wait from synchronous code | [`blocking::FutureExt`]                                                               | `blocking`                                  |
@@ -107,6 +107,8 @@ mod internal;
 pub mod barrier;
 #[cfg(feature = "blocking")]
 pub mod blocking;
+#[cfg(feature = "broadcast")]
+pub use self::channel::broadcast;
 #[cfg(feature = "condvar")]
 pub mod condvar;
 #[cfg(feature = "latch")]

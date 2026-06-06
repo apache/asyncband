@@ -27,6 +27,7 @@ async-channel = { workspace = true }
 asyncband = { workspace = true, features = [
   "barrier",
   "blocking",
+  "broadcast",
   "condvar",
   "latch",
   "mpsc",
