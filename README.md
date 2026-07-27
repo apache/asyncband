@@ -22,6 +22,7 @@ MEA is a runtime-agnostic library providing essential synchronization primitives
 
 ## Features
 
+* [**admission::FairShare**](https://docs.rs/mea/*/mea/admission/struct.FairShare.html): A work-conserving admission policy that fairly shares bounded concurrency across keys.
 * [**Barrier**](https://docs.rs/mea/*/mea/barrier/struct.Barrier.html): A synchronization primitive that enables tasks to wait until all participants arrive.
 * [**Condvar**](https://docs.rs/mea/*/mea/condvar/struct.Condvar.html): A condition variable that allows tasks to wait for a notification.
 * [**Latch**](https://docs.rs/mea/*/mea/latch/struct.Latch.html): A synchronization primitive that allows one or more tasks to wait until a set of operations completes.
@@ -70,6 +71,7 @@ This project is licensed under [Apache License, Version 2.0](LICENSE).
 
 This crate collects runtime-agnostic synchronization primitives from spare parts:
 
+* **admission::FairShare** is written from scratch to bound global concurrency while balancing in-flight permits across contending keys.
 * **Barrier** is inspired by `std::sync::Barrier` and `tokio::sync::Barrier`, with a different implementation based on the internal `WaitSet` primitive.
 * **Condvar** is inspired by `std::sync::Condvar` and `async_std::sync::Condvar`, with a different implementation based on the internal `Semaphore` primitive. Different from the async_std implementation, this condvar is fair.
 * **Latch** is inspired by [`latches`](https://github.com/mirromutth/latches), with a different implementation based on the internal `CountdownState` primitive. No `wait` or `watch` method is provided, since it can be easily implemented by [composing delay futures](https://docs.rs/fastimer/*/fastimer/fn.timeout.html). No sync variant is provided, since it can be easily implemented with block_on of any runtime.

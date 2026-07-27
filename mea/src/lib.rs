@@ -21,6 +21,8 @@
 //!
 //! # Features
 //!
+//! * [`admission::FairShare`]: A work-conserving admission policy that fairly shares bounded
+//!   concurrency across keys
 //! * [`Barrier`]: A synchronization point where multiple tasks can wait until all participants
 //!   arrive
 //! * [`Condvar`]: A condition variable that allows tasks to wait for a notification
@@ -72,6 +74,7 @@
 
 mod internal;
 
+pub mod admission;
 pub mod atomicbox;
 pub mod barrier;
 pub mod broadcast;
@@ -98,6 +101,9 @@ fn test_runtime() -> &'static tokio::runtime::Runtime {
 
 #[cfg(test)]
 mod tests {
+    use crate::admission::FairShare;
+    use crate::admission::FairSharePermit;
+    use crate::admission::OwnedFairSharePermit;
     use crate::barrier::Barrier;
     use crate::broadcast;
     use crate::condvar::Condvar;
@@ -123,6 +129,9 @@ mod tests {
     #[test]
     fn assert_send_and_sync() {
         fn do_assert_send_and_sync<T: Send + Sync>() {}
+        do_assert_send_and_sync::<FairShare<String>>();
+        do_assert_send_and_sync::<FairSharePermit<'_, String>>();
+        do_assert_send_and_sync::<OwnedFairSharePermit<String>>();
         do_assert_send_and_sync::<Barrier>();
         do_assert_send_and_sync::<Condvar>();
         do_assert_send_and_sync::<Once>();
@@ -163,6 +172,9 @@ mod tests {
     #[test]
     fn assert_unpin() {
         fn do_assert_unpin<T: Unpin>() {}
+        do_assert_unpin::<FairShare<String>>();
+        do_assert_unpin::<FairSharePermit<'_, String>>();
+        do_assert_unpin::<OwnedFairSharePermit<String>>();
         do_assert_unpin::<Barrier>();
         do_assert_unpin::<Condvar>();
         do_assert_unpin::<Latch>();
