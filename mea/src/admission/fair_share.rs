@@ -32,7 +32,7 @@ use crate::internal::Mutex;
 ///
 /// Each acquisition belongs to a key. When a permit becomes available,
 /// [`FairShare`] admits a queued acquisition for the key with the fewest
-/// permits currently in flight. Ties are resolved by queue order.
+/// permits currently held. Ties are resolved by queue order.
 ///
 /// See the [module-level documentation](super) for details about the fairness
 /// guarantee.
@@ -88,8 +88,8 @@ where
 
     /// Returns the current number of permits available for immediate admission.
     ///
-    /// A permit already assigned to a queued acquisition counts as in flight,
-    /// even if that acquisition has not yet been polled again.
+    /// A permit already assigned to a queued acquisition counts as held by its
+    /// key, even if that acquisition has not yet been polled again.
     pub fn available_permits(&self) -> usize {
         self.state.lock().available_permits
     }
@@ -199,7 +199,7 @@ where
         }
 
         self.available_permits -= 1;
-        self.groups.entry(key).or_default().in_flight += 1;
+        self.groups.entry(key).or_default().held_permits += 1;
         true
     }
 
@@ -259,7 +259,7 @@ where
                 .position(|candidate| *candidate == waiter_id)
                 .expect("FairShare waiter is missing from its group");
             group.queue.remove(position);
-            group.in_flight == 0 && group.queue.is_empty()
+            group.held_permits == 0 && group.queue.is_empty()
         };
 
         self.pending -= 1;
@@ -286,7 +286,7 @@ where
                     .expect("FairShare pending group is missing");
                 let popped = group.queue.pop_front();
                 debug_assert_eq!(popped, Some(waiter));
-                group.in_flight += 1;
+                group.held_permits += 1;
             }
 
             self.available_permits -= 1;
@@ -306,9 +306,9 @@ where
             .filter_map(|(key, group)| {
                 let waiter = *group.queue.front()?;
                 let sequence = self.waiters[waiter].sequence;
-                Some((group.in_flight, sequence, key))
+                Some((group.held_permits, sequence, key))
             })
-            .min_by_key(|(in_flight, sequence, _)| (*in_flight, *sequence))
+            .min_by_key(|(held_permits, sequence, _)| (*held_permits, *sequence))
             .map(|(_, _, key)| key.clone())
     }
 
@@ -318,9 +318,9 @@ where
                 .groups
                 .get_mut(key)
                 .expect("FairShare released a permit for an unknown key");
-            debug_assert!(group.in_flight > 0);
-            group.in_flight -= 1;
-            group.in_flight == 0 && group.queue.is_empty()
+            debug_assert!(group.held_permits > 0);
+            group.held_permits -= 1;
+            group.held_permits == 0 && group.queue.is_empty()
         };
 
         if remove_group {
@@ -334,7 +334,7 @@ where
 
 #[derive(Debug, Default)]
 struct GroupState {
-    in_flight: usize,
+    held_permits: usize,
     queue: VecDeque<usize>,
 }
 
