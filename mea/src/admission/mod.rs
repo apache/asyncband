@@ -15,12 +15,12 @@
 //! Admission control policies for bounded asynchronous work.
 //!
 //! This module provides [`FairShare`], a work-conserving admission policy for
-//! workloads partitioned by key. It maintains a fixed capacity and, when
-//! contended, admits work for the key with the fewest permits currently in
-//! flight. Ties are resolved by queue order.
+//! workloads partitioned by key. It maintains a fixed number of permits and,
+//! when contended, admits work for the key with the fewest permits currently
+//! in flight. Ties are resolved by queue order.
 //!
 //! Fairness applies to the number of permits held by contending keys. It does
-//! not reserve capacity for idle keys or account for differences in execution
+//! not reserve permits for idle keys or account for differences in execution
 //! time or work cost.
 
 mod fair_share;

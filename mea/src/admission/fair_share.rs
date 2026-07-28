@@ -28,9 +28,9 @@ use slab::Slab;
 
 use crate::internal::Mutex;
 
-/// A fixed-capacity admission controller that fairly shares permits across keys.
+/// An admission controller that fairly shares a fixed number of permits across keys.
 ///
-/// Each acquisition belongs to a key. When capacity becomes available,
+/// Each acquisition belongs to a key. When a permit becomes available,
 /// [`FairShare`] admits a queued acquisition for the key with the fewest
 /// permits currently in flight. Ties are resolved by queue order.
 ///
@@ -42,7 +42,6 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    capacity: usize,
     state: Mutex<State<K, S>>,
 }
 
@@ -50,11 +49,11 @@ impl<K> FairShare<K, RandomState>
 where
     K: Eq + Hash,
 {
-    /// Creates a fair-share admission controller with the given capacity.
+    /// Creates a fair-share admission controller with the given number of permits.
     ///
     /// # Panics
     ///
-    /// Panics if `capacity` is zero.
+    /// Panics if `permits` is zero.
     ///
     /// # Examples
     ///
@@ -62,11 +61,10 @@ where
     /// use mea::admission::FairShare;
     ///
     /// let admission = FairShare::<String>::new(3);
-    /// assert_eq!(admission.capacity(), 3);
     /// assert_eq!(admission.available_permits(), 3);
     /// ```
-    pub fn new(capacity: usize) -> Self {
-        Self::with_hasher(capacity, RandomState::new())
+    pub fn new(permits: usize) -> Self {
+        Self::with_hasher(permits, RandomState::new())
     }
 }
 
@@ -75,23 +73,17 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    /// Creates a fair-share admission controller with the given capacity and
-    /// hash builder.
+    /// Creates a fair-share admission controller with the given number of
+    /// permits and hash builder.
     ///
     /// # Panics
     ///
-    /// Panics if `capacity` is zero.
-    pub fn with_hasher(capacity: usize, hash_builder: S) -> Self {
-        assert!(capacity > 0, "FairShare requires a non-zero capacity");
+    /// Panics if `permits` is zero.
+    pub fn with_hasher(permits: usize, hash_builder: S) -> Self {
+        assert!(permits > 0, "FairShare requires at least one permit");
         Self {
-            capacity,
-            state: Mutex::new(State::new(capacity, hash_builder)),
+            state: Mutex::new(State::new(permits, hash_builder)),
         }
-    }
-
-    /// Returns the maximum number of permits that may be in flight.
-    pub fn capacity(&self) -> usize {
-        self.capacity
     }
 
     /// Returns the current number of permits available for immediate admission.
@@ -99,32 +91,7 @@ where
     /// A permit already assigned to a queued acquisition counts as in flight,
     /// even if that acquisition has not yet been polled again.
     pub fn available_permits(&self) -> usize {
-        self.state.lock().available
-    }
-
-    /// Returns the number of acquisitions waiting in the admission queue.
-    ///
-    /// Acquisitions that have been assigned a permit but have not yet been
-    /// polled again are not included.
-    pub fn queue_len(&self) -> usize {
-        self.state.lock().pending
-    }
-
-    /// Returns the number of permits currently in flight for `key`.
-    ///
-    /// A permit already assigned to a queued acquisition is included, even if
-    /// that acquisition has not yet been polled again.
-    pub fn in_flight(&self, key: &K) -> usize {
-        self.state.lock().in_flight(key)
-    }
-
-    /// Returns `true` when no permits are in flight and no acquisitions are pending.
-    pub fn is_idle(&self) -> bool {
-        let state = self.state.lock();
-        state.available == self.capacity
-            && state.pending == 0
-            && state.groups.is_empty()
-            && state.waiters.is_empty()
+        self.state.lock().available_permits
     }
 
     /// Attempts to acquire one permit for `key` without waiting.
@@ -189,7 +156,7 @@ where
         let mut wakers = Vec::new();
         {
             let mut state = self.state.lock();
-            state.release(key, self.capacity);
+            state.release(key);
             state.admit_waiters(&mut wakers);
         }
         wake_all(wakers);
@@ -202,7 +169,8 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    available: usize,
+    total_permits: usize,
+    available_permits: usize,
     pending: usize,
     next_sequence: u64,
     groups: HashMap<Arc<K>, GroupState, S>,
@@ -214,9 +182,10 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    fn new(capacity: usize, hash_builder: S) -> Self {
+    fn new(permits: usize, hash_builder: S) -> Self {
         Self {
-            available: capacity,
+            total_permits: permits,
+            available_permits: permits,
             pending: 0,
             next_sequence: 0,
             groups: HashMap::with_hasher(hash_builder),
@@ -224,16 +193,12 @@ where
         }
     }
 
-    fn in_flight(&self, key: &K) -> usize {
-        self.groups.get(key).map_or(0, |group| group.in_flight)
-    }
-
     fn try_admit(&mut self, key: Arc<K>) -> bool {
-        if self.available == 0 || self.pending != 0 {
+        if self.available_permits == 0 || self.pending != 0 {
             return false;
         }
 
-        self.available -= 1;
+        self.available_permits -= 1;
         self.groups.entry(key).or_default().in_flight += 1;
         true
     }
@@ -276,10 +241,10 @@ where
         }
     }
 
-    fn cancel(&mut self, waiter_id: usize, key: &K, capacity: usize) {
+    fn cancel(&mut self, waiter_id: usize, key: &K) {
         let waiter = self.waiters.remove(waiter_id);
         if waiter.admitted {
-            self.release(key, capacity);
+            self.release(key);
             return;
         }
 
@@ -304,7 +269,7 @@ where
     }
 
     fn admit_waiters(&mut self, wakers: &mut Vec<Waker>) {
-        while self.available > 0 && self.pending > 0 {
+        while self.available_permits > 0 && self.pending > 0 {
             let key = self
                 .next_group()
                 .expect("FairShare has pending acquisitions without a group");
@@ -324,7 +289,7 @@ where
                 group.in_flight += 1;
             }
 
-            self.available -= 1;
+            self.available_permits -= 1;
             self.pending -= 1;
 
             let waiter = &mut self.waiters[waiter];
@@ -347,7 +312,7 @@ where
             .map(|(_, _, key)| key.clone())
     }
 
-    fn release(&mut self, key: &K, capacity: usize) {
+    fn release(&mut self, key: &K) {
         let remove_group = {
             let group = self
                 .groups
@@ -362,8 +327,8 @@ where
             self.groups.remove(key);
         }
 
-        self.available += 1;
-        debug_assert!(self.available <= capacity);
+        self.available_permits += 1;
+        debug_assert!(self.available_permits <= self.total_permits);
     }
 }
 
@@ -420,7 +385,7 @@ where
         let mut wakers = Vec::new();
         {
             let mut state = self.admission.state.lock();
-            state.cancel(waiter, &self.key, self.admission.capacity);
+            state.cancel(waiter, &self.key);
             state.admit_waiters(&mut wakers);
         }
         wake_all(wakers);
@@ -480,9 +445,14 @@ where
     }
 }
 
-/// A borrowed permit acquired from a [`FairShare`] admission controller.
+/// A permit from a [`FairShare`] admission controller.
 ///
-/// Dropping the permit releases its capacity to another queued acquisition.
+/// This type is created by the [`acquire`] and [`try_acquire`] methods on
+/// [`FairShare`]. It represents one admitted operation associated with a key.
+/// Dropping it returns the permit and may admit another queued acquisition.
+///
+/// [`acquire`]: FairShare::acquire
+/// [`try_acquire`]: FairShare::try_acquire
 #[must_use = "permits are released immediately when dropped"]
 #[derive(Debug)]
 pub struct FairSharePermit<'a, K, S = RandomState>
@@ -515,11 +485,16 @@ where
     }
 }
 
-/// An owned permit acquired from an [`Arc<FairShare>`].
+/// An owned permit from a [`FairShare`] admission controller.
 ///
-/// Dropping the permit releases its capacity to another queued acquisition.
+/// This type is created by the [`acquire_owned`] and [`try_acquire_owned`]
+/// methods on [`FairShare`]. Unlike [`FairSharePermit`], it owns an [`Arc`] to
+/// the admission controller and has no lifetime parameter. Dropping it returns
+/// the permit and may admit another queued acquisition.
 ///
-/// [`Arc<FairShare>`]: std::sync::Arc
+/// [`acquire_owned`]: FairShare::acquire_owned
+/// [`try_acquire_owned`]: FairShare::try_acquire_owned
+/// [`Arc`]: std::sync::Arc
 #[must_use = "permits are released immediately when dropped"]
 #[derive(Debug)]
 pub struct OwnedFairSharePermit<K, S = RandomState>

@@ -34,39 +34,31 @@ where
 }
 
 #[test]
-#[should_panic(expected = "FairShare requires a non-zero capacity")]
-fn zero_capacity_panics() {
+#[should_panic(expected = "FairShare requires at least one permit")]
+fn zero_permits_panics() {
     FairShare::<usize>::new(0);
 }
 
 #[test]
-fn tracks_capacity_and_key_usage() {
+fn tracks_available_permits() {
     let admission = FairShare::new(2);
-    assert_eq!(admission.capacity(), 2);
     assert_eq!(admission.available_permits(), 2);
-    assert_eq!(admission.queue_len(), 0);
-    assert!(admission.is_idle());
 
     let permit_a0 = admission.try_acquire("a").unwrap();
     let permit_a1 = admission.try_acquire("a").unwrap();
     assert_eq!(permit_a0.key(), &"a");
     assert_eq!(admission.available_permits(), 0);
-    assert_eq!(admission.in_flight(&"a"), 2);
-    assert!(!admission.is_idle());
     assert!(admission.try_acquire("b").is_none());
 
     drop(permit_a0);
     assert_eq!(admission.available_permits(), 1);
-    assert_eq!(admission.in_flight(&"a"), 1);
 
     drop(permit_a1);
     assert_eq!(admission.available_permits(), 2);
-    assert_eq!(admission.in_flight(&"a"), 0);
-    assert!(admission.is_idle());
 }
 
 #[test]
-fn uses_spare_capacity_without_reservations() {
+fn uses_all_permits_without_reservations() {
     let admission = FairShare::new(3);
     let permits = [
         admission.try_acquire("a").unwrap(),
@@ -74,11 +66,10 @@ fn uses_spare_capacity_without_reservations() {
         admission.try_acquire("a").unwrap(),
     ];
 
-    assert_eq!(admission.in_flight(&"a"), 3);
     assert_eq!(admission.available_permits(), 0);
 
     drop(permits);
-    assert!(admission.is_idle());
+    assert_eq!(admission.available_permits(), 3);
 }
 
 #[test]
@@ -94,7 +85,6 @@ fn admits_the_key_with_the_smallest_share() {
     let acquire_b = admission.acquire("b");
     let mut acquire_b = pin!(acquire_b);
     assert!(poll_once(acquire_b.as_mut()).is_pending());
-    assert_eq!(admission.queue_len(), 2);
 
     drop(permit_a0);
     assert!(poll_once(acquire_a.as_mut()).is_pending());
@@ -113,7 +103,7 @@ fn admits_the_key_with_the_smallest_share() {
 }
 
 #[test]
-fn equalizes_capacity_across_contending_keys() {
+fn shares_permits_across_contending_keys() {
     let admission = FairShare::new(3);
     let mut held_by_a = vec![
         admission.try_acquire("a").unwrap(),
@@ -151,11 +141,12 @@ fn equalizes_capacity_across_contending_keys() {
         Poll::Pending => panic!("key a should receive the third released permit"),
     };
 
-    assert_eq!(admission.in_flight(&"a"), 1);
-    assert_eq!(admission.in_flight(&"b"), 1);
-    assert_eq!(admission.in_flight(&"c"), 1);
+    assert_eq!(permit_a.key(), &"a");
+    assert_eq!(permit_b.key(), &"b");
+    assert_eq!(permit_c.key(), &"c");
+    assert_eq!(admission.available_permits(), 0);
     drop((permit_a, permit_b, permit_c));
-    assert!(admission.is_idle());
+    assert_eq!(admission.available_permits(), 3);
 }
 
 #[test]
@@ -223,12 +214,10 @@ fn cancelling_a_pending_acquire_removes_it() {
         let acquire = admission.acquire(2usize);
         let mut acquire = pin!(acquire);
         assert!(poll_once(acquire.as_mut()).is_pending());
-        assert_eq!(admission.queue_len(), 1);
     }
 
-    assert_eq!(admission.queue_len(), 0);
     drop(held);
-    assert!(admission.is_idle());
+    assert_eq!(admission.available_permits(), 1);
 
     let permit = admission.try_acquire(3usize).unwrap();
     assert_eq!(permit.key(), &3);
@@ -246,13 +235,10 @@ fn cancelling_an_admitted_acquire_reassigns_its_permit() {
     assert!(poll_once(second.as_mut()).is_pending());
 
     drop(held);
-    assert_eq!(admission.in_flight(&"first"), 1);
-    assert_eq!(admission.queue_len(), 1);
+    assert_eq!(admission.available_permits(), 0);
 
     drop(first);
-    assert_eq!(admission.in_flight(&"first"), 0);
-    assert_eq!(admission.in_flight(&"second"), 1);
-    assert_eq!(admission.queue_len(), 0);
+    assert_eq!(admission.available_permits(), 0);
 
     let permit = match poll_once(second.as_mut()) {
         Poll::Ready(permit) => permit,
@@ -273,7 +259,6 @@ fn cancelling_within_a_key_preserves_its_queue() {
     assert!(poll_once(second.as_mut()).is_pending());
 
     drop(first);
-    assert_eq!(admission.queue_len(), 1);
 
     drop(held);
     let permit = match poll_once(second.as_mut()) {
@@ -299,7 +284,7 @@ fn owned_permit_keeps_the_admission_controller_alive() {
     let permit = admission
         .clone()
         .try_acquire_owned("tenant")
-        .expect("capacity should be available");
+        .expect("a permit should be available");
 
     drop(admission);
     assert_eq!(permit.key(), &"tenant");
@@ -318,7 +303,7 @@ fn acquire_futures_are_send() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stress_test_preserves_capacity() {
+async fn stress_test_preserves_permit_limit() {
     let admission = Arc::new(FairShare::new(3));
     let active = Arc::new(AtomicUsize::new(0));
     let max_active = Arc::new(AtomicUsize::new(0));
@@ -346,6 +331,4 @@ async fn stress_test_preserves_capacity() {
     assert_eq!(active.load(Ordering::SeqCst), 0);
     assert!(max_active.load(Ordering::SeqCst) <= 3);
     assert_eq!(admission.available_permits(), 3);
-    assert_eq!(admission.queue_len(), 0);
-    assert!(admission.is_idle());
 }
