@@ -94,6 +94,14 @@ where
         self.state.lock().available_permits
     }
 
+    /// Returns the number of acquisitions currently waiting for a permit.
+    ///
+    /// An acquisition is no longer counted once it has been assigned a permit,
+    /// even if its future has not yet been polled again.
+    pub fn num_waiters(&self) -> usize {
+        self.state.lock().num_waiters
+    }
+
     /// Attempts to acquire one permit for `key` without waiting.
     ///
     /// This method does not bypass queued acquisitions.
@@ -171,7 +179,7 @@ where
 {
     total_permits: usize,
     available_permits: usize,
-    pending: usize,
+    num_waiters: usize,
     next_sequence: u64,
     groups: HashMap<Arc<K>, GroupState, S>,
     waiters: Slab<Waiter>,
@@ -186,7 +194,7 @@ where
         Self {
             total_permits: permits,
             available_permits: permits,
-            pending: 0,
+            num_waiters: 0,
             next_sequence: 0,
             groups: HashMap::with_hasher(hash_builder),
             waiters: Slab::new(),
@@ -194,7 +202,7 @@ where
     }
 
     fn try_admit(&mut self, key: Arc<K>) -> bool {
-        if self.available_permits == 0 || self.pending != 0 {
+        if self.available_permits == 0 || self.num_waiters != 0 {
             return false;
         }
 
@@ -205,10 +213,7 @@ where
 
     fn enqueue(&mut self, key: Arc<K>, waker: &Waker) -> usize {
         let sequence = self.next_sequence;
-        self.next_sequence = self
-            .next_sequence
-            .checked_add(1)
-            .expect("FairShare acquisition sequence overflowed u64::MAX");
+        self.next_sequence += 1;
 
         let waiter = self.waiters.insert(Waiter {
             sequence,
@@ -216,7 +221,7 @@ where
             admitted: false,
         });
         self.groups.entry(key).or_default().queue.push_back(waiter);
-        self.pending += 1;
+        self.num_waiters += 1;
         waiter
     }
 
@@ -262,14 +267,14 @@ where
             group.held_permits == 0 && group.queue.is_empty()
         };
 
-        self.pending -= 1;
+        self.num_waiters -= 1;
         if remove_group {
             self.groups.remove(key);
         }
     }
 
     fn admit_waiters(&mut self, wakers: &mut Vec<Waker>) {
-        while self.available_permits > 0 && self.pending > 0 {
+        while self.available_permits > 0 && self.num_waiters > 0 {
             let key = self
                 .next_group()
                 .expect("FairShare has pending acquisitions without a group");
@@ -290,7 +295,7 @@ where
             }
 
             self.available_permits -= 1;
-            self.pending -= 1;
+            self.num_waiters -= 1;
 
             let waiter = &mut self.waiters[waiter];
             waiter.admitted = true;
@@ -494,7 +499,6 @@ where
 ///
 /// [`acquire_owned`]: FairShare::acquire_owned
 /// [`try_acquire_owned`]: FairShare::try_acquire_owned
-/// [`Arc`]: std::sync::Arc
 #[must_use = "permits are released immediately when dropped"]
 #[derive(Debug)]
 pub struct OwnedFairSharePermit<K, S = RandomState>
