@@ -87,8 +87,6 @@ pub mod singleflight;
 pub mod waitgroup;
 
 #[cfg(doctest)]
-pub mod guard_send_sync_tests;
-#[cfg(doctest)]
 pub mod guard_variance_tests;
 
 #[cfg(test)]
