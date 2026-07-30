@@ -891,6 +891,24 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
 /// assert_eq!(*value_guard, 42);
 /// # }
 /// ```
+///
+/// # Compile-time guarantees
+///
+/// The mapped target type is invariant. In particular, a guard mapped to a reference with a
+/// longer lifetime cannot be coerced to one with a shorter lifetime:
+///
+/// ```compile_fail
+/// use mea::mutex::OwnedMappedMutexGuard;
+///
+/// fn shorten<'short>(
+///     guard: OwnedMappedMutexGuard<&'static str, &'static str>,
+///     value: &'short str,
+/// ) -> OwnedMappedMutexGuard<&'static str, &'short str> {
+///     let mut guard: OwnedMappedMutexGuard<&'static str, &'short str> = guard;
+///     *guard = value;
+///     guard
+/// }
+/// ```
 #[must_use = "if unused the Mutex will immediately unlock"]
 pub struct OwnedMappedMutexGuard<T: ?Sized, U: ?Sized> {
     // This Arc acts as an ownership certificate, ensuring the Mutex remains valid
@@ -899,7 +917,7 @@ pub struct OwnedMappedMutexGuard<T: ?Sized, U: ?Sized> {
     // This NonNull pointer precisely points to the subfield U, telling us which
     // memory location we can operate on, with compile-time guarantee of non-null
     d: NonNull<U>,
-    variance: PhantomData<U>,
+    variance: PhantomData<*mut U>,
 }
 
 // SAFETY: OwnedMappedMutexGuard can be safely sent between threads when T: Send and U: Send.
