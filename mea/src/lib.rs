@@ -87,6 +87,8 @@ pub mod singleflight;
 pub mod waitgroup;
 
 #[cfg(doctest)]
+pub mod guard_send_sync_tests;
+#[cfg(doctest)]
 pub mod guard_variance_tests;
 
 #[cfg(test)]
@@ -114,6 +116,7 @@ mod tests {
     use crate::once::OnceCell;
     use crate::once::OnceMap;
     use crate::oneshot;
+    use crate::rwlock::OwnedRwLockReadGuard;
     use crate::rwlock::RwLock;
     use crate::rwlock::RwLockReadGuard;
     use crate::rwlock::RwLockWriteGuard;
@@ -146,6 +149,7 @@ mod tests {
         do_assert_send_and_sync::<Mutex<i64>>();
         do_assert_send_and_sync::<MutexGuard<'_, i64>>();
         do_assert_send_and_sync::<RwLock<i64>>();
+        do_assert_send_and_sync::<OwnedRwLockReadGuard<i64>>();
         do_assert_send_and_sync::<RwLockReadGuard<'_, i64>>();
         do_assert_send_and_sync::<RwLockWriteGuard<'_, i64>>();
         do_assert_send_and_sync::<broadcast::overflow::Sender<i64>>();
@@ -164,6 +168,7 @@ mod tests {
     #[test]
     fn assert_send() {
         fn do_assert_send<T: Send>() {}
+        do_assert_send::<RwLockReadGuard<'_, std::sync::MutexGuard<'static, ()>>>();
         do_assert_send::<oneshot::Receiver<i64>>();
         do_assert_send::<oneshot::Recv<i64>>();
     }

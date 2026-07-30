@@ -117,9 +117,6 @@ pub struct OwnedRwLockReadGuard<T: ?Sized> {
     pub(super) lock: Arc<RwLock<T>>,
 }
 
-unsafe impl<T: ?Sized + Sync> Send for OwnedRwLockReadGuard<T> {}
-unsafe impl<T: ?Sized + Send + Sync> Sync for OwnedRwLockReadGuard<T> {}
-
 impl<T: ?Sized> Drop for OwnedRwLockReadGuard<T> {
     fn drop(&mut self) {
         self.lock.s.release(1);
