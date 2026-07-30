@@ -85,6 +85,7 @@ pub struct MappedRwLockWriteGuard<'a, T: ?Sized> {
     d: NonNull<T>,
     s: &'a internal::Semaphore,
     permits_acquired: usize,
+    // Mutable access requires invariance over T.
     variance: PhantomData<&'a mut T>,
 }
 

@@ -90,6 +90,9 @@ pub mod shutdown;
 pub mod singleflight;
 pub mod waitgroup;
 
+#[cfg(doctest)]
+pub mod guard_variance_tests;
+
 #[cfg(test)]
 fn test_runtime() -> &'static tokio::runtime::Runtime {
     use std::sync::OnceLock;

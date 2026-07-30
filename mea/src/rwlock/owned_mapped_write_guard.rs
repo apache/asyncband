@@ -90,6 +90,7 @@ pub struct OwnedMappedRwLockWriteGuard<T: ?Sized, U: ?Sized> {
     d: NonNull<U>,
     lock: Arc<RwLock<T>>,
     permits_acquired: usize,
+    // Mutable access requires invariance over U.
     variance: PhantomData<*mut U>,
 }
 
