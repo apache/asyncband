@@ -171,8 +171,9 @@ impl Once {
 
         f().await;
 
-        if let Err(cnt) = self.done.cas_state(1, 0) {
-            unreachable!("[BUG] Once completed more than once: {}", cnt);
+        // `decrement` retries spurious failures from the weak CAS.
+        if !self.done.decrement(1) {
+            unreachable!("[BUG] Once completed more than once");
         }
 
         self.done.wake_all();
