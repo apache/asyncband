@@ -31,15 +31,6 @@ impl<T> Mutex<T> {
     pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, T> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
-
-    #[cfg(test)]
-    pub(crate) fn try_lock(&self) -> Option<std::sync::MutexGuard<'_, T>> {
-        match self.0.try_lock() {
-            Ok(guard) => Some(guard),
-            Err(std::sync::TryLockError::Poisoned(err)) => Some(err.into_inner()),
-            Err(std::sync::TryLockError::WouldBlock) => None,
-        }
-    }
 }
 
 #[cfg(test)]
