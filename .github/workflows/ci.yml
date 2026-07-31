@@ -48,18 +48,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: typos-cli,taplo-cli,hawkeye
-      - run: cargo x lint
-      - name: Check documentation
-        run: cargo doc --workspace --all-features --no-deps
-        env:
-          RUSTDOCFLAGS: -D warnings
-      - name: Check semver
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          package: mea
-          feature-group: all-features
-          rust-toolchain: manual
+          tool: typos-cli,taplo-cli,hawkeye,cargo-semver-checks
+      - run: cargo +nightly x lint
 
   test:
     name: Run tests

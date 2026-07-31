@@ -37,7 +37,7 @@ impl Command {
 enum SubCommand {
     #[clap(about = "Compile workspace packages.")]
     Build(CommandBuild),
-    #[clap(about = "Run format and clippy checks.")]
+    #[clap(about = "Run code quality and API compatibility checks.")]
     Lint(CommandLint),
     #[clap(about = "Run unit tests.")]
     Test(CommandTest),
@@ -81,6 +81,8 @@ impl CommandLint {
         run_command(make_taplo_cmd(self.fix));
         run_command(make_typos_cmd());
         run_command(make_hawkeye_cmd(self.fix));
+        run_command(make_doc_cmd());
+        run_command(make_semver_check_cmd());
     }
 }
 
@@ -164,6 +166,33 @@ fn make_clippy_cmd(fix: bool) -> StdCommand {
     } else {
         cmd.args(["--", "-D", "warnings"]);
     }
+    cmd
+}
+
+fn make_doc_cmd() -> StdCommand {
+    let mut cmd = find_command("cargo");
+    cmd.env("RUSTDOCFLAGS", "-D warnings");
+    cmd.args([
+        "+nightly",
+        "doc",
+        "--workspace",
+        "--all-features",
+        "--no-deps",
+    ]);
+    cmd
+}
+
+fn make_semver_check_cmd() -> StdCommand {
+    ensure_installed("cargo-semver-checks", "cargo-semver-checks");
+    let mut cmd = find_command("cargo");
+    cmd.args([
+        "+stable",
+        "semver-checks",
+        "check-release",
+        "--package",
+        "mea",
+        "--all-features",
+    ]);
     cmd
 }
 
