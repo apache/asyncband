@@ -37,9 +37,7 @@ impl WaitSet {
         }
     }
 
-    /// Drains all registered wakers from the wait set.
-    ///
-    /// Callers must release any lock protecting the wait set before waking the returned wakers.
+    /// Takes all registered wakers without waking them.
     pub(crate) fn take_wakers(&mut self) -> Vec<Waker> {
         self.waiters.drain().collect()
     }

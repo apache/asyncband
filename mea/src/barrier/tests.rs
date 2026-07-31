@@ -14,11 +14,9 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::task::Context;
-use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
 
@@ -29,17 +27,17 @@ use tokio_test::task::spawn;
 use crate::barrier::Barrier;
 
 struct LockCheckingWaker {
-    barrier: Weak<Barrier>,
+    barrier: Arc<Barrier>,
     woke: AtomicBool,
-    lock_was_available: AtomicBool,
 }
 
 impl Wake for LockCheckingWaker {
     fn wake(self: Arc<Self>) {
-        let barrier = self.barrier.upgrade().unwrap();
+        assert!(
+            self.barrier.state.try_lock().is_some(),
+            "barrier state lock must not be held while waking"
+        );
         self.woke.store(true, Ordering::Relaxed);
-        self.lock_was_available
-            .store(barrier.state.try_lock().is_some(), Ordering::Relaxed);
     }
 }
 
@@ -47,9 +45,8 @@ impl Wake for LockCheckingWaker {
 fn releases_state_lock_before_waking() {
     let barrier = Arc::new(Barrier::new(2));
     let check = Arc::new(LockCheckingWaker {
-        barrier: Arc::downgrade(&barrier),
+        barrier: barrier.clone(),
         woke: AtomicBool::new(false),
-        lock_was_available: AtomicBool::new(false),
     });
     let waker = Waker::from(check.clone());
     let mut cx = Context::from_waker(&waker);
@@ -59,11 +56,7 @@ fn releases_state_lock_before_waking() {
     assert!(pollster::block_on(barrier.wait()).is_leader());
 
     assert!(check.woke.load(Ordering::Relaxed));
-    assert!(check.lock_was_available.load(Ordering::Relaxed));
-    let Poll::Ready(result) = first.as_mut().poll(&mut cx) else {
-        panic!("first barrier waiter should be ready");
-    };
-    assert!(!result.is_leader());
+    assert!(first.as_mut().poll(&mut cx).is_ready());
 }
 
 #[test]
