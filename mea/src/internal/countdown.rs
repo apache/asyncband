@@ -56,8 +56,14 @@ impl CountdownState {
 
     /// Drain and wake up all waiters.
     pub(crate) fn wake_all(&self) {
-        let mut waiters = self.waiters.lock();
-        waiters.wake_all();
+        let wakers = {
+            let mut waiters = self.waiters.lock();
+            waiters.take_wakers()
+        };
+
+        for waker in wakers {
+            waker.wake();
+        }
     }
 
     /// Registers a waker to be woken up when the countdown reaches zero.
@@ -101,5 +107,52 @@ impl CountdownState {
                 Err(x) => cnt = x,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::Weak;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Wake;
+    use std::task::Waker;
+
+    use super::CountdownState;
+
+    struct LockCheckingWaker {
+        state: Weak<CountdownState>,
+        woke: AtomicBool,
+        lock_was_available: AtomicBool,
+    }
+
+    impl Wake for LockCheckingWaker {
+        fn wake(self: Arc<Self>) {
+            let state = self.state.upgrade().unwrap();
+            self.woke.store(true, Ordering::Relaxed);
+            self.lock_was_available
+                .store(state.waiters.try_lock().is_some(), Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn wake_all_releases_waiters_lock_before_waking() {
+        let state = Arc::new(CountdownState::new(1));
+        let check = Arc::new(LockCheckingWaker {
+            state: Arc::downgrade(&state),
+            woke: AtomicBool::new(false),
+            lock_was_available: AtomicBool::new(false),
+        });
+        let waker = Waker::from(check.clone());
+        let mut cx = Context::from_waker(&waker);
+        state.register_waker(&mut None, &mut cx);
+
+        assert!(state.decrement(1));
+        state.wake_all();
+
+        assert!(check.woke.load(Ordering::Relaxed));
+        assert!(check.lock_was_available.load(Ordering::Relaxed));
     }
 }

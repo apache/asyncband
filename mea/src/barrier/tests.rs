@@ -12,11 +12,59 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::future::Future;
+use std::sync::Arc;
+use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
+
 use tokio_test::assert_pending;
 use tokio_test::assert_ready;
 use tokio_test::task::spawn;
 
 use crate::barrier::Barrier;
+
+struct LockCheckingWaker {
+    barrier: Weak<Barrier>,
+    woke: AtomicBool,
+    lock_was_available: AtomicBool,
+}
+
+impl Wake for LockCheckingWaker {
+    fn wake(self: Arc<Self>) {
+        let barrier = self.barrier.upgrade().unwrap();
+        self.woke.store(true, Ordering::Relaxed);
+        self.lock_was_available
+            .store(barrier.state.try_lock().is_some(), Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn releases_state_lock_before_waking() {
+    let barrier = Arc::new(Barrier::new(2));
+    let check = Arc::new(LockCheckingWaker {
+        barrier: Arc::downgrade(&barrier),
+        woke: AtomicBool::new(false),
+        lock_was_available: AtomicBool::new(false),
+    });
+    let waker = Waker::from(check.clone());
+    let mut cx = Context::from_waker(&waker);
+    let mut first = Box::pin(barrier.wait());
+
+    assert!(first.as_mut().poll(&mut cx).is_pending());
+    assert!(pollster::block_on(barrier.wait()).is_leader());
+
+    assert!(check.woke.load(Ordering::Relaxed));
+    assert!(check.lock_was_available.load(Ordering::Relaxed));
+    let Poll::Ready(result) = first.as_mut().poll(&mut cx) else {
+        panic!("first barrier waiter should be ready");
+    };
+    assert!(!result.is_leader());
+}
 
 #[test]
 fn zero_does_not_block() {

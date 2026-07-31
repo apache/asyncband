@@ -195,6 +195,19 @@ struct Shared<T> {
     waiters: Mutex<WaitSet>,
 }
 
+impl<T> Shared<T> {
+    fn wake_waiters(&self) {
+        let wakers = {
+            let mut waiters = self.waiters.lock();
+            waiters.take_wakers()
+        };
+
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+}
+
 /// A sender handle to the broadcast channel.
 ///
 /// The sender can be cloned to create multiple producers. When all senders are dropped,
@@ -218,7 +231,7 @@ impl<T> Drop for Sender<T> {
             1 => {
                 // If this is the last sender, we need to wake up the receiver so it can
                 // observe the disconnected state.
-                self.shared.waiters.lock().wake_all();
+                self.shared.wake_waiters();
             }
             _ => {
                 // there are still other senders left, do nothing
@@ -254,7 +267,7 @@ impl<T> Sender<T> {
         }
 
         // Notify all waiting receivers.
-        self.shared.waiters.lock().wake_all();
+        self.shared.wake_waiters();
     }
 
     /// Creates a new receiver that starts receiving messages from the current tail of the channel.

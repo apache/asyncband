@@ -12,7 +12,63 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::future::Future;
+use std::sync::Arc;
+use std::sync::Weak;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
+
 use super::*;
+
+struct LockCheckingWaker {
+    shared: Weak<Shared<()>>,
+    wake_count: AtomicUsize,
+    unlocked_wake_count: AtomicUsize,
+}
+
+impl Wake for LockCheckingWaker {
+    fn wake(self: Arc<Self>) {
+        let shared = self.shared.upgrade().unwrap();
+        self.wake_count.fetch_add(1, Ordering::Relaxed);
+        if shared.waiters.try_lock().is_some() {
+            self.unlocked_wake_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+#[test]
+fn releases_waiters_lock_before_waking() {
+    let (tx, mut rx) = channel::<()>(1);
+    let check = Arc::new(LockCheckingWaker {
+        shared: Arc::downgrade(&tx.shared),
+        wake_count: AtomicUsize::new(0),
+        unlocked_wake_count: AtomicUsize::new(0),
+    });
+    let waker = Waker::from(check.clone());
+    let mut cx = Context::from_waker(&waker);
+
+    let mut recv = Box::pin(rx.recv());
+    assert_eq!(recv.as_mut().poll(&mut cx), Poll::Pending);
+    tx.send(());
+    assert_eq!(check.wake_count.load(Ordering::Relaxed), 1);
+    assert_eq!(check.unlocked_wake_count.load(Ordering::Relaxed), 1);
+    assert_eq!(recv.as_mut().poll(&mut cx), Poll::Ready(Ok(())));
+    drop(recv);
+
+    let mut recv = Box::pin(rx.recv());
+    assert_eq!(recv.as_mut().poll(&mut cx), Poll::Pending);
+    drop(tx);
+    assert_eq!(check.wake_count.load(Ordering::Relaxed), 2);
+    assert_eq!(check.unlocked_wake_count.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        recv.as_mut().poll(&mut cx),
+        Poll::Ready(Err(RecvError::Disconnected))
+    );
+}
 
 #[tokio::test]
 async fn test_broadcast_basic() {

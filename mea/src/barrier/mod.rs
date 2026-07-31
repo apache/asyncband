@@ -228,7 +228,11 @@ impl Barrier {
             if state.arrived == self.n {
                 state.arrived = 0;
                 state.generation += 1;
-                state.waiters.wake_all();
+                let wakers = state.waiters.take_wakers();
+                drop(state);
+                for waker in wakers {
+                    waker.wake();
+                }
                 return BarrierWaitResult(true);
             }
 
