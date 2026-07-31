@@ -19,6 +19,16 @@ use super::*;
 use crate::test_runtime;
 
 #[test]
+#[should_panic(expected = "WaitGroup counter overflow")]
+fn test_clone_panics_on_counter_overflow() {
+    let wg = WaitGroup {
+        state: Arc::new(CountdownState::new(u32::MAX)),
+    };
+
+    let _ = wg.clone();
+}
+
+#[test]
 fn test_wait_group_drop() {
     let wg = WaitGroup::new();
     for _i in 0..100 {

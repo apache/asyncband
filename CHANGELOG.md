@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Bug fixes
+
+* Prevent `OwnedMappedMutexGuard` from allowing invalid lifetime coercions. ([#121](https://github.com/fast/mea/pull/121))
+* Require the protected value of an `OwnedRwLockReadGuard` to be both `Send` and `Sync` before the guard can be sent across threads. ([#122](https://github.com/fast/mea/pull/122))
+* Wake waiting tasks only after releasing internal locks. ([#125](https://github.com/fast/mea/pull/125))
+* Retry spurious atomic failures when completing `Once` initialization. ([#126](https://github.com/fast/mea/pull/126))
+* Make cloning a `WaitGroup` panic on counter overflow instead of silently losing track of a handle.
+
 ## v0.6.5 (2026-07-30)
 
 ### New features

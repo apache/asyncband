@@ -104,9 +104,15 @@ impl Clone for WaitGroup {
     ///
     /// This increments the WaitGroup counter. The counter will be decremented
     /// when the new handle is dropped.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the WaitGroup counter would overflow.
     fn clone(&self) -> Self {
         let sync = self.state.clone();
-        sync.increment(1);
+        if sync.increment(1) {
+            panic!("WaitGroup counter overflow");
+        }
         Self { state: sync }
     }
 }
