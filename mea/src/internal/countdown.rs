@@ -48,7 +48,7 @@ impl CountdownState {
     ///
     /// @see https://doc.rust-lang.org/std/sync/atomic/struct.AtomicU32.html#method.compare_exchange_weak
     /// @see https://en.cppreference.com/w/cpp/atomic/atomic_compare_exchange
-    pub(crate) fn cas_state(&self, current: u32, new: u32) -> Result<(), u32> {
+    fn cas_state(&self, current: u32, new: u32) -> Result<(), u32> {
         self.state
             .compare_exchange_weak(current, new, Ordering::Release, Ordering::Relaxed)
             .map(|_| ())
@@ -88,6 +88,18 @@ impl CountdownState {
         match self.state() {
             0 => Ok(()),
             s => Err(s),
+        }
+    }
+
+    /// Increments the counter by `n`, saturating at [`u32::MAX`].
+    pub(crate) fn increment(&self, n: u32) {
+        let mut cnt = self.state();
+        loop {
+            let new_cnt = cnt.saturating_add(n);
+            match self.cas_state(cnt, new_cnt) {
+                Ok(_) => return,
+                Err(x) => cnt = x,
+            }
         }
     }
 

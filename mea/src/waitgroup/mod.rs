@@ -106,14 +106,8 @@ impl Clone for WaitGroup {
     /// when the new handle is dropped.
     fn clone(&self) -> Self {
         let sync = self.state.clone();
-        let mut cnt = sync.state();
-        loop {
-            let new_cnt = cnt.saturating_add(1);
-            match sync.cas_state(cnt, new_cnt) {
-                Ok(_) => return Self { state: sync },
-                Err(x) => cnt = x,
-            }
-        }
+        sync.increment(1);
+        Self { state: sync }
     }
 }
 
