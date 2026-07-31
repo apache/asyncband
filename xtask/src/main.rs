@@ -171,7 +171,7 @@ fn make_clippy_cmd(fix: bool) -> StdCommand {
 
 fn make_doc_cmd() -> StdCommand {
     let mut cmd = find_command("cargo");
-    cmd.env("RUSTDOCFLAGS", "-D warnings");
+    cmd.env("RUSTDOCFLAGS", "-D warnings --cfg docsrs");
     cmd.args([
         "+nightly",
         "doc",
