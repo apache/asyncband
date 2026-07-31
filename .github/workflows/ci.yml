@@ -39,25 +39,17 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - name: Install toolchain
+      - name: Install nightly toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt,clippy
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: typos-cli,taplo-cli,hawkeye
       - run: cargo x lint
-
-  public-api:
-    name: Check public API
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Check documentation
         run: cargo doc --workspace --all-features --no-deps
         env:
@@ -97,14 +89,12 @@ jobs:
     if: ${{ always() }}
     needs:
       - check
-      - public-api
       - test
     steps:
       - name: Guardian
         run: |
           if [[ ! ( \
                  "${{ needs.check.result }}" == "success" \
-              && "${{ needs.public-api.result }}" == "success" \
               && "${{ needs.test.result }}" == "success" \
               ) ]]; then
             echo "Required jobs haven't been completed successfully."
