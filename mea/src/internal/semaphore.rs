@@ -168,7 +168,7 @@ impl Semaphore {
         waiters: MutexGuard<'_, WaitList<WaitNode>>,
     ) {
         const NUM_WAKER: usize = 32;
-        let mut wakers = Vec::with_capacity(NUM_WAKER);
+        let mut wakers = Vec::new();
 
         let mut lock = Some(waiters);
         while rem > 0 {
@@ -188,6 +188,9 @@ impl Semaphore {
                     None => break,
                     Some(waiter) => {
                         if let Some(waker) = waiter.waker.take() {
+                            if wakers.capacity() == 0 {
+                                wakers.reserve_exact(NUM_WAKER);
+                            }
                             wakers.push(waker);
                         }
                     }

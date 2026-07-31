@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Improvements
+
+* Avoid allocating a waker buffer when releasing semaphore permits with no tasks to wake.
+
 ### Bug fixes
 
 * Prevent `OwnedMappedMutexGuard` from allowing invalid lifetime coercions. ([#121](https://github.com/fast/mea/pull/121))
