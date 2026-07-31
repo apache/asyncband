@@ -49,6 +49,26 @@ jobs:
           tool: typos-cli,taplo-cli,hawkeye
       - run: cargo x lint
 
+  public-api:
+    name: Check public API
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check documentation
+        run: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: mea
+          feature-group: all-features
+          rust-toolchain: manual
+
   test:
     name: Run tests
     strategy:
@@ -77,12 +97,14 @@ jobs:
     if: ${{ always() }}
     needs:
       - check
+      - public-api
       - test
     steps:
       - name: Guardian
         run: |
           if [[ ! ( \
                  "${{ needs.check.result }}" == "success" \
+              && "${{ needs.public-api.result }}" == "success" \
               && "${{ needs.test.result }}" == "success" \
               ) ]]; then
             echo "Required jobs haven't been completed successfully."
