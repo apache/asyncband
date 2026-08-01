@@ -14,11 +14,12 @@
 
 //! A condition variable that allows tasks to wait for a notification.
 //!
-//! A condition variable is normally paired with a predicate protected by a
-//! [`Mutex`](crate::mutex::Mutex). The predicate records the state of the application;
-//! notifications only wake tasks that may need to check that state again. Notifications are not
-//! buffered, so calling [`Condvar::notify_one`] or [`Condvar::notify_all`] when no task is waiting
-//! has no effect.
+//! A condition variable is normally paired with a predicate protected by a [`Mutex`]. The predicate
+//! records the state of the application; notifications only wake tasks that may need to check that
+//! state again. Notifications are not buffered, so calling [`Condvar::notify_one`] or
+//! [`Condvar::notify_all`] when no task is waiting has no effect.
+//!
+//! [`Mutex`]: mutex::Mutex
 //!
 //! Always check the predicate while holding the mutex and wait in a loop. [`Condvar::wait`]
 //! registers the task before releasing the mutex, so a notifier that updates the predicate under
@@ -64,7 +65,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-use crate::internal::Mutex as InternalMutex;
+use crate::internal::Mutex;
 use crate::internal::WaitList;
 use crate::mutex;
 use crate::mutex::MutexGuard;
@@ -77,7 +78,7 @@ mod tests;
 ///
 /// See the [module level documentation](self) for more.
 pub struct Condvar {
-    waiters: InternalMutex<WaitList<WaitNode>>,
+    waiters: Mutex<WaitList<WaitNode>>,
 }
 
 #[derive(Debug)]
@@ -116,7 +117,7 @@ impl Condvar {
     /// ```
     pub const fn new() -> Condvar {
         Condvar {
-            waiters: InternalMutex::new(WaitList::new()),
+            waiters: Mutex::new(WaitList::new()),
         }
     }
 
