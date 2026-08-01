@@ -29,6 +29,7 @@ release = false
 [dependencies]
 clap = { version = "4.6.5", features = ["derive"] }
 semver = { version = "1.0.28" }
+serde_json = { version = "1.0.151" }
 which = { version = "8.0.5" }
 
 [lints]

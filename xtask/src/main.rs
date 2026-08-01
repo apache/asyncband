@@ -18,6 +18,9 @@ use clap::Parser;
 use clap::Subcommand;
 use semver::Version;
 
+const CRATES_IO_API_URL: &str = "https://crates.io/api/v1/crates/mea";
+const CRATES_IO_USER_AGENT: &str = "mea release tooling (https://github.com/fast/mea)";
+
 #[derive(Parser)]
 struct Command {
     #[clap(subcommand)]
@@ -79,18 +82,18 @@ struct CommandSemver {
 
 impl CommandSemver {
     fn run(self) {
-        let Some((baseline_tag, baseline_version)) = find_latest_release() else {
-            println!("No release tag found; skipping semver checks for the first release.");
+        let Some(baseline_version) = find_latest_release() else {
+            println!("mea has not been published; skipping semver checks for the first release.");
             return;
         };
 
         let release_type = classify_release_type(&baseline_version, &self.release_version);
         println!(
-            "Checking release {} against {baseline_tag} as a {} release.",
+            "Checking release {} against mea@{baseline_version} as a {} release.",
             self.release_version,
             release_type.as_str()
         );
-        run_command(make_semver_check_cmd(&baseline_tag, release_type));
+        run_command(make_semver_check_cmd(&baseline_version, release_type));
     }
 }
 
@@ -156,37 +159,59 @@ fn run_command(mut cmd: StdCommand) {
     assert!(status.success(), "command failed: {status}");
 }
 
-fn read_command(mut cmd: StdCommand) -> String {
-    println!("{cmd:?}");
-    let output = cmd.output().expect("failed to execute process");
+fn find_latest_release() -> Option<Version> {
+    let mut cmd = find_command("curl");
+    cmd.args([
+        "--silent",
+        "--show-error",
+        "--location",
+        "--proto",
+        "=https",
+        "--connect-timeout",
+        "10",
+        "--max-time",
+        "30",
+        "--user-agent",
+        CRATES_IO_USER_AGENT,
+        "--write-out",
+        "\n%{http_code}",
+        CRATES_IO_API_URL,
+    ]);
+    let output = cmd.output().expect("failed to query crates.io for mea");
     assert!(
         output.status.success(),
-        "command failed: {}\n{}",
+        "failed to query crates.io for mea: {}\n{}",
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(output.stdout).expect("command returned non-UTF-8 output")
-}
+    let output = String::from_utf8(output.stdout).expect("crates.io returned non-UTF-8 data");
+    let (body, status) = output
+        .rsplit_once('\n')
+        .expect("curl did not return an HTTP status for crates.io");
+    match status {
+        "200" => {}
+        "404" => return None,
+        status => panic!("crates.io returned HTTP {status} for mea"),
+    }
 
-fn find_latest_release() -> Option<(String, Version)> {
-    let mut shallow_cmd = find_command("git");
-    shallow_cmd.args(["rev-parse", "--is-shallow-repository"]);
-    assert_eq!(
-        read_command(shallow_cmd).trim(),
-        "false",
-        "semver checks require complete git history; fetch tags and unshallow the repository"
-    );
-
-    let mut tag_cmd = find_command("git");
-    tag_cmd.args(["tag", "--merged", "HEAD", "--list", "v[0-9]*"]);
-    read_command(tag_cmd)
-        .lines()
-        .map(|tag| {
-            let version = Version::parse(tag.strip_prefix('v').unwrap())
-                .unwrap_or_else(|err| panic!("invalid release tag {tag:?}: {err}"));
-            (tag.to_owned(), version)
+    let response: serde_json::Value =
+        serde_json::from_str(body).expect("failed to decode crates.io response for mea");
+    let crate_data = response
+        .get("crate")
+        .expect("crates.io response for mea did not include crate data");
+    let version = crate_data
+        .get("max_stable_version")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            crate_data
+                .get("max_version")
+                .and_then(serde_json::Value::as_str)
         })
-        .max_by(|(_, left), (_, right)| left.cmp_precedence(right))
+        .expect("crates.io response for mea did not include a release version");
+    Some(
+        Version::parse(version)
+            .unwrap_or_else(|err| panic!("crates.io returned invalid version {version:?}: {err}")),
+    )
 }
 
 fn classify_release_type(baseline: &Version, release: &Version) -> SemverReleaseType {
@@ -283,7 +308,10 @@ fn make_doc_cmd() -> StdCommand {
     cmd
 }
 
-fn make_semver_check_cmd(baseline_tag: &str, release_type: SemverReleaseType) -> StdCommand {
+fn make_semver_check_cmd(
+    baseline_version: &Version,
+    release_type: SemverReleaseType,
+) -> StdCommand {
     ensure_installed("cargo-semver-checks", "cargo-semver-checks");
     let mut cmd = find_command("cargo");
     cmd.args([
@@ -293,11 +321,10 @@ fn make_semver_check_cmd(baseline_tag: &str, release_type: SemverReleaseType) ->
         "--package",
         "mea",
         "--all-features",
-        "--baseline-rev",
-        baseline_tag,
-        "--release-type",
-        release_type.as_str(),
-    ]);
+        "--baseline-version",
+    ])
+    .arg(baseline_version.to_string())
+    .args(["--release-type", release_type.as_str()]);
     cmd
 }
 
