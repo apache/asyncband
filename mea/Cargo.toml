@@ -36,9 +36,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 slab = { version = "0.4.11" }
 
 [dev-dependencies]
-pollster = { version = "0.4.0", features = ["macro"] }
-tokio = { version = "1.41.0", features = ["full"] }
-tokio-test = { version = "0.4.4" }
+pollster = { version = "1.0.1", features = ["macro"] }
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-test = { version = "0.4.5" }
 
 [lints]
 workspace = true

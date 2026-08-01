@@ -39,9 +39,9 @@ impl Command {
 enum SubCommand {
     #[clap(about = "Compile workspace packages.")]
     Build(CommandBuild),
-    #[clap(about = "Run code quality and documentation checks.")]
+    #[clap(about = "Run workspace quality checks.")]
     Lint(CommandLint),
-    #[clap(about = "Check API compatibility for a planned release.")]
+    #[clap(about = "Verify API compatibility for a planned release.")]
     Semver(CommandSemver),
     #[clap(about = "Run unit tests.")]
     Test(CommandTest),
