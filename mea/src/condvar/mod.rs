@@ -93,6 +93,19 @@ enum WaitState {
     NotifiedAll,
 }
 
+fn notify_one_locked(waiters: &mut WaitList<WaitNode>) -> Option<Waker> {
+    let mut waker = None;
+    waiters.unlink_first_waiter(|node| {
+        let WaitState::Waiting(waiting) = mem::replace(&mut node.state, WaitState::NotifiedOne)
+        else {
+            unreachable!("only waiting tasks remain linked")
+        };
+        waker = Some(waiting);
+        true
+    });
+    waker
+}
+
 impl fmt::Debug for Condvar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Condvar").finish_non_exhaustive()
@@ -131,7 +144,7 @@ impl Condvar {
     pub fn notify_one(&self) {
         let waker = {
             let mut waiters = self.waiters.lock();
-            Self::notify_one_locked(&mut waiters)
+            notify_one_locked(&mut waiters)
         };
 
         if let Some(waker) = waker {
@@ -149,7 +162,7 @@ impl Condvar {
             let mut wakers = Vec::new();
 
             while waiters
-                .remove_first_waiter(|node| {
+                .unlink_first_waiter(|node| {
                     let WaitState::Waiting(waker) =
                         mem::replace(&mut node.state, WaitState::NotifiedAll)
                     else {
@@ -169,19 +182,6 @@ impl Condvar {
         }
     }
 
-    fn notify_one_locked(waiters: &mut WaitList<WaitNode>) -> Option<Waker> {
-        let mut waker = None;
-        waiters.remove_first_waiter(|node| {
-            let WaitState::Waiting(waiting) = mem::replace(&mut node.state, WaitState::NotifiedOne)
-            else {
-                unreachable!("only waiting tasks remain linked")
-            };
-            waker = Some(waiting);
-            true
-        });
-        waker
-    }
-
     /// Waits for a notification, atomically releasing and then reacquiring the mutex.
     ///
     /// The task is registered with this condition variable before the mutex is released. When this
@@ -191,7 +191,7 @@ impl Condvar {
     /// Unlike the standard library equivalent, this function does not check at runtime that the
     /// same mutex is always used with this condition variable.
     ///
-    /// # Cancellation
+    /// # Cancel safety
     ///
     /// Cancelling this wait removes the task from the wait queue. If the task was selected by
     /// [`notify_one`](Self::notify_one) but has not yet reacquired the mutex, the notification is
@@ -199,14 +199,16 @@ impl Condvar {
     /// for a future waiter.
     pub async fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
         let mutex = mutex::guard_lock(&guard);
-        let notification = Wait {
+        let notify_one_baton = Wait {
             condvar: self,
             guard: Some(guard),
             index: None,
         }
         .await;
         let guard = mutex.lock().await;
-        notification.complete();
+        if let Some(baton) = notify_one_baton {
+            baton.complete();
+        }
         guard
     }
 
@@ -216,14 +218,16 @@ impl Condvar {
     /// accepts and returns an owned guard.
     pub async fn wait_owned<T>(&self, guard: OwnedMutexGuard<T>) -> OwnedMutexGuard<T> {
         let mutex = mutex::owned_guard_lock(&guard);
-        let notification = Wait {
+        let notify_one_baton = Wait {
             condvar: self,
             guard: Some(guard),
             index: None,
         }
         .await;
         let guard = mutex.lock_owned().await;
-        notification.complete();
+        if let Some(baton) = notify_one_baton {
+            baton.complete();
+        }
         guard
     }
 
@@ -330,7 +334,7 @@ impl<'a, G> Future for Wait<'a, G>
 where
     G: Unpin,
 {
-    type Output = Notification<'a>;
+    type Output = Option<NotifyOneBaton<'a>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -351,30 +355,20 @@ where
         }
 
         let index = this.index.expect("wait future polled after completion");
-        let mut notification = None;
-        waiters.with_mut(index, |node| match &mut node.state {
+        let notify_one_baton = match &mut waiters.waiter_mut(index).state {
             WaitState::Waiting(waker) => {
                 if !waker.will_wake(cx.waker()) {
                     waker.clone_from(cx.waker());
                 }
-                false
+                return Poll::Pending;
             }
-            WaitState::NotifiedOne => {
-                notification = Some(Notification::one(this.condvar));
-                true
-            }
-            WaitState::NotifiedAll => {
-                notification = Some(Notification::all());
-                true
-            }
-        });
+            WaitState::NotifiedOne => Some(NotifyOneBaton::new(this.condvar)),
+            WaitState::NotifiedAll => None,
+        };
 
-        if let Some(notification) = notification {
-            this.index = None;
-            Poll::Ready(notification)
-        } else {
-            Poll::Pending
-        }
+        waiters.remove_unlinked_waiter(index);
+        this.index = None;
+        Poll::Ready(notify_one_baton)
     }
 }
 
@@ -387,7 +381,7 @@ impl<G> Drop for Wait<'_, G> {
         let waker = {
             let mut waiters = self.condvar.waiters.lock();
             let mut pass_notification = false;
-            waiters.remove_waiter(index, |node| match &node.state {
+            waiters.unlink_waiter(index, |node| match &node.state {
                 WaitState::Waiting(_) => true,
                 WaitState::NotifiedOne => {
                     pass_notification = true;
@@ -395,10 +389,10 @@ impl<G> Drop for Wait<'_, G> {
                 }
                 WaitState::NotifiedAll => false,
             });
-            waiters.with_mut(index, |_| true);
+            waiters.remove_unlinked_waiter(index);
 
             if pass_notification {
-                Condvar::notify_one_locked(&mut waiters)
+                notify_one_locked(&mut waiters)
             } else {
                 None
             }
@@ -410,19 +404,16 @@ impl<G> Drop for Wait<'_, G> {
     }
 }
 
-struct Notification<'a> {
+/// Passes a selected notification onward if the wait is cancelled while reacquiring its mutex.
+struct NotifyOneBaton<'a> {
     condvar: Option<&'a Condvar>,
 }
 
-impl<'a> Notification<'a> {
-    fn one(condvar: &'a Condvar) -> Self {
+impl<'a> NotifyOneBaton<'a> {
+    fn new(condvar: &'a Condvar) -> Self {
         Self {
             condvar: Some(condvar),
         }
-    }
-
-    fn all() -> Self {
-        Self { condvar: None }
     }
 
     fn complete(mut self) {
@@ -430,7 +421,7 @@ impl<'a> Notification<'a> {
     }
 }
 
-impl Drop for Notification<'_> {
+impl Drop for NotifyOneBaton<'_> {
     fn drop(&mut self) {
         if let Some(condvar) = self.condvar {
             condvar.notify_one();

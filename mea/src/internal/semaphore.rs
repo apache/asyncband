@@ -144,7 +144,7 @@ impl Semaphore {
         let mut waiters = self.waiters.lock();
         let mut wakers = Vec::new();
         loop {
-            match waiters.remove_first_waiter(|node| {
+            match waiters.unlink_first_waiter(|node| {
                 node.permits = 0;
                 true
             }) {
@@ -174,7 +174,7 @@ impl Semaphore {
         while rem > 0 {
             let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
             while wakers.len() < NUM_WAKER {
-                match waiters.remove_first_waiter(|node| {
+                match waiters.unlink_first_waiter(|node| {
                     if node.permits <= rem {
                         rem -= node.permits;
                         node.permits = 0;
@@ -225,12 +225,12 @@ impl Drop for Acquire<'_> {
         if let Some(index) = self.index {
             let mut waiters = self.semaphore.waiters.lock();
             let mut acquired = 0;
-            waiters.remove_waiter(index, |node| {
+            waiters.unlink_waiter(index, |node| {
                 acquired = self.permits - node.permits;
                 node.permits = 0;
                 true
             });
-            waiters.with_mut(index, |_| true); // drop
+            waiters.remove_unlinked_waiter(index);
             if acquired > 0 {
                 self.semaphore.insert_permits_with_lock(acquired, waiters);
             }
@@ -254,8 +254,8 @@ impl Acquire<'_> {
         match index {
             Some(idx) => {
                 let mut waiters = semaphore.waiters.lock();
-                let mut ready = false;
-                waiters.with_mut(*idx, |node| {
+                let ready = {
+                    let node = waiters.waiter_mut(*idx);
                     if node.permits > 0 {
                         let update_waker = node.waker.as_ref().is_none_or(|w| !w.will_wake(waker));
                         if update_waker {
@@ -263,12 +263,11 @@ impl Acquire<'_> {
                         }
                         false
                     } else {
-                        ready = true;
                         true
                     }
-                });
-
+                };
                 if ready {
+                    waiters.remove_unlinked_waiter(*idx);
                     *index = None;
                     *done = true;
                     return Poll::Ready(());

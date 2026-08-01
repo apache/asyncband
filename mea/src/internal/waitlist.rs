@@ -14,14 +14,15 @@
 
 use slab::Slab;
 
-/// A guarded linked list.
+/// A sentinel-based linked list with stable slab indices.
 ///
-/// * `guard`'s `next` points to the first node (regular head).
-/// * `guard`'s `prev` points to the last node (regular tail).
+/// * `sentinel`'s `next` points to the first node (regular head).
+/// * `sentinel`'s `prev` points to the last node (regular tail).
+/// * Unlinked nodes remain addressable by index until they are explicitly removed.
 #[derive(Debug)]
 pub(crate) struct WaitList<T> {
-    // if None, the list is uninitialized and empty
-    guard: Option<usize>,
+    // If `None`, the list is uninitialized and empty.
+    sentinel: Option<usize>,
     nodes: Slab<Node<T>>,
 }
 
@@ -29,30 +30,30 @@ pub(crate) struct WaitList<T> {
 struct Node<T> {
     prev: usize,
     next: usize,
-    stat: Option<T>,
+    value: Option<T>,
 }
 
 impl<T> WaitList<T> {
-    /// Ensures the wait list is initialized, returning the guard index.
+    /// Ensures the wait list is initialized, returning the sentinel index.
     fn ensure_init(&mut self) -> usize {
-        if let Some(guard) = self.guard {
-            return guard;
+        if let Some(sentinel) = self.sentinel {
+            return sentinel;
         }
 
         let first = self.nodes.vacant_entry();
-        let guard = first.key();
+        let sentinel = first.key();
         first.insert(Node {
-            prev: guard,
-            next: guard,
-            stat: None,
+            prev: sentinel,
+            next: sentinel,
+            value: None,
         });
-        self.guard = Some(guard);
-        guard
+        self.sentinel = Some(sentinel);
+        sentinel
     }
 
     pub(crate) const fn new() -> Self {
         Self {
-            guard: None,
+            sentinel: None,
             nodes: Slab::new(),
         }
     }
@@ -69,16 +70,16 @@ impl<T> WaitList<T> {
     ) {
         assert!(idx.is_none());
 
-        let guard = self.ensure_init();
-        let stat = f();
-        let prev_head = self.nodes[guard].next;
+        let sentinel = self.ensure_init();
+        let value = f();
+        let prev_head = self.nodes[sentinel].next;
         let new_node = Node {
-            prev: guard,
+            prev: sentinel,
             next: prev_head,
-            stat,
+            value,
         };
         let new_key = self.nodes.insert(new_node);
-        self.nodes[guard].next = new_key;
+        self.nodes[sentinel].next = new_key;
         self.nodes[prev_head].prev = new_key;
         *idx = Some(new_key);
     }
@@ -95,56 +96,67 @@ impl<T> WaitList<T> {
     ) {
         assert!(idx.is_none());
 
-        let guard = self.ensure_init();
-        let stat = f();
-        let prev_tail = self.nodes[guard].prev;
+        let sentinel = self.ensure_init();
+        let value = f();
+        let prev_tail = self.nodes[sentinel].prev;
         let new_node = Node {
             prev: prev_tail,
-            next: guard,
-            stat,
+            next: sentinel,
+            value,
         };
         let new_key = self.nodes.insert(new_node);
-        self.nodes[guard].prev = new_key;
+        self.nodes[sentinel].prev = new_key;
         self.nodes[prev_tail].next = new_key;
         *idx = Some(new_key);
     }
 
-    /// Removes a previously registered waker from the wait list, if the predicate `f` returns
+    /// Unlinks a previously registered waiter from the wait list if the predicate returns
     /// `true`.
-    pub(crate) fn remove_waiter(
+    ///
+    /// The slab entry remains available until
+    /// [`remove_unlinked_waiter`](Self::remove_unlinked_waiter) is called.
+    /// If the waiter is already unlinked, the predicate still runs but no links are changed.
+    pub(crate) fn unlink_waiter(
         &mut self,
         idx: usize,
-        f: impl FnOnce(&mut T) -> bool,
+        should_unlink: impl FnOnce(&mut T) -> bool,
     ) -> Option<&mut T> {
-        // SAFETY: the wait list must be initialized before any waiter can be registered
-        let guard = self.guard.expect("wait list must be uninitialized");
+        let sentinel = self.sentinel.expect("wait list must be initialized");
 
-        assert_ne!(idx, guard);
+        assert_ne!(idx, sentinel);
 
-        fn retrieve_stat<T>(node: &mut Node<T>) -> &mut T {
-            // SAFETY: `idx` is a valid key + non-guard node always has `Some(stat)`
-            node.stat.as_mut().unwrap()
+        fn value_mut<T>(node: &mut Node<T>) -> &mut T {
+            node.value
+                .as_mut()
+                .expect("waiter node must contain a value")
         }
 
-        if f(retrieve_stat(&mut self.nodes[idx])) {
+        if should_unlink(value_mut(&mut self.nodes[idx])) {
             let prev = self.nodes[idx].prev;
             let next = self.nodes[idx].next;
-            self.nodes[prev].next = next;
-            self.nodes[next].prev = prev;
-            self.nodes[idx].prev = idx;
-            self.nodes[idx].next = idx;
-            Some(retrieve_stat(&mut self.nodes[idx]))
+            let is_unlinked = prev == idx;
+            assert_eq!(is_unlinked, next == idx, "waiter links must be consistent");
+            if !is_unlinked {
+                self.nodes[prev].next = next;
+                self.nodes[next].prev = prev;
+                self.nodes[idx].prev = idx;
+                self.nodes[idx].next = idx;
+            }
+            Some(value_mut(&mut self.nodes[idx]))
         } else {
             None
         }
     }
 
-    /// Removes the first waiter from the wait list, if the predicate `f` returns `true`.
-    pub(crate) fn remove_first_waiter(&mut self, f: impl FnOnce(&mut T) -> bool) -> Option<&mut T> {
-        let guard = self.guard?;
-        let first = self.nodes[guard].next;
-        if first != guard {
-            self.remove_waiter(first, f)
+    /// Unlinks the first waiter from the wait list if the predicate returns `true`.
+    pub(crate) fn unlink_first_waiter(
+        &mut self,
+        should_unlink: impl FnOnce(&mut T) -> bool,
+    ) -> Option<&mut T> {
+        let sentinel = self.sentinel?;
+        let first = self.nodes[sentinel].next;
+        if first != sentinel {
+            self.unlink_waiter(first, should_unlink)
         } else {
             None
         }
@@ -152,14 +164,21 @@ impl<T> WaitList<T> {
 
     /// Returns `true` if the wait list is empty.
     pub(crate) fn is_empty(&self) -> bool {
-        self.guard
-            .is_none_or(|guard| self.nodes[guard].next == guard)
+        self.sentinel
+            .is_none_or(|sentinel| self.nodes[sentinel].next == sentinel)
     }
 
-    pub(crate) fn with_mut(&mut self, idx: usize, drop: impl FnOnce(&mut T) -> bool) {
-        let node = &mut self.nodes[idx];
-        if drop(node.stat.as_mut().unwrap()) {
-            self.nodes.remove(idx);
-        }
+    pub(crate) fn waiter_mut(&mut self, idx: usize) -> &mut T {
+        self.nodes[idx]
+            .value
+            .as_mut()
+            .expect("waiter node must contain a value")
+    }
+
+    pub(crate) fn remove_unlinked_waiter(&mut self, idx: usize) {
+        let node = &self.nodes[idx];
+        assert_eq!(node.prev, idx, "waiter must be unlinked before removal");
+        assert_eq!(node.next, idx, "waiter must be unlinked before removal");
+        self.nodes.remove(idx);
     }
 }
