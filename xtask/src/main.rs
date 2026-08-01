@@ -13,13 +13,12 @@
 // limitations under the License.
 
 use std::process::Command as StdCommand;
+use std::time::Duration;
 
 use clap::Parser;
 use clap::Subcommand;
 use semver::Version;
-
-const CRATES_IO_API_URL: &str = "https://crates.io/api/v1/crates/mea";
-const CRATES_IO_USER_AGENT: &str = "mea release tooling (https://github.com/fast/mea)";
+use serde::Deserialize;
 
 #[derive(Parser)]
 struct Command {
@@ -160,56 +159,40 @@ fn run_command(mut cmd: StdCommand) {
 }
 
 fn find_latest_release() -> Option<Version> {
-    let mut cmd = find_command("curl");
-    cmd.args([
-        "--silent",
-        "--show-error",
-        "--location",
-        "--proto",
-        "=https",
-        "--connect-timeout",
-        "10",
-        "--max-time",
-        "30",
-        "--user-agent",
-        CRATES_IO_USER_AGENT,
-        "--write-out",
-        "\n%{http_code}",
-        CRATES_IO_API_URL,
-    ]);
-    let output = cmd.output().expect("failed to query crates.io for mea");
-    assert!(
-        output.status.success(),
-        "failed to query crates.io for mea: {}\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
+    let agent = ureq::Agent::from(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(10)))
+            .build(),
     );
-    let output = String::from_utf8(output.stdout).expect("crates.io returned non-UTF-8 data");
-    let (body, status) = output
-        .rsplit_once('\n')
-        .expect("curl did not return an HTTP status for crates.io");
-    match status {
-        "200" => {}
-        "404" => return None,
-        status => panic!("crates.io returned HTTP {status} for mea"),
+
+    let mut response = match agent.get("https://crates.io/api/v1/crates/mea").call() {
+        Ok(response) => response,
+        Err(ureq::Error::StatusCode(404)) => return None,
+        Err(err) => panic!("failed to query crates.io for mea: {err}"),
+    };
+
+    #[derive(Deserialize)]
+    struct CratesIoResponse {
+        #[serde(rename = "crate")]
+        crate_data: CratesIoCrate,
     }
 
-    let response: serde_json::Value =
-        serde_json::from_str(body).expect("failed to decode crates.io response for mea");
-    let crate_data = response
-        .get("crate")
-        .expect("crates.io response for mea did not include crate data");
-    let version = crate_data
-        .get("max_stable_version")
-        .and_then(serde_json::Value::as_str)
-        .or_else(|| {
-            crate_data
-                .get("max_version")
-                .and_then(serde_json::Value::as_str)
-        })
-        .expect("crates.io response for mea did not include a release version");
+    #[derive(Deserialize)]
+    struct CratesIoCrate {
+        max_version: String,
+        max_stable_version: Option<String>,
+    }
+
+    let response: CratesIoResponse = response
+        .body_mut()
+        .read_json()
+        .expect("failed to decode crates.io response for mea");
+    let version = response
+        .crate_data
+        .max_stable_version
+        .unwrap_or(response.crate_data.max_version);
     Some(
-        Version::parse(version)
+        Version::parse(&version)
             .unwrap_or_else(|err| panic!("crates.io returned invalid version {version:?}: {err}")),
     )
 }
