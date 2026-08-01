@@ -43,12 +43,10 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt,clippy
-      - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: typos-cli,taplo-cli,hawkeye,cargo-semver-checks
+          tool: typos-cli,taplo-cli,hawkeye
       - run: cargo +nightly x lint
 
   test:

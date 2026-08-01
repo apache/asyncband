@@ -32,6 +32,7 @@ dbg_macro = "deny"
 
 [workspace.metadata.release]
 pre-release-commit-message = "chore: release v{{version}}"
+pre-release-hook = ["cargo", "x", "semver", "--release-version", "{{version}}"]
 shared-version = true
 sign-tag = true
 tag-name = "v{{version}}"

@@ -28,6 +28,7 @@ release = false
 
 [dependencies]
 clap = { version = "4.5.20", features = ["derive"] }
+semver = "1.0.28"
 which = { version = "8.0.0" }
 
 [lints]
