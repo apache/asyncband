@@ -189,6 +189,20 @@ impl Barrier {
     /// The last task to call `wait()` will be designated as the leader and receive `true`
     /// as the return value. All other tasks will receive `false`.
     ///
+    /// # Cancel safety
+    ///
+    /// This method is not cancellation safe.
+    ///
+    /// An arrival is recorded when the future returned by `wait` is first polled. Once recorded,
+    /// the arrival is not retracted if that future is dropped before the barrier completes.
+    /// Cancellation therefore stops that caller from observing completion, but it does not make the
+    /// caller leave the current barrier generation.
+    ///
+    /// Calling `wait` again after canceling a pending call records another arrival. Repeatedly
+    /// canceling and retrying can therefore cause a generation to complete with fewer than `n` live
+    /// wait futures. Callers that need to keep waiting after another operation completes first
+    /// should retain and continue polling the same `wait` future instead of creating a new one.
+    ///
     /// # Returns
     ///
     /// Returns a `Future` that resolves to:

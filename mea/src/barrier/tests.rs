@@ -69,6 +69,18 @@ fn tango() {
 }
 
 #[test]
+fn cancelled_wait_still_counts_as_arrival() {
+    let b = Barrier::new(2);
+
+    let mut cancelled = spawn(b.wait());
+    assert_pending!(cancelled.poll());
+    drop(cancelled);
+
+    let mut remaining = spawn(b.wait());
+    assert!(assert_ready!(remaining.poll()).is_leader());
+}
+
+#[test]
 fn lots() {
     let b = Barrier::new(100);
 
