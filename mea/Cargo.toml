@@ -44,6 +44,7 @@ tokio-test = { version = "0.4.5" }
 [[bench]]
 harness = false
 name = "primitives"
+path = "benches/primitives/main.rs"
 
 [lints]
 workspace = true
