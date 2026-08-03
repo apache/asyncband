@@ -151,6 +151,12 @@ fn try_recv_success_then_disconnected() {
 
     assert_eq!(rx.try_recv(), Ok(10));
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+    assert!(rx.is_closed());
+    assert!(!rx.has_message());
+    assert_eq!(
+        pollster::block_on(rx.into_future()),
+        Err(oneshot::RecvError::Disconnected)
+    );
 }
 
 #[test]
@@ -164,6 +170,71 @@ fn try_recv_disconnected_after_drop() {
     let (tx, rx) = oneshot::channel::<()>();
     drop(tx);
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
+fn send_error_preserves_message_until_consumed() {
+    let (sender, receiver) = oneshot::channel();
+    let (message, counter) = DropCounter::new(17u128);
+
+    drop(receiver);
+    assert!(sender.is_closed());
+
+    let error = sender.send(message).unwrap_err();
+    assert_eq!(counter.count(), 0);
+    assert_eq!(*error.as_inner().value(), 17);
+
+    let message = error.into_inner();
+    assert_eq!(counter.count(), 0);
+    drop(message);
+    assert_eq!(counter.count(), 1);
+}
+
+#[test]
+fn dropping_send_error_drops_message() {
+    let (sender, receiver) = oneshot::channel();
+    let (message, counter) = DropCounter::new(());
+
+    drop(receiver);
+    drop(sender.send(message).unwrap_err());
+
+    assert_eq!(counter.count(), 1);
+}
+
+#[test]
+fn dropping_receiver_after_send_drops_message() {
+    let (sender, receiver) = oneshot::channel();
+    let (message, counter) = DropCounter::new(());
+
+    sender.send(message).unwrap();
+    assert_eq!(counter.count(), 0);
+    drop(receiver);
+
+    assert_eq!(counter.count(), 1);
+}
+
+#[test]
+fn dropping_unpolled_recv_closes_channel() {
+    let (sender, receiver) = oneshot::channel::<u128>();
+    let receiver = receiver.into_future();
+
+    drop(receiver);
+
+    assert!(sender.is_closed());
+    assert_eq!(sender.send(17).unwrap_err().into_inner(), 17);
+}
+
+#[test]
+fn dropping_recv_after_send_drops_message() {
+    let (sender, receiver) = oneshot::channel();
+    let (message, counter) = DropCounter::new(());
+    let receiver = receiver.into_future();
+
+    sender.send(message).unwrap();
+    assert_eq!(counter.count(), 0);
+    drop(receiver);
+
+    assert_eq!(counter.count(), 1);
 }
 
 #[derive(Default)]
@@ -247,6 +318,32 @@ fn poll_then_send() {
         Poll::Ready(Ok(1234))
     );
     assert_eq!(waker_handle.clone_count(), 1);
+    assert_eq!(waker_handle.drop_count(), 1);
+    assert_eq!(waker_handle.wake_count(), 1);
+}
+
+#[test]
+fn poll_then_drop_sender() {
+    let (sender, receiver) = oneshot::channel::<u128>();
+    let mut receiver = receiver.into_future();
+
+    let (waker, waker_handle) = waker();
+    let mut context = Context::from_waker(&waker);
+
+    assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Pending);
+    assert_eq!(waker_handle.clone_count(), 1);
+    assert_eq!(waker_handle.drop_count(), 0);
+    assert_eq!(waker_handle.wake_count(), 0);
+
+    drop(sender);
+    assert_eq!(waker_handle.clone_count(), 1);
+    assert_eq!(waker_handle.drop_count(), 1);
+    assert_eq!(waker_handle.wake_count(), 1);
+
+    assert_eq!(
+        Pin::new(&mut receiver).poll(&mut context),
+        Poll::Ready(Err(oneshot::RecvError::Disconnected))
+    );
     assert_eq!(waker_handle.drop_count(), 1);
     assert_eq!(waker_handle.wake_count(), 1);
 }
@@ -342,25 +439,28 @@ fn drop_pending_receiver_closes_channel_and_drops_waker() {
 
 #[test]
 fn poll_then_drop_receiver_during_send() {
-    let (sender, receiver) = oneshot::channel::<u128>();
+    let (sender, receiver) = oneshot::channel();
+    let (message, counter) = DropCounter::new(1234u128);
     let mut receiver = receiver.into_future();
 
     let (waker, _waker_handle) = waker();
     let mut context = Context::from_waker(&waker);
 
     // Put the channel into the receiving state
-    assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Pending);
+    assert!(matches!(
+        Pin::new(&mut receiver).poll(&mut context),
+        Poll::Pending
+    ));
 
     // Spawn a separate thread that sends in parallel
-    let t = std::thread::spawn(move || {
-        let _ = sender.send(1234);
-    });
+    let t = std::thread::spawn(move || sender.send(message));
 
     // Drop the receiver.
     drop(receiver);
 
-    // The send operation should also not have panicked
-    t.join().unwrap();
+    // Whether send or receiver drop wins, exactly one side owns and drops the message.
+    drop(t.join().unwrap());
+    assert_eq!(counter.count(), 1);
 }
 
 #[test]
