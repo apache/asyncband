@@ -40,6 +40,7 @@ MEA is a runtime-agnostic library providing essential synchronization primitives
 * [**oneshot::channel**](https://docs.rs/mea/*/mea/oneshot/): A one-shot channel for sending a single value between tasks.
 * [**shutdown**](https://docs.rs/mea/*/mea/shutdown/): A composite synchronization primitive for managing shutdown signals.
 * [**singleflight::Group**](https://docs.rs/mea/*/mea/singleflight/): A duplicate function call suppression mechanism.
+* [**time**](https://docs.rs/mea/*/mea/time/): Explicitly driven delays, timeouts, intervals, and scheduled actions that do not require a particular async runtime.
 
 ## Installation
 
@@ -84,6 +85,7 @@ This crate collects runtime-agnostic synchronization primitives from spare parts
 * **atomicbox** is forked from [`atomicbox`](https://github.com/jorendorff/atomicbox/) at commit 07756444.
 * **broadcast::channel** is derived from `tokio::sync::broadcast::channel`, with a different implementation based on the internal `WaitSet` primitive.
 * **oneshot::channel** is derived from [`oneshot`](https://github.com/faern/oneshot), with significant simplifications since we need not support synchronized receiving functions.
+* **time** is built around an explicit driver/context pair. The driver owns a private hierarchical timing wheel and is advanced by the integrating reactor; timeout, interval, and scheduling APIs compose over the context without spawning tasks or using a process-global runtime handle.
 
 Other parts are written from scratch.
 

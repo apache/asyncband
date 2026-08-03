@@ -44,6 +44,8 @@
 //! * [`oneshot::channel`]: A one-shot channel for sending a single value between tasks.
 //! * [`shutdown`]: A composite synchronization primitive for managing shutdown signals.
 //! * [`singleflight::Group`]: A duplicate function call suppression mechanism.
+//! * [`time`]: Explicitly driven delays, timeouts, intervals, and scheduled actions that do not
+//!   require a particular async runtime.
 //!
 //! # Runtime Agnostic
 //!
@@ -84,6 +86,7 @@ pub mod rwlock;
 pub mod semaphore;
 pub mod shutdown;
 pub mod singleflight;
+pub mod time;
 pub mod waitgroup;
 
 #[cfg(doctest)]
@@ -123,6 +126,10 @@ mod tests {
     use crate::shutdown::ShutdownSend;
     use crate::shutdown::ShutdownWatch;
     use crate::singleflight;
+    use crate::time::Delay;
+    use crate::time::Interval;
+    use crate::time::TimerContext;
+    use crate::time::TimerDriver;
     use crate::waitgroup::Wait;
     use crate::waitgroup::WaitGroup;
 
@@ -161,6 +168,10 @@ mod tests {
         do_assert_send_and_sync::<mpsc::UnboundedReceiver<i64>>();
         do_assert_send_and_sync::<mpsc::BoundedSender<i64>>();
         do_assert_send_and_sync::<mpsc::BoundedReceiver<i64>>();
+        do_assert_send_and_sync::<TimerContext>();
+        do_assert_send_and_sync::<TimerDriver>();
+        do_assert_send_and_sync::<Delay>();
+        do_assert_send_and_sync::<Interval>();
     }
 
     #[test]
@@ -208,5 +219,7 @@ mod tests {
         do_assert_unpin::<mpsc::UnboundedReceiver<i64>>();
         do_assert_unpin::<mpsc::BoundedSender<i64>>();
         do_assert_unpin::<mpsc::BoundedReceiver<i64>>();
+        do_assert_unpin::<Delay>();
+        do_assert_unpin::<Interval>();
     }
 }
