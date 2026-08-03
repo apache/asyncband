@@ -12,12 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod primitives {
-    pub(crate) mod oneshot;
+#[path = "primitives/oneshot.rs"]
+mod oneshot;
+
+fn main() {
+    divan::main();
 }
-
-use criterion::criterion_group;
-use criterion::criterion_main;
-
-criterion_group!(benches, primitives::oneshot::benchmarks);
-criterion_main!(benches);

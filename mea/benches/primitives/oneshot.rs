@@ -14,47 +14,46 @@
 
 use std::future::Future;
 use std::future::IntoFuture;
-use std::hint::black_box;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-use criterion::Criterion;
+use divan::Bencher;
+use divan::black_box;
 use mea::oneshot;
 
-pub(crate) fn benchmarks(c: &mut Criterion) {
-    let mut group = c.benchmark_group("oneshot");
+#[divan::bench]
+fn send_before_poll(bencher: Bencher) {
     let mut context = Context::from_waker(Waker::noop());
 
-    group.bench_function("send_before_poll", |b| {
-        b.iter(|| {
-            let (sender, receiver) = black_box(oneshot::channel());
-            let mut receiver = receiver.into_future();
+    bencher.bench_local(|| {
+        let (sender, receiver) = black_box(oneshot::channel());
+        let mut receiver = receiver.into_future();
 
-            sender.send(black_box(1usize)).unwrap();
+        sender.send(black_box(1usize)).unwrap();
 
-            match Pin::new(&mut receiver).poll(&mut context) {
-                Poll::Ready(Ok(value)) => black_box(value),
-                result => panic!("unexpected receive result: {result:?}"),
-            }
-        });
+        match Pin::new(&mut receiver).poll(&mut context) {
+            Poll::Ready(Ok(value)) => black_box(value),
+            result => panic!("unexpected receive result: {result:?}"),
+        }
     });
+}
 
-    group.bench_function("poll_before_send", |b| {
-        b.iter(|| {
-            let (sender, receiver) = black_box(oneshot::channel());
-            let mut receiver = receiver.into_future();
+#[divan::bench]
+fn poll_before_send(bencher: Bencher) {
+    let mut context = Context::from_waker(Waker::noop());
 
-            assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Pending);
-            sender.send(black_box(1usize)).unwrap();
+    bencher.bench_local(|| {
+        let (sender, receiver) = black_box(oneshot::channel());
+        let mut receiver = receiver.into_future();
 
-            match Pin::new(&mut receiver).poll(&mut context) {
-                Poll::Ready(Ok(value)) => black_box(value),
-                result => panic!("unexpected receive result: {result:?}"),
-            }
-        });
+        assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Pending);
+        sender.send(black_box(1usize)).unwrap();
+
+        match Pin::new(&mut receiver).poll(&mut context) {
+            Poll::Ready(Ok(value)) => black_box(value),
+            result => panic!("unexpected receive result: {result:?}"),
+        }
     });
-
-    group.finish();
 }
