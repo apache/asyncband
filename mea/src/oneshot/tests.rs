@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::RawWaker;
@@ -323,57 +324,129 @@ fn poll_then_send() {
 }
 
 #[test]
-fn poll_completes_before_sender_takes_published_waker() {
-    let (mut sender, receiver) = oneshot::channel();
+fn poll_returns_while_sender_owns_waker() {
+    let (sender, receiver) = oneshot::channel();
+    let channel_ptr = sender.channel_ptr;
+    mem::forget(sender);
     let mut receiver = receiver.into_future();
 
-    let (waker, waker_handle) = waker();
-    let mut context = Context::from_waker(&waker);
-    assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Pending);
-
-    let channel_ref = sender.channel.take().unwrap();
-    let channel = channel_ref.get();
-    unsafe { channel.write_message(1234u128) };
+    let (stored_waker, stored_handle) = waker();
+    let mut stored_context = Context::from_waker(&stored_waker);
     assert_eq!(
-        channel.state.swap(super::MESSAGE, Ordering::AcqRel),
-        super::WAITING
+        Pin::new(&mut receiver).poll(&mut stored_context),
+        Poll::Pending
     );
 
-    // The sender can be descheduled here without delaying a concurrent receiver poll.
+    let channel = unsafe { channel_ptr.as_ref() };
+    unsafe { channel.write_message(1234u128) };
+    // Pause the sender immediately after it claims the stored waker.
     assert_eq!(
-        Pin::new(&mut receiver).poll(&mut context),
+        channel.state.fetch_add(1, Ordering::AcqRel),
+        super::RECEIVING
+    );
+
+    let (started_tx, started_rx) = mpsc::sync_channel(0);
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    let poll_thread = spawn_named("receiver", move || {
+        let (current_waker, current_handle) = waker();
+        let mut current_context = Context::from_waker(&current_waker);
+        started_tx.send(()).unwrap();
+        let result = Pin::new(&mut receiver).poll(&mut current_context);
+        result_tx.send((receiver, current_handle, result)).unwrap();
+    });
+
+    started_rx.recv().unwrap();
+    let result = result_rx.recv_timeout(Duration::from_secs(5));
+    let returned_before_handoff = result.is_ok();
+
+    let (handoff_waker, receiver_owns_allocation) =
+        super::sender_finish_waker_handoff(channel, super::MESSAGE);
+    assert!(receiver_owns_allocation);
+    handoff_waker.wake();
+    assert_eq!(stored_handle.wake_count(), 1);
+
+    let (mut receiver, current_handle, result) = match result {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("receiver remained blocked after the sender completed the handoff"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("receiver thread exited unexpectedly"),
+    };
+    poll_thread.join().unwrap();
+    assert!(
+        returned_before_handoff,
+        "poll blocked while the sender owned the waker"
+    );
+    assert_eq!(result, Poll::Pending);
+    assert_eq!(current_handle.wake_count(), 1);
+
+    let (current_waker, _) = waker();
+    let mut current_context = Context::from_waker(&current_waker);
+    assert_eq!(
+        Pin::new(&mut receiver).poll(&mut current_context),
         Poll::Ready(Ok(1234))
     );
-
-    unsafe { channel.take_waker() }.wake();
-    assert_eq!(waker_handle.wake_count(), 1);
-    drop(channel_ref);
-    drop(receiver);
 }
 
 #[test]
-fn drop_completes_before_sender_takes_published_waker() {
-    let (mut sender, receiver) = oneshot::channel::<u128>();
+fn drop_transfers_cleanup_while_sender_owns_waker() {
+    let (sender, receiver) = oneshot::channel();
+    let channel_ptr = sender.channel_ptr;
+    mem::forget(sender);
     let mut receiver = receiver.into_future();
+    let (message, counter) = DropCounter::new(1234u128);
 
-    let (waker, waker_handle) = waker();
-    let mut context = Context::from_waker(&waker);
-    assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Pending);
+    let (stored_waker, stored_handle) = waker();
+    let mut context = Context::from_waker(&stored_waker);
+    assert!(matches!(
+        Pin::new(&mut receiver).poll(&mut context),
+        Poll::Pending
+    ));
 
-    let channel_ref = sender.channel.take().unwrap();
-    let channel = channel_ref.get();
+    let channel = unsafe { channel_ptr.as_ref() };
+    unsafe { channel.write_message(message) };
+    // Pause the sender immediately after it claims the stored waker.
     assert_eq!(
-        channel.state.swap(super::DISCONNECTED, Ordering::AcqRel),
-        super::WAITING
+        channel.state.fetch_add(1, Ordering::AcqRel),
+        super::RECEIVING
     );
 
-    // The sender still owns the waker, but dropping the receiver does not wait for that handoff.
-    drop(receiver);
-    assert_eq!(waker_handle.drop_count(), 0);
+    let (started_tx, started_rx) = mpsc::sync_channel(0);
+    let (done_tx, done_rx) = mpsc::sync_channel(1);
+    let drop_thread = spawn_named("receiver", move || {
+        started_tx.send(()).unwrap();
+        drop(receiver);
+        done_tx.send(()).unwrap();
+    });
 
-    unsafe { channel.take_waker() }.wake();
-    assert_eq!(waker_handle.wake_count(), 1);
-    drop(channel_ref);
+    started_rx.recv().unwrap();
+    let result = done_rx.recv_timeout(Duration::from_secs(5));
+    let returned_before_handoff = result.is_ok();
+
+    let (handoff_waker, receiver_owns_allocation) =
+        super::sender_finish_waker_handoff(channel, super::MESSAGE);
+    if receiver_owns_allocation {
+        handoff_waker.wake();
+    } else {
+        unsafe { super::discard_sent_message(channel_ptr) };
+        drop(handoff_waker);
+    }
+
+    match result {
+        Ok(()) => {}
+        Err(mpsc::RecvTimeoutError::Timeout) => done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("receiver remained blocked after the sender completed the handoff"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("receiver thread exited unexpectedly"),
+    }
+    drop_thread.join().unwrap();
+    assert!(
+        returned_before_handoff,
+        "drop blocked while the sender owned the waker"
+    );
+    assert!(!receiver_owns_allocation);
+    assert_eq!(counter.count(), 1);
+    assert_eq!(stored_handle.drop_count(), 1);
 }
 
 #[test]
