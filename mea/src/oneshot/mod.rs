@@ -424,9 +424,9 @@ impl<T> fmt::Debug for Recv<T> {
 
 unsafe impl<T: Send> Send for Recv<T> {}
 
-// Only a waker move and a terminal state store remain after the sender claims the handoff. Keep
-// the budget small so an active sender usually wins without letting a descheduled sender occupy a
-// runtime worker indefinitely.
+// Only an acquire synchronization, a waker move, and a terminal state store remain after the
+// sender claims the handoff. Keep the budget small so an active sender usually wins without
+// letting a descheduled sender occupy a runtime worker indefinitely.
 const WAKER_HANDOFF_SPINS: usize = 8;
 
 #[cold]
