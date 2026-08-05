@@ -323,6 +323,60 @@ fn poll_then_send() {
 }
 
 #[test]
+fn poll_completes_before_sender_takes_published_waker() {
+    let (mut sender, receiver) = oneshot::channel();
+    let mut receiver = receiver.into_future();
+
+    let (waker, waker_handle) = waker();
+    let mut context = Context::from_waker(&waker);
+    assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Pending);
+
+    let channel_ref = sender.channel.take().unwrap();
+    let channel = channel_ref.get();
+    unsafe { channel.write_message(1234u128) };
+    assert_eq!(
+        channel.state.swap(super::MESSAGE, Ordering::AcqRel),
+        super::WAITING
+    );
+
+    // The sender can be descheduled here without delaying a concurrent receiver poll.
+    assert_eq!(
+        Pin::new(&mut receiver).poll(&mut context),
+        Poll::Ready(Ok(1234))
+    );
+
+    unsafe { channel.take_waker() }.wake();
+    assert_eq!(waker_handle.wake_count(), 1);
+    drop(channel_ref);
+    drop(receiver);
+}
+
+#[test]
+fn drop_completes_before_sender_takes_published_waker() {
+    let (mut sender, receiver) = oneshot::channel::<u128>();
+    let mut receiver = receiver.into_future();
+
+    let (waker, waker_handle) = waker();
+    let mut context = Context::from_waker(&waker);
+    assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Pending);
+
+    let channel_ref = sender.channel.take().unwrap();
+    let channel = channel_ref.get();
+    assert_eq!(
+        channel.state.swap(super::DISCONNECTED, Ordering::AcqRel),
+        super::WAITING
+    );
+
+    // The sender still owns the waker, but dropping the receiver does not wait for that handoff.
+    drop(receiver);
+    assert_eq!(waker_handle.drop_count(), 0);
+
+    unsafe { channel.take_waker() }.wake();
+    assert_eq!(waker_handle.wake_count(), 1);
+    drop(channel_ref);
+}
+
+#[test]
 fn poll_then_drop_sender() {
     let (sender, receiver) = oneshot::channel::<u128>();
     let mut receiver = receiver.into_future();
