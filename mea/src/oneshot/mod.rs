@@ -77,6 +77,7 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::future::Future;
 use std::future::IntoFuture;
+use std::hint;
 use std::mem;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
@@ -423,11 +424,46 @@ impl<T> fmt::Debug for Recv<T> {
 
 unsafe impl<T: Send> Send for Recv<T> {}
 
+// Only a waker move and a terminal state store remain after the sender claims the handoff. Keep
+// the budget small so an active sender usually wins without letting a descheduled sender occupy a
+// runtime worker indefinitely.
+const WAKER_HANDOFF_SPINS: usize = 8;
+
+#[cold]
+fn spin_waker_handoff(state: &AtomicU8) -> u8 {
+    for _ in 0..WAKER_HANDOFF_SPINS {
+        hint::spin_loop();
+        let current = state.load(Ordering::Relaxed);
+        if current != WAKER_CLAIMED {
+            return current;
+        }
+    }
+
+    WAKER_CLAIMED
+}
+
 fn handoff_pending<T>(cx: &Context<'_>) -> Poll<Result<T, RecvError>> {
-    // The sender owns the stored waker, so preserve the latest-waker contract without waiting for
-    // the sender to finish the handoff.
+    // The sender still owns the stored waker after the optimistic spin budget. Preserve the
+    // latest-waker contract while returning control to the executor.
     cx.waker().wake_by_ref();
     Poll::Pending
+}
+
+#[cold]
+fn poll_waker_handoff<T>(channel: &Channel<T>, cx: &Context<'_>) -> Poll<Result<T, RecvError>> {
+    match spin_waker_handoff(&channel.state) {
+        MESSAGE => {
+            channel.state.store(DISCONNECTED, Ordering::Relaxed);
+            fence(Ordering::Acquire);
+
+            // SAFETY: The sender published MESSAGE before the state observed above, and the
+            // acquire fence synchronizes with that publication.
+            Poll::Ready(Ok(unsafe { channel.take_message() }))
+        }
+        WAKER_CLAIMED => handoff_pending(cx),
+        DISCONNECTED => Poll::Ready(Err(RecvError::Disconnected)),
+        state => unreachable!("unexpected channel state after waker handoff: {}", state),
+    }
 }
 
 impl<T> Future for Recv<T> {
@@ -501,16 +537,16 @@ impl<T> Future for Recv<T> {
                         Poll::Ready(Ok(unsafe { channel.take_message() }))
                     }
                     // The sender is currently waking us up.
-                    Err(WAKER_CLAIMED) => handoff_pending(cx),
+                    Err(WAKER_CLAIMED) => poll_waker_handoff(channel, cx),
                     // The sender was dropped before sending anything while we prepared to park.
                     // The sender has taken the waker already.
                     Err(DISCONNECTED) => Poll::Ready(Err(RecvError::Disconnected)),
                     Err(state) => unreachable!("unexpected channel state: {}", state),
                 }
             }
-            // The sender has observed RECEIVING and owns the previous waker. Return control to the
-            // executor instead of waiting for that sender to make progress.
-            WAKER_CLAIMED => handoff_pending(cx),
+            // The sender has observed RECEIVING and owns the previous waker. Optimistically wait
+            // for its short critical section before returning control to the executor.
+            WAKER_CLAIMED => poll_waker_handoff(channel, cx),
             // The sender was dropped before sending anything.
             DISCONNECTED => Poll::Ready(Err(RecvError::Disconnected)),
             state => unreachable!("unexpected channel state: {}", state),
@@ -572,9 +608,12 @@ impl<T> Drop for Recv<T> {
                         unsafe { channel.drop_waker() };
                     }
                 }
-                // The sender owns the waker and allocation access. Transfer cleanup to it instead
-                // of waiting for it to finish.
+                // The sender owns the waker and allocation access. Optimistically wait for its
+                // short critical section, then transfer cleanup if it was descheduled.
                 WAKER_CLAIMED => {
+                    if spin_waker_handoff(&channel.state) != WAKER_CLAIMED {
+                        continue;
+                    }
                     if channel
                         .state
                         .compare_exchange(
