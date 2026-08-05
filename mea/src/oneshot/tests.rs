@@ -340,10 +340,7 @@ fn poll_returns_while_sender_owns_waker() {
     let channel = unsafe { channel_ptr.as_ref() };
     unsafe { channel.write_message(1234u128) };
     // Pause the sender immediately after it claims the stored waker.
-    assert_eq!(
-        channel.state.fetch_add(1, Ordering::AcqRel),
-        super::RECEIVING
-    );
+    assert_eq!(channel.state.fetch_add(1, Ordering::AcqRel), super::WAITING);
 
     let (started_tx, started_rx) = mpsc::sync_channel(0);
     let (result_tx, result_rx) = mpsc::sync_channel(1);
@@ -360,7 +357,7 @@ fn poll_returns_while_sender_owns_waker() {
     let returned_before_handoff = result.is_ok();
 
     let (handoff_waker, receiver_owns_allocation) =
-        super::sender_finish_waker_handoff(channel, super::MESSAGE);
+        super::sender_finish_waker_handoff(channel, super::READY);
     assert!(receiver_owns_allocation);
     handoff_waker.wake();
     assert_eq!(stored_handle.wake_count(), 1);
@@ -406,10 +403,7 @@ fn drop_transfers_cleanup_while_sender_owns_waker() {
     let channel = unsafe { channel_ptr.as_ref() };
     unsafe { channel.write_message(message) };
     // Pause the sender immediately after it claims the stored waker.
-    assert_eq!(
-        channel.state.fetch_add(1, Ordering::AcqRel),
-        super::RECEIVING
-    );
+    assert_eq!(channel.state.fetch_add(1, Ordering::AcqRel), super::WAITING);
 
     let (started_tx, started_rx) = mpsc::sync_channel(0);
     let (done_tx, done_rx) = mpsc::sync_channel(1);
@@ -424,7 +418,7 @@ fn drop_transfers_cleanup_while_sender_owns_waker() {
     let returned_before_handoff = result.is_ok();
 
     let (handoff_waker, receiver_owns_allocation) =
-        super::sender_finish_waker_handoff(channel, super::MESSAGE);
+        super::sender_finish_waker_handoff(channel, super::READY);
     if receiver_owns_allocation {
         handoff_waker.wake();
     } else {
