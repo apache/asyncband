@@ -555,7 +555,7 @@ impl OwnedSemaphorePermit {
     ///
     /// let sem = Arc::new(Semaphore::new(10));
     /// {
-    ///     let permit = sem.try_acquire(5).unwrap();
+    ///     let permit = sem.clone().try_acquire_owned(5).unwrap();
     ///     assert_eq!(sem.available_permits(), 5);
     ///     permit.forget();
     /// }
