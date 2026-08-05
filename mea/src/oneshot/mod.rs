@@ -358,7 +358,8 @@ impl<T> Drop for ChannelRef<T> {
 /// separate so neither endpoint has to wait for the other endpoint to finish a state transition.
 struct Channel<T> {
     refs: AtomicUsize,
-    // Native-width RMWs avoid the fallback sequences required for sub-word atomics on some targets.
+    // Native-width RMWs avoid the fallback sequences required for sub-word atomics on some
+    // targets.
     state: AtomicUsize,
     message: UnsafeCell<MaybeUninit<T>>,
     waker: UnsafeCell<MaybeUninit<Waker>>,
