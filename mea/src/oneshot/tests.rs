@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::fence;
 use std::sync::mpsc;
 use std::task::Context;
 use std::task::Poll;
@@ -341,7 +342,7 @@ fn poll_returns_while_sender_owns_waker() {
     unsafe { channel.write_message(1234u128) };
     // Pause the synthetic sender in CLAIMED immediately after it claims the stored waker.
     assert_eq!(
-        channel.state.fetch_add(1, Ordering::AcqRel),
+        channel.state.fetch_add(1, Ordering::Release),
         super::REGISTERED
     );
 
@@ -359,6 +360,7 @@ fn poll_returns_while_sender_owns_waker() {
     let result = result_rx.recv_timeout(Duration::from_secs(5));
     let returned_before_publish = result.is_ok();
 
+    fence(Ordering::Acquire);
     let (claimed_waker, receiver_owns_allocation) =
         super::take_waker_and_publish(channel, super::READY);
     assert!(receiver_owns_allocation);
@@ -407,7 +409,7 @@ fn drop_transfers_cleanup_while_sender_owns_waker() {
     unsafe { channel.write_message(message) };
     // Pause the synthetic sender in CLAIMED immediately after it claims the stored waker.
     assert_eq!(
-        channel.state.fetch_add(1, Ordering::AcqRel),
+        channel.state.fetch_add(1, Ordering::Release),
         super::REGISTERED
     );
 
@@ -423,6 +425,7 @@ fn drop_transfers_cleanup_while_sender_owns_waker() {
     let result = done_rx.recv_timeout(Duration::from_secs(5));
     let returned_before_publish = result.is_ok();
 
+    fence(Ordering::Acquire);
     let (claimed_waker, receiver_owns_allocation) =
         super::take_waker_and_publish(channel, super::READY);
     if receiver_owns_allocation {
