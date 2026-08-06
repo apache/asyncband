@@ -339,8 +339,11 @@ fn poll_returns_while_sender_owns_waker() {
 
     let channel = unsafe { channel_ptr.as_ref() };
     unsafe { channel.write_message(1234u128) };
-    // Pause the sender immediately after it claims the stored waker.
-    assert_eq!(channel.state.fetch_add(1, Ordering::AcqRel), super::WAITING);
+    // Pause the synthetic sender in CLAIMED immediately after it claims the stored waker.
+    assert_eq!(
+        channel.state.fetch_add(1, Ordering::AcqRel),
+        super::REGISTERED
+    );
 
     let (started_tx, started_rx) = mpsc::sync_channel(0);
     let (result_tx, result_rx) = mpsc::sync_channel(1);
@@ -354,24 +357,24 @@ fn poll_returns_while_sender_owns_waker() {
 
     started_rx.recv().unwrap();
     let result = result_rx.recv_timeout(Duration::from_secs(5));
-    let returned_before_handoff = result.is_ok();
+    let returned_before_publish = result.is_ok();
 
-    let (handoff_waker, receiver_owns_allocation) =
-        super::sender_finish_waker_handoff(channel, super::READY);
+    let (claimed_waker, receiver_owns_allocation) =
+        super::take_waker_and_publish(channel, super::READY);
     assert!(receiver_owns_allocation);
-    handoff_waker.wake();
+    claimed_waker.wake();
     assert_eq!(stored_handle.wake_count(), 1);
 
     let (mut receiver, current_handle, result) = match result {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => result_rx
             .recv_timeout(Duration::from_secs(5))
-            .expect("receiver remained blocked after the sender completed the handoff"),
+            .expect("receiver remained blocked after the sender published READY"),
         Err(mpsc::RecvTimeoutError::Disconnected) => panic!("receiver thread exited unexpectedly"),
     };
     poll_thread.join().unwrap();
     assert!(
-        returned_before_handoff,
+        returned_before_publish,
         "poll blocked while the sender owned the waker"
     );
     assert_eq!(result, Poll::Pending);
@@ -402,8 +405,11 @@ fn drop_transfers_cleanup_while_sender_owns_waker() {
 
     let channel = unsafe { channel_ptr.as_ref() };
     unsafe { channel.write_message(message) };
-    // Pause the sender immediately after it claims the stored waker.
-    assert_eq!(channel.state.fetch_add(1, Ordering::AcqRel), super::WAITING);
+    // Pause the synthetic sender in CLAIMED immediately after it claims the stored waker.
+    assert_eq!(
+        channel.state.fetch_add(1, Ordering::AcqRel),
+        super::REGISTERED
+    );
 
     let (started_tx, started_rx) = mpsc::sync_channel(0);
     let (done_tx, done_rx) = mpsc::sync_channel(1);
@@ -415,27 +421,27 @@ fn drop_transfers_cleanup_while_sender_owns_waker() {
 
     started_rx.recv().unwrap();
     let result = done_rx.recv_timeout(Duration::from_secs(5));
-    let returned_before_handoff = result.is_ok();
+    let returned_before_publish = result.is_ok();
 
-    let (handoff_waker, receiver_owns_allocation) =
-        super::sender_finish_waker_handoff(channel, super::READY);
+    let (claimed_waker, receiver_owns_allocation) =
+        super::take_waker_and_publish(channel, super::READY);
     if receiver_owns_allocation {
-        handoff_waker.wake();
+        claimed_waker.wake();
     } else {
         unsafe { super::discard_sent_message(channel_ptr) };
-        drop(handoff_waker);
+        drop(claimed_waker);
     }
 
     match result {
         Ok(()) => {}
         Err(mpsc::RecvTimeoutError::Timeout) => done_rx
             .recv_timeout(Duration::from_secs(5))
-            .expect("receiver remained blocked after the sender completed the handoff"),
+            .expect("receiver remained blocked after the sender published READY"),
         Err(mpsc::RecvTimeoutError::Disconnected) => panic!("receiver thread exited unexpectedly"),
     }
     drop_thread.join().unwrap();
     assert!(
-        returned_before_handoff,
+        returned_before_publish,
         "drop blocked while the sender owned the waker"
     );
     assert!(!receiver_owns_allocation);
