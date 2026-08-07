@@ -21,7 +21,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::fence;
 use std::sync::mpsc;
 use std::task::Context;
 use std::task::Poll;
@@ -340,10 +339,10 @@ fn poll_returns_while_sender_owns_waker() {
 
     let channel = unsafe { channel_ptr.as_ref() };
     unsafe { channel.write_message(1234u128) };
-    // Pause the synthetic sender in CLAIMED immediately after it claims the stored waker.
+    // Pause the synthetic sender in AWAKING immediately after it takes the stored waker.
     assert_eq!(
         channel.state.fetch_add(1, Ordering::Release),
-        super::REGISTERED
+        super::RECEIVING
     );
 
     let (started_tx, started_rx) = mpsc::sync_channel(0);
@@ -360,18 +359,19 @@ fn poll_returns_while_sender_owns_waker() {
     let result = result_rx.recv_timeout(Duration::from_secs(5));
     let returned_before_publish = result.is_ok();
 
-    fence(Ordering::Acquire);
-    let (claimed_waker, receiver_owns_allocation) =
-        super::take_waker_and_publish(channel, super::READY);
+    // SAFETY: fetch_add observed RECEIVING and changed it to AWAKING after the message and waker
+    // were initialized.
+    let (sender_waker, receiver_owns_allocation) =
+        unsafe { channel.finish_sender_awakening(super::MESSAGE) };
     assert!(receiver_owns_allocation);
-    claimed_waker.wake();
+    sender_waker.wake();
     assert_eq!(stored_handle.wake_count(), 1);
 
     let (mut receiver, current_handle, result) = match result {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => result_rx
             .recv_timeout(Duration::from_secs(5))
-            .expect("receiver remained blocked after the sender published READY"),
+            .expect("receiver remained blocked after the sender published MESSAGE"),
         Err(mpsc::RecvTimeoutError::Disconnected) => panic!("receiver thread exited unexpectedly"),
     };
     poll_thread.join().unwrap();
@@ -407,10 +407,10 @@ fn drop_transfers_cleanup_while_sender_owns_waker() {
 
     let channel = unsafe { channel_ptr.as_ref() };
     unsafe { channel.write_message(message) };
-    // Pause the synthetic sender in CLAIMED immediately after it claims the stored waker.
+    // Pause the synthetic sender in AWAKING immediately after it takes the stored waker.
     assert_eq!(
         channel.state.fetch_add(1, Ordering::Release),
-        super::REGISTERED
+        super::RECEIVING
     );
 
     let (started_tx, started_rx) = mpsc::sync_channel(0);
@@ -425,21 +425,25 @@ fn drop_transfers_cleanup_while_sender_owns_waker() {
     let result = done_rx.recv_timeout(Duration::from_secs(5));
     let returned_before_publish = result.is_ok();
 
-    fence(Ordering::Acquire);
-    let (claimed_waker, receiver_owns_allocation) =
-        super::take_waker_and_publish(channel, super::READY);
+    // SAFETY: fetch_add observed RECEIVING and changed it to AWAKING after the message and waker
+    // were initialized.
+    let (sender_waker, receiver_owns_allocation) =
+        unsafe { channel.finish_sender_awakening(super::MESSAGE) };
     if receiver_owns_allocation {
-        claimed_waker.wake();
+        sender_waker.wake();
     } else {
-        unsafe { super::drop_message_and_dealloc_channel(channel_ptr) };
-        drop(claimed_waker);
+        // SAFETY: Receiver cancellation transferred allocation cleanup to the synthetic sender, so
+        // the original pointer provenance may be reclaimed as a Box. The message is initialized and
+        // the waker was moved out above.
+        unsafe { super::drop_message_and_deallocate_channel(channel_ptr) };
+        drop(sender_waker);
     }
 
     match result {
         Ok(()) => {}
         Err(mpsc::RecvTimeoutError::Timeout) => done_rx
             .recv_timeout(Duration::from_secs(5))
-            .expect("receiver remained blocked after the sender published READY"),
+            .expect("receiver remained blocked after the sender published MESSAGE"),
         Err(mpsc::RecvTimeoutError::Disconnected) => panic!("receiver thread exited unexpectedly"),
     }
     drop_thread.join().unwrap();

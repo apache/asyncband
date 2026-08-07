@@ -22,13 +22,12 @@ use std::sync::atomic::fence;
 use crate::oneshot::Channel;
 use crate::oneshot::DISCONNECTED;
 use crate::oneshot::EMPTY;
-use crate::oneshot::READY;
-use crate::oneshot::REGISTERED;
+use crate::oneshot::MESSAGE;
+use crate::oneshot::RECEIVING;
 #[cfg(doc)]
 use crate::oneshot::Receiver;
-use crate::oneshot::dealloc_empty_channel;
-use crate::oneshot::drop_message_and_dealloc_channel;
-use crate::oneshot::take_waker_and_publish;
+use crate::oneshot::deallocate_empty_channel;
+use crate::oneshot::drop_message_and_deallocate_channel;
 
 /// Sends a value to the associated [`Receiver`].
 pub struct Sender<T> {
@@ -59,15 +58,15 @@ impl<T> Sender<T> {
 
         // Write the message into the channel on the heap.
         //
-        // SAFETY: The receiver only ever accesses this memory location if we are in the READY
+        // SAFETY: The receiver only ever accesses this memory location if we are in the MESSAGE
         // state, and since we are responsible for setting that state, we can guarantee that we have
         // exclusive access to this memory location to perform this write.
         unsafe { channel.write_message(message) };
 
-        // Claim a registered waker, or publish the message if no waker is registered:
+        // Publish the message directly, or begin awakening a receiving task:
         //
-        // * EMPTY + 1 = READY
-        // * REGISTERED + 1 = CLAIMED
+        // * EMPTY + 1 = MESSAGE
+        // * RECEIVING + 1 = AWAKING
         // * DISCONNECTED + 1 = EMPTY (invalid), however this state is never observed
         //
         // ORDERING: release publishes the message. The common EMPTY branch does not consume any
@@ -77,15 +76,22 @@ impl<T> Sender<T> {
             // The receiver is alive and has not started waiting. Send done.
             EMPTY => Ok(()),
             // The receiver is waiting. Wake it up so it can return the message.
-            REGISTERED => {
-                fence(Ordering::Acquire);
-                let (waker, receiver_owns_allocation) = take_waker_and_publish(channel, READY);
+            RECEIVING => {
+                // SAFETY: fetch_add observed RECEIVING and changed it to AWAKING, transferring
+                // exclusive ownership of the published waker to this sender. The message was
+                // initialized before the RMW and is ready to publish.
+                let (waker, receiver_owns_allocation) =
+                    unsafe { channel.finish_sender_awakening(MESSAGE) };
                 if receiver_owns_allocation {
                     waker.wake();
                 } else {
-                    // The sender claimed the registered waker before cancellation, so it remains
-                    // successful while the sender performs the receiver's message cleanup.
-                    unsafe { drop_message_and_dealloc_channel(channel_ptr) };
+                    // The send remains successful because this sender owned the waker before the
+                    // receiver cancelled.
+                    //
+                    // SAFETY: Receiver cancellation transferred message and allocation cleanup to
+                    // this sender. The original pointer provenance may therefore be reclaimed as a
+                    // Box; the message is initialized and the waker has been moved out.
+                    unsafe { drop_message_and_deallocate_channel(channel_ptr) };
                 }
                 Ok(())
             }
@@ -133,20 +139,20 @@ impl<T> Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        // SAFETY: The receiver only ever frees the channel if we are in the READY or
+        // SAFETY: The receiver only ever frees the channel if we are in the MESSAGE or
         // DISCONNECTED states.
         //
-        // * If we are in the READY state, then `send` suppressed `Sender::drop`, so we should not
+        // * If we are in the MESSAGE state, then `send` suppressed `Sender::drop`, so we should not
         //   be in this function call.
         // * If we are in the DISCONNECTED state, then the receiver either received the message,
         //   making this statement unreachable, or was dropped and observed that our side was still
         //   alive, and thus didn't free the channel.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
-        // Claim a registered waker, or disconnect the channel if no waker is registered:
+        // Disconnect directly, or begin awakening a receiving task:
         //
         // * EMPTY ^ 001 = DISCONNECTED
-        // * REGISTERED ^ 001 = CLAIMED
+        // * RECEIVING ^ 001 = AWAKING
         // * DISCONNECTED ^ 001 = EMPTY (invalid), but this state is never observed
         //
         // ORDERING: release publishes the sender's final state. The common EMPTY branch does not
@@ -157,14 +163,19 @@ impl<T> Drop for Sender<T> {
             // deallocating the channel.
             EMPTY => {}
             // The receiver is waiting. Wake it up so it can detect that the channel disconnected.
-            REGISTERED => {
-                fence(Ordering::Acquire);
+            RECEIVING => {
+                // SAFETY: fetch_xor observed RECEIVING and changed it to AWAKING, transferring
+                // exclusive ownership of the published waker to this sender. Sender::drop has no
+                // message to publish.
                 let (waker, receiver_owns_allocation) =
-                    take_waker_and_publish(channel, DISCONNECTED);
+                    unsafe { channel.finish_sender_awakening(DISCONNECTED) };
                 if receiver_owns_allocation {
                     waker.wake();
                 } else {
-                    unsafe { dealloc_empty_channel(self.channel_ptr) };
+                    // SAFETY: Receiver cancellation transferred allocation cleanup to this sender.
+                    // Both slots are uninitialized, and the original pointer provenance may be
+                    // reclaimed as a Box.
+                    unsafe { deallocate_empty_channel(self.channel_ptr) };
                 }
             }
             // The receiver was already dropped. We are responsible for freeing the channel.
@@ -175,7 +186,7 @@ impl<T> Drop for Sender<T> {
                 // observed that the sender is still alive, meaning that we are responsible for
                 // freeing the channel allocation. The acquire ordering above synchronizes with
                 // the receiver's final write of the state.
-                unsafe { dealloc_empty_channel(self.channel_ptr) };
+                unsafe { deallocate_empty_channel(self.channel_ptr) };
             }
             state => unreachable!("unexpected channel state: {}", state),
         }
@@ -218,8 +229,9 @@ impl<T> SendError<T> {
         // SAFETY: The send path initialized the message before constructing SendError.
         let message = unsafe { channel.take_message() };
 
-        // SAFETY: SendError exclusively owns the allocation.
-        unsafe { dealloc_empty_channel(channel_ptr) };
+        // SAFETY: SendError exclusively owns the allocation, so its original pointer provenance may
+        // be reclaimed as a Box. The message has been moved out and no waker remains initialized.
+        unsafe { deallocate_empty_channel(channel_ptr) };
 
         message
     }
@@ -227,8 +239,10 @@ impl<T> SendError<T> {
 
 impl<T> Drop for SendError<T> {
     fn drop(&mut self) {
-        // SAFETY: SendError exclusively owns the channel.
-        unsafe { drop_message_and_dealloc_channel(self.channel_ptr) };
+        // SAFETY: SendError exclusively owns the initialized message and allocation, so its
+        // original pointer provenance may be reclaimed as a Box. No waker remains in the
+        // channel.
+        unsafe { drop_message_and_deallocate_channel(self.channel_ptr) };
     }
 }
 

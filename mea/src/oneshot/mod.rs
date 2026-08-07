@@ -111,41 +111,35 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     (Sender::new(channel_ptr), Receiver::new(channel_ptr))
 }
 
-#[inline(always)]
-fn take_waker_and_publish<T>(channel: &Channel<T>, terminal_state: u8) -> (Waker, bool) {
-    debug_assert!(matches!(terminal_state, READY | DISCONNECTED));
-
-    // SAFETY: The sender changed REGISTERED to CLAIMED and synchronized with the receiver's
-    // publication, so it exclusively owns the initialized waker.
-    let waker = unsafe { channel.take_waker() };
-
-    // Release publishes the terminal state. If receiver cancellation replaced CLAIMED with
-    // DISCONNECTED, the acquire fence synchronizes with that transfer before the sender frees
-    // the allocation.
-    let previous_state = channel.state.swap(terminal_state, Ordering::Release);
-    let receiver_owns_allocation = previous_state == CLAIMED;
-    if !receiver_owns_allocation {
-        debug_assert_eq!(previous_state, DISCONNECTED);
-        fence(Ordering::Acquire);
-    }
-
-    (waker, receiver_owns_allocation)
-}
-
 const EMPTY: u8 = 0b011;
-const REGISTERED: u8 = 0b000;
-const CLAIMED: u8 = 0b001;
-const READY: u8 = 0b100;
+const RECEIVING: u8 = 0b000;
+const AWAKING: u8 = 0b001;
+const MESSAGE: u8 = 0b100;
 const DISCONNECTED: u8 = 0b010;
 
-/// Internal channel data structure.
+/// Shared storage and state machine for a oneshot channel.
 ///
-/// The [`channel`] method allocates and puts one instance of this struct on the heap for each
-/// oneshot channel instance. The struct holds:
+/// The atomic state publishes access to the `message` and `waker` slots. Initializing a slot does
+/// not by itself transfer ownership; the corresponding release operation does, and an acquire
+/// operation is required before the other endpoint accesses it.
 ///
-/// * The current state of the channel.
-/// * The message in the channel. This memory is uninitialized until the message is sent.
-/// * The receiver waker. This memory is initialized only while the state is REGISTERED or CLAIMED.
+/// * `EMPTY`: no message or waker is published. The sender may be initializing the message, and the
+///   receiver may temporarily own a reclaimed waker, but neither slot is available to the other
+///   endpoint.
+/// * `RECEIVING`: the receiver has published an initialized waker. It may reclaim the waker by
+///   returning to `EMPTY`, or the sender may move to `AWAKING` and take ownership of it. The sender
+///   retains ownership of any message that it has not yet published.
+/// * `AWAKING`: the sender exclusively owns the published waker and any unpublished message while
+///   it publishes either a send or a disconnect. The receiver must not access either slot;
+///   cancellation may only transfer allocation cleanup to the sender by moving to `DISCONNECTED`.
+/// * `MESSAGE`: the sender has published an initialized message and no longer accesses the channel.
+///   The receiver owns the message and the allocation.
+/// * `DISCONNECTED`: no message can subsequently be received. The transition that reaches or
+///   observes this state determines which endpoint owns any remaining message, waker, and
+///   allocation cleanup.
+///
+/// The state is no longer meaningful after an operation obtains exclusive ownership of the whole
+/// allocation, such as when `send` creates a `SendError`.
 struct Channel<T> {
     state: AtomicU8,
     message: UnsafeCell<MaybeUninit<T>>,
@@ -161,6 +155,12 @@ impl<T> Channel<T> {
         }
     }
 
+    /// Returns a shared reference to the initialized message.
+    ///
+    /// # Safety
+    ///
+    /// The message must be initialized and remain initialized and immutably accessible for the
+    /// returned reference's lifetime.
     #[inline(always)]
     unsafe fn message(&self) -> &T {
         unsafe {
@@ -169,6 +169,12 @@ impl<T> Channel<T> {
         }
     }
 
+    /// Moves the initialized message out of its slot.
+    ///
+    /// # Safety
+    ///
+    /// The caller must exclusively own an initialized message and must not subsequently read or
+    /// drop the slot as initialized unless it is initialized again.
     #[inline(always)]
     unsafe fn take_message(&self) -> T {
         unsafe {
@@ -177,6 +183,12 @@ impl<T> Channel<T> {
         }
     }
 
+    /// Initializes the message slot.
+    ///
+    /// # Safety
+    ///
+    /// The message slot must be uninitialized and exclusively accessible to the caller. The caller
+    /// must publish the initialized message before another thread accesses it.
     #[inline(always)]
     unsafe fn write_message(&self, message: T) {
         unsafe {
@@ -185,6 +197,12 @@ impl<T> Channel<T> {
         }
     }
 
+    /// Drops the initialized message in place.
+    ///
+    /// # Safety
+    ///
+    /// The caller must exclusively own an initialized message. The slot must not subsequently be
+    /// read or dropped as initialized unless it is initialized again.
     #[inline(always)]
     unsafe fn drop_message(&self) {
         unsafe {
@@ -193,30 +211,33 @@ impl<T> Channel<T> {
         }
     }
 
+    /// Stores and publishes a receiver waker, resolving a raced terminal state immediately.
+    ///
     /// # Safety
     ///
     /// * The `waker` field must not contain an initialized waker when calling this method.
-    /// * The `state` must not be in the REGISTERED or CLAIMED state when calling this method.
+    /// * The `state` must not be in the `RECEIVING` or `AWAKING` state when calling this method.
+    /// * No other receiver operation may access the waker slot concurrently.
     unsafe fn register_waker(&self, waker: Waker) -> Poll<Result<T, RecvError>> {
-        // SAFETY: The sender cannot access the waker until the state becomes REGISTERED.
+        // SAFETY: The sender cannot access the waker until the state becomes RECEIVING.
         unsafe {
             let slot = &mut *self.waker.get();
             slot.as_mut_ptr().write(waker);
         }
 
         // ORDERING: Release publishes the initialized waker. On failure, the sender did not
-        // observe REGISTERED and cannot access the waker, so each branch provides only the
+        // observe RECEIVING and cannot access the waker, so each branch provides only the
         // synchronization needed for its terminal state.
         match self
             .state
-            .compare_exchange(EMPTY, REGISTERED, Ordering::Release, Ordering::Relaxed)
+            .compare_exchange(EMPTY, RECEIVING, Ordering::Release, Ordering::Relaxed)
         {
             // The waker is registered for the sender to take and wake.
             Ok(_) => Poll::Pending,
             // The sender sent the message while we prepared to await.
             // We take the message and mark the channel disconnected.
-            Err(READY) => {
-                // SAFETY: We wrote a waker above. The sender cannot have observed the REGISTERED
+            Err(MESSAGE) => {
+                // SAFETY: We wrote a waker above. The sender cannot have observed the RECEIVING
                 // state, so it has not accessed the waker. We must drop it.
                 unsafe { self.drop_waker() };
 
@@ -228,13 +249,13 @@ impl<T> Channel<T> {
                 // ordering on the compare_exchange operation.
                 fence(Ordering::Acquire);
 
-                // SAFETY: The READY state tells us there is a correctly initialized message,
+                // SAFETY: The MESSAGE state tells us there is a correctly initialized message,
                 // and the fence above synchronizes with that write.
                 Poll::Ready(Ok(unsafe { self.take_message() }))
             }
             // The sender was dropped before sending anything while we prepared to await.
             Err(DISCONNECTED) => {
-                // SAFETY: We wrote a waker above. The sender cannot have observed the REGISTERED
+                // SAFETY: We wrote a waker above. The sender cannot have observed the RECEIVING
                 // state, so it has not accessed the waker. We must drop it.
                 unsafe { self.drop_waker() };
                 Poll::Ready(Err(RecvError::Disconnected))
@@ -243,6 +264,12 @@ impl<T> Channel<T> {
         }
     }
 
+    /// Drops the initialized waker in place.
+    ///
+    /// # Safety
+    ///
+    /// The caller must exclusively own an initialized waker. The slot must not subsequently be
+    /// read or dropped as initialized unless it is initialized again.
     #[inline(always)]
     unsafe fn drop_waker(&self) {
         unsafe {
@@ -251,6 +278,12 @@ impl<T> Channel<T> {
         }
     }
 
+    /// Moves the initialized waker out of its slot.
+    ///
+    /// # Safety
+    ///
+    /// The caller must exclusively own an initialized waker. The slot must not subsequently be
+    /// read or dropped as initialized unless it is initialized again.
     #[inline(always)]
     unsafe fn take_waker(&self) -> Waker {
         unsafe {
@@ -258,20 +291,75 @@ impl<T> Channel<T> {
             slot.assume_init_read()
         }
     }
+
+    /// Finishes the sender-owned `AWAKING` state by taking the receiver waker and publishing the
+    /// final channel state.
+    ///
+    /// Returns the waker and whether the receiver still owns allocation cleanup. If the receiver
+    /// cancelled from `AWAKING`, this returns `false` and transfers cleanup to the caller.
+    ///
+    /// # Safety
+    ///
+    /// * `final_state` must be `MESSAGE` or `DISCONNECTED`.
+    /// * The caller must have just observed `RECEIVING` with an atomic read-modify-write that
+    ///   changed the state to `AWAKING`. This gives the caller exclusive ownership of the
+    ///   initialized waker and provides the atomic read paired with the acquire fence in this
+    ///   method.
+    /// * When publishing `MESSAGE`, the caller must own an initialized message that precedes the
+    ///   release operation in this method.
+    #[inline(always)]
+    unsafe fn finish_sender_awakening(&self, final_state: u8) -> (Waker, bool) {
+        debug_assert!(matches!(final_state, MESSAGE | DISCONNECTED));
+
+        // ORDERING: Synchronize the caller's preceding RMW with the receiver's waker publication.
+        fence(Ordering::Acquire);
+
+        // SAFETY: The caller's RECEIVING-to-AWAKING transition transferred exclusive ownership of
+        // the initialized waker to the sender.
+        let waker = unsafe { self.take_waker() };
+
+        // ORDERING: Release publishes the final state. If receiver cancellation replaced
+        // AWAKING with DISCONNECTED, the acquire fence synchronizes with that transfer before
+        // the sender frees the allocation.
+        let previous_state = self.state.swap(final_state, Ordering::Release);
+        let receiver_owns_allocation = previous_state == AWAKING;
+        if !receiver_owns_allocation {
+            debug_assert_eq!(previous_state, DISCONNECTED);
+            fence(Ordering::Acquire);
+        }
+
+        (waker, receiver_owns_allocation)
+    }
 }
 
-unsafe fn dealloc_empty_channel<T>(channel: NonNull<Channel<T>>) {
-    // SAFETY: The caller owns the allocation and guarantees that no channel access follows.
-    unsafe { drop(Box::from_raw(channel.as_ptr())) };
+/// Deallocates a channel whose slots no longer contain values that need to be dropped.
+///
+/// # Safety
+///
+/// `channel_ptr` must retain the provenance of the live allocation created by `channel`. The caller
+/// must exclusively own allocation cleanup, neither slot may contain a value that still needs to be
+/// dropped, and no access through any pointer or reference may follow this call.
+unsafe fn deallocate_empty_channel<T>(channel_ptr: NonNull<Channel<T>>) {
+    // SAFETY: The caller transfers exclusive ownership of the original allocation to this function,
+    // so this is the only Box reconstructed from the pointer.
+    unsafe { drop(Box::from_raw(channel_ptr.as_ptr())) };
 }
 
-unsafe fn drop_message_and_dealloc_channel<T>(channel_ptr: NonNull<Channel<T>>) {
+/// Drops the initialized message and then deallocates the channel.
+///
+/// # Safety
+///
+/// `channel_ptr` must retain the provenance of the live allocation created by `channel`. The caller
+/// must exclusively own the initialized message and allocation cleanup, the waker slot must not
+/// contain a value that still needs to be dropped, and no access through any pointer or reference
+/// may follow this call.
+unsafe fn drop_message_and_deallocate_channel<T>(channel_ptr: NonNull<Channel<T>>) {
     // SAFETY: The caller transfers exclusive allocation ownership to this function, so this is the
-    // only Box reconstructed from `channel_ptr`.
+    // only Box reconstructed from the pointer.
     let channel = unsafe { Box::from_raw(channel_ptr.as_ptr()) };
 
-    // SAFETY: The caller guarantees that the message is initialized and exclusively owned. The
-    // local Box deallocates the channel on normal return and during unwinding if `T::drop` panics.
-    // Since the message is stored in MaybeUninit, dropping the Box will not drop it a second time.
+    // SAFETY: The caller guarantees that the message is initialized and exclusively owned. The Box
+    // deallocates the channel on normal return and during unwinding if `T::drop` panics. Since the
+    // message is stored in MaybeUninit, dropping the Box will not drop it a second time.
     unsafe { channel.drop_message() };
 }
