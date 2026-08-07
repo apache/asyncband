@@ -431,7 +431,7 @@ fn drop_transfers_cleanup_while_sender_owns_waker() {
     if receiver_owns_allocation {
         claimed_waker.wake();
     } else {
-        unsafe { super::discard_sent_message(channel_ptr) };
+        unsafe { super::drop_message_and_dealloc_channel(channel_ptr) };
         drop(claimed_waker);
     }
 

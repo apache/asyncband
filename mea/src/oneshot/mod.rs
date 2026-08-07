@@ -91,7 +91,6 @@ use std::future::IntoFuture;
 use std::mem;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
-use std::ptr;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
@@ -186,7 +185,7 @@ impl<T> Sender<T> {
                 } else {
                     // The sender claimed the registered waker before cancellation, so it remains
                     // successful while the sender performs the receiver's message cleanup.
-                    unsafe { discard_sent_message(channel_ptr) };
+                    unsafe { drop_message_and_dealloc_channel(channel_ptr) };
                 }
                 Ok(())
             }
@@ -256,7 +255,7 @@ impl<T> Drop for Sender<T> {
                 if receiver_owns_allocation {
                     waker.wake();
                 } else {
-                    unsafe { dealloc(self.channel_ptr) };
+                    unsafe { dealloc_empty_channel(self.channel_ptr) };
                 }
             }
             // The receiver was already dropped. We are responsible for freeing the channel.
@@ -267,7 +266,7 @@ impl<T> Drop for Sender<T> {
                 // observed that the sender is still alive, meaning that we are responsible for
                 // freeing the channel allocation. The acquire ordering above synchronizes with
                 // the receiver's final write of the state.
-                unsafe { dealloc(self.channel_ptr) };
+                unsafe { dealloc_empty_channel(self.channel_ptr) };
             }
             state => unreachable!("unexpected channel state: {}", state),
         }
@@ -400,13 +399,13 @@ impl<T> Drop for Receiver<T> {
                 // written a message and that it has a happens-before relationship with this drop.
                 // In addition, the acquire ordering above synchronizes with the sender's final
                 // write of the state, so we can safely deallocate the channel.
-                unsafe { discard_sent_message(self.channel_ptr) };
+                unsafe { drop_message_and_dealloc_channel(self.channel_ptr) };
             }
             // The sender was already dropped. We are responsible for freeing the channel.
             DISCONNECTED => {
                 // SAFETY: The acquire ordering above synchronizes with the sender's final write
                 // of the state, so we can safely deallocate the channel.
-                unsafe { dealloc(self.channel_ptr) };
+                unsafe { dealloc_empty_channel(self.channel_ptr) };
             }
             // NOTE: the receiver, unless transformed into a future, will never see the
             // REGISTERED or CLAIMED states, so we can ignore them here.
@@ -421,19 +420,12 @@ pub struct Recv<T> {
     channel_ptr: NonNull<Channel<T>>,
 }
 
+unsafe impl<T: Send> Send for Recv<T> {}
+
 impl<T> fmt::Debug for Recv<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Recv").finish_non_exhaustive()
     }
-}
-
-unsafe impl<T: Send> Send for Recv<T> {}
-
-#[inline(always)]
-fn schedule_repoll(cx: &Context<'_>) {
-    // The sender can only wake the waker registered by an earlier poll. Schedule the current waker
-    // before returning Pending so a replacement waker cannot miss the terminal state.
-    cx.waker().wake_by_ref();
 }
 
 impl<T> Future for Recv<T> {
@@ -507,7 +499,7 @@ impl<T> Future for Recv<T> {
                     }
                     // The sender claimed the registered waker while we prepared to replace it.
                     Err(CLAIMED) => {
-                        schedule_repoll(cx);
+                        cx.waker().wake_by_ref();
                         Poll::Pending
                     }
                     // The sender was dropped before sending anything while we prepared to park.
@@ -519,7 +511,7 @@ impl<T> Future for Recv<T> {
             // The sender owns the registered waker. Schedule this poll's potentially different
             // waker and return without waiting for the sender to make progress.
             CLAIMED => {
-                schedule_repoll(cx);
+                cx.waker().wake_by_ref();
                 Poll::Pending
             }
             // The sender was dropped before sending anything.
@@ -555,7 +547,7 @@ impl<T> Drop for Recv<T> {
                     // written a message and that it has a happens-before relationship with this
                     // drop. In addition, the acquire load above synchronizes with the sender's
                     // final write of the state, so we can safely deallocate the channel.
-                    unsafe { discard_sent_message(self.channel_ptr) };
+                    unsafe { drop_message_and_dealloc_channel(self.channel_ptr) };
                     break;
                 }
                 // This receiver was previously polled, but was not polled to completion. Move away
@@ -602,7 +594,7 @@ impl<T> Drop for Recv<T> {
                     // SAFETY: When DISCONNECTED comes from the sender, the acquire load
                     // synchronizes with the sender's state write. When it comes from our own
                     // completed poll, the message has already been taken.
-                    unsafe { dealloc(self.channel_ptr) };
+                    unsafe { dealloc_empty_channel(self.channel_ptr) };
                     break;
                 }
                 state => unreachable!("unexpected channel state: {}", state),
@@ -718,22 +710,24 @@ impl<T> Channel<T> {
 
     #[inline(always)]
     unsafe fn take_waker(&self) -> Waker {
-        unsafe { ptr::read(self.waker.get()).assume_init() }
+        unsafe {
+            let slot = &*self.waker.get();
+            slot.assume_init_read()
+        }
     }
 }
 
-unsafe fn dealloc<T>(channel: NonNull<Channel<T>>) {
+unsafe fn dealloc_empty_channel<T>(channel: NonNull<Channel<T>>) {
     // SAFETY: The caller owns the allocation and guarantees that no channel access follows.
     unsafe { drop(Box::from_raw(channel.as_ptr())) }
 }
 
-#[cold]
-unsafe fn discard_sent_message<T>(channel_ptr: NonNull<Channel<T>>) {
-    // SAFETY: The caller owns an allocation containing an initialized message.
+unsafe fn drop_message_and_dealloc_channel<T>(channel_ptr: NonNull<Channel<T>>) {
+    // SAFETY: The caller guarantees that the message is initialized and exclusively owned.
     let channel = unsafe { channel_ptr.as_ref() };
     let message = unsafe { channel.take_message() };
     // Free the allocation before running user code so a panicking destructor cannot leak it.
-    unsafe { dealloc(channel_ptr) };
+    unsafe { dealloc_empty_channel(channel_ptr) };
     drop(message);
 }
 
@@ -774,7 +768,7 @@ impl<T> SendError<T> {
         let message = unsafe { channel.take_message() };
 
         // SAFETY: SendError exclusively owns the allocation.
-        unsafe { dealloc(channel_ptr) };
+        unsafe { dealloc_empty_channel(channel_ptr) };
 
         message
     }
@@ -783,7 +777,7 @@ impl<T> SendError<T> {
 impl<T> Drop for SendError<T> {
     fn drop(&mut self) {
         // SAFETY: SendError exclusively owns the channel.
-        unsafe { discard_sent_message(self.channel_ptr) };
+        unsafe { drop_message_and_dealloc_channel(self.channel_ptr) };
     }
 }
 
