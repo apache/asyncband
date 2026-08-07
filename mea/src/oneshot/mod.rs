@@ -13,21 +13,20 @@
 // limitations under the License.
 
 // This implementation is derived from the `oneshot` crate [1], with significant simplifications
-// because mea does not support synchronous receive operations.
+// because this crate support only asynchronous receive operations.
 //
 // [1] https://github.com/faern/oneshot/blob/83fd0864/src/lib.rs
 
-//! A one-shot channel is used for sending a single message between
-//! asynchronous tasks. The [`channel`] function is used to create a
-//! [`Sender`] and [`Receiver`] handle pair that form the channel.
+//! A one-shot channel is used for sending a single message between asynchronous tasks. The
+//! [`channel`] function is used to create a [`Sender`] and [`Receiver`] pair that form the channel.
 //!
-//! The `Sender` handle is used by the producer to send the value.
-//! The `Receiver` handle is used by the consumer to receive the value.
+//! The sender is used by the producer to send the value. The receiver is used by the consumer
+//! to receive the value.
 //!
-//! The handles can be used by separate tasks.
+//! The sender and receiver can be used by separate tasks.
 //!
-//! Since the `send` method is not async, it can be used anywhere. This includes
-//! sending between two runtimes, and using it from non-async code.
+//! Since [`Sender::send`] is not async, it can be used anywhere. This includes sending between
+//! two runtimes, and using it from non-async code.
 //!
 //! # Examples
 //!
@@ -51,8 +50,7 @@
 //! # }
 //! ```
 //!
-//! If the sender is dropped without sending, the receiver will fail with
-//! [`RecvError`]:
+//! If the sender is dropped without sending, the receiver will fail with [`RecvError`]:
 //!
 //! ```
 //! # #[tokio::main]
@@ -61,15 +59,28 @@
 //!
 //! let (tx, rx) = oneshot::channel::<u32>();
 //!
-//! tokio::spawn(async move {
-//!     drop(tx);
-//! });
+//! tokio::spawn(async move { drop(tx) });
 //!
 //! match rx.await {
 //!     Ok(_) => panic!("This doesn't happen"),
 //!     Err(_) => println!("the sender dropped"),
 //! }
 //! # }
+//! ```
+//!
+//! If the receiver is dropped before receiving, the sender will fail with [`SendError`]:
+//!
+//! ```
+//! use mea::oneshot;
+//!
+//! let (tx, rx) = oneshot::channel::<u32>();
+//!
+//! drop(rx);
+//!
+//! match tx.send(42) {
+//!     Ok(_) => panic!("This doesn't happen"),
+//!     Err(_) => println!("the receiver dropped"),
+//! }
 //! ```
 
 use std::any::type_name;
@@ -92,7 +103,7 @@ use std::task::Waker;
 #[cfg(test)]
 mod tests;
 
-/// Creates a new oneshot channel and returns the two endpoints, [`Sender`] and [`Receiver`].
+/// Creates a new oneshot channel and returns the [`Sender`] and [`Receiver`].
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let channel_ptr = NonNull::from(Box::leak(Box::new(Channel::new())));
     (Sender { channel_ptr }, Receiver { channel_ptr })
@@ -173,7 +184,7 @@ impl<T> Sender<T> {
                 if receiver_owns_allocation {
                     waker.wake();
                 } else {
-                    // The send claimed the registered waker before cancellation, so it remains
+                    // The sender claimed the registered waker before cancellation, so it remains
                     // successful while the sender performs the receiver's message cleanup.
                     unsafe { discard_sent_message(channel_ptr) };
                 }
@@ -420,6 +431,7 @@ impl<T> fmt::Debug for Recv<T> {
 
 unsafe impl<T: Send> Send for Recv<T> {}
 
+#[inline(always)]
 fn schedule_repoll(cx: &Context<'_>) {
     // The sender can only wake the waker registered by an earlier poll. Schedule the current waker
     // before returning Pending so a replacement waker cannot miss the terminal state.
@@ -629,11 +641,10 @@ impl<T> Channel<T> {
 
     #[inline(always)]
     unsafe fn message(&self) -> &T {
-        // SAFETY: The caller guarantees that no other thread will access the message field.
-        let message_container = unsafe { &*self.message.get() };
-
-        // SAFETY: The caller guarantees that the message has been initialized.
-        unsafe { message_container.assume_init_ref() }
+        unsafe {
+            let slot = &*self.message.get();
+            slot.assume_init_ref()
+        }
     }
 
     #[inline(always)]
@@ -684,8 +695,7 @@ impl<T> Channel<T> {
                 // state, so it has not accessed the waker. We must drop it.
                 unsafe { self.drop_waker() };
 
-                // ORDERING: sender does not exist, so this update only needs to be visible to
-                // us.
+                // ORDERING: sender does not exist, so this update only needs to be visible to us.
                 self.state.store(DISCONNECTED, Ordering::Relaxed);
 
                 // ORDERING: Synchronize with writing message. This branch is unlikely to be
