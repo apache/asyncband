@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // This implementation is derived from the `oneshot` crate [1], with significant simplifications
-// because this crate support only asynchronous receive operations.
+// because this crate supports only asynchronous receive operations.
 //
 // [1] https://github.com/faern/oneshot/blob/83fd0864/src/lib.rs
 
@@ -88,7 +88,7 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::future::Future;
 use std::future::IntoFuture;
-use std::mem;
+use std::mem::ManuallyDrop;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::ptr::NonNull;
@@ -147,10 +147,9 @@ impl<T> Sender<T> {
     /// Attempts to send a value on this channel, returning an error containing the message if it
     /// could not be sent.
     pub fn send(self, message: T) -> Result<(), SendError<T>> {
-        let channel_ptr = self.channel_ptr;
-
-        // Do not run the Drop implementation if send was called, any cleanup happens below.
-        mem::forget(self);
+        // `send` takes over endpoint cleanup, so `Sender::drop` must not run afterward.
+        let sender = ManuallyDrop::new(self);
+        let channel_ptr = sender.channel_ptr;
 
         // SAFETY: The channel exists on the heap for the entire duration of this method, and we
         // only ever acquire shared references to it. Note that if the receiver disconnects it
@@ -227,8 +226,8 @@ impl<T> Drop for Sender<T> {
         // SAFETY: The receiver only ever frees the channel if we are in the READY or
         // DISCONNECTED states.
         //
-        // * If we are in the READY state, then we called mem::forget(self), so we should
-        // not be in this function call.
+        // * If we are in the READY state, then `send` suppressed `Sender::drop`, so we should not
+        //   be in this function call.
         // * If we are in the DISCONNECTED state, then the receiver either received the message,
         //   making this statement unreachable, or was dropped and observed that our side was still
         //   alive, and thus didn't free the channel.
@@ -297,9 +296,9 @@ impl<T> IntoFuture for Receiver<T> {
     type IntoFuture = Recv<T>;
 
     fn into_future(self) -> Self::IntoFuture {
-        let Receiver { channel_ptr } = self;
-        // Do not run our Drop implementation, since the receiver lives on as the new future.
-        mem::forget(self);
+        // `Recv` takes over receiver-side cleanup, so `Receiver::drop` must not run afterward.
+        let receiver = ManuallyDrop::new(self);
+        let channel_ptr = receiver.channel_ptr;
         Recv { channel_ptr }
     }
 }
@@ -650,6 +649,14 @@ impl<T> Channel<T> {
         }
     }
 
+    #[inline(always)]
+    unsafe fn drop_message(&self) {
+        unsafe {
+            let slot = &mut *self.message.get();
+            slot.assume_init_drop();
+        }
+    }
+
     /// # Safety
     ///
     /// * The `waker` field must not contain an initialized waker when calling this method.
@@ -719,16 +726,18 @@ impl<T> Channel<T> {
 
 unsafe fn dealloc_empty_channel<T>(channel: NonNull<Channel<T>>) {
     // SAFETY: The caller owns the allocation and guarantees that no channel access follows.
-    unsafe { drop(Box::from_raw(channel.as_ptr())) }
+    unsafe { drop(Box::from_raw(channel.as_ptr())) };
 }
 
 unsafe fn drop_message_and_dealloc_channel<T>(channel_ptr: NonNull<Channel<T>>) {
-    // SAFETY: The caller guarantees that the message is initialized and exclusively owned.
-    let channel = unsafe { channel_ptr.as_ref() };
-    let message = unsafe { channel.take_message() };
-    // Free the allocation before running user code so a panicking destructor cannot leak it.
-    unsafe { dealloc_empty_channel(channel_ptr) };
-    drop(message);
+    // SAFETY: The caller transfers exclusive allocation ownership to this function, so this is the
+    // only Box reconstructed from `channel_ptr`.
+    let channel = unsafe { Box::from_raw(channel_ptr.as_ptr()) };
+
+    // SAFETY: The caller guarantees that the message is initialized and exclusively owned. The
+    // local Box deallocates the channel on normal return and during unwinding if `T::drop` panics.
+    // Since the message is stored in MaybeUninit, dropping the Box will not drop it a second time.
+    unsafe { channel.drop_message() };
 }
 
 /// An error returned when trying to send on a closed channel. Returned from
@@ -756,10 +765,10 @@ impl<T> SendError<T> {
 
     /// Consumes the error and returns the message that failed to be sent.
     pub fn into_inner(self) -> T {
-        let channel_ptr = self.channel_ptr;
-
-        // Do not run destructor if we consumed ourselves. Freeing happens below.
-        mem::forget(self);
+        // The returned message and this method take over cleanup, so `SendError::drop` must not
+        // run.
+        let error = ManuallyDrop::new(self);
+        let channel_ptr = error.channel_ptr;
 
         // SAFETY: SendError exclusively owns the allocation.
         let channel: &Channel<T> = unsafe { channel_ptr.as_ref() };
