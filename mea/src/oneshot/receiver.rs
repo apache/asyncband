@@ -1,0 +1,407 @@
+// Copyright 2024 tison <wander4096@gmail.com>
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use std::fmt;
+use std::mem::ManuallyDrop;
+use std::pin::Pin;
+use std::ptr::NonNull;
+use std::sync::atomic::Ordering;
+use std::sync::atomic::fence;
+use std::task::Context;
+use std::task::Poll;
+
+use crate::oneshot::CLAIMED;
+use crate::oneshot::Channel;
+use crate::oneshot::DISCONNECTED;
+use crate::oneshot::EMPTY;
+use crate::oneshot::READY;
+use crate::oneshot::REGISTERED;
+#[cfg(doc)]
+use crate::oneshot::Sender;
+use crate::oneshot::dealloc_empty_channel;
+use crate::oneshot::drop_message_and_dealloc_channel;
+
+/// Receives a value from the associated [`Sender`].
+pub struct Receiver<T> {
+    channel_ptr: NonNull<Channel<T>>,
+}
+
+impl<T> fmt::Debug for Receiver<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Receiver").finish_non_exhaustive()
+    }
+}
+
+unsafe impl<T: Send> Send for Receiver<T> {}
+
+// Receiver must not be `Sync`: receive operations taking `&self` assume that no other receive
+// operation runs concurrently.
+
+impl<T> Unpin for Receiver<T> {}
+
+impl<T> IntoFuture for Receiver<T> {
+    type Output = Result<T, RecvError>;
+
+    type IntoFuture = Recv<T>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        // `Recv` takes over receiver-side cleanup, so `Receiver::drop` must not run afterward.
+        let receiver = ManuallyDrop::new(self);
+        let channel_ptr = receiver.channel_ptr;
+        Recv { channel_ptr }
+    }
+}
+
+impl<T> Receiver<T> {
+    /// Returns true if the associated [`Sender`] was dropped before sending a message, or if the
+    /// message has already been received.
+    ///
+    /// If `true` is returned, all future calls to receive the message are guaranteed to return
+    /// [`RecvError`]. Future calls to this method are also guaranteed to return `true`.
+    pub fn is_closed(&self) -> bool {
+        // SAFETY: The existence of `self` guarantees that the receiver is still alive. If the
+        // sender was dropped, it observed the live receiver and left allocation cleanup to it, so
+        // `channel_ptr` remains valid.
+        let channel = unsafe { self.channel_ptr.as_ref() };
+
+        // ORDERING: Relaxed is sufficient to enforce the method's contract.
+        //
+        // Once true has been observed, it will remain true. However, if false is observed,
+        // the sender might have just disconnected but this thread has not observed it yet.
+        matches!(channel.state.load(Ordering::Relaxed), DISCONNECTED)
+    }
+
+    /// Returns true if there is a message in the channel, ready to be received.
+    ///
+    /// If `true` is returned, the next call to receive the message is guaranteed to return
+    /// the message immediately.
+    pub fn has_message(&self) -> bool {
+        // SAFETY: The existence of `self` guarantees that the receiver is still alive. If the
+        // sender was dropped, it observed the live receiver and left allocation cleanup to it, so
+        // `channel_ptr` remains valid.
+        let channel = unsafe { self.channel_ptr.as_ref() };
+
+        // ORDERING: Acquire guarantees that no subsequent load is reordered
+        // before this one. This upholds the contract that if true is returned, the next call to
+        // receive the message is guaranteed to also observe the `READY` state and return the
+        // message immediately.
+        matches!(channel.state.load(Ordering::Acquire), READY)
+    }
+
+    /// Checks if there is a message in the channel without blocking. Returns:
+    ///
+    /// * `Ok(message)` if there was a message in the channel.
+    /// * `Err(TryRecvError::Empty)` if the [`Sender`] is alive, but has not yet sent a message.
+    /// * `Err(TryRecvError::Disconnected)` if the [`Sender`] was dropped before sending anything or
+    ///   if the message has already been extracted by a previous `try_recv` call.
+    ///
+    /// If a message is returned, the channel is disconnected and any subsequent receive operation
+    /// using this receiver will return an error: [`TryRecvError::Disconnected`] for `try_recv`,
+    /// or [`RecvError::Disconnected`] for [`recv`](Receiver::into_future).
+    pub fn try_recv(&self) -> Result<T, TryRecvError> {
+        // SAFETY: The channel will not be freed while this method is still running.
+        let channel = unsafe { self.channel_ptr.as_ref() };
+
+        // ORDERING: Relaxed is fine since the only branch that needs synchronization is READY,
+        // and that branch has its own synchronization.
+        match channel.state.load(Ordering::Relaxed) {
+            READY => {
+                // It is okay to break up the load and store since once we are in the READY state,
+                // the sender no longer modifies the state
+                //
+                // ORDERING: at this point the sender has done its job and is no longer active, so
+                // we need not make any side effects visible to it.
+                channel.state.store(DISCONNECTED, Ordering::Relaxed);
+
+                // ORDERING: Synchronize with the sender's write of the message.
+                fence(Ordering::Acquire);
+
+                // SAFETY: we are in the READY state so the message is present and synchronized.
+                Ok(unsafe { channel.take_message() })
+            }
+            EMPTY => Err(TryRecvError::Empty),
+            DISCONNECTED => Err(TryRecvError::Disconnected),
+            state => unreachable!("unexpected channel state: {}", state),
+        }
+    }
+
+    pub(super) fn new(channel_ptr: NonNull<Channel<T>>) -> Self {
+        Self { channel_ptr }
+    }
+}
+
+impl<T> Drop for Receiver<T> {
+    fn drop(&mut self) {
+        // SAFETY: The live receiver guarantees that a dropped sender left allocation cleanup to
+        // this side.
+        let channel = unsafe { self.channel_ptr.as_ref() };
+
+        // Set the channel state to disconnected and read what state the channel was in.
+        //
+        // ORDERING: Release is required so that in the states where the sender becomes responsible
+        // for deallocating the channel, they can synchronize with this final state write from us.
+        // Acquire is required by the branches below to synchronize with writes from the sender.
+        match channel.state.swap(DISCONNECTED, Ordering::AcqRel) {
+            // The sender has not sent anything, nor is it dropped. The sender is responsible for
+            // deallocating the channel.
+            EMPTY => {}
+            // The sender already sent something. We must drop it, and free the channel.
+            READY => {
+                // SAFETY: The READY state plus acquire ordering guarantees the sender has
+                // written a message and that it has a happens-before relationship with this drop.
+                // In addition, the acquire ordering above synchronizes with the sender's final
+                // write of the state, so we can safely deallocate the channel.
+                unsafe { drop_message_and_dealloc_channel(self.channel_ptr) };
+            }
+            // The sender was already dropped. We are responsible for freeing the channel.
+            DISCONNECTED => {
+                // SAFETY: The acquire ordering above synchronizes with the sender's final write
+                // of the state, so we can safely deallocate the channel.
+                unsafe { dealloc_empty_channel(self.channel_ptr) };
+            }
+            // NOTE: the receiver, unless transformed into a future, will never see the
+            // REGISTERED or CLAIMED states, so we can ignore them here.
+            state => unreachable!("unexpected channel state: {}", state),
+        }
+    }
+}
+
+/// A future that completes when the message is sent from the associated [`Sender`], or the
+/// [`Sender`] is dropped before sending a message.
+pub struct Recv<T> {
+    channel_ptr: NonNull<Channel<T>>,
+}
+
+unsafe impl<T: Send> Send for Recv<T> {}
+
+impl<T> fmt::Debug for Recv<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Recv").finish_non_exhaustive()
+    }
+}
+
+impl<T> Future for Recv<T> {
+    type Output = Result<T, RecvError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: The existence of `self` guarantees that the receiver is still alive. If the
+        // sender was dropped, it observed the live receiver and left allocation cleanup to it, so
+        // `channel_ptr` remains valid.
+        let channel = unsafe { self.channel_ptr.as_ref() };
+
+        // ORDERING: Relaxed is fine since the branches that need synchronization use dedicated
+        // fences.
+        match channel.state.load(Ordering::Relaxed) {
+            // The sender is alive but has not sent anything yet.
+            EMPTY => {
+                let waker = cx.waker().clone();
+                // SAFETY: EMPTY means no waker is initialized or owned by the sender.
+                unsafe { channel.register_waker(waker) }
+            }
+            // The sender sent the message.
+            READY => {
+                // ORDERING: after publishing READY, the sender no longer uses the channel, so
+                // this state update only needs to be visible to this receiver.
+                channel.state.store(DISCONNECTED, Ordering::Relaxed);
+
+                // ORDERING: Synchronize with the sender's write of the message and final state.
+                fence(Ordering::Acquire);
+
+                // SAFETY: we are in the READY state and have synchronized with the sender.
+                Poll::Ready(Ok(unsafe { channel.take_message() }))
+            }
+            // We were polled again while waiting for the sender. Replace the waker with the new
+            // one.
+            REGISTERED => {
+                // ORDERING: Success synchronizes with the previous register_waker call before we
+                // drop the stored waker. Failure does not access the stored waker.
+                match channel.state.compare_exchange(
+                    REGISTERED,
+                    EMPTY,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    // The state is EMPTY again.
+                    Ok(_) => {
+                        let waker = cx.waker().clone();
+
+                        // SAFETY: The successful exchange makes the state EMPTY, so the sender
+                        // cannot take the stored waker. The acquire ordering synchronizes with the
+                        // waker write.
+                        unsafe { channel.drop_waker() };
+
+                        // SAFETY: The old waker was dropped while the state was EMPTY, so no waker
+                        // remains initialized or owned by the sender.
+                        unsafe { channel.register_waker(waker) }
+                    }
+                    // The sender sent the message while we prepared to replace the waker.
+                    // We take the message and mark the channel disconnected.
+                    // The sender has already taken the waker.
+                    Err(READY) => {
+                        // ORDERING: after publishing READY, the sender no longer uses the
+                        // channel, so this state update only needs to be visible to this receiver.
+                        channel.state.store(DISCONNECTED, Ordering::Relaxed);
+
+                        // ORDERING: Synchronize with the sender's write of the message.
+                        fence(Ordering::Acquire);
+
+                        // SAFETY: The state tells us the sender has initialized the message, and
+                        // the fence above synchronizes with that write.
+                        Poll::Ready(Ok(unsafe { channel.take_message() }))
+                    }
+                    // The sender claimed the registered waker while we prepared to replace it.
+                    Err(CLAIMED) => {
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                    // The sender was dropped before sending anything while we prepared to park.
+                    // The sender has taken the waker already.
+                    Err(DISCONNECTED) => Poll::Ready(Err(RecvError::Disconnected)),
+                    Err(state) => unreachable!("unexpected channel state: {}", state),
+                }
+            }
+            // The sender owns the registered waker. Schedule this poll's potentially different
+            // waker and return without waiting for the sender to make progress.
+            CLAIMED => {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            // The sender was dropped before sending anything.
+            DISCONNECTED => Poll::Ready(Err(RecvError::Disconnected)),
+            state => unreachable!("unexpected channel state: {}", state),
+        }
+    }
+}
+
+impl<T> Drop for Recv<T> {
+    fn drop(&mut self) {
+        // SAFETY: The live receiver guarantees that a dropped sender left allocation cleanup to
+        // this side.
+        let channel = unsafe { self.channel_ptr.as_ref() };
+
+        loop {
+            // ORDERING: READY and DISCONNECTED synchronize with the sender's state writes.
+            match channel.state.load(Ordering::Acquire) {
+                // The sender has not sent anything, nor is it dropped. Mark the receiver as
+                // dropped; the sender is responsible for deallocating the channel.
+                EMPTY => {
+                    if channel
+                        .state
+                        .compare_exchange(EMPTY, DISCONNECTED, Ordering::Release, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        break;
+                    }
+                }
+                // The sender already sent something. We must drop it, and free the channel.
+                READY => {
+                    // SAFETY: The READY state plus acquire ordering guarantees the sender has
+                    // written a message and that it has a happens-before relationship with this
+                    // drop. In addition, the acquire load above synchronizes with the sender's
+                    // final write of the state, so we can safely deallocate the channel.
+                    unsafe { drop_message_and_dealloc_channel(self.channel_ptr) };
+                    break;
+                }
+                // This receiver was previously polled, but was not polled to completion. Move away
+                // from REGISTERED before dropping the waker so the sender cannot take the same
+                // waker.
+                //
+                // A successful exchange creates a short EMPTY window before the next iteration can
+                // mark DISCONNECTED. This branch owns and drops the stored waker first. A sender
+                // that observes EMPTY does not touch the waker. It either stores READY and
+                // leaves the message and allocation to this loop, or stores DISCONNECTED and
+                // leaves the allocation to this loop. If this loop marks DISCONNECTED first, the
+                // sender observes DISCONNECTED and owns any send error cleanup.
+                REGISTERED => {
+                    if channel
+                        .state
+                        .compare_exchange(REGISTERED, EMPTY, Ordering::Acquire, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        // SAFETY: The successful exchange makes the state EMPTY, so the sender
+                        // cannot take the stored waker. The acquire ordering synchronizes with the
+                        // waker write.
+                        unsafe { channel.drop_waker() };
+                    }
+                }
+                // The sender owns the waker. Transfer allocation cleanup to it instead of waiting
+                // for it to publish the terminal state.
+                CLAIMED => {
+                    if channel
+                        .state
+                        .compare_exchange(
+                            CLAIMED,
+                            DISCONNECTED,
+                            Ordering::Release,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok()
+                    {
+                        break;
+                    }
+                }
+                // The sender was already dropped, or this future was previously polled to
+                // completion. We are responsible for freeing the channel.
+                DISCONNECTED => {
+                    // SAFETY: When DISCONNECTED comes from the sender, the acquire load
+                    // synchronizes with the sender's state write. When it comes from our own
+                    // completed poll, the message has already been taken.
+                    unsafe { dealloc_empty_channel(self.channel_ptr) };
+                    break;
+                }
+                state => unreachable!("unexpected channel state: {}", state),
+            }
+        }
+    }
+}
+
+/// Error returned by [`Receiver::try_recv`].
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum TryRecvError {
+    /// This channel is currently empty, but the sender has not yet disconnected, so data may yet
+    /// become available.
+    Empty,
+    /// The sender has become disconnected, and there will never be any more data received on it.
+    Disconnected,
+}
+
+impl fmt::Display for TryRecvError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            TryRecvError::Empty => "receiving on an empty channel",
+            TryRecvError::Disconnected => "receiving on a closed channel",
+        })
+    }
+}
+
+impl std::error::Error for TryRecvError {}
+
+/// An error returned when awaiting the message via [`Receiver`].
+///
+/// This error indicates that the corresponding [`Sender`] was dropped before sending any message.
+/// Note that if a message was already received (e.g., via [`Receiver::try_recv`]), subsequent
+/// `try_recv` calls will return [`TryRecvError::Disconnected`] instead.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum RecvError {
+    /// The sender has become disconnected, and there will never be any more data received on it.
+    Disconnected,
+}
+
+impl fmt::Display for RecvError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("receiving on a closed channel")
+    }
+}
+
+impl std::error::Error for RecvError {}

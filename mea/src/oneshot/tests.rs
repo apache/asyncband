@@ -327,7 +327,7 @@ fn poll_then_send() {
 #[test]
 fn poll_returns_while_sender_owns_waker() {
     let (sender, receiver) = oneshot::channel();
-    let channel_ptr = sender.channel_ptr;
+    let channel_ptr = sender.channel_ptr();
     mem::forget(sender);
     let mut receiver = receiver.into_future();
 
@@ -393,7 +393,7 @@ fn poll_returns_while_sender_owns_waker() {
 #[test]
 fn drop_transfers_cleanup_while_sender_owns_waker() {
     let (sender, receiver) = oneshot::channel();
-    let channel_ptr = sender.channel_ptr;
+    let channel_ptr = sender.channel_ptr();
     mem::forget(sender);
     let mut receiver = receiver.into_future();
     let (message, counter) = DropCounter::new(1234u128);
