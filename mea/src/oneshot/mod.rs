@@ -398,11 +398,9 @@ impl<T> Drop for Receiver<T> {
             READY => {
                 // SAFETY: The READY state plus acquire ordering guarantees the sender has
                 // written a message and that it has a happens-before relationship with this drop.
-                unsafe { channel.drop_message() };
-
-                // SAFETY: The acquire ordering above synchronizes with the sender's final write
-                // of the state, so we can safely deallocate the channel.
-                unsafe { dealloc(self.channel_ptr) };
+                // In addition, the acquire ordering above synchronizes with the sender's final
+                // write of the state, so we can safely deallocate the channel.
+                unsafe { discard_sent_message(self.channel_ptr) };
             }
             // The sender was already dropped. We are responsible for freeing the channel.
             DISCONNECTED => {
@@ -555,12 +553,9 @@ impl<T> Drop for Recv<T> {
                 READY => {
                     // SAFETY: The READY state plus acquire ordering guarantees the sender has
                     // written a message and that it has a happens-before relationship with this
-                    // drop.
-                    unsafe { channel.drop_message() };
-
-                    // SAFETY: The acquire load above synchronizes with the sender's final write of
-                    // the state, so we can safely deallocate the channel.
-                    unsafe { dealloc(self.channel_ptr) };
+                    // drop. In addition, the acquire load above synchronizes with the sender's
+                    // final write of the state, so we can safely deallocate the channel.
+                    unsafe { discard_sent_message(self.channel_ptr) };
                     break;
                 }
                 // This receiver was previously polled, but was not polled to completion. Move away
@@ -648,24 +643,19 @@ impl<T> Channel<T> {
     }
 
     #[inline(always)]
+    unsafe fn take_message(&self) -> T {
+        unsafe {
+            let slot = &*self.message.get();
+            slot.assume_init_read()
+        }
+    }
+
+    #[inline(always)]
     unsafe fn write_message(&self, message: T) {
         unsafe {
             let slot = &mut *self.message.get();
             slot.as_mut_ptr().write(message);
         }
-    }
-
-    #[inline(always)]
-    unsafe fn drop_message(&self) {
-        unsafe {
-            let slot = &mut *self.message.get();
-            slot.assume_init_drop();
-        }
-    }
-
-    #[inline(always)]
-    unsafe fn take_message(&self) -> T {
-        unsafe { ptr::read(self.message.get()).assume_init() }
     }
 
     /// # Safety
@@ -792,11 +782,8 @@ impl<T> SendError<T> {
 
 impl<T> Drop for SendError<T> {
     fn drop(&mut self) {
-        // SAFETY: SendError exclusively owns an initialized message.
-        unsafe { self.channel_ptr.as_ref().drop_message() };
-
-        // SAFETY: SendError exclusively owns the allocation.
-        unsafe { dealloc(self.channel_ptr) };
+        // SAFETY: SendError exclusively owns the channel.
+        unsafe { discard_sent_message(self.channel_ptr) };
     }
 }
 
