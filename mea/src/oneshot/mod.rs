@@ -225,9 +225,9 @@ impl<T> Channel<T> {
             slot.as_mut_ptr().write(waker);
         }
 
-        // ORDERING: Release publishes the initialized waker. On failure, the sender did not
-        // observe RECEIVING and cannot access the waker, so each branch provides only the
-        // synchronization needed for its terminal state.
+        // ORDERING: On success, Release publishes the initialized waker. Failure only observes the
+        // current state; the MESSAGE branch performs its own conditional Acquire below, while the
+        // DISCONNECTED branch does not access sender-owned data.
         match self
             .state
             .compare_exchange(EMPTY, RECEIVING, Ordering::Release, Ordering::Relaxed)
@@ -241,12 +241,12 @@ impl<T> Channel<T> {
                 // state, so it has not accessed the waker. We must drop it.
                 unsafe { self.drop_waker() };
 
-                // ORDERING: sender does not exist, so this update only needs to be visible to us.
+                // ORDERING: The sender has completed, so this receiver-only terminal update does
+                // not publish data to another thread.
                 self.state.store(DISCONNECTED, Ordering::Relaxed);
 
-                // ORDERING: Synchronize with writing message. This branch is unlikely to be
-                // taken, so it is likely more efficient to use a fence here instead of AcqRel
-                // ordering on the compare_exchange operation.
+                // ORDERING: The failed CAS read MESSAGE from the sender's Release publication. This
+                // conditional Acquire makes the initialized message visible before it is taken.
                 fence(Ordering::Acquire);
 
                 // SAFETY: The MESSAGE state tells us there is a correctly initialized message,
@@ -311,16 +311,17 @@ impl<T> Channel<T> {
     unsafe fn finish_sender_awakening(&self, final_state: u8) -> (Waker, bool) {
         debug_assert!(matches!(final_state, MESSAGE | DISCONNECTED));
 
-        // ORDERING: Synchronize the caller's preceding RMW with the receiver's waker publication.
+        // ORDERING: The caller's Release RMW read RECEIVING with a Relaxed load. This Acquire fence
+        // synchronizes that read with the receiver's Release publication before taking the waker.
         fence(Ordering::Acquire);
 
         // SAFETY: The caller's RECEIVING-to-AWAKING transition transferred exclusive ownership of
         // the initialized waker to the sender.
         let waker = unsafe { self.take_waker() };
 
-        // ORDERING: Release publishes the final state. If receiver cancellation replaced
-        // AWAKING with DISCONNECTED, the acquire fence synchronizes with that transfer before
-        // the sender frees the allocation.
+        // ORDERING: Release publishes the message or disconnect when this replaces AWAKING. The
+        // RMW's load half is Relaxed; if it reads a receiver-written DISCONNECTED, the conditional
+        // Acquire below completes the reverse allocation-ownership handoff.
         let previous_state = self.state.swap(final_state, Ordering::Release);
         if matches!(previous_state, AWAKING) {
             (waker, true)
@@ -328,8 +329,8 @@ impl<T> Channel<T> {
             // The receiver has been dropped.
             debug_assert_eq!(previous_state, DISCONNECTED);
 
-            // ORDERING: Acquire synchronize with receiver cancellation so every access through
-            // the receiver happens before the sender reclaims the allocation.
+            // ORDERING: The swap read DISCONNECTED from the receiver's Release cancellation.
+            // Acquire makes every preceding receiver access happen before sender-side reclamation.
             fence(Ordering::Acquire);
 
             (waker, false)

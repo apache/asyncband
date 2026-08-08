@@ -69,9 +69,9 @@ impl<T> Sender<T> {
         // * RECEIVING + 1 = AWAKING
         // * DISCONNECTED + 1 = EMPTY (invalid), however this state is never observed
         //
-        // ORDERING: release publishes the message. The common EMPTY branch does not consume any
-        // receiver data; the other branches use an acquire fence before accessing resources whose
-        // ownership the receiver published through the state.
+        // ORDERING: Release publishes the message directly for EMPTY-to-MESSAGE and orders it
+        // before the waiting path's final publication. The RMW's load half is Relaxed, so
+        // branches that consume receiver-published resources use an Acquire fence.
         match channel.state.fetch_add(1, Ordering::Release) {
             // The receiver is alive and has not started waiting. Send done.
             EMPTY => Ok(()),
@@ -103,6 +103,9 @@ impl<T> Sender<T> {
             // Moreover, since we just placed the message in the channel, the channel contains a
             // valid message.
             DISCONNECTED => {
+                // ORDERING: The RMW read DISCONNECTED from the receiver's Release endpoint drop.
+                // This Acquire completes the ownership handoff before SendError accesses the
+                // allocation.
                 fence(Ordering::Acquire);
                 Err(SendError { channel_ptr })
             }
@@ -155,9 +158,9 @@ impl<T> Drop for Sender<T> {
         // * RECEIVING ^ 001 = AWAKING
         // * DISCONNECTED ^ 001 = EMPTY (invalid), but this state is never observed
         //
-        // ORDERING: release publishes the sender's final state. The common EMPTY branch does not
-        // consume receiver data; the other branches use an acquire fence before accessing
-        // resources whose ownership the receiver published through the state.
+        // ORDERING: Release publishes a direct disconnect and orders it before the waiting path's
+        // final publication. The RMW's load half is Relaxed, so branches that consume
+        // receiver-published resources use an Acquire fence.
         match channel.state.fetch_xor(0b001, Ordering::Release) {
             // The receiver is not waiting, nor is it dropped. The receiver is responsible for
             // deallocating the channel.
@@ -180,6 +183,8 @@ impl<T> Drop for Sender<T> {
             }
             // The receiver was already dropped. We are responsible for freeing the channel.
             DISCONNECTED => {
+                // ORDERING: The RMW read DISCONNECTED from the receiver's Release endpoint drop.
+                // Acquire makes all preceding receiver accesses happen before deallocation.
                 fence(Ordering::Acquire);
                 // SAFETY: when the receiver switches the state to DISCONNECTED they have received
                 // the message or will no longer be trying to receive the message, and have

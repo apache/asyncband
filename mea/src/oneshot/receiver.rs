@@ -92,10 +92,9 @@ impl<T> Receiver<T> {
         // `channel_ptr` remains valid.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
-        // ORDERING: Acquire guarantees that no subsequent load is reordered
-        // before this one. This upholds the contract that if true is returned, the next call to
-        // receive the message is guaranteed to also observe the `MESSAGE` state and return the
-        // message immediately.
+        // ORDERING: This method only observes the atomic state. MESSAGE is terminal for the sender,
+        // and receiver operations cannot run concurrently, so atomic coherence preserves this
+        // observation for the next receive. Accessing the message synchronizes separately.
         matches!(channel.state.load(Ordering::Relaxed), MESSAGE)
     }
 
@@ -120,11 +119,13 @@ impl<T> Receiver<T> {
                 // It is okay to break up the load and store since once we are in the MESSAGE state,
                 // the sender no longer modifies the state
                 //
-                // ORDERING: at this point the sender has done its job and is no longer active, so
-                // we need not make any side effects visible to it.
+                // ORDERING: The sender has completed, so this receiver-only terminal update does
+                // not publish data to another thread.
                 channel.state.store(DISCONNECTED, Ordering::Relaxed);
 
-                // ORDERING: Synchronize with the sender's write of the message.
+                // ORDERING: The preceding Relaxed load read MESSAGE from the sender's Release
+                // publication. This conditional Acquire makes the message visible before it is
+                // taken.
                 fence(Ordering::Acquire);
 
                 // SAFETY: we are in the MESSAGE state so the message is present and synchronized.
@@ -149,17 +150,15 @@ impl<T> Drop for Receiver<T> {
 
         // Set the channel state to disconnected and read what state the channel was in.
         //
-        // ORDERING: Release is required so that in the states where the sender becomes responsible
-        // for deallocating the channel, they can synchronize with this final state write from us.
-        // Acquire is required by the branches below to synchronize with writes from the sender.
-        match channel.state.swap(DISCONNECTED, Ordering::Release) {
+        // ORDERING: This is a bidirectional ownership handoff. Release publishes the receiver's
+        // last access when the sender must reclaim the allocation; Acquire receives a
+        // sender-published message or disconnect before receiver-side cleanup.
+        match channel.state.swap(DISCONNECTED, Ordering::AcqRel) {
             // The sender has not sent anything, nor is it dropped. The sender is responsible for
             // deallocating the channel.
             EMPTY => {}
             // The sender already sent something. We must drop it, and free the channel.
             MESSAGE => {
-                fence(Ordering::Acquire);
-
                 // SAFETY: The MESSAGE state plus acquire ordering guarantees the sender has
                 // written a message and that it has a happens-before relationship with this drop.
                 // In addition, the acquire ordering above synchronizes with the sender's final
@@ -168,10 +167,9 @@ impl<T> Drop for Receiver<T> {
             }
             // The sender was already dropped. We are responsible for freeing the channel.
             DISCONNECTED => {
-                fence(Ordering::Acquire);
-
-                // SAFETY: The acquire ordering above synchronizes with the sender's final write
-                // of the state, so we can safely deallocate the channel.
+                // SAFETY: If the sender published DISCONNECTED, the swap's Acquire half makes its
+                // preceding accesses happen before reclamation. If this receiver previously wrote
+                // DISCONNECTED after taking the message, no cross-thread synchronization is needed.
                 unsafe { deallocate_empty_channel(self.channel_ptr) };
             }
             // NOTE: the receiver, unless transformed into a future, will never see the RECEIVING or
@@ -204,8 +202,8 @@ impl<T> Future for Recv<T> {
         // `channel_ptr` remains valid.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
-        // ORDERING: Relaxed is fine since the branches that need synchronization use dedicated
-        // fences.
+        // ORDERING: This load only selects a state-machine branch. Branches that access a published
+        // message or waker perform their own Acquire operation.
         match channel.state.load(Ordering::Relaxed) {
             // The sender is alive but has not sent anything yet.
             EMPTY => {
@@ -215,11 +213,13 @@ impl<T> Future for Recv<T> {
             }
             // The sender sent the message.
             MESSAGE => {
-                // ORDERING: after publishing MESSAGE, the sender no longer uses the channel, so
-                // this state update only needs to be visible to this receiver.
+                // ORDERING: The sender has completed, so this receiver-only terminal update does
+                // not publish data to another thread.
                 channel.state.store(DISCONNECTED, Ordering::Relaxed);
 
-                // ORDERING: Synchronize with the sender's write of the message and final state.
+                // ORDERING: The preceding Relaxed load read MESSAGE from the sender's Release
+                // publication. This conditional Acquire makes the message visible before it is
+                // taken.
                 fence(Ordering::Acquire);
 
                 // SAFETY: we are in the MESSAGE state and have synchronized with the sender.
@@ -228,8 +228,8 @@ impl<T> Future for Recv<T> {
             // We were polled again while waiting for the sender. Replace the waker with the new
             // one.
             RECEIVING => {
-                // ORDERING: Success synchronizes with the previous register_waker call before we
-                // drop the stored waker. Failure does not access the stored waker.
+                // ORDERING: On success, Acquire synchronizes with the Release that published the
+                // stored waker before this poll reclaims it. Failure does not access that waker.
                 match channel.state.compare_exchange(
                     RECEIVING,
                     EMPTY,
@@ -253,11 +253,13 @@ impl<T> Future for Recv<T> {
                     // We take the message and mark the channel disconnected.
                     // The sender has already taken the waker.
                     Err(MESSAGE) => {
-                        // ORDERING: after publishing MESSAGE, the sender no longer uses the
-                        // channel, so this state update only needs to be visible to this receiver.
+                        // ORDERING: The sender has completed, so this receiver-only terminal update
+                        // does not publish data to another thread.
                         channel.state.store(DISCONNECTED, Ordering::Relaxed);
 
-                        // ORDERING: Synchronize with the sender's write of the message.
+                        // ORDERING: The failed CAS read MESSAGE from the sender's Release
+                        // publication. This conditional Acquire makes the message visible before it
+                        // is taken.
                         fence(Ordering::Acquire);
 
                         // SAFETY: The state tells us the sender has initialized the message, and
@@ -296,8 +298,11 @@ impl<T> Drop for Recv<T> {
         let channel = unsafe { self.channel_ptr.as_ref() };
 
         loop {
-            // ORDERING: MESSAGE and DISCONNECTED synchronize with the sender's state writes.
-            match channel.state.load(Ordering::Relaxed) {
+            // ORDERING: Acquire synchronizes terminal sender publications before cleanup and the
+            // receiver's earlier waker publication before reclaiming it. EMPTY and AWAKING need
+            // only the atomic state observation, but using one load keeps the cleanup
+            // paths fence-free.
+            match channel.state.load(Ordering::Acquire) {
                 // The sender has not sent anything, nor is it dropped. Mark the receiver as
                 // dropped; the sender is responsible for deallocating the channel.
                 EMPTY => {
@@ -311,12 +316,9 @@ impl<T> Drop for Recv<T> {
                 }
                 // The sender already sent something. We must drop it, and free the channel.
                 MESSAGE => {
-                    fence(Ordering::Acquire);
-
                     // SAFETY: The MESSAGE state plus acquire ordering guarantees the sender has
                     // written a message and that it has a happens-before relationship with this
-                    // drop. In addition, the acquire load above synchronizes with the sender's
-                    // final write of the state, so we can safely deallocate the channel.
+                    // drop. The same load orders sender accesses before allocation reclamation.
                     unsafe { drop_message_and_deallocate_channel(self.channel_ptr) };
                     break;
                 }
@@ -333,13 +335,13 @@ impl<T> Drop for Recv<T> {
                 RECEIVING => {
                     if channel
                         .state
-                        .compare_exchange(RECEIVING, EMPTY, Ordering::Acquire, Ordering::Relaxed)
+                        .compare_exchange(RECEIVING, EMPTY, Ordering::Relaxed, Ordering::Relaxed)
                         .is_ok()
                     {
-                        fence(Ordering::Acquire);
                         // SAFETY: The successful exchange makes the state EMPTY, so the sender
-                        // cannot take the stored waker. The acquire ordering synchronizes with the
-                        // waker write.
+                        // cannot take the stored waker. The preceding Acquire load synchronized
+                        // with its publication. No transition can recreate RECEIVING, so the
+                        // successful Relaxed CAS still claims that same waker.
                         unsafe { channel.drop_waker() };
                     }
                 }
@@ -362,10 +364,10 @@ impl<T> Drop for Recv<T> {
                 // The sender was already dropped, or this future was previously polled to
                 // completion. We are responsible for freeing the channel.
                 DISCONNECTED => {
-                    fence(Ordering::Acquire);
-                    // SAFETY: When DISCONNECTED comes from the sender, the acquire load
-                    // synchronizes with the sender's state write. When it comes from our own
-                    // completed poll, the message has already been taken.
+                    // SAFETY: If the sender published DISCONNECTED, the Acquire load makes its
+                    // preceding accesses happen before reclamation. If this future wrote
+                    // DISCONNECTED after taking the message, no cross-thread synchronization is
+                    // needed.
                     unsafe { deallocate_empty_channel(self.channel_ptr) };
                     break;
                 }
