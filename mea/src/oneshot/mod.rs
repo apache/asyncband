@@ -311,7 +311,7 @@ impl<T> Channel<T> {
     unsafe fn finish_sender_awakening(&self, final_state: u8) -> (Waker, bool) {
         debug_assert!(matches!(final_state, MESSAGE | DISCONNECTED));
 
-        // ORDERING: The caller's Release RMW read RECEIVING with a Relaxed load. This Acquire fence
+        // ORDERING: The caller's Release RMW read RECEIVING with a Relaxed load. Acquire
         // synchronizes that read with the receiver's Release publication before taking the waker.
         fence(Ordering::Acquire);
 
