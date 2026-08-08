@@ -130,7 +130,7 @@ const DISCONNECTED: u8 = 0b010;
 ///   returning to `EMPTY`, or the sender may move to `AWAKING` and take ownership of it. The sender
 ///   retains ownership of any message that it has not yet published.
 /// * `AWAKING`: the sender exclusively owns the published waker and any unpublished message while
-///   it publishes either a send or a disconnect. The receiver must not access either slot;
+///   it publishes either a message or a disconnect. The receiver must not access either slot;
 ///   cancellation may only transfer allocation cleanup to the sender by moving to `DISCONNECTED`.
 /// * `MESSAGE`: the sender has published an initialized message and no longer accesses the channel.
 ///   The receiver owns the message and the allocation.
@@ -322,13 +322,18 @@ impl<T> Channel<T> {
         // AWAKING with DISCONNECTED, the acquire fence synchronizes with that transfer before
         // the sender frees the allocation.
         let previous_state = self.state.swap(final_state, Ordering::Release);
-        let receiver_owns_allocation = previous_state == AWAKING;
-        if !receiver_owns_allocation {
+        if matches!(previous_state, AWAKING) {
+            (waker, true)
+        } else {
+            // The receiver has been dropped.
             debug_assert_eq!(previous_state, DISCONNECTED);
-            fence(Ordering::Acquire);
-        }
 
-        (waker, receiver_owns_allocation)
+            // ORDERING: Acquire synchronizes with the release that set DISCONNECTED, ensuring any
+            // writes before the receiver dropped are visible.
+            fence(Ordering::Acquire);
+
+            (waker, false)
+        }
     }
 }
 
