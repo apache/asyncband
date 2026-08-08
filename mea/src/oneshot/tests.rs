@@ -428,9 +428,9 @@ fn concurrent_send_and_try_recv_to_completion() {
 
     let receiver_thread = spawn_named("receiver", move || {
         spin_until("message from sender", || match receiver.try_recv() {
-            Ok(999) => Some(()),
+            Ok(999) => true,
             Ok(value) => panic!("unexpected value: {value}"),
-            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Empty) => false,
             Err(TryRecvError::Disconnected) => panic!("unexpected disconnect"),
         });
     });
@@ -450,8 +450,8 @@ fn concurrent_drop_sender_and_try_recv_to_completion() {
     let receiver_thread = spawn_named("receiver", move || {
         spin_until("sender disconnect", || match receiver.try_recv() {
             Ok(value) => panic!("unexpected value: {value}"),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(()),
+            Err(TryRecvError::Empty) => false,
+            Err(TryRecvError::Disconnected) => true,
         });
     });
 
@@ -474,9 +474,9 @@ fn concurrent_send_and_poll_to_completion() {
 
         spin_until("poll ready with message", || {
             match Pin::new(&mut receiver).poll(&mut context) {
-                Poll::Ready(Ok(999)) => Some(()),
+                Poll::Ready(Ok(999)) => true,
                 Poll::Ready(result) => panic!("unexpected result: {result:?}"),
-                Poll::Pending => None,
+                Poll::Pending => false,
             }
         });
     });
@@ -500,9 +500,9 @@ fn concurrent_drop_sender_and_poll_to_completion() {
 
         spin_until("poll ready with disconnect", || {
             match Pin::new(&mut receiver).poll(&mut context) {
-                Poll::Ready(Err(oneshot::RecvError::Disconnected)) => Some(()),
+                Poll::Ready(Err(oneshot::RecvError::Disconnected)) => true,
                 Poll::Ready(result) => panic!("unexpected result: {result:?}"),
-                Poll::Pending => None,
+                Poll::Pending => false,
             }
         });
     });
@@ -599,13 +599,13 @@ mod support {
 
     pub(super) fn spin_until<F>(label: &str, mut f: F)
     where
-        F: FnMut() -> Option<()>,
+        F: FnMut() -> bool,
     {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut spins = 0usize;
 
         loop {
-            if f().is_some() {
+            if f() {
                 break;
             }
 
