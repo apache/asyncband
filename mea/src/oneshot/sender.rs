@@ -133,11 +133,6 @@ impl<T> Sender<T> {
     pub(super) fn new(channel_ptr: NonNull<Channel<T>>) -> Self {
         Self { channel_ptr }
     }
-
-    #[cfg(test)]
-    pub(super) fn channel_ptr(&self) -> NonNull<Channel<T>> {
-        self.channel_ptr
-    }
 }
 
 impl<T> Drop for Sender<T> {
@@ -264,3 +259,10 @@ impl<T> fmt::Debug for SendError<T> {
 }
 
 impl<T> std::error::Error for SendError<T> {}
+
+#[cfg(test)]
+impl<T> Sender<T> {
+    pub(super) fn channel_ptr(&self) -> NonNull<Channel<T>> {
+        self.channel_ptr
+    }
+}
