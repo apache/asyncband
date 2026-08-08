@@ -96,7 +96,7 @@ impl<T> Receiver<T> {
         // before this one. This upholds the contract that if true is returned, the next call to
         // receive the message is guaranteed to also observe the `MESSAGE` state and return the
         // message immediately.
-        matches!(channel.state.load(Ordering::Acquire), MESSAGE)
+        matches!(channel.state.load(Ordering::Relaxed), MESSAGE)
     }
 
     /// Checks if there is a message in the channel without blocking. Returns:
@@ -152,12 +152,14 @@ impl<T> Drop for Receiver<T> {
         // ORDERING: Release is required so that in the states where the sender becomes responsible
         // for deallocating the channel, they can synchronize with this final state write from us.
         // Acquire is required by the branches below to synchronize with writes from the sender.
-        match channel.state.swap(DISCONNECTED, Ordering::AcqRel) {
+        match channel.state.swap(DISCONNECTED, Ordering::Release) {
             // The sender has not sent anything, nor is it dropped. The sender is responsible for
             // deallocating the channel.
             EMPTY => {}
             // The sender already sent something. We must drop it, and free the channel.
             MESSAGE => {
+                fence(Ordering::Acquire);
+
                 // SAFETY: The MESSAGE state plus acquire ordering guarantees the sender has
                 // written a message and that it has a happens-before relationship with this drop.
                 // In addition, the acquire ordering above synchronizes with the sender's final
@@ -166,6 +168,8 @@ impl<T> Drop for Receiver<T> {
             }
             // The sender was already dropped. We are responsible for freeing the channel.
             DISCONNECTED => {
+                fence(Ordering::Acquire);
+
                 // SAFETY: The acquire ordering above synchronizes with the sender's final write
                 // of the state, so we can safely deallocate the channel.
                 unsafe { deallocate_empty_channel(self.channel_ptr) };
@@ -293,7 +297,7 @@ impl<T> Drop for Recv<T> {
 
         loop {
             // ORDERING: MESSAGE and DISCONNECTED synchronize with the sender's state writes.
-            match channel.state.load(Ordering::Acquire) {
+            match channel.state.load(Ordering::Relaxed) {
                 // The sender has not sent anything, nor is it dropped. Mark the receiver as
                 // dropped; the sender is responsible for deallocating the channel.
                 EMPTY => {
@@ -307,6 +311,8 @@ impl<T> Drop for Recv<T> {
                 }
                 // The sender already sent something. We must drop it, and free the channel.
                 MESSAGE => {
+                    fence(Ordering::Acquire);
+
                     // SAFETY: The MESSAGE state plus acquire ordering guarantees the sender has
                     // written a message and that it has a happens-before relationship with this
                     // drop. In addition, the acquire load above synchronizes with the sender's
@@ -330,6 +336,7 @@ impl<T> Drop for Recv<T> {
                         .compare_exchange(RECEIVING, EMPTY, Ordering::Acquire, Ordering::Relaxed)
                         .is_ok()
                     {
+                        fence(Ordering::Acquire);
                         // SAFETY: The successful exchange makes the state EMPTY, so the sender
                         // cannot take the stored waker. The acquire ordering synchronizes with the
                         // waker write.
@@ -355,6 +362,7 @@ impl<T> Drop for Recv<T> {
                 // The sender was already dropped, or this future was previously polled to
                 // completion. We are responsible for freeing the channel.
                 DISCONNECTED => {
+                    fence(Ordering::Acquire);
                     // SAFETY: When DISCONNECTED comes from the sender, the acquire load
                     // synchronizes with the sender's state write. When it comes from our own
                     // completed poll, the message has already been taken.

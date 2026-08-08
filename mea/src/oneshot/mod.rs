@@ -328,8 +328,8 @@ impl<T> Channel<T> {
             // The receiver has been dropped.
             debug_assert_eq!(previous_state, DISCONNECTED);
 
-            // ORDERING: Acquire synchronizes with the release that set DISCONNECTED, ensuring any
-            // writes before the receiver dropped are visible.
+            // ORDERING: Acquire synchronize with receiver cancellation so every access through
+            // the receiver happens before the sender reclaims the allocation.
             fence(Ordering::Acquire);
 
             (waker, false)
