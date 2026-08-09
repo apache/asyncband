@@ -13,10 +13,12 @@ All notable changes to this project will be documented in this file.
 * Make cloning a `WaitGroup` panic on counter overflow instead of silently losing track of a handle.
 * Align `Condvar` with standard condition-variable semantics by notifying only current waiters and passing a cancelled `notify_one` wakeup to another current waiter instead of storing a permit.
 * Release cancelled wait registrations promptly and reclaim fulfilled `Semaphore::forget_exact` debt nodes.
+* Clean up uninitialized `OnceMap` and `singleflight` entries once no callers remain after a failure, panic, or cancellation.
 
 ### Improvements
 
 * Remove the `slab` dependency in favor of a focused internal waiter arena.
+* Remove unnecessary `Clone` bounds from `singleflight` keys and custom hashers used by keyed once primitives.
 
 ## v0.6.5 (2026-07-30)
 

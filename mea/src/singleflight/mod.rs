@@ -15,14 +15,14 @@
 //! Singleflight provides a duplicate function call suppression mechanism.
 
 use std::borrow::Borrow;
-use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::RandomState;
 use std::sync::Arc;
 
 use crate::internal::Mutex;
-use crate::once::OnceCell;
+use crate::internal::OnceTable;
+use crate::internal::OnceTableEntry;
 
 #[cfg(test)]
 mod tests;
@@ -31,14 +31,72 @@ mod tests;
 /// units of work can be executed with duplicate suppression.
 #[derive(Debug)]
 pub struct Group<K, V, S = RandomState> {
-    map: Mutex<HashMap<K, Arc<OnceCell<V>>, S>>,
+    map: Mutex<OnceTable<K, V, S>>,
+}
+
+// Holds one call's entry so Drop can clean it up if the work is abandoned.
+struct WorkCleanupGuard<'a, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    group: &'a Group<K, V, S>,
+    entry: Option<Arc<OnceTableEntry<K, V>>>,
+}
+
+impl<'a, K, V, S> WorkCleanupGuard<'a, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    fn new(group: &'a Group<K, V, S>, key: K) -> Self {
+        let entry = {
+            let mut map = group.map.lock();
+            Arc::clone(map.get_or_insert(key))
+        };
+
+        Self {
+            group,
+            entry: Some(entry),
+        }
+    }
+
+    fn entry(&self) -> &Arc<OnceTableEntry<K, V>> {
+        self.entry.as_ref().unwrap()
+    }
+
+    fn dismiss(mut self) {
+        drop(self.entry.take());
+    }
+}
+
+impl<K, V, S> Drop for WorkCleanupGuard<'_, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    fn drop(&mut self) {
+        let Some(entry) = self.entry.take() else {
+            return;
+        };
+
+        let mut table = self.group.map.lock();
+        // If the table still owns this entry, a count of two means the current call is its only
+        // owner outside the table. remove_entry rejects an entry that was detached or replaced.
+        if Arc::strong_count(&entry) == 2 && !entry.initialized() {
+            table.remove_entry(&entry);
+        }
+        // Drop this call's reference before unlocking so a waiting cleanup observes the updated
+        // reference count.
+        drop(entry);
+    }
 }
 
 impl<K, V, S> Default for Group<K, V, S>
 where
-    K: Eq + Hash + Clone,
+    K: Eq + Hash,
     V: Clone,
-    S: BuildHasher + Clone + Default,
+    S: BuildHasher + Default,
 {
     fn default() -> Self {
         Self::with_hasher(S::default())
@@ -47,27 +105,27 @@ where
 
 impl<K, V> Group<K, V, RandomState>
 where
-    K: Eq + Hash + Clone,
+    K: Eq + Hash,
     V: Clone,
 {
     /// Creates a new Group with the default hasher.
     pub fn new() -> Self {
         Self {
-            map: Mutex::new(HashMap::new()),
+            map: Mutex::new(OnceTable::with_hasher(RandomState::new())),
         }
     }
 }
 
 impl<K, V, S> Group<K, V, S>
 where
-    K: Eq + Hash + Clone,
+    K: Eq + Hash,
     V: Clone,
-    S: BuildHasher + Clone,
+    S: BuildHasher,
 {
     /// Creates a new Group with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
         Self {
-            map: Mutex::new(HashMap::with_hasher(hasher)),
+            map: Mutex::new(OnceTable::with_hasher(hasher)),
         }
     }
 
@@ -76,6 +134,9 @@ where
     ///
     /// If a duplicate comes in, the duplicate caller waits for the original to complete and
     /// receives the same results.
+    ///
+    /// If the computation is cancelled or panics, another caller waiting for the same key may retry
+    /// it.
     ///
     /// Once the function completes, the key, if not [`forgotten`], is removed from the group,
     /// allowing future calls with the same key to execute the function again.
@@ -124,35 +185,18 @@ where
     where
         F: AsyncFnOnce() -> V,
     {
-        // 1. Get or create the OnceCell.
-        let cell = {
-            let mut map = self.map.lock();
-            map.entry(key.clone())
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
-        };
-
-        // 2. Try to initialize the cell.
-        // OnceCell::get_or_init guarantees that only one task executes the closure.
-        let res = cell
+        let guard = WorkCleanupGuard::new(self, key);
+        let entry = guard.entry();
+        let result = entry
             .get_or_init(async || {
                 let result = func().await;
-
-                // Cleanup: remove the key from the map.
-                // We must ensure we remove the entry corresponding to *this* cell.
-                let mut map = self.map.lock();
-                if let Some(existing) = map.get(&key) {
-                    // Check if the map still points to our cell.
-                    if Arc::ptr_eq(&cell, existing) {
-                        map.remove(&key);
-                    }
-                }
-
+                self.map.lock().remove_entry(entry);
                 result
             })
-            .await;
-
-        res.clone()
+            .await
+            .clone();
+        guard.dismiss();
+        result
     }
 
     /// Executes and returns the results of the given function, making sure that only one execution
@@ -161,8 +205,8 @@ where
     /// If a duplicate comes in, the duplicate caller waits for the original to complete and
     /// receives the same results.
     ///
-    /// If the computation fails, the error is returned for the caller. Other tasks waiting for the
-    /// result will retry the computation.
+    /// If the computation returns an error, it is returned to that caller. After an error,
+    /// cancellation, or panic, another caller may retry the computation.
     ///
     /// Once the function completes successfully, the key, if not [`forgotten`], is removed from
     /// the group, allowing future calls with the same key to execute the function again.
@@ -205,35 +249,18 @@ where
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        // 1. Get or create the OnceCell.
-        let cell = {
-            let mut map = self.map.lock();
-            map.entry(key.clone())
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
-        };
-
-        // 2. Try to initialize the cell.
-        // OnceCell::get_or_try_init guarantees that only one task executes the closure.
-        let res = cell
+        let guard = WorkCleanupGuard::new(self, key);
+        let entry = guard.entry();
+        let result = entry
             .get_or_try_init(async || {
                 let result = func().await?;
-
-                // Cleanup: remove the key from the map.
-                // We must ensure we remove the entry corresponding to *this* cell.
-                let mut map = self.map.lock();
-                if let Some(existing) = map.get(&key) {
-                    // Check if the map still points to our cell.
-                    if Arc::ptr_eq(&cell, existing) {
-                        map.remove(&key);
-                    }
-                }
-
+                self.map.lock().remove_entry(entry);
                 Ok(result)
             })
-            .await?;
-
-        Ok(res.clone())
+            .await?
+            .clone();
+        guard.dismiss();
+        Ok(result)
     }
 
     /// Forgets about the given key.

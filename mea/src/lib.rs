@@ -99,6 +99,14 @@ fn test_runtime() -> &'static tokio::runtime::Runtime {
 }
 
 #[cfg(test)]
+pub(crate) fn poll_once<F: std::future::Future>(
+    future: std::pin::Pin<&mut F>,
+) -> std::task::Poll<F::Output> {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    future.poll(&mut context)
+}
+
+#[cfg(test)]
 mod tests {
     use crate::admission::FairShare;
     use crate::admission::FairSharePermit;

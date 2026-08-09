@@ -13,14 +13,14 @@
 // limitations under the License.
 
 use std::borrow::Borrow;
-use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::RandomState;
 use std::sync::Arc;
 
 use crate::internal::Mutex;
-use crate::once::OnceCell;
+use crate::internal::OnceTable;
+use crate::internal::OnceTableEntry;
 
 #[cfg(test)]
 mod tests;
@@ -31,14 +31,67 @@ mod tests;
 /// to wrap the `V` in an `Arc<V>` to make cloning cheap.
 #[derive(Debug)]
 pub struct OnceMap<K, V, S = RandomState> {
-    map: Mutex<HashMap<K, Arc<OnceCell<V>>, S>>,
+    map: Mutex<OnceTable<K, V, S>>,
+}
+
+// Holds one call's entry so Drop can clean it up if the computation is abandoned.
+struct ComputeCleanupGuard<'a, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    once_map: &'a OnceMap<K, V, S>,
+    entry: Option<Arc<OnceTableEntry<K, V>>>,
+}
+
+impl<'a, K, V, S> ComputeCleanupGuard<'a, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    fn new(once_map: &'a OnceMap<K, V, S>, entry: Arc<OnceTableEntry<K, V>>) -> Self {
+        Self {
+            once_map,
+            entry: Some(entry),
+        }
+    }
+
+    fn entry(&self) -> &Arc<OnceTableEntry<K, V>> {
+        self.entry.as_ref().unwrap()
+    }
+
+    fn dismiss(mut self) {
+        drop(self.entry.take());
+    }
+}
+
+impl<K, V, S> Drop for ComputeCleanupGuard<'_, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    fn drop(&mut self) {
+        let Some(entry) = self.entry.take() else {
+            return;
+        };
+
+        let mut table = self.once_map.map.lock();
+        // If the table still owns this entry, a count of two means the current call is its only
+        // owner outside the table. remove_entry rejects an entry that was detached or replaced.
+        if Arc::strong_count(&entry) == 2 && !entry.initialized() {
+            table.remove_entry(&entry);
+        }
+        // Drop this call's reference before unlocking so a waiting cleanup observes the updated
+        // reference count.
+        drop(entry);
+    }
 }
 
 impl<K, V, S> Default for OnceMap<K, V, S>
 where
     K: Eq + Hash,
     V: Clone,
-    S: BuildHasher + Clone + Default,
+    S: BuildHasher + Default,
 {
     fn default() -> Self {
         Self::with_hasher(S::default())
@@ -53,14 +106,17 @@ where
     /// Creates a new OnceMap with the default hasher.
     pub fn new() -> Self {
         Self {
-            map: Mutex::new(HashMap::new()),
+            map: Mutex::new(OnceTable::with_hasher(RandomState::new())),
         }
     }
 
     /// Creates a new OnceMap with the default hasher and the specified capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            map: Mutex::new(HashMap::with_capacity(capacity)),
+            map: Mutex::new(OnceTable::with_capacity_and_hasher(
+                capacity,
+                RandomState::new(),
+            )),
         }
     }
 }
@@ -69,19 +125,19 @@ impl<K, V, S> OnceMap<K, V, S>
 where
     K: Eq + Hash,
     V: Clone,
-    S: BuildHasher + Clone,
+    S: BuildHasher,
 {
     /// Creates a new OnceMap with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
         Self {
-            map: Mutex::new(HashMap::with_hasher(hasher)),
+            map: Mutex::new(OnceTable::with_hasher(hasher)),
         }
     }
 
     /// Create a OnceMap with the specified capacity and hasher.
     pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
         Self {
-            map: Mutex::new(HashMap::with_capacity_and_hasher(capacity, hasher)),
+            map: Mutex::new(OnceTable::with_capacity_and_hasher(capacity, hasher)),
         }
     }
 
@@ -89,22 +145,26 @@ where
     ///
     /// If the value for the key is already being computed by another task, this task will wait for
     /// the computation to finish and return the result.
+    ///
+    /// If the computation is cancelled or panics, another caller waiting for the same key may retry
+    /// it.
     pub async fn compute<F>(&self, key: K, func: F) -> V
     where
         F: AsyncFnOnce() -> V,
     {
-        // 1. Get or create the OnceCell.
-        let cell = {
+        let entry = {
             let mut map = self.map.lock();
-            map.entry(key)
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
+            let entry = map.get_or_insert(key);
+            if let Some(value) = entry.get() {
+                return value.clone();
+            }
+            Arc::clone(entry)
         };
 
-        // 2. Try to initialize the cell.
-        // OnceCell::get_or_init guarantees that only one task executes the closure.
-        let res = cell.get_or_init(func).await;
-        res.clone()
+        let guard = ComputeCleanupGuard::new(self, entry);
+        let result = guard.entry().get_or_init(func).await.clone();
+        guard.dismiss();
+        result
     }
 
     /// Compute the value for the given key if absent.
@@ -112,24 +172,25 @@ where
     /// If the value for the key is already being computed by another task, this task will wait for
     /// the computation to finish and return the result.
     ///
-    /// If the computation fails, the error is returned and the value is not stored. Other tasks
-    /// waiting for the value will retry the computation.
+    /// If the computation returns an error, it is returned to that caller and the value is not
+    /// stored. After an error, cancellation, or panic, another caller may retry the computation.
     pub async fn try_compute<E, F>(&self, key: K, func: F) -> Result<V, E>
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        // 1. Get or create the OnceCell.
-        let cell = {
+        let entry = {
             let mut map = self.map.lock();
-            map.entry(key)
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
+            let entry = map.get_or_insert(key);
+            if let Some(value) = entry.get() {
+                return Ok(value.clone());
+            }
+            Arc::clone(entry)
         };
 
-        // 2. Try to initialize the cell.
-        // OnceCell::get_or_try_init guarantees that only one task executes the closure.
-        let res = cell.get_or_try_init(func).await?;
-        Ok(res.clone())
+        let guard = ComputeCleanupGuard::new(self, entry);
+        let result = guard.entry().get_or_try_init(func).await?.clone();
+        guard.dismiss();
+        Ok(result)
     }
 
     /// Get a clone of the value for the given key if exists.
@@ -139,8 +200,8 @@ where
         Q: Hash + Eq + ?Sized,
     {
         let map = self.map.lock();
-        let cell = map.get(key)?;
-        cell.get().cloned()
+        let entry = map.get(key)?;
+        entry.get().cloned()
     }
 
     /// Remove the given key from the map.
@@ -168,24 +229,25 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let cell = self.map.lock().remove(key)?;
-        cell.get().cloned()
+        let entry = self.map.lock().remove(key)?;
+        entry.get().cloned()
     }
 }
 
 impl<K, V, S> FromIterator<(K, V)> for OnceMap<K, V, S>
 where
-    K: Eq + Hash + Clone,
+    K: Eq + Hash,
     V: Clone,
-    S: Default + BuildHasher + Clone,
+    S: Default + BuildHasher,
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let mut map = OnceTable::with_hasher(S::default());
+        for (key, value) in iter {
+            map.insert(key, value);
+        }
+
         Self {
-            map: Mutex::new(
-                iter.into_iter()
-                    .map(|(k, v)| (k, Arc::new(OnceCell::from_value(v))))
-                    .collect(),
-            ),
+            map: Mutex::new(map),
         }
     }
 }

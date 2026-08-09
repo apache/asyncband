@@ -18,6 +18,9 @@ pub(crate) use arena::*;
 mod countdown;
 pub(crate) use countdown::*;
 
+mod once_table;
+pub(crate) use once_table::*;
+
 mod mutex;
 pub(crate) use mutex::*;
 

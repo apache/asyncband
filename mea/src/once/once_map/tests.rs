@@ -14,12 +14,12 @@
 
 use std::collections::hash_map::RandomState;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::once::OnceMap;
+use crate::poll_once;
 
 #[test]
 fn test_default_and_constructors() {
@@ -75,6 +75,7 @@ async fn test_try_compute() {
     // Fail first
     let res: Result<i32, &str> = map.try_compute("key", async || Err("fail")).await;
     assert_eq!(res, Err("fail"));
+    assert!(map.map.lock().is_empty());
 
     // Success then
     let res: Result<i32, &str> = map.try_compute("key", async || Ok::<i32, &str>(1)).await;
@@ -86,58 +87,84 @@ async fn test_try_compute() {
 }
 
 #[tokio::test]
-async fn test_try_compute_concurrent_failure_then_success() {
-    let map = Arc::new(OnceMap::new());
-    let success = Arc::new(AtomicBool::new(false));
+async fn test_panicked_compute_removes_empty_entry() {
+    let map = Arc::new(OnceMap::<&str, i32>::new());
+
     let map_clone = map.clone();
-    let success_clone = success.clone();
-
-    // Spawn a task that fails
-    let t1 = tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         map_clone
-            .try_compute("key", async move || {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                Err::<i32, _>("fail")
+            .compute("key", async || {
+                panic!("oops");
             })
             .await
     });
 
-    // Spawn a task that succeeds, but starts slightly later/runs concurrent
-    let map_clone2 = map.clone();
-    let t2 = tokio::spawn(async move {
-        // Wait for t1 to start
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        // This should block until t1 fails, then retry (conceptually)
-        map_clone2
-            .try_compute("key", async move || {
-                success_clone.store(true, Ordering::SeqCst);
-                Ok::<i32, &str>(1)
+    assert!(task.await.unwrap_err().is_panic());
+    assert!(map.map.lock().is_empty());
+}
+
+#[tokio::test]
+async fn test_cancelled_compute_removes_empty_entry() {
+    let map = Arc::new(OnceMap::<&str, i32>::new());
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+
+    let map_clone = map.clone();
+    let task = tokio::spawn(async move {
+        map_clone
+            .compute("key", async move || {
+                started_tx.send(()).unwrap();
+                std::future::pending().await
             })
             .await
     });
 
-    let res1 = t1.await.unwrap();
-    assert_eq!(res1, Err("fail"));
+    started_rx.await.unwrap();
+    assert_eq!(map.map.lock().len(), 1);
 
-    let res2 = t2.await.unwrap();
-    assert_eq!(res2, Ok(1));
-    assert!(success.load(Ordering::SeqCst));
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(map.map.lock().is_empty());
+}
+
+#[tokio::test]
+async fn test_try_compute_concurrent_failure_then_success() {
+    let map = OnceMap::new();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+
+    let first = map.try_compute("key", async move || {
+        release_rx.await.unwrap();
+        Err::<i32, &str>("fail")
+    });
+    tokio::pin!(first);
+    assert!(poll_once(first.as_mut()).is_pending());
+
+    let retry = map.try_compute("key", async || Ok::<i32, &str>(1));
+    tokio::pin!(retry);
+    assert!(poll_once(retry.as_mut()).is_pending());
+
+    release_tx.send(()).unwrap();
+    assert_eq!(first.await, Err("fail"));
+
+    // The failed caller must not remove the cell while an existing waiter can still retry it.
+    assert_eq!(map.map.lock().len(), 1);
+    assert_eq!(retry.await, Ok(1));
+    assert_eq!(map.get("key"), Some(1));
 }
 
 #[tokio::test]
 async fn test_get_remove() {
-    let map = OnceMap::new();
+    let map = OnceMap::<String, i32>::new();
     assert_eq!(map.get("key"), None);
     assert_eq!(map.remove("key"), None);
 
-    map.compute("key", async || 1).await;
+    map.compute("key".to_owned(), async || 1).await;
     assert_eq!(map.get("key"), Some(1));
 
     let v = map.remove("key");
     assert_eq!(v, Some(1));
     assert_eq!(map.get("key"), None);
 
-    map.compute("key", async || 2).await;
+    map.compute("key".to_owned(), async || 2).await;
     map.discard("key");
     assert_eq!(map.get("key"), None);
 }
@@ -193,15 +220,20 @@ async fn test_get_while_computing() {
 
 #[tokio::test]
 async fn test_from_iter() {
-    let map: OnceMap<_, _> = vec![("a", 1), ("b", 2)].into_iter().collect();
-    assert_eq!(map.get("a"), Some(1));
-    assert_eq!(map.get("b"), Some(2));
-    assert_eq!(map.get("c"), None);
+    #[derive(Hash, PartialEq, Eq)]
+    struct Key(&'static str);
+
+    let map: OnceMap<_, _> = vec![(Key("a"), 1), (Key("b"), 2), (Key("a"), 3)]
+        .into_iter()
+        .collect();
+    assert_eq!(map.get(&Key("a")), Some(3));
+    assert_eq!(map.get(&Key("b")), Some(2));
+    assert_eq!(map.get(&Key("c")), None);
 }
 
 #[tokio::test]
 async fn test_complex_key_value() {
-    #[derive(Hash, PartialEq, Eq, Clone, Debug)]
+    #[derive(Hash, PartialEq, Eq, Debug)]
     struct Key(i32);
 
     let map = OnceMap::new();

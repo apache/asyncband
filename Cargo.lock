@@ -464,6 +464,7 @@ name = "mea"
 version = "0.6.5"
 dependencies = [
  "divan",
+ "hashbrown",
  "pollster",
  "tokio",
  "tokio-test",
