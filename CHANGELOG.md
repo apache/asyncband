@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 * Align `Condvar` with standard condition-variable semantics by notifying only current waiters and passing a cancelled `notify_one` wakeup to another current waiter instead of storing a permit.
 * Release cancelled wait registrations promptly and reclaim fulfilled `Semaphore::forget_exact` debt nodes.
 * Clean up uninitialized `OnceMap` and `singleflight` entries once no callers remain after a failure, panic, or cancellation.
+* Preserve semaphore permits when releasing permits panics on overflow.
 
 ### Improvements
 

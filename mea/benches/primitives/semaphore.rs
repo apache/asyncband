@@ -66,3 +66,22 @@ fn fulfill_debt_repeatedly(bencher: Bencher) {
         black_box(semaphore.available_permits())
     });
 }
+
+#[divan::bench]
+fn release(bencher: Bencher) {
+    bencher
+        .with_inputs(|| Semaphore::new(0))
+        .bench_local_values(|semaphore| {
+            semaphore.release(black_box(1));
+            black_box(semaphore)
+        });
+}
+
+#[divan::bench]
+fn try_acquire_release(bencher: Bencher) {
+    let semaphore = Semaphore::new(1);
+
+    bencher.bench_local(|| {
+        drop(black_box(semaphore.try_acquire(black_box(1)).unwrap()));
+    });
+}

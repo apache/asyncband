@@ -229,12 +229,14 @@ impl Semaphore {
             }
 
             if rem > 0 && waiters.is_empty() {
-                let permits = rem;
-                let prev = self.permits.fetch_add(permits, Ordering::Release);
+                // Holding `waiters` serializes all permit additions. Concurrent operations can
+                // only remove permits, so the count cannot grow between this check and fetch_add.
+                let current = self.permits.load(Ordering::Relaxed);
                 assert!(
-                    prev.checked_add(permits).is_some(),
-                    "number of added permits ({permits}) would overflow usize::MAX (prev: {prev})"
+                    current.checked_add(rem).is_some(),
+                    "number of added permits ({rem}) would overflow usize::MAX (prev: {current})"
                 );
+                self.permits.fetch_add(rem, Ordering::Release);
                 rem = 0;
             }
 
