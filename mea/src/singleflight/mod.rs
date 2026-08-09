@@ -23,7 +23,6 @@ use std::sync::Arc;
 use crate::internal::Mutex;
 use crate::internal::OnceTable;
 use crate::internal::OnceTableEntry;
-use crate::once::OnceCell;
 
 #[cfg(test)]
 mod tests;
@@ -62,14 +61,8 @@ where
         }
     }
 
-    fn cell(&self) -> &OnceCell<V> {
-        self.entry.as_deref().unwrap().cell()
-    }
-
-    fn remove_completed_entry(&self) {
-        let entry = self.entry.as_ref().unwrap();
-        let mut map = self.group.map.lock();
-        map.remove_exact(entry);
+    fn entry(&self) -> &Arc<OnceTableEntry<K, V>> {
+        self.entry.as_ref().unwrap()
     }
 
     fn dismiss(mut self) {
@@ -86,13 +79,15 @@ where
         let Some(entry) = self.entry.take() else {
             return;
         };
-        if entry.cell().initialized() {
-            return;
-        }
 
-        let mut map = self.group.map.lock();
-        map.remove_abandoned(&entry);
-        // Let another cleanup waiting for the map observe the updated reference count.
+        let mut table = self.group.map.lock();
+        // If the table still owns this entry, a count of two means the current call is its only
+        // owner outside the table. remove_entry rejects an entry that was detached or replaced.
+        if Arc::strong_count(&entry) == 2 && !entry.cell().initialized() {
+            table.remove_entry(&entry);
+        }
+        // Drop this call's reference before unlocking so a waiting cleanup observes the updated
+        // reference count.
         drop(entry);
     }
 }
@@ -192,10 +187,11 @@ where
     {
         let guard = WorkCleanupGuard::new(self, key);
         let result = guard
+            .entry()
             .cell()
             .get_or_init(async || {
                 let result = func().await;
-                guard.remove_completed_entry();
+                self.map.lock().remove_entry(guard.entry());
                 result
             })
             .await
@@ -256,10 +252,11 @@ where
     {
         let guard = WorkCleanupGuard::new(self, key);
         let result = guard
+            .entry()
             .cell()
             .get_or_try_init(async || {
                 let result = func().await?;
-                guard.remove_completed_entry();
+                self.map.lock().remove_entry(guard.entry());
                 Ok(result)
             })
             .await?

@@ -91,7 +91,7 @@ impl<T> OnceCell<T> {
     }
 
     /// Returns whether the internal value is set.
-    fn initialized_mut(&mut self) -> bool {
+    pub(crate) fn initialized_mut(&mut self) -> bool {
         *self.value_set.get_mut()
     }
 

@@ -21,7 +21,6 @@ use std::sync::Arc;
 use crate::internal::Mutex;
 use crate::internal::OnceTable;
 use crate::internal::OnceTableEntry;
-use crate::once::OnceCell;
 
 #[cfg(test)]
 mod tests;
@@ -57,8 +56,8 @@ where
         }
     }
 
-    fn cell(&self) -> &OnceCell<V> {
-        self.entry.as_deref().unwrap().cell()
+    fn entry(&self) -> &Arc<OnceTableEntry<K, V>> {
+        self.entry.as_ref().unwrap()
     }
 
     fn dismiss(mut self) {
@@ -75,13 +74,15 @@ where
         let Some(entry) = self.entry.take() else {
             return;
         };
-        if entry.cell().initialized() {
-            return;
-        }
 
-        let mut map = self.once_map.map.lock();
-        map.remove_abandoned(&entry);
-        // Let another cleanup waiting for the map observe the updated reference count.
+        let mut table = self.once_map.map.lock();
+        // If the table still owns this entry, a count of two means the current call is its only
+        // owner outside the table. remove_entry rejects an entry that was detached or replaced.
+        if Arc::strong_count(&entry) == 2 && !entry.cell().initialized() {
+            table.remove_entry(&entry);
+        }
+        // Drop this call's reference before unlocking so a waiting cleanup observes the updated
+        // reference count.
         drop(entry);
     }
 }
@@ -161,7 +162,7 @@ where
         };
 
         let guard = ComputeCleanupGuard::new(self, entry);
-        let result = guard.cell().get_or_init(func).await.clone();
+        let result = guard.entry().cell().get_or_init(func).await.clone();
         guard.dismiss();
         result
     }
@@ -187,7 +188,7 @@ where
         };
 
         let guard = ComputeCleanupGuard::new(self, entry);
-        let result = guard.cell().get_or_try_init(func).await?.clone();
+        let result = guard.entry().cell().get_or_try_init(func).await?.clone();
         guard.dismiss();
         Ok(result)
     }
@@ -242,7 +243,7 @@ where
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let mut map = OnceTable::with_hasher(S::default());
         for (key, value) in iter {
-            map.insert_value(key, value);
+            map.insert(key, value);
         }
 
         Self {

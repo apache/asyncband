@@ -120,29 +120,19 @@ where
         Some(entry)
     }
 
-    /// Removes the entry only if the table still contains the same allocation.
-    pub fn remove_exact(&mut self, expected: &Arc<OnceTableEntry<K, V>>) -> bool {
-        let Ok(entry) = self
+    /// Removes the entry if the table still contains the same allocation.
+    pub fn remove_entry(&mut self, entry: &Arc<OnceTableEntry<K, V>>) {
+        let Ok(occupied) = self
             .entries
-            .find_entry(expected.hash, |entry| Arc::ptr_eq(entry, expected))
+            .find_entry(entry.hash, |existing| Arc::ptr_eq(existing, entry))
         else {
-            return false;
+            return;
         };
 
-        drop(entry.remove());
-        true
+        drop(occupied.remove());
     }
 
-    pub fn remove_abandoned(&mut self, entry: &Arc<OnceTableEntry<K, V>>) {
-        // If the table still owns this entry, a count of two means the current call is its only
-        // owner outside the table. remove_exact also rejects an entry that was detached or
-        // replaced.
-        if Arc::strong_count(entry) == 2 && !entry.cell.initialized() {
-            self.remove_exact(entry);
-        }
-    }
-
-    pub fn insert_value(&mut self, key: K, value: V) {
+    pub fn insert(&mut self, key: K, value: V) {
         self.remove(&key);
 
         let hash = self.hasher.hash_one(&key);
