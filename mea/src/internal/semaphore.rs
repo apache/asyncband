@@ -162,26 +162,6 @@ impl Semaphore {
         }
     }
 
-    fn add_available_permits(&self, permits: usize) {
-        let mut current = self.permits.load(Ordering::Relaxed);
-        loop {
-            let next = current.checked_add(permits).unwrap_or_else(|| {
-                panic!(
-                    "number of added permits ({permits}) would overflow usize::MAX (prev: {current})"
-                )
-            });
-            match self.permits.compare_exchange_weak(
-                current,
-                next,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return,
-                Err(actual) => current = actual,
-            }
-        }
-    }
-
     fn insert_permits_with_lock(
         &self,
         mut rem: usize,
@@ -215,7 +195,14 @@ impl Semaphore {
             }
 
             if rem > 0 && waiters.is_empty() {
-                self.add_available_permits(rem);
+                // Holding `waiters` serializes all permit additions. Concurrent operations can
+                // only remove permits, so the count cannot grow between this check and fetch_add.
+                let current = self.permits.load(Ordering::Relaxed);
+                assert!(
+                    current.checked_add(rem).is_some(),
+                    "number of added permits ({rem}) would overflow usize::MAX (prev: {current})"
+                );
+                self.permits.fetch_add(rem, Ordering::Release);
                 rem = 0;
             }
 

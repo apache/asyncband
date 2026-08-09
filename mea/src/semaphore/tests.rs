@@ -108,6 +108,12 @@ fn add_max_amount_permits() {
 }
 
 #[test]
+#[should_panic(expected = "would overflow usize::MAX")]
+fn release_overflow_panics() {
+    Semaphore::new(usize::MAX).release(1);
+}
+
+#[test]
 fn release_overflow_preserves_permits() {
     let s = Semaphore::new(usize::MAX);
     let result = std::panic::catch_unwind(|| s.release(1));

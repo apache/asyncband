@@ -12,12 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod once_map;
-mod oneshot;
-mod semaphore;
-mod singleflight;
-mod support;
+use divan::Bencher;
+use divan::black_box;
+use mea::semaphore::Semaphore;
 
-fn main() {
-    divan::main();
+#[divan::bench]
+fn release(bencher: Bencher) {
+    bencher
+        .with_inputs(|| Semaphore::new(0))
+        .bench_local_values(|semaphore| {
+            semaphore.release(black_box(1));
+            black_box(semaphore)
+        });
+}
+
+#[divan::bench]
+fn try_acquire_release(bencher: Bencher) {
+    let semaphore = Semaphore::new(1);
+
+    bencher.bench_local(|| {
+        drop(black_box(semaphore.try_acquire(black_box(1)).unwrap()));
+    });
 }
