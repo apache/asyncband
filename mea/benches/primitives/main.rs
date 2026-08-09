@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod once_map;
 mod oneshot;
+mod singleflight;
+mod support;
 
 fn main() {
     divan::main();
