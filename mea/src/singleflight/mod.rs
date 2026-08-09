@@ -15,12 +15,13 @@
 //! Singleflight provides a duplicate function call suppression mechanism.
 
 use std::borrow::Borrow;
-use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::RandomState;
 use std::sync::Arc;
 
+use crate::internal::KeyedOnceEntry;
+use crate::internal::KeyedOnceTable;
 use crate::internal::Mutex;
 use crate::once::OnceCell;
 
@@ -31,57 +32,48 @@ mod tests;
 /// units of work can be executed with duplicate suppression.
 #[derive(Debug)]
 pub struct Group<K, V, S = RandomState> {
-    map: Mutex<HashMap<K, Arc<OnceCell<V>>, S>>,
+    map: Mutex<KeyedOnceTable<K, V, S>>,
 }
 
-// Holds one call's cell reference so Drop can clean up an abandoned entry.
+// Holds one call's entry so Drop can clean it up if the work is abandoned.
 struct WorkCleanupGuard<'a, K, V, S>
 where
     K: Eq + Hash,
     S: BuildHasher,
 {
     group: &'a Group<K, V, S>,
-    key: K,
-    cell: Option<Arc<OnceCell<V>>>,
+    entry: Option<Arc<KeyedOnceEntry<K, V>>>,
 }
 
 impl<'a, K, V, S> WorkCleanupGuard<'a, K, V, S>
 where
-    K: Eq + Hash + Clone,
+    K: Eq + Hash,
     S: BuildHasher,
 {
     fn new(group: &'a Group<K, V, S>, key: K) -> Self {
-        let cell = {
+        let entry = {
             let mut map = group.map.lock();
-            map.entry(key.clone())
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
+            Arc::clone(map.get_or_insert(key))
         };
 
         Self {
             group,
-            key,
-            cell: Some(cell),
+            entry: Some(entry),
         }
     }
 
     fn cell(&self) -> &OnceCell<V> {
-        self.cell.as_deref().unwrap()
+        self.entry.as_deref().unwrap().cell()
     }
 
     fn remove_completed_entry(&self) {
-        let cell = self.cell.as_ref().unwrap();
+        let entry = self.entry.as_ref().unwrap();
         let mut map = self.group.map.lock();
-        if map
-            .get(&self.key)
-            .is_some_and(|existing| Arc::ptr_eq(cell, existing))
-        {
-            map.remove(&self.key);
-        }
+        map.remove_exact(entry);
     }
 
     fn disarm_cleanup(&mut self) {
-        drop(self.cell.take());
+        drop(self.entry.take());
     }
 }
 
@@ -91,34 +83,25 @@ where
     S: BuildHasher,
 {
     fn drop(&mut self) {
-        let Some(cell) = self.cell.take() else {
+        let Some(entry) = self.entry.take() else {
             return;
         };
-        if cell.get().is_some() {
+        if entry.cell().get().is_some() {
             return;
         }
 
         let mut map = self.group.map.lock();
-
-        // The map and each current call own one strong reference. If the map still points to this
-        // cell, a count of two means only the map and this last call own it. Drop this call's
-        // reference before unlocking so a waiting cleanup observes the updated count.
-        let should_remove = Arc::strong_count(&cell) == 2
-            && map
-                .get(&self.key)
-                .is_some_and(|existing| Arc::ptr_eq(&cell, existing) && existing.get().is_none());
-        if should_remove {
-            map.remove(&self.key);
-        }
-        drop(cell);
+        map.remove_abandoned(&entry);
+        // Let another cleanup waiting for the map observe the updated reference count.
+        drop(entry);
     }
 }
 
 impl<K, V, S> Default for Group<K, V, S>
 where
-    K: Eq + Hash + Clone,
+    K: Eq + Hash,
     V: Clone,
-    S: BuildHasher + Clone + Default,
+    S: BuildHasher + Default,
 {
     fn default() -> Self {
         Self::with_hasher(S::default())
@@ -127,27 +110,27 @@ where
 
 impl<K, V> Group<K, V, RandomState>
 where
-    K: Eq + Hash + Clone,
+    K: Eq + Hash,
     V: Clone,
 {
     /// Creates a new Group with the default hasher.
     pub fn new() -> Self {
         Self {
-            map: Mutex::new(HashMap::new()),
+            map: Mutex::new(KeyedOnceTable::with_hasher(RandomState::new())),
         }
     }
 }
 
 impl<K, V, S> Group<K, V, S>
 where
-    K: Eq + Hash + Clone,
+    K: Eq + Hash,
     V: Clone,
-    S: BuildHasher + Clone,
+    S: BuildHasher,
 {
     /// Creates a new Group with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
         Self {
-            map: Mutex::new(HashMap::with_hasher(hasher)),
+            map: Mutex::new(KeyedOnceTable::with_hasher(hasher)),
         }
     }
 

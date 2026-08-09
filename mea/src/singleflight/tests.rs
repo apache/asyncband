@@ -28,6 +28,16 @@ async fn test_simple() {
 }
 
 #[tokio::test]
+async fn test_non_clone_key() {
+    #[derive(Hash, PartialEq, Eq)]
+    struct Key(&'static str);
+
+    let group = Group::new();
+    let res = group.work(Key("key"), || async { "val" }).await;
+    assert_eq!(res, "val");
+}
+
+#[tokio::test]
 async fn test_coalescing() {
     let group = Arc::new(Group::new());
     let counter = Arc::new(AtomicUsize::new(0));
@@ -94,7 +104,7 @@ async fn test_forget() {
     let g1 = group.clone();
     let c1 = counter.clone();
     let h1 = tokio::spawn(async move {
-        g1.work("key", || async move {
+        g1.work("key".to_owned(), || async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
             c1.fetch_add(1, Ordering::SeqCst);
             "val1"
@@ -104,12 +114,12 @@ async fn test_forget() {
 
     // Wait a bit to ensure the first call is established
     tokio::time::sleep(Duration::from_millis(10)).await;
-    group.forget(&"key");
+    group.forget("key");
 
     let g2 = group.clone();
     let c2 = counter.clone();
     let h2 = tokio::spawn(async move {
-        g2.work("key", || async move {
+        g2.work("key".to_owned(), || async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
             c2.fetch_add(1, Ordering::SeqCst);
             "val2"

@@ -153,18 +153,18 @@ async fn test_try_compute_concurrent_failure_then_success() {
 
 #[tokio::test]
 async fn test_get_remove() {
-    let map = OnceMap::new();
+    let map = OnceMap::<String, i32>::new();
     assert_eq!(map.get("key"), None);
     assert_eq!(map.remove("key"), None);
 
-    map.compute("key", async || 1).await;
+    map.compute("key".to_owned(), async || 1).await;
     assert_eq!(map.get("key"), Some(1));
 
     let v = map.remove("key");
     assert_eq!(v, Some(1));
     assert_eq!(map.get("key"), None);
 
-    map.compute("key", async || 2).await;
+    map.compute("key".to_owned(), async || 2).await;
     map.discard("key");
     assert_eq!(map.get("key"), None);
 }
@@ -220,10 +220,15 @@ async fn test_get_while_computing() {
 
 #[tokio::test]
 async fn test_from_iter() {
-    let map: OnceMap<_, _> = vec![("a", 1), ("b", 2)].into_iter().collect();
-    assert_eq!(map.get("a"), Some(1));
-    assert_eq!(map.get("b"), Some(2));
-    assert_eq!(map.get("c"), None);
+    #[derive(Hash, PartialEq, Eq)]
+    struct Key(&'static str);
+
+    let map: OnceMap<_, _> = vec![(Key("a"), 1), (Key("b"), 2), (Key("a"), 3)]
+        .into_iter()
+        .collect();
+    assert_eq!(map.get(&Key("a")), Some(3));
+    assert_eq!(map.get(&Key("b")), Some(2));
+    assert_eq!(map.get(&Key("c")), None);
 }
 
 #[tokio::test]
