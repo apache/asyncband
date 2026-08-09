@@ -12,25 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
 use tokio::task::JoinHandle;
 
 use crate::condvar::Condvar;
 use crate::mutex::Mutex;
+use crate::poll_once;
 use crate::test_runtime;
-
-fn poll_once<F>(future: Pin<&mut F>) -> Poll<F::Output>
-where
-    F: Future,
-{
-    future.poll(&mut Context::from_waker(Waker::noop()))
-}
 
 fn expect_ready<T>(poll: Poll<T>) -> T {
     match poll {

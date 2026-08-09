@@ -85,26 +85,17 @@ where
             return;
         }
 
-        let cell_ptr = Arc::as_ptr(&cell);
         let mut map = self.once_map.map.lock();
 
-        // The map and each current call own one strong reference. With the map locked, a count of
-        // two means this may be the last call using the mapped cell. Other counts mean that another
-        // call can still retry the cell, or that the entry has already been explicitly removed.
-        let may_be_last_call = Arc::strong_count(&cell) == 2;
-        drop(cell);
-        if !may_be_last_call {
-            return;
+        // The map and each current call own one strong reference. If the map still points to this
+        // cell, a count of two means only the map and this last call own it. Drop this call's
+        // reference before unlocking so a waiting cleanup observes the updated count.
+        if Arc::strong_count(&cell) == 2 {
+            // OnceMap intentionally does not require K: Clone, so locate the cell by allocation
+            // identity. This scan only runs when the last call leaves a cell uninitialized.
+            map.retain(|_, existing| !Arc::ptr_eq(existing, &cell) || existing.get().is_some());
         }
-
-        // OnceMap intentionally does not require K: Clone, so locate the cell by allocation
-        // identity. This scan only runs when the last caller leaves a cell uninitialized.
-        map.retain(|_, existing| {
-            let should_remove = Arc::as_ptr(existing) == cell_ptr
-                && Arc::strong_count(existing) == 1
-                && existing.get().is_none();
-            !should_remove
-        });
+        drop(cell);
     }
 }
 
@@ -164,8 +155,8 @@ where
     /// If the value for the key is already being computed by another task, this task will wait for
     /// the computation to finish and return the result.
     ///
-    /// If the computation is cancelled or panics, another current caller may retry it. The empty
-    /// entry is removed once no current callers remain.
+    /// If the computation is cancelled or panics, another caller waiting for the same key may retry
+    /// it.
     pub async fn compute<F>(&self, key: K, func: F) -> V
     where
         F: AsyncFnOnce() -> V,
@@ -181,9 +172,8 @@ where
     /// If the value for the key is already being computed by another task, this task will wait for
     /// the computation to finish and return the result.
     ///
-    /// If the computation fails, is cancelled or panics, the value is not stored and other current
-    /// callers may retry the computation. The empty entry is removed once no current callers
-    /// remain.
+    /// If the computation returns an error, it is returned to that caller and the value is not
+    /// stored. After an error, cancellation, or panic, another caller may retry the computation.
     pub async fn try_compute<E, F>(&self, key: K, func: F) -> Result<V, E>
     where
         F: AsyncFnOnce() -> Result<V, E>,

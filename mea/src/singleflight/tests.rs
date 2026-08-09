@@ -12,21 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::task::Context;
-use std::task::Poll;
-use std::task::Waker;
 use std::time::Duration;
 
+use crate::poll_once;
 use crate::singleflight::Group;
-
-fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
-    future.poll(&mut Context::from_waker(Waker::noop()))
-}
 
 #[tokio::test]
 async fn test_simple() {

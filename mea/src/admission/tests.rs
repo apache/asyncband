@@ -13,25 +13,15 @@
 // limitations under the License.
 
 use std::collections::hash_map::DefaultHasher;
-use std::future::Future;
 use std::hash::BuildHasherDefault;
-use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
 use super::FairShare;
-
-fn poll_once<F>(future: Pin<&mut F>) -> Poll<F::Output>
-where
-    F: Future,
-{
-    future.poll(&mut Context::from_waker(Waker::noop()))
-}
+use crate::poll_once;
 
 #[test]
 #[should_panic(expected = "FairShare requires at least one permit")]

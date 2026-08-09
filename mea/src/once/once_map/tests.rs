@@ -13,21 +13,13 @@
 // limitations under the License.
 
 use std::collections::hash_map::RandomState;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::task::Context;
-use std::task::Poll;
-use std::task::Waker;
 use std::time::Duration;
 
 use crate::once::OnceMap;
-
-fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
-    future.poll(&mut Context::from_waker(Waker::noop()))
-}
+use crate::poll_once;
 
 #[test]
 fn test_default_and_constructors() {

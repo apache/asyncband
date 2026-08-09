@@ -98,26 +98,19 @@ where
             return;
         }
 
-        let cell_ptr = Arc::as_ptr(&cell);
         let mut map = self.group.map.lock();
 
-        // The map and each current call own one strong reference. With the map locked, a count of
-        // two means this may be the last call using the mapped cell. Other counts mean that another
-        // call can still retry the cell, or that `forget` has already removed it.
-        let may_be_last_call = Arc::strong_count(&cell) == 2;
-        drop(cell);
-        if !may_be_last_call {
-            return;
-        }
-
-        let should_remove = map.get(&self.key).is_some_and(|existing| {
-            cell_ptr == Arc::as_ptr(existing)
-                && Arc::strong_count(existing) == 1
-                && existing.get().is_none()
-        });
+        // The map and each current call own one strong reference. If the map still points to this
+        // cell, a count of two means only the map and this last call own it. Drop this call's
+        // reference before unlocking so a waiting cleanup observes the updated count.
+        let should_remove = Arc::strong_count(&cell) == 2
+            && map
+                .get(&self.key)
+                .is_some_and(|existing| Arc::ptr_eq(&cell, existing) && existing.get().is_none());
         if should_remove {
             map.remove(&self.key);
         }
+        drop(cell);
     }
 }
 
@@ -164,8 +157,8 @@ where
     /// If a duplicate comes in, the duplicate caller waits for the original to complete and
     /// receives the same results.
     ///
-    /// If the computation is cancelled or panics, another current caller may retry it. The empty
-    /// entry is removed once no current callers remain.
+    /// If the computation is cancelled or panics, another caller waiting for the same key may retry
+    /// it.
     ///
     /// Once the function completes, the key, if not [`forgotten`], is removed from the group,
     /// allowing future calls with the same key to execute the function again.
@@ -234,8 +227,8 @@ where
     /// If a duplicate comes in, the duplicate caller waits for the original to complete and
     /// receives the same results.
     ///
-    /// If the computation fails, is cancelled or panics, other current callers may retry it. The
-    /// empty entry is removed once no current callers remain.
+    /// If the computation returns an error, it is returned to that caller. After an error,
+    /// cancellation, or panic, another caller may retry the computation.
     ///
     /// Once the function completes successfully, the key, if not [`forgotten`], is removed from
     /// the group, allowing future calls with the same key to execute the function again.
