@@ -95,7 +95,7 @@ async fn test_wait_mechanism() {
 
 #[test]
 fn cancelled_recv_releases_its_waker() {
-    let (_tx, mut rx) = channel::<()>(1);
+    let (tx, mut rx) = channel::<()>(1);
     let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
     let waker = Waker::from(tracker.clone());
     let baseline = Arc::strong_count(&tracker);
@@ -107,6 +107,10 @@ fn cancelled_recv_releases_its_waker() {
 
     drop(recv);
     assert_eq!(Arc::strong_count(&tracker), baseline);
+
+    tx.send(());
+    assert_eq!(tracker.0.load(Ordering::Relaxed), 0);
+    assert_eq!(rx.try_recv(), Ok(()));
 }
 
 #[tokio::test]

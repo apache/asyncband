@@ -27,7 +27,7 @@ use crate::internal::WaiterId;
 
 /// The internal semaphore that provides low-level async primitives.
 #[derive(Debug)]
-pub(crate) struct Semaphore {
+pub struct Semaphore {
     /// The current number of available permits in the semaphore.
     permits: AtomicUsize,
     waiters: Mutex<WaitList<WaitNode>>,
@@ -64,7 +64,7 @@ impl WaitNode {
 }
 
 impl Semaphore {
-    pub(crate) const fn new(permits: usize) -> Self {
+    pub const fn new(permits: usize) -> Self {
         Self {
             permits: AtomicUsize::new(permits),
             waiters: Mutex::new(WaitList::new()),
@@ -72,14 +72,14 @@ impl Semaphore {
     }
 
     /// Returns the current number of available permits.
-    pub(crate) fn available_permits(&self) -> usize {
+    pub fn available_permits(&self) -> usize {
         self.permits.load(Ordering::Acquire)
     }
 
     /// Tries to acquire `n` permits from the semaphore.
     ///
     /// Returns `true` if the permits were acquired, `false` otherwise.
-    pub(crate) fn try_acquire(&self, n: usize) -> bool {
+    pub fn try_acquire(&self, n: usize) -> bool {
         let mut current = self.permits.load(Ordering::Acquire);
         loop {
             if current < n {
@@ -100,7 +100,7 @@ impl Semaphore {
     /// Decrease the semaphore's permits by a maximum of `n`.
     ///
     /// Return the number of permits that were actually reduced.
-    pub(crate) fn forget(&self, n: usize) -> usize {
+    pub fn forget(&self, n: usize) -> usize {
         if n == 0 {
             return 0;
         }
@@ -124,12 +124,12 @@ impl Semaphore {
     ///
     /// If the semaphore has not enough permits, enqueue front an empty waiter to consume the
     /// permits.
-    pub(crate) fn forget_exact(&self, n: usize) {
+    pub fn forget_exact(&self, n: usize) {
         acquired_or_enqueue(self, n, None, None, false);
     }
 
     /// Acquires `n` permits from the semaphore.
-    pub(crate) async fn acquire(&self, n: usize) {
+    pub async fn acquire(&self, n: usize) {
         let fut = Acquire {
             permits: n,
             index: None,
@@ -140,7 +140,7 @@ impl Semaphore {
     }
 
     /// Returns a future that is resolved when acquired `n` permits from the semaphore.
-    pub(crate) fn poll_acquire(&self, n: usize) -> Acquire<'_> {
+    pub fn poll_acquire(&self, n: usize) -> Acquire<'_> {
         Acquire {
             permits: n,
             index: None,
@@ -150,14 +150,14 @@ impl Semaphore {
     }
 
     /// Adds `n` permits to the semaphore.
-    pub(crate) fn release(&self, n: usize) {
+    pub fn release(&self, n: usize) {
         if n != 0 {
             self.insert_permits_with_lock(n, self.waiters.lock());
         }
     }
 
     /// Adds `n` permits to the semaphore if there is any waiter.
-    pub(crate) fn release_if_nonempty(&self, n: usize) {
+    pub fn release_if_nonempty(&self, n: usize) {
         let waiters = self.waiters.lock();
         if !waiters.is_empty() {
             self.insert_permits_with_lock(n, waiters);
@@ -165,7 +165,7 @@ impl Semaphore {
     }
 
     /// Adds as many permits until there is no waiter.
-    pub(crate) fn notify_all(&self) {
+    pub fn notify_all(&self) {
         let mut waiters = self.waiters.lock();
         let mut wakers = Vec::new();
         loop {
@@ -246,13 +246,13 @@ impl Semaphore {
     }
 
     #[cfg(test)]
-    pub(crate) fn num_waiter_nodes(&self) -> usize {
+    pub fn num_waiter_nodes(&self) -> usize {
         self.waiters.lock().occupied_len()
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct Acquire<'a> {
+pub struct Acquire<'a> {
     permits: usize,
     index: Option<WaiterId>,
     semaphore: &'a Semaphore,
@@ -281,7 +281,7 @@ impl Drop for Acquire<'_> {
 }
 
 impl Acquire<'_> {
-    pub(crate) fn poll_once(&mut self, waker: &Waker) -> Poll<()> {
+    pub fn poll_once(&mut self, waker: &Waker) -> Poll<()> {
         let Self {
             permits,
             index,

@@ -13,117 +13,178 @@
 // limitations under the License.
 
 use std::mem;
+use std::num::NonZeroUsize;
+use std::ops::Index;
+use std::ops::IndexMut;
 
 /// A stable index into an [`Arena`] for as long as its slot remains occupied.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ArenaKey(usize);
+pub struct ArenaKey(usize);
+
+impl ArenaKey {
+    /// Encodes this key so it can provide a niche when stored in an `Option`-wrapped structure.
+    pub fn encode(self) -> NonZeroUsize {
+        // `Slot<T>` is non-zero-sized, so a Vec of slots cannot reach `usize::MAX` elements.
+        unsafe { NonZeroUsize::new_unchecked(self.0 + 1) }
+    }
+
+    /// Decodes a key produced by [`Self::encode`].
+    pub fn decode(encoded: NonZeroUsize) -> Self {
+        Self(encoded.get() - 1)
+    }
+}
 
 /// Minimal reusable storage for internal waiter state.
 #[derive(Debug)]
-pub(crate) struct Arena<T> {
+pub struct Arena<T> {
     slots: Vec<Slot<T>>,
-    next_vacant: Option<usize>,
+    /// The next reusable slot, or `slots.len()` when every slot is occupied.
+    next_vacant: usize,
     len: usize,
+}
+
+/// Values extracted from an [`Arena`], storing the common single-value case inline.
+#[derive(Debug)]
+pub struct ArenaValues<T> {
+    first: Option<T>,
+    rest: Vec<T>,
+}
+
+impl<T> IntoIterator for ArenaValues<T> {
+    type Item = T;
+    type IntoIter = std::iter::Chain<std::option::IntoIter<T>, std::vec::IntoIter<T>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.first.into_iter().chain(self.rest)
+    }
 }
 
 #[derive(Debug)]
 enum Slot<T> {
     Occupied(T),
-    Vacant { next: Option<usize> },
+    Vacant(usize),
 }
 
 impl<T> Arena<T> {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             slots: Vec::new(),
-            next_vacant: None,
+            next_vacant: 0,
             len: 0,
         }
     }
 
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
+    pub fn with_capacity(capacity: usize) -> Self {
         Self {
             slots: Vec::with_capacity(capacity),
-            next_vacant: None,
+            next_vacant: 0,
             len: 0,
         }
     }
 
-    pub(crate) fn insert(&mut self, value: T) -> ArenaKey {
-        let key = if let Some(index) = self.next_vacant {
-            let Slot::Vacant { next } = self.slots[index] else {
-                unreachable!("arena free list must point to a vacant slot");
-            };
-            self.next_vacant = next;
-            self.slots[index] = Slot::Occupied(value);
-            ArenaKey(index)
-        } else {
-            let key = ArenaKey(self.slots.len());
-            self.slots.push(Slot::Occupied(value));
-            key
-        };
+    pub fn insert(&mut self, value: T) -> ArenaKey {
+        let key = self.next_vacant;
         self.len += 1;
-        key
+
+        if key == self.slots.len() {
+            self.slots.push(Slot::Occupied(value));
+            self.next_vacant = key + 1;
+        } else {
+            self.next_vacant = match self.slots.get(key) {
+                Some(Slot::Vacant(next)) => *next,
+                Some(Slot::Occupied(_)) | None => {
+                    unreachable!("arena free list must point to a vacant slot")
+                }
+            };
+            self.slots[key] = Slot::Occupied(value);
+        }
+
+        ArenaKey(key)
     }
 
-    pub(crate) fn get(&self, key: ArenaKey) -> Option<&T> {
+    pub fn get(&self, key: ArenaKey) -> Option<&T> {
         match self.slots.get(key.0) {
             Some(Slot::Occupied(value)) => Some(value),
-            Some(Slot::Vacant { .. }) | None => None,
+            Some(Slot::Vacant(_)) | None => None,
         }
     }
 
-    pub(crate) fn get_mut(&mut self, key: ArenaKey) -> Option<&mut T> {
+    pub fn get_mut(&mut self, key: ArenaKey) -> Option<&mut T> {
         match self.slots.get_mut(key.0) {
             Some(Slot::Occupied(value)) => Some(value),
-            Some(Slot::Vacant { .. }) | None => None,
+            Some(Slot::Vacant(_)) | None => None,
         }
     }
 
-    pub(crate) fn remove(&mut self, key: ArenaKey) -> T {
+    pub fn remove(&mut self, key: ArenaKey) -> T {
+        let index = key.0;
         let slot = self
             .slots
-            .get_mut(key.0)
+            .get_mut(index)
             .expect("arena key must be in bounds");
-        assert!(
-            matches!(slot, Slot::Occupied(_)),
-            "arena key must refer to an occupied slot"
-        );
-        let value = match mem::replace(
-            slot,
-            Slot::Vacant {
-                next: self.next_vacant,
-            },
-        ) {
+        let value = match mem::replace(slot, Slot::Vacant(self.next_vacant)) {
             Slot::Occupied(value) => value,
-            Slot::Vacant { .. } => unreachable!("occupied slot was checked before replacement"),
+            vacant @ Slot::Vacant(_) => {
+                *slot = vacant;
+                panic!("arena key must be occupied");
+            }
         };
-        self.next_vacant = Some(key.0);
         self.len -= 1;
+        self.next_vacant = index;
         value
     }
 
-    /// Takes every occupied value while retaining the allocated slots for reuse.
-    pub(crate) fn take_all(&mut self) -> Vec<T> {
-        let mut values = Vec::with_capacity(self.len);
-        let mut next_vacant = None;
-
-        for (index, slot) in self.slots.iter_mut().enumerate() {
-            let previous = mem::replace(slot, Slot::Vacant { next: next_vacant });
-            if let Slot::Occupied(value) = previous {
-                values.push(value);
+    /// Takes every occupied value while retaining the allocation for reuse.
+    #[inline]
+    pub fn take_all(&mut self) -> ArenaValues<T> {
+        let len = self.len;
+        let mut values = ArenaValues {
+            first: None,
+            rest: Vec::new(),
+        };
+        for slot in self.slots.drain(..) {
+            if let Slot::Occupied(value) = slot {
+                if values.first.is_none() {
+                    values.first = Some(value);
+                } else {
+                    if values.rest.is_empty() {
+                        values.rest.reserve(len - 1);
+                    }
+                    values.rest.push(value);
+                }
             }
-            next_vacant = Some(index);
         }
 
-        self.next_vacant = next_vacant;
+        self.next_vacant = 0;
         self.len = 0;
         values
     }
 
     #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.len
+    }
+}
+
+impl<T> Index<ArenaKey> for Arena<T> {
+    type Output = T;
+
+    #[track_caller]
+    fn index(&self, key: ArenaKey) -> &Self::Output {
+        match self.slots.get(key.0) {
+            Some(Slot::Occupied(value)) => value,
+            Some(Slot::Vacant(_)) | None => panic!("arena key must be occupied"),
+        }
+    }
+}
+
+impl<T> IndexMut<ArenaKey> for Arena<T> {
+    #[track_caller]
+    fn index_mut(&mut self, key: ArenaKey) -> &mut Self::Output {
+        match self.slots.get_mut(key.0) {
+            Some(Slot::Occupied(value)) => value,
+            Some(Slot::Vacant(_)) | None => panic!("arena key must be occupied"),
+        }
     }
 }
 
@@ -146,17 +207,19 @@ mod tests {
     }
 
     #[test]
-    fn take_all_rebuilds_the_free_list() {
+    fn take_all_restarts_key_allocation() {
         let mut arena = Arena::with_capacity(3);
         let first = arena.insert(1);
         let second = arena.insert(2);
         let third = arena.insert(3);
+        let capacity = arena.slots.capacity();
         arena.remove(second);
 
-        assert_eq!(arena.take_all(), vec![1, 3]);
+        assert_eq!(arena.take_all().into_iter().collect::<Vec<_>>(), vec![1, 3]);
         assert_eq!(arena.len(), 0);
+        assert_eq!(arena.slots.capacity(), capacity);
 
         let keys = [arena.insert(4), arena.insert(5), arena.insert(6)];
-        assert_eq!(keys, [third, second, first]);
+        assert_eq!(keys, [first, second, third]);
     }
 }

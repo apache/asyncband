@@ -12,19 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::num::NonZeroUsize;
+
 use crate::internal::Arena;
 use crate::internal::ArenaKey;
 
 /// A linked waiter queue whose detached nodes remain addressable until removal.
 #[derive(Debug)]
-pub(crate) struct WaitList<T> {
+pub struct WaitList<T> {
     head: Option<WaiterId>,
     tail: Option<WaiterId>,
     nodes: Arena<Node<T>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct WaiterId(ArenaKey);
+pub struct WaiterId(NonZeroUsize);
+
+impl WaiterId {
+    fn new(key: ArenaKey) -> Self {
+        Self(key.encode())
+    }
+
+    fn key(self) -> ArenaKey {
+        ArenaKey::decode(self.0)
+    }
+}
 
 #[derive(Debug)]
 struct Node<T> {
@@ -40,7 +52,7 @@ struct Links {
 }
 
 impl<T> WaitList<T> {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             head: None,
             tail: None,
@@ -49,9 +61,9 @@ impl<T> WaitList<T> {
     }
 
     /// Registers a waiter at the head of the list.
-    pub(crate) fn push_front(&mut self, value: T) -> WaiterId {
+    pub fn push_front(&mut self, value: T) -> WaiterId {
         let next = self.head;
-        let id = WaiterId(self.nodes.insert(Node {
+        let id = WaiterId::new(self.nodes.insert(Node {
             links: Some(Links { prev: None, next }),
             value,
         }));
@@ -66,9 +78,9 @@ impl<T> WaitList<T> {
     }
 
     /// Registers a waiter at the tail of the list.
-    pub(crate) fn push_back(&mut self, value: T) -> WaiterId {
+    pub fn push_back(&mut self, value: T) -> WaiterId {
         let prev = self.tail;
-        let id = WaiterId(self.nodes.insert(Node {
+        let id = WaiterId::new(self.nodes.insert(Node {
             links: Some(Links { prev, next: None }),
             value,
         }));
@@ -87,7 +99,7 @@ impl<T> WaitList<T> {
     /// The node and its value remain available until
     /// [`remove_unlinked_waiter`](Self::remove_unlinked_waiter) is called. If the waiter is already
     /// detached, the predicate still runs but the list links are unchanged.
-    pub(crate) fn unlink_waiter(
+    pub fn unlink_waiter(
         &mut self,
         id: WaiterId,
         should_unlink: impl FnOnce(&mut T) -> bool,
@@ -118,7 +130,7 @@ impl<T> WaitList<T> {
     }
 
     /// Detaches the first waiter if the predicate returns `true`.
-    pub(crate) fn unlink_first_waiter(
+    pub fn unlink_first_waiter(
         &mut self,
         should_unlink: impl FnOnce(&mut T) -> bool,
     ) -> Option<(WaiterId, &mut T)> {
@@ -128,32 +140,32 @@ impl<T> WaitList<T> {
     }
 
     /// Returns `true` if no linked waiters remain.
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         debug_assert_eq!(self.head.is_none(), self.tail.is_none());
         self.head.is_none()
     }
 
-    pub(crate) fn waiter_mut(&mut self, id: WaiterId) -> &mut T {
+    pub fn waiter_mut(&mut self, id: WaiterId) -> &mut T {
         &mut self.node_mut(id).value
     }
 
-    pub(crate) fn remove_unlinked_waiter(&mut self, id: WaiterId) -> T {
+    pub fn remove_unlinked_waiter(&mut self, id: WaiterId) -> T {
         assert!(
             self.node(id).links.is_none(),
             "waiter must be unlinked before removal"
         );
-        self.nodes.remove(id.0).value
+        self.nodes.remove(id.key()).value
     }
 
     fn node(&self, id: WaiterId) -> &Node<T> {
         self.nodes
-            .get(id.0)
+            .get(id.key())
             .expect("waiter id must refer to an occupied node")
     }
 
     fn node_mut(&mut self, id: WaiterId) -> &mut Node<T> {
         self.nodes
-            .get_mut(id.0)
+            .get_mut(id.key())
             .expect("waiter id must refer to an occupied node")
     }
 
@@ -165,7 +177,7 @@ impl<T> WaitList<T> {
     }
 
     #[cfg(test)]
-    pub(crate) fn occupied_len(&self) -> usize {
+    pub fn occupied_len(&self) -> usize {
         self.nodes.len()
     }
 }

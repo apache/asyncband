@@ -291,7 +291,9 @@ impl Future for LatchWait<'_> {
 
 impl Drop for LatchWait<'_> {
     fn drop(&mut self) {
-        self.latch.state.unregister_waker(&mut self.registration);
+        if self.registration.is_some() {
+            self.latch.state.unregister_waker(&mut self.registration);
+        }
     }
 }
 
@@ -324,6 +326,8 @@ impl Future for OwnedLatchWait {
 
 impl Drop for OwnedLatchWait {
     fn drop(&mut self) {
-        self.latch.state.unregister_waker(&mut self.registration);
+        if self.registration.is_some() {
+            self.latch.state.unregister_waker(&mut self.registration);
+        }
     }
 }

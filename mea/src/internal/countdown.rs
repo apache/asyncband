@@ -22,13 +22,13 @@ use crate::internal::WaitRegistration;
 use crate::internal::WaitSet;
 
 #[derive(Debug)]
-pub(crate) struct CountdownState {
+pub struct CountdownState {
     state: AtomicU32,
     waiters: Mutex<WaitSet>,
 }
 
 impl CountdownState {
-    pub(crate) const fn new(count: u32) -> Self {
+    pub const fn new(count: u32) -> Self {
         Self {
             state: AtomicU32::new(count),
             waiters: Mutex::new(WaitSet::new()),
@@ -38,7 +38,7 @@ impl CountdownState {
     /// Performs volatile read on `state`.
     ///
     /// All other writes to `state` should be at least [`Ordering::Release`].
-    pub(crate) fn state(&self) -> u32 {
+    pub fn state(&self) -> u32 {
         self.state.load(Ordering::Acquire)
     }
 
@@ -57,7 +57,7 @@ impl CountdownState {
     }
 
     /// Drain and wake up all waiters.
-    pub(crate) fn wake_all(&self) {
+    pub fn wake_all(&self) {
         let wakers = {
             let mut waiters = self.waiters.lock();
             waiters.take_wakers()
@@ -69,31 +69,45 @@ impl CountdownState {
     }
 
     /// Polls for zero, registering the current waker if the countdown is still active.
-    pub(crate) fn poll_wait(
+    pub fn poll_wait(
         &self,
         registration: &mut Option<WaitRegistration>,
         cx: &mut Context<'_>,
     ) -> Poll<()> {
         if self.spin_wait(16).is_ok() {
+            // The zero transition owns draining this wake epoch. Avoid taking the waiter lock
+            // again when the completed future is dropped.
+            *registration = None;
             return Poll::Ready(());
         }
 
-        let mut waiters = self.waiters.lock();
-        if self.state() == 0 {
-            Poll::Ready(())
-        } else {
-            waiters.register_waker(registration, cx);
-            Poll::Pending
-        }
+        let replaced_waker = {
+            let mut waiters = self.waiters.lock();
+            if self.state() == 0 {
+                // A concurrent zero transition will drain after this lock is released.
+                *registration = None;
+                return Poll::Ready(());
+            }
+            waiters.register_waker(registration, cx)
+        };
+        drop(replaced_waker);
+        Poll::Pending
     }
 
-    pub(crate) fn unregister_waker(&self, registration: &mut Option<WaitRegistration>) {
-        self.waiters.lock().unregister_waker(registration);
+    #[inline]
+    pub fn unregister_waker(&self, registration: &mut Option<WaitRegistration>) {
+        if registration.is_some() {
+            let removed_waker = {
+                let mut waiters = self.waiters.lock();
+                waiters.unregister_waker(registration)
+            };
+            drop(removed_waker);
+        }
     }
 
     /// Returns `Ok(())` if the counter is zero, otherwise returns `Err(s)` where `s` is the current
     /// counter value.
-    pub(crate) fn spin_wait(&self, n: usize) -> Result<(), u32> {
+    pub fn spin_wait(&self, n: usize) -> Result<(), u32> {
         for _ in 0..n {
             if self.state() == 0 {
                 return Ok(());
@@ -110,7 +124,7 @@ impl CountdownState {
     /// Increments the counter by `n`.
     ///
     /// Returns `true` without changing the counter if the operation would overflow.
-    pub(crate) fn increment(&self, n: u32) -> bool {
+    pub fn increment(&self, n: u32) -> bool {
         let mut cnt = self.state();
         loop {
             let Some(new_cnt) = cnt.checked_add(n) else {
@@ -124,7 +138,7 @@ impl CountdownState {
     }
 
     /// Decrements the counter by `n`, returning whether the caller should wake up all waiters.
-    pub(crate) fn decrement(&self, n: u32) -> bool {
+    pub fn decrement(&self, n: u32) -> bool {
         let mut cnt = self.state();
         loop {
             if cnt == 0 {

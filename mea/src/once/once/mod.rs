@@ -238,6 +238,8 @@ impl Future for OnceWait<'_> {
 
 impl Drop for OnceWait<'_> {
     fn drop(&mut self) {
-        self.once.done.unregister_waker(&mut self.registration);
+        if self.registration.is_some() {
+            self.once.done.unregister_waker(&mut self.registration);
+        }
     }
 }

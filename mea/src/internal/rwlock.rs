@@ -14,20 +14,20 @@
 
 use std::sync::PoisonError;
 
-pub(crate) struct RwLock<T: ?Sized>(std::sync::RwLock<T>);
+pub struct RwLock<T: ?Sized>(std::sync::RwLock<T>);
 
 impl<T> RwLock<T> {
-    pub(crate) const fn new(t: T) -> Self {
+    pub const fn new(t: T) -> Self {
         Self(std::sync::RwLock::new(t))
     }
 }
 
 impl<T: ?Sized> RwLock<T> {
-    pub(crate) fn read(&self) -> std::sync::RwLockReadGuard<'_, T> {
+    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, T> {
         self.0.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub(crate) fn write(&self) -> std::sync::RwLockWriteGuard<'_, T> {
+    pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, T> {
         self.0.write().unwrap_or_else(PoisonError::into_inner)
     }
 }

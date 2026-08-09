@@ -462,10 +462,19 @@ impl<T: Clone> Future for Recv<'_, T> {
         } = self.get_mut();
 
         loop {
+            // Senders publish data or closure before draining the current wake epoch. Once a
+            // result is observable, Drop does not need to lock the waiter set again.
             match receiver.try_recv() {
-                Ok(val) => return Poll::Ready(Ok(val)),
-                Err(TryRecvError::Lagged(n)) => return Poll::Ready(Err(RecvError::Lagged(n))),
+                Ok(val) => {
+                    *registration = None;
+                    return Poll::Ready(Ok(val));
+                }
+                Err(TryRecvError::Lagged(n)) => {
+                    *registration = None;
+                    return Poll::Ready(Err(RecvError::Lagged(n)));
+                }
                 Err(TryRecvError::Disconnected) => {
+                    *registration = None;
                     return Poll::Ready(Err(RecvError::Disconnected));
                 }
                 Err(TryRecvError::Empty) => {}
@@ -485,11 +494,14 @@ impl<T: Clone> Future for Recv<'_, T> {
             // Check for Closed
             // Use Acquire to ensure we see all writes before the sender dropped.
             if shared.senders.load(Ordering::Acquire) == 0 {
+                *registration = None;
                 return Poll::Ready(Err(RecvError::Disconnected));
             }
 
             // Register Waker
-            waiters.register_waker(registration, cx);
+            let replaced_waker = waiters.register_waker(registration, cx);
+            drop(waiters);
+            drop(replaced_waker);
             return Poll::Pending;
         }
     }
@@ -497,10 +509,12 @@ impl<T: Clone> Future for Recv<'_, T> {
 
 impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
-        self.receiver
-            .shared
-            .waiters
-            .lock()
-            .unregister_waker(&mut self.registration);
+        if self.registration.is_some() {
+            let removed_waker = {
+                let mut waiters = self.receiver.shared.waiters.lock();
+                waiters.unregister_waker(&mut self.registration)
+            };
+            drop(removed_waker);
+        }
     }
 }

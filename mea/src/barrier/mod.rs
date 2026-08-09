@@ -292,22 +292,28 @@ impl Future for BarrierWait<'_> {
             barrier,
         } = self.get_mut();
 
-        let mut state = barrier.state.lock();
-        if *generation < state.generation {
-            Poll::Ready(())
-        } else {
-            state.waiters.register_waker(registration, cx);
-            Poll::Pending
-        }
+        let replaced_waker = {
+            let mut state = barrier.state.lock();
+            if *generation < state.generation {
+                // Advancing the generation drains its registrations under this same lock.
+                *registration = None;
+                return Poll::Ready(());
+            }
+            state.waiters.register_waker(registration, cx)
+        };
+        drop(replaced_waker);
+        Poll::Pending
     }
 }
 
 impl Drop for BarrierWait<'_> {
     fn drop(&mut self) {
-        self.barrier
-            .state
-            .lock()
-            .waiters
-            .unregister_waker(&mut self.registration);
+        if self.registration.is_some() {
+            let removed_waker = {
+                let mut state = self.barrier.state.lock();
+                state.waiters.unregister_waker(&mut self.registration)
+            };
+            drop(removed_waker);
+        }
     }
 }

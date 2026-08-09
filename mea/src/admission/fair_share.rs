@@ -161,13 +161,14 @@ where
     }
 
     fn release(&self, key: &K) {
-        let mut wakers = Vec::new();
-        {
+        let waker = {
             let mut state = self.state.lock();
             state.release(key);
-            state.admit_waiters(&mut wakers);
+            state.admit_one()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
         }
-        wake_all(wakers);
     }
 }
 
@@ -216,22 +217,24 @@ where
         self.next_sequence += 1;
 
         let waiter = self.waiters.insert(Waiter {
-            sequence,
             waker: Some(waker.clone()),
-            admitted: false,
         });
-        self.groups.entry(key).or_default().queue.push_back(waiter);
+        self.groups
+            .entry(key)
+            .or_default()
+            .queue
+            .push_back(QueuedWaiter {
+                id: waiter,
+                sequence,
+            });
         self.num_waiters += 1;
         waiter
     }
 
     fn poll_waiter(&mut self, waiter: ArenaKey, waker: &Waker) -> Poll<()> {
-        let state = self
-            .waiters
-            .get_mut(waiter)
-            .expect("FairShare waiter is missing");
+        let state = &mut self.waiters[waiter];
 
-        if state.admitted {
+        if state.waker.is_none() {
             self.waiters.remove(waiter);
             Poll::Ready(())
         } else {
@@ -248,7 +251,7 @@ where
 
     fn cancel(&mut self, waiter_id: ArenaKey, key: &K) {
         let waiter = self.waiters.remove(waiter_id);
-        if waiter.admitted {
+        if waiter.waker.is_none() {
             self.release(key);
             return;
         }
@@ -258,12 +261,20 @@ where
                 .groups
                 .get_mut(key)
                 .expect("FairShare waiter group is missing");
-            let position = group
+            if group
                 .queue
-                .iter()
-                .position(|candidate| *candidate == waiter_id)
-                .expect("FairShare waiter is missing from its group");
-            group.queue.remove(position);
+                .front()
+                .is_some_and(|waiter| waiter.id == waiter_id)
+            {
+                group.queue.pop_front();
+            } else {
+                let position = group
+                    .queue
+                    .iter()
+                    .position(|candidate| candidate.id == waiter_id)
+                    .expect("FairShare waiter is missing from its group");
+                group.queue.remove(position);
+            }
             group.held_permits == 0 && group.queue.is_empty()
         };
 
@@ -274,51 +285,50 @@ where
     }
 
     fn admit_waiters(&mut self, wakers: &mut Vec<Waker>) {
-        while self.available_permits > 0 && self.num_waiters > 0 {
-            let key = self
-                .next_group()
-                .expect("FairShare has pending acquisitions without a group");
-            let waiter = self.groups[&key]
-                .queue
-                .front()
-                .copied()
-                .expect("FairShare pending group has no waiters");
-
-            {
-                let group = self
-                    .groups
-                    .get_mut(&key)
-                    .expect("FairShare pending group is missing");
-                let popped = group.queue.pop_front();
-                debug_assert_eq!(popped, Some(waiter));
-                group.held_permits += 1;
-            }
-
-            self.available_permits -= 1;
-            self.num_waiters -= 1;
-
-            let waiter = self
-                .waiters
-                .get_mut(waiter)
-                .expect("FairShare waiter is missing");
-            waiter.admitted = true;
-            if let Some(waker) = waiter.waker.take() {
-                wakers.push(waker);
-            }
+        while let Some(waker) = self.admit_one() {
+            wakers.push(waker);
         }
+    }
+
+    fn admit_one(&mut self) -> Option<Waker> {
+        if self.available_permits == 0 || self.num_waiters == 0 {
+            return None;
+        }
+
+        let key = self
+            .next_group()
+            .expect("FairShare has pending acquisitions without a group");
+        let waiter = {
+            let group = self
+                .groups
+                .get_mut(&key)
+                .expect("FairShare pending group is missing");
+            let waiter = group
+                .queue
+                .pop_front()
+                .expect("FairShare pending group has no waiters")
+                .id;
+            group.held_permits += 1;
+            waiter
+        };
+
+        self.available_permits -= 1;
+        self.num_waiters -= 1;
+
+        Some(
+            self.waiters[waiter]
+                .waker
+                .take()
+                .expect("pending FairShare waiter must have a waker"),
+        )
     }
 
     fn next_group(&self) -> Option<Arc<K>> {
         self.groups
             .iter()
             .filter_map(|(key, group)| {
-                let waiter = *group.queue.front()?;
-                let sequence = self
-                    .waiters
-                    .get(waiter)
-                    .expect("FairShare waiter is missing")
-                    .sequence;
-                Some((group.held_permits, sequence, key))
+                let waiter = group.queue.front()?;
+                Some((group.held_permits, waiter.sequence, key))
             })
             .min_by_key(|(held_permits, sequence, _)| (*held_permits, *sequence))
             .map(|(_, _, key)| key.clone())
@@ -347,14 +357,19 @@ where
 #[derive(Debug, Default)]
 struct GroupState {
     held_permits: usize,
-    queue: VecDeque<ArenaKey>,
+    queue: VecDeque<QueuedWaiter>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct QueuedWaiter {
+    id: ArenaKey,
+    sequence: u64,
 }
 
 #[derive(Debug)]
 struct Waiter {
-    sequence: u64,
+    /// `None` once this waiter has been admitted but has not yet observed completion.
     waker: Option<Waker>,
-    admitted: bool,
 }
 
 #[derive(Debug)]
@@ -394,13 +409,14 @@ where
             return;
         };
 
-        let mut wakers = Vec::new();
-        {
+        let waker = {
             let mut state = self.admission.state.lock();
             state.cancel(waiter, &self.key);
-            state.admit_waiters(&mut wakers);
+            state.admit_one()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
         }
-        wake_all(wakers);
     }
 }
 
