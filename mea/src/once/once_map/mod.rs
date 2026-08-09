@@ -49,14 +49,7 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    fn new(once_map: &'a OnceMap<K, V, S>, key: K) -> Self {
-        let cell = {
-            let mut map = once_map.map.lock();
-            map.entry(key)
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
-        };
-
+    fn new(once_map: &'a OnceMap<K, V, S>, cell: Arc<OnceCell<V>>) -> Self {
         Self {
             once_map,
             cell: Some(cell),
@@ -150,6 +143,13 @@ where
         }
     }
 
+    fn get_or_insert_cell(&self, key: K) -> Arc<OnceCell<V>> {
+        let mut map = self.map.lock();
+        map.entry(key)
+            .or_insert_with(|| Arc::new(OnceCell::new()))
+            .clone()
+    }
+
     /// Compute the value for the given key if absent.
     ///
     /// If the value for the key is already being computed by another task, this task will wait for
@@ -161,7 +161,12 @@ where
     where
         F: AsyncFnOnce() -> V,
     {
-        let mut guard = ComputeCleanupGuard::new(self, key);
+        let cell = self.get_or_insert_cell(key);
+        if let Some(value) = cell.get() {
+            return value.clone();
+        }
+
+        let mut guard = ComputeCleanupGuard::new(self, cell);
         let result = guard.cell().get_or_init(func).await.clone();
         guard.disarm_cleanup();
         result
@@ -178,7 +183,12 @@ where
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        let mut guard = ComputeCleanupGuard::new(self, key);
+        let cell = self.get_or_insert_cell(key);
+        if let Some(value) = cell.get() {
+            return Ok(value.clone());
+        }
+
+        let mut guard = ComputeCleanupGuard::new(self, cell);
         let result = guard.cell().get_or_try_init(func).await?.clone();
         guard.disarm_cleanup();
         Ok(result)
