@@ -23,6 +23,7 @@ use std::task::Waker;
 
 use crate::internal::Mutex;
 use crate::internal::WaitList;
+use crate::internal::WaiterId;
 
 /// The internal semaphore that provides low-level async primitives.
 #[derive(Debug)]
@@ -33,9 +34,33 @@ pub(crate) struct Semaphore {
 }
 
 #[derive(Debug)]
-struct WaitNode {
-    permits: usize,
-    waker: Option<Waker>,
+enum WaitNode {
+    /// State retained until the acquiring future observes completion or is dropped.
+    Acquire {
+        permits: usize,
+        waker: Option<Waker>,
+    },
+    /// State owned by the queue and removed as soon as the permit debt is satisfied.
+    Debt { permits: usize },
+}
+
+impl WaitNode {
+    fn permits_mut(&mut self) -> &mut usize {
+        match self {
+            Self::Acquire { permits, .. } | Self::Debt { permits } => permits,
+        }
+    }
+
+    fn take_waker(&mut self) -> Option<Waker> {
+        match self {
+            Self::Acquire { waker, .. } => waker.take(),
+            Self::Debt { .. } => None,
+        }
+    }
+
+    fn is_debt(&self) -> bool {
+        matches!(self, Self::Debt { .. })
+    }
 }
 
 impl Semaphore {
@@ -100,7 +125,7 @@ impl Semaphore {
     /// If the semaphore has not enough permits, enqueue front an empty waiter to consume the
     /// permits.
     pub(crate) fn forget_exact(&self, n: usize) {
-        acquired_or_enqueue(self, n, &mut None, None, false);
+        acquired_or_enqueue(self, n, None, None, false);
     }
 
     /// Acquires `n` permits from the semaphore.
@@ -145,13 +170,17 @@ impl Semaphore {
         let mut wakers = Vec::new();
         loop {
             match waiters.unlink_first_waiter(|node| {
-                node.permits = 0;
+                *node.permits_mut() = 0;
                 true
             }) {
                 None => break,
-                Some(waiter) => {
-                    if let Some(waker) = waiter.waker.take() {
+                Some((id, waiter)) => {
+                    let remove_now = waiter.is_debt();
+                    if let Some(waker) = waiter.take_waker() {
                         wakers.push(waker);
+                    }
+                    if remove_now {
+                        waiters.remove_unlinked_waiter(id);
                     }
                 }
             }
@@ -175,20 +204,25 @@ impl Semaphore {
             let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
             while wakers.len() < NUM_WAKER {
                 match waiters.unlink_first_waiter(|node| {
-                    if node.permits <= rem {
-                        rem -= node.permits;
-                        node.permits = 0;
+                    let permits = node.permits_mut();
+                    if *permits <= rem {
+                        rem -= *permits;
+                        *permits = 0;
                         true
                     } else {
-                        node.permits -= rem;
+                        *permits -= rem;
                         rem = 0;
                         false
                     }
                 }) {
                     None => break,
-                    Some(waiter) => {
-                        if let Some(waker) = waiter.waker.take() {
+                    Some((id, waiter)) => {
+                        let remove_now = waiter.is_debt();
+                        if let Some(waker) = waiter.take_waker() {
                             wakers.push(waker);
+                        }
+                        if remove_now {
+                            waiters.remove_unlinked_waiter(id);
                         }
                     }
                 }
@@ -210,24 +244,32 @@ impl Semaphore {
             }
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn num_waiter_nodes(&self) -> usize {
+        self.waiters.lock().occupied_len()
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct Acquire<'a> {
     permits: usize,
-    index: Option<usize>,
+    index: Option<WaiterId>,
     semaphore: &'a Semaphore,
     done: bool,
 }
 
 impl Drop for Acquire<'_> {
     fn drop(&mut self) {
-        if let Some(index) = self.index {
+        if let Some(index) = self.index.take() {
             let mut waiters = self.semaphore.waiters.lock();
             let mut acquired = 0;
             waiters.unlink_waiter(index, |node| {
-                acquired = self.permits - node.permits;
-                node.permits = 0;
+                let WaitNode::Acquire { permits, .. } = node else {
+                    unreachable!("acquire handle must refer to an acquire waiter");
+                };
+                acquired = self.permits - *permits;
+                *permits = 0;
                 true
             });
             waiters.remove_unlinked_waiter(index);
@@ -256,10 +298,19 @@ impl Acquire<'_> {
                 let mut waiters = semaphore.waiters.lock();
                 let ready = {
                     let node = waiters.waiter_mut(*idx);
-                    if node.permits > 0 {
-                        let update_waker = node.waker.as_ref().is_none_or(|w| !w.will_wake(waker));
+                    let WaitNode::Acquire {
+                        permits,
+                        waker: current_waker,
+                    } = node
+                    else {
+                        unreachable!("acquire handle must refer to an acquire waiter");
+                    };
+                    if *permits > 0 {
+                        let update_waker = current_waker
+                            .as_ref()
+                            .is_none_or(|current| !current.will_wake(waker));
                         if update_waker {
-                            node.waker = Some(waker.clone());
+                            *current_waker = Some(waker.clone());
                         }
                         false
                     } else {
@@ -277,7 +328,7 @@ impl Acquire<'_> {
                 // not yet enqueued
                 let needed = *permits;
 
-                if acquired_or_enqueue(semaphore, needed, index, Some(waker), true) {
+                if acquired_or_enqueue(semaphore, needed, Some(index), Some(waker), true) {
                     *done = true;
                     return Poll::Ready(());
                 }
@@ -301,10 +352,15 @@ impl Future for Acquire<'_> {
 fn acquired_or_enqueue(
     sem: &Semaphore,
     needed: usize,
-    idx: &mut Option<usize>,
+    index: Option<&mut Option<WaiterId>>,
     waker: Option<&Waker>,
     enqueue_last: bool,
 ) -> bool {
+    assert_eq!(
+        index.is_some(),
+        waker.is_some(),
+        "only acquire waiters have a future owner"
+    );
     let mut current = sem.permits.load(Ordering::Acquire);
     let mut lock = None;
 
@@ -347,20 +403,24 @@ fn acquired_or_enqueue(
             unreachable!("lock must be acquired when remaining {remaining} > 0");
         });
 
-        if enqueue_last {
-            waiters.register_waiter_to_tail(idx, || {
-                Some(WaitNode {
-                    permits: remaining,
-                    waker: waker.cloned(),
-                })
-            });
+        let node = if let Some(waker) = waker {
+            WaitNode::Acquire {
+                permits: remaining,
+                waker: Some(waker.clone()),
+            }
         } else {
-            waiters.register_waiter_to_head(idx, || {
-                Some(WaitNode {
-                    permits: remaining,
-                    waker: waker.cloned(),
-                })
-            });
+            WaitNode::Debt { permits: remaining }
+        };
+        let id = if enqueue_last {
+            waiters.push_back(node)
+        } else {
+            waiters.push_front(node)
+        };
+        if let Some(index) = index {
+            assert!(
+                index.replace(id).is_none(),
+                "waiter must not be registered twice"
+            );
         }
 
         return false;

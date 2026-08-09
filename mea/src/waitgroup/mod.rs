@@ -59,6 +59,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::CountdownState;
+use crate::internal::WaitRegistration;
 
 #[cfg(test)]
 mod tests;
@@ -134,7 +135,10 @@ impl IntoFuture for WaitGroup {
     fn into_future(self) -> Self::IntoFuture {
         let state = self.state.clone();
         drop(self);
-        Wait { idx: None, state }
+        Wait {
+            registration: None,
+            state,
+        }
     }
 }
 
@@ -145,7 +149,7 @@ impl IntoFuture for WaitGroup {
 /// will complete when the WaitGroup counter reaches zero.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Wait {
-    idx: Option<usize>,
+    registration: Option<WaitRegistration>,
     state: Arc<CountdownState>,
 }
 
@@ -155,7 +159,7 @@ impl Clone for Wait {
     /// This does not increment the WaitGroup counter.
     fn clone(&self) -> Self {
         Wait {
-            idx: None,
+            registration: None,
             state: self.state.clone(),
         }
     }
@@ -171,17 +175,16 @@ impl Future for Wait {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self { idx, state } = self.get_mut();
+        let Self {
+            registration,
+            state,
+        } = self.get_mut();
+        state.poll_wait(registration, cx)
+    }
+}
 
-        // register waker if the counter is not zero
-        if state.spin_wait(16).is_err() {
-            state.register_waker(idx, cx);
-            // double check after register waker, to catch the update between two steps
-            if state.spin_wait(0).is_err() {
-                return Poll::Pending;
-            }
-        }
-
-        Poll::Ready(())
+impl Drop for Wait {
+    fn drop(&mut self) {
+        self.state.unregister_waker(&mut self.registration);
     }
 }

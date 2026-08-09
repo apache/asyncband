@@ -24,8 +24,8 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-use slab::Slab;
-
+use crate::internal::Arena;
+use crate::internal::ArenaKey;
 use crate::internal::Mutex;
 
 /// An admission controller that fairly shares a fixed number of permits across keys.
@@ -182,7 +182,7 @@ where
     num_waiters: usize,
     next_sequence: u64,
     groups: HashMap<Arc<K>, GroupState, S>,
-    waiters: Slab<Waiter>,
+    waiters: Arena<Waiter>,
 }
 
 impl<K, S> State<K, S>
@@ -197,7 +197,7 @@ where
             num_waiters: 0,
             next_sequence: 0,
             groups: HashMap::with_hasher(hash_builder),
-            waiters: Slab::new(),
+            waiters: Arena::new(),
         }
     }
 
@@ -211,7 +211,7 @@ where
         true
     }
 
-    fn enqueue(&mut self, key: Arc<K>, waker: &Waker) -> usize {
+    fn enqueue(&mut self, key: Arc<K>, waker: &Waker) -> ArenaKey {
         let sequence = self.next_sequence;
         self.next_sequence += 1;
 
@@ -225,7 +225,7 @@ where
         waiter
     }
 
-    fn poll_waiter(&mut self, waiter: usize, waker: &Waker) -> Poll<()> {
+    fn poll_waiter(&mut self, waiter: ArenaKey, waker: &Waker) -> Poll<()> {
         let state = self
             .waiters
             .get_mut(waiter)
@@ -246,7 +246,7 @@ where
         }
     }
 
-    fn cancel(&mut self, waiter_id: usize, key: &K) {
+    fn cancel(&mut self, waiter_id: ArenaKey, key: &K) {
         let waiter = self.waiters.remove(waiter_id);
         if waiter.admitted {
             self.release(key);
@@ -297,7 +297,10 @@ where
             self.available_permits -= 1;
             self.num_waiters -= 1;
 
-            let waiter = &mut self.waiters[waiter];
+            let waiter = self
+                .waiters
+                .get_mut(waiter)
+                .expect("FairShare waiter is missing");
             waiter.admitted = true;
             if let Some(waker) = waiter.waker.take() {
                 wakers.push(waker);
@@ -310,7 +313,11 @@ where
             .iter()
             .filter_map(|(key, group)| {
                 let waiter = *group.queue.front()?;
-                let sequence = self.waiters[waiter].sequence;
+                let sequence = self
+                    .waiters
+                    .get(waiter)
+                    .expect("FairShare waiter is missing")
+                    .sequence;
                 Some((group.held_permits, sequence, key))
             })
             .min_by_key(|(held_permits, sequence, _)| (*held_permits, *sequence))
@@ -340,7 +347,7 @@ where
 #[derive(Debug, Default)]
 struct GroupState {
     held_permits: usize,
-    queue: VecDeque<usize>,
+    queue: VecDeque<ArenaKey>,
 }
 
 #[derive(Debug)]
@@ -358,7 +365,7 @@ where
 {
     admission: &'a FairShare<K, S>,
     key: Arc<K>,
-    waiter: Option<usize>,
+    waiter: Option<ArenaKey>,
     completed: bool,
 }
 

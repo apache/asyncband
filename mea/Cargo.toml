@@ -32,9 +32,6 @@ rust-version.workspace = true
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-[dependencies]
-slab = { version = "0.4.11" }
-
 [dev-dependencies]
 divan = { version = "0.1.21" }
 pollster = { version = "1.0.1", features = ["macro"] }

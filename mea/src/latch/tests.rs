@@ -12,10 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::future::Future;
 use std::prelude::rust_2015::Vec;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Wake;
+use std::task::Waker;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -29,6 +34,14 @@ macro_rules! assert_time {
                 .contains(&$time)
         )
     };
+}
+
+struct TrackWake(AtomicUsize);
+
+impl Wake for TrackWake {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 #[test]
@@ -50,6 +63,22 @@ fn test_try_wait() {
 fn test_try_wait_err() {
     let latch = Latch::new(3);
     assert_eq!(latch.try_wait(), Err(3));
+}
+
+#[test]
+fn cancelled_wait_releases_its_waker() {
+    let latch = Latch::new(1);
+    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let waker = Waker::from(tracker.clone());
+    let baseline = Arc::strong_count(&tracker);
+    let mut context = Context::from_waker(&waker);
+    let mut wait = Box::pin(latch.wait());
+
+    assert!(wait.as_mut().poll(&mut context).is_pending());
+    assert_eq!(Arc::strong_count(&tracker), baseline + 1);
+
+    drop(wait);
+    assert_eq!(Arc::strong_count(&tracker), baseline);
 }
 
 #[test]

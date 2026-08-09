@@ -72,6 +72,7 @@ use std::task::Poll;
 
 use crate::internal::Mutex;
 use crate::internal::RwLock;
+use crate::internal::WaitRegistration;
 use crate::internal::WaitSet;
 
 #[cfg(test)]
@@ -341,7 +342,7 @@ impl<T: Clone> Receiver<T> {
     pub async fn recv(&mut self) -> Result<T, RecvError> {
         Recv {
             receiver: self,
-            index: None,
+            registration: None,
         }
         .await
     }
@@ -448,14 +449,17 @@ impl<T> Receiver<T> {
 
 struct Recv<'a, T> {
     receiver: &'a mut Receiver<T>,
-    index: Option<usize>,
+    registration: Option<WaitRegistration>,
 }
 
 impl<T: Clone> Future for Recv<'_, T> {
     type Output = Result<T, RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self { receiver, index } = self.get_mut();
+        let Self {
+            receiver,
+            registration,
+        } = self.get_mut();
 
         loop {
             match receiver.try_recv() {
@@ -485,8 +489,18 @@ impl<T: Clone> Future for Recv<'_, T> {
             }
 
             // Register Waker
-            waiters.register_waker(index, cx);
+            waiters.register_waker(registration, cx);
             return Poll::Pending;
         }
+    }
+}
+
+impl<T> Drop for Recv<'_, T> {
+    fn drop(&mut self) {
+        self.receiver
+            .shared
+            .waiters
+            .lock()
+            .unregister_waker(&mut self.registration);
     }
 }

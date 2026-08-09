@@ -18,6 +18,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::CountdownState;
+use crate::internal::WaitRegistration;
 use crate::semaphore::Semaphore;
 
 #[cfg(test)]
@@ -208,7 +209,7 @@ impl Once {
         }
 
         OnceWait {
-            idx: None,
+            registration: None,
             once: self,
         }
         .await
@@ -216,7 +217,7 @@ impl Once {
 }
 
 struct OnceWait<'a> {
-    idx: Option<usize>,
+    registration: Option<WaitRegistration>,
     once: &'a Once,
 }
 
@@ -230,17 +231,13 @@ impl Future for OnceWait<'_> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self { idx, once } = self.get_mut();
+        let Self { registration, once } = self.get_mut();
+        once.done.poll_wait(registration, cx)
+    }
+}
 
-        // register waker if the counter is not zero
-        if once.done.spin_wait(16).is_err() {
-            once.done.register_waker(idx, cx);
-            // double check after register waker, to catch the update between two steps
-            if !once.is_completed() {
-                return Poll::Pending;
-            };
-        }
-
-        Poll::Ready(())
+impl Drop for OnceWait<'_> {
+    fn drop(&mut self) {
+        self.once.done.unregister_waker(&mut self.registration);
     }
 }

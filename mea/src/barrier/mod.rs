@@ -74,6 +74,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::Mutex;
+use crate::internal::WaitRegistration;
 use crate::internal::WaitSet;
 
 #[cfg(test)]
@@ -254,7 +255,7 @@ impl Barrier {
         };
 
         let fut = BarrierWait {
-            idx: None,
+            registration: None,
             generation,
             barrier: self,
         };
@@ -268,7 +269,7 @@ impl Barrier {
 /// This future will complete when all tasks have reached the barrier point.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 struct BarrierWait<'a> {
-    idx: Option<usize>,
+    registration: Option<WaitRegistration>,
     generation: usize,
     barrier: &'a Barrier,
 }
@@ -286,7 +287,7 @@ impl Future for BarrierWait<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self {
-            idx,
+            registration,
             generation,
             barrier,
         } = self.get_mut();
@@ -295,8 +296,18 @@ impl Future for BarrierWait<'_> {
         if *generation < state.generation {
             Poll::Ready(())
         } else {
-            state.waiters.register_waker(idx, cx);
+            state.waiters.register_waker(registration, cx);
             Poll::Pending
         }
+    }
+}
+
+impl Drop for BarrierWait<'_> {
+    fn drop(&mut self) {
+        self.barrier
+            .state
+            .lock()
+            .waiters
+            .unregister_waker(&mut self.registration);
     }
 }

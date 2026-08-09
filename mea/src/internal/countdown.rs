@@ -15,8 +15,10 @@
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::task::Context;
+use std::task::Poll;
 
 use crate::internal::Mutex;
+use crate::internal::WaitRegistration;
 use crate::internal::WaitSet;
 
 #[derive(Debug)]
@@ -66,13 +68,27 @@ impl CountdownState {
         }
     }
 
-    /// Registers a waker to be woken up when the countdown reaches zero.
-    ///
-    /// `idx` must be `None` when the waker is not registered, or `Some(key)` where `key` is
-    /// a value previously returned by this method.
-    pub(crate) fn register_waker(&self, idx: &mut Option<usize>, cx: &mut Context<'_>) {
+    /// Polls for zero, registering the current waker if the countdown is still active.
+    pub(crate) fn poll_wait(
+        &self,
+        registration: &mut Option<WaitRegistration>,
+        cx: &mut Context<'_>,
+    ) -> Poll<()> {
+        if self.spin_wait(16).is_ok() {
+            return Poll::Ready(());
+        }
+
         let mut waiters = self.waiters.lock();
-        waiters.register_waker(idx, cx);
+        if self.state() == 0 {
+            Poll::Ready(())
+        } else {
+            waiters.register_waker(registration, cx);
+            Poll::Pending
+        }
+    }
+
+    pub(crate) fn unregister_waker(&self, registration: &mut Option<WaitRegistration>) {
+        self.waiters.lock().unregister_waker(registration);
     }
 
     /// Returns `Ok(())` if the counter is zero, otherwise returns `Err(s)` where `s` is the current

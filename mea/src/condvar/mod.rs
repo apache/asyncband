@@ -67,6 +67,7 @@ use std::task::Waker;
 
 use crate::internal::Mutex;
 use crate::internal::WaitList;
+use crate::internal::WaiterId;
 use crate::mutex;
 use crate::mutex::MutexGuard;
 use crate::mutex::OwnedMutexGuard;
@@ -327,7 +328,7 @@ impl Condvar {
 struct Wait<'a, G> {
     condvar: &'a Condvar,
     guard: Option<G>,
-    index: Option<usize>,
+    index: Option<WaiterId>,
 }
 
 impl<'a, G> Future for Wait<'a, G>
@@ -341,11 +342,9 @@ where
         let mut waiters = this.condvar.waiters.lock();
 
         if let Some(guard) = this.guard.take() {
-            waiters.register_waiter_to_tail(&mut this.index, || {
-                Some(WaitNode {
-                    state: WaitState::Waiting(cx.waker().clone()),
-                })
-            });
+            this.index = Some(waiters.push_back(WaitNode {
+                state: WaitState::Waiting(cx.waker().clone()),
+            }));
 
             // Registration must happen before unlocking the associated mutex. A notifier that
             // acquires the mutex after this point will therefore observe this waiter.

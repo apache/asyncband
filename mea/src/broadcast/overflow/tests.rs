@@ -12,7 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Wake;
+use std::task::Waker;
+
 use super::*;
+
+struct TrackWake(AtomicUsize);
+
+impl Wake for TrackWake {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 #[tokio::test]
 async fn test_broadcast_basic() {
@@ -75,6 +91,22 @@ async fn test_wait_mechanism() {
     tx.send(42);
 
     assert_eq!(handle.await.unwrap(), Ok(42));
+}
+
+#[test]
+fn cancelled_recv_releases_its_waker() {
+    let (_tx, mut rx) = channel::<()>(1);
+    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let waker = Waker::from(tracker.clone());
+    let baseline = Arc::strong_count(&tracker);
+    let mut context = Context::from_waker(&waker);
+    let mut recv = Box::pin(rx.recv());
+
+    assert!(recv.as_mut().poll(&mut context).is_pending());
+    assert_eq!(Arc::strong_count(&tracker), baseline + 1);
+
+    drop(recv);
+    assert_eq!(Arc::strong_count(&tracker), baseline);
 }
 
 #[tokio::test]

@@ -178,6 +178,19 @@ fn wake_then_drop() {
     assert_eq!(s.available_permits(), 2);
 }
 
+#[test]
+fn fulfilled_forget_exact_debt_reclaims_its_waiter_node() {
+    let s = Semaphore::new(0);
+
+    for _ in 0..3 {
+        s.forget_exact(1);
+        assert_eq!(s.s.num_waiter_nodes(), 1);
+
+        s.release(1);
+        assert_eq!(s.s.num_waiter_nodes(), 0);
+    }
+}
+
 #[tokio::test]
 async fn acquire_then_forget_exact() {
     let s = Arc::new(Semaphore::new(5));

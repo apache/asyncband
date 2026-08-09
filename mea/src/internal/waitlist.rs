@@ -12,173 +12,197 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use slab::Slab;
+use crate::internal::Arena;
+use crate::internal::ArenaKey;
 
-/// A sentinel-based linked list with stable slab indices.
-///
-/// * `sentinel`'s `next` points to the first node (regular head).
-/// * `sentinel`'s `prev` points to the last node (regular tail).
-/// * Unlinked nodes remain addressable by index until they are explicitly removed.
+/// A linked waiter queue whose detached nodes remain addressable until removal.
 #[derive(Debug)]
 pub(crate) struct WaitList<T> {
-    // If `None`, the list is uninitialized and empty.
-    sentinel: Option<usize>,
-    nodes: Slab<Node<T>>,
+    head: Option<WaiterId>,
+    tail: Option<WaiterId>,
+    nodes: Arena<Node<T>>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WaiterId(ArenaKey);
 
 #[derive(Debug)]
 struct Node<T> {
-    prev: usize,
-    next: usize,
-    value: Option<T>,
+    /// `None` marks a node that has been detached but not yet removed.
+    links: Option<Links>,
+    value: T,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Links {
+    prev: Option<WaiterId>,
+    next: Option<WaiterId>,
 }
 
 impl<T> WaitList<T> {
-    /// Ensures the wait list is initialized, returning the sentinel index.
-    fn ensure_init(&mut self) -> usize {
-        if let Some(sentinel) = self.sentinel {
-            return sentinel;
-        }
-
-        let first = self.nodes.vacant_entry();
-        let sentinel = first.key();
-        first.insert(Node {
-            prev: sentinel,
-            next: sentinel,
-            value: None,
-        });
-        self.sentinel = Some(sentinel);
-        sentinel
-    }
-
     pub(crate) const fn new() -> Self {
         Self {
-            sentinel: None,
-            nodes: Slab::new(),
+            head: None,
+            tail: None,
+            nodes: Arena::new(),
         }
     }
 
-    /// Registers a waiter to the head of the wait list.
-    ///
-    /// # Panic
-    ///
-    /// Panics if `idx` is `Some`.
-    pub(crate) fn register_waiter_to_head(
-        &mut self,
-        idx: &mut Option<usize>,
-        f: impl FnOnce() -> Option<T>,
-    ) {
-        assert!(idx.is_none());
-
-        let sentinel = self.ensure_init();
-        let value = f();
-        let prev_head = self.nodes[sentinel].next;
-        let new_node = Node {
-            prev: sentinel,
-            next: prev_head,
+    /// Registers a waiter at the head of the list.
+    pub(crate) fn push_front(&mut self, value: T) -> WaiterId {
+        let next = self.head;
+        let id = WaiterId(self.nodes.insert(Node {
+            links: Some(Links { prev: None, next }),
             value,
-        };
-        let new_key = self.nodes.insert(new_node);
-        self.nodes[sentinel].next = new_key;
-        self.nodes[prev_head].prev = new_key;
-        *idx = Some(new_key);
+        }));
+
+        if let Some(next) = next {
+            self.linked_node_mut(next).prev = Some(id);
+        } else {
+            self.tail = Some(id);
+        }
+        self.head = Some(id);
+        id
     }
 
-    /// Registers a waiter to the tail of the wait list.
-    ///
-    /// # Panic
-    ///
-    /// Panics if `idx` is `Some`.
-    pub(crate) fn register_waiter_to_tail(
-        &mut self,
-        idx: &mut Option<usize>,
-        f: impl FnOnce() -> Option<T>,
-    ) {
-        assert!(idx.is_none());
-
-        let sentinel = self.ensure_init();
-        let value = f();
-        let prev_tail = self.nodes[sentinel].prev;
-        let new_node = Node {
-            prev: prev_tail,
-            next: sentinel,
+    /// Registers a waiter at the tail of the list.
+    pub(crate) fn push_back(&mut self, value: T) -> WaiterId {
+        let prev = self.tail;
+        let id = WaiterId(self.nodes.insert(Node {
+            links: Some(Links { prev, next: None }),
             value,
-        };
-        let new_key = self.nodes.insert(new_node);
-        self.nodes[sentinel].prev = new_key;
-        self.nodes[prev_tail].next = new_key;
-        *idx = Some(new_key);
+        }));
+
+        if let Some(prev) = prev {
+            self.linked_node_mut(prev).next = Some(id);
+        } else {
+            self.head = Some(id);
+        }
+        self.tail = Some(id);
+        id
     }
 
-    /// Unlinks a previously registered waiter from the wait list if the predicate returns
-    /// `true`.
+    /// Detaches a waiter if the predicate returns `true`.
     ///
-    /// The slab entry remains available until
-    /// [`remove_unlinked_waiter`](Self::remove_unlinked_waiter) is called.
-    /// If the waiter is already unlinked, the predicate still runs but no links are changed.
+    /// The node and its value remain available until
+    /// [`remove_unlinked_waiter`](Self::remove_unlinked_waiter) is called. If the waiter is already
+    /// detached, the predicate still runs but the list links are unchanged.
     pub(crate) fn unlink_waiter(
         &mut self,
-        idx: usize,
+        id: WaiterId,
         should_unlink: impl FnOnce(&mut T) -> bool,
     ) -> Option<&mut T> {
-        let sentinel = self.sentinel.expect("wait list must be initialized");
-
-        assert_ne!(idx, sentinel);
-
-        fn value_mut<T>(node: &mut Node<T>) -> &mut T {
-            node.value
-                .as_mut()
-                .expect("waiter node must contain a value")
-        }
-
-        if should_unlink(value_mut(&mut self.nodes[idx])) {
-            let prev = self.nodes[idx].prev;
-            let next = self.nodes[idx].next;
-            let is_unlinked = prev == idx;
-            assert_eq!(is_unlinked, next == idx, "waiter links must be consistent");
-            if !is_unlinked {
-                self.nodes[prev].next = next;
-                self.nodes[next].prev = prev;
-                self.nodes[idx].prev = idx;
-                self.nodes[idx].next = idx;
+        let links = {
+            let node = self.node_mut(id);
+            if !should_unlink(&mut node.value) {
+                return None;
             }
-            Some(value_mut(&mut self.nodes[idx]))
-        } else {
-            None
+            node.links.take()
+        };
+
+        if let Some(Links { prev, next }) = links {
+            if let Some(prev) = prev {
+                self.linked_node_mut(prev).next = next;
+            } else {
+                self.head = next;
+            }
+
+            if let Some(next) = next {
+                self.linked_node_mut(next).prev = prev;
+            } else {
+                self.tail = prev;
+            }
         }
+
+        Some(&mut self.node_mut(id).value)
     }
 
-    /// Unlinks the first waiter from the wait list if the predicate returns `true`.
+    /// Detaches the first waiter if the predicate returns `true`.
     pub(crate) fn unlink_first_waiter(
         &mut self,
         should_unlink: impl FnOnce(&mut T) -> bool,
-    ) -> Option<&mut T> {
-        let sentinel = self.sentinel?;
-        let first = self.nodes[sentinel].next;
-        if first != sentinel {
-            self.unlink_waiter(first, should_unlink)
-        } else {
-            None
-        }
+    ) -> Option<(WaiterId, &mut T)> {
+        let first = self.head?;
+        self.unlink_waiter(first, should_unlink)
+            .map(|waiter| (first, waiter))
     }
 
-    /// Returns `true` if the wait list is empty.
+    /// Returns `true` if no linked waiters remain.
     pub(crate) fn is_empty(&self) -> bool {
-        self.sentinel
-            .is_none_or(|sentinel| self.nodes[sentinel].next == sentinel)
+        debug_assert_eq!(self.head.is_none(), self.tail.is_none());
+        self.head.is_none()
     }
 
-    pub(crate) fn waiter_mut(&mut self, idx: usize) -> &mut T {
-        self.nodes[idx]
-            .value
+    pub(crate) fn waiter_mut(&mut self, id: WaiterId) -> &mut T {
+        &mut self.node_mut(id).value
+    }
+
+    pub(crate) fn remove_unlinked_waiter(&mut self, id: WaiterId) -> T {
+        assert!(
+            self.node(id).links.is_none(),
+            "waiter must be unlinked before removal"
+        );
+        self.nodes.remove(id.0).value
+    }
+
+    fn node(&self, id: WaiterId) -> &Node<T> {
+        self.nodes
+            .get(id.0)
+            .expect("waiter id must refer to an occupied node")
+    }
+
+    fn node_mut(&mut self, id: WaiterId) -> &mut Node<T> {
+        self.nodes
+            .get_mut(id.0)
+            .expect("waiter id must refer to an occupied node")
+    }
+
+    fn linked_node_mut(&mut self, id: WaiterId) -> &mut Links {
+        self.node_mut(id)
+            .links
             .as_mut()
-            .expect("waiter node must contain a value")
+            .expect("linked waiter must have links")
     }
 
-    pub(crate) fn remove_unlinked_waiter(&mut self, idx: usize) {
-        let node = &self.nodes[idx];
-        assert_eq!(node.prev, idx, "waiter must be unlinked before removal");
-        assert_eq!(node.next, idx, "waiter must be unlinked before removal");
-        self.nodes.remove(idx);
+    #[cfg(test)]
+    pub(crate) fn occupied_len(&self) -> usize {
+        self.nodes.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detached_nodes_remain_available_until_removed() {
+        let mut waiters = WaitList::new();
+        let first = waiters.push_back(1);
+        let second = waiters.push_back(2);
+
+        assert_eq!(waiters.unlink_first_waiter(|_| true).unwrap().0, first);
+        assert_eq!(*waiters.waiter_mut(first), 1);
+        assert_eq!(waiters.occupied_len(), 2);
+
+        assert_eq!(waiters.remove_unlinked_waiter(first), 1);
+        assert_eq!(waiters.unlink_first_waiter(|_| true).unwrap().0, second);
+        assert!(waiters.is_empty());
+        assert_eq!(waiters.remove_unlinked_waiter(second), 2);
+        assert_eq!(waiters.occupied_len(), 0);
+    }
+
+    #[test]
+    fn push_front_and_back_preserve_order() {
+        let mut waiters = WaitList::new();
+        let middle = waiters.push_back(2);
+        let first = waiters.push_front(1);
+        let last = waiters.push_back(3);
+
+        for expected in [(first, 1), (middle, 2), (last, 3)] {
+            let (id, value) = waiters.unlink_first_waiter(|_| true).unwrap();
+            assert_eq!((id, *value), expected);
+            waiters.remove_unlinked_waiter(id);
+        }
+        assert!(waiters.is_empty());
     }
 }
