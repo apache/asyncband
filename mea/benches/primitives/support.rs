@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::future::Future;
+use std::pin::Pin;
 use std::pin::pin;
 use std::task::Context;
 use std::task::Poll;
@@ -24,10 +25,21 @@ pub(super) fn noop_context() -> Context<'static> {
 
 pub(super) fn poll_ready<F: Future>(future: F, context: &mut Context<'_>) -> F::Output {
     let mut future = pin!(future);
+    poll_pinned_ready(future.as_mut(), context)
+}
+
+pub(super) fn poll_pinned_ready<F: Future>(
+    mut future: Pin<&mut F>,
+    context: &mut Context<'_>,
+) -> F::Output {
     match future.as_mut().poll(context) {
         Poll::Ready(output) => output,
         Poll::Pending => panic!("benchmark future should be ready"),
     }
+}
+
+pub(super) fn poll_pending<F: Future>(mut future: Pin<&mut F>, context: &mut Context<'_>) {
+    assert!(future.as_mut().poll(context).is_pending());
 }
 
 // Move the input into the benchmark output so Divan drops it outside the timed section.
