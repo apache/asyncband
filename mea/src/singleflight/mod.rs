@@ -186,12 +186,12 @@ where
         F: AsyncFnOnce() -> V,
     {
         let guard = WorkCleanupGuard::new(self, key);
-        let result = guard
-            .entry()
+        let entry = guard.entry();
+        let result = entry
             .cell()
             .get_or_init(async || {
                 let result = func().await;
-                self.map.lock().remove_entry(guard.entry());
+                self.map.lock().remove_entry(entry);
                 result
             })
             .await
@@ -251,12 +251,12 @@ where
         F: AsyncFnOnce() -> Result<V, E>,
     {
         let guard = WorkCleanupGuard::new(self, key);
-        let result = guard
-            .entry()
+        let entry = guard.entry();
+        let result = entry
             .cell()
             .get_or_try_init(async || {
                 let result = func().await?;
-                self.map.lock().remove_entry(guard.entry());
+                self.map.lock().remove_entry(entry);
                 Ok(result)
             })
             .await?
