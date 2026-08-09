@@ -108,18 +108,17 @@ fn add_max_amount_permits() {
 }
 
 #[test]
-#[should_panic]
-fn add_more_than_max_amount_permits1() {
-    let s = Semaphore::new(1);
-    s.release(usize::MAX);
-}
+fn release_overflow_preserves_permits() {
+    let s = Semaphore::new(usize::MAX);
+    let result = std::panic::catch_unwind(|| s.release(1));
 
-#[test]
-#[should_panic]
-fn add_more_than_max_amount_permits2() {
-    let s = Semaphore::new(usize::MAX - 1);
-    s.release(1);
-    s.release(1);
+    assert!(result.is_err());
+    assert_eq!(s.available_permits(), usize::MAX);
+
+    let permit = s.try_acquire(1).unwrap();
+    assert_eq!(s.available_permits(), usize::MAX - 1);
+    drop(permit);
+    assert_eq!(s.available_permits(), usize::MAX);
 }
 
 #[test]

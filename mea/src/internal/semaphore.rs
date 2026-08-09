@@ -162,6 +162,26 @@ impl Semaphore {
         }
     }
 
+    fn add_available_permits(&self, permits: usize) {
+        let mut current = self.permits.load(Ordering::Relaxed);
+        loop {
+            let next = current.checked_add(permits).unwrap_or_else(|| {
+                panic!(
+                    "number of added permits ({permits}) would overflow usize::MAX (prev: {current})"
+                )
+            });
+            match self.permits.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
     fn insert_permits_with_lock(
         &self,
         mut rem: usize,
@@ -195,12 +215,7 @@ impl Semaphore {
             }
 
             if rem > 0 && waiters.is_empty() {
-                let permits = rem;
-                let prev = self.permits.fetch_add(permits, Ordering::Release);
-                assert!(
-                    prev.checked_add(permits).is_some(),
-                    "number of added permits ({permits}) would overflow usize::MAX (prev: {prev})"
-                );
+                self.add_available_permits(rem);
                 rem = 0;
             }
 
