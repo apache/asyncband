@@ -20,9 +20,9 @@ use std::hash::Hash;
 use std::hash::RandomState;
 use std::sync::Arc;
 
-use crate::internal::KeyedOnceEntry;
-use crate::internal::KeyedOnceTable;
 use crate::internal::Mutex;
+use crate::internal::OnceTable;
+use crate::internal::OnceTableEntry;
 use crate::once::OnceCell;
 
 #[cfg(test)]
@@ -32,7 +32,7 @@ mod tests;
 /// units of work can be executed with duplicate suppression.
 #[derive(Debug)]
 pub struct Group<K, V, S = RandomState> {
-    map: Mutex<KeyedOnceTable<K, V, S>>,
+    map: Mutex<OnceTable<K, V, S>>,
 }
 
 // Holds one call's entry so Drop can clean it up if the work is abandoned.
@@ -42,7 +42,7 @@ where
     S: BuildHasher,
 {
     group: &'a Group<K, V, S>,
-    entry: Option<Arc<KeyedOnceEntry<K, V>>>,
+    entry: Option<Arc<OnceTableEntry<K, V>>>,
 }
 
 impl<'a, K, V, S> WorkCleanupGuard<'a, K, V, S>
@@ -53,7 +53,7 @@ where
     fn new(group: &'a Group<K, V, S>, key: K) -> Self {
         let entry = {
             let mut map = group.map.lock();
-            Arc::clone(map.get_or_insert(key))
+            Arc::clone(map.get_or_insert(key).get())
         };
 
         Self {
@@ -72,7 +72,7 @@ where
         map.remove_exact(entry);
     }
 
-    fn disarm_cleanup(&mut self) {
+    fn dismiss(mut self) {
         drop(self.entry.take());
     }
 }
@@ -86,7 +86,7 @@ where
         let Some(entry) = self.entry.take() else {
             return;
         };
-        if entry.cell().get().is_some() {
+        if entry.cell().initialized() {
             return;
         }
 
@@ -116,7 +116,7 @@ where
     /// Creates a new Group with the default hasher.
     pub fn new() -> Self {
         Self {
-            map: Mutex::new(KeyedOnceTable::with_hasher(RandomState::new())),
+            map: Mutex::new(OnceTable::with_hasher(RandomState::new())),
         }
     }
 }
@@ -130,7 +130,7 @@ where
     /// Creates a new Group with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
         Self {
-            map: Mutex::new(KeyedOnceTable::with_hasher(hasher)),
+            map: Mutex::new(OnceTable::with_hasher(hasher)),
         }
     }
 
@@ -190,7 +190,7 @@ where
     where
         F: AsyncFnOnce() -> V,
     {
-        let mut guard = WorkCleanupGuard::new(self, key);
+        let guard = WorkCleanupGuard::new(self, key);
         let result = guard
             .cell()
             .get_or_init(async || {
@@ -200,7 +200,7 @@ where
             })
             .await
             .clone();
-        guard.disarm_cleanup();
+        guard.dismiss();
         result
     }
 
@@ -254,7 +254,7 @@ where
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        let mut guard = WorkCleanupGuard::new(self, key);
+        let guard = WorkCleanupGuard::new(self, key);
         let result = guard
             .cell()
             .get_or_try_init(async || {
@@ -264,7 +264,7 @@ where
             })
             .await?
             .clone();
-        guard.disarm_cleanup();
+        guard.dismiss();
         Ok(result)
     }
 

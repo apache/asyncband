@@ -86,7 +86,7 @@ impl<T> OnceCell<T> {
     }
 
     /// Returns whether the internal value is set.
-    fn initialized(&self) -> bool {
+    pub(crate) fn initialized(&self) -> bool {
         self.value_set.load(Ordering::Acquire)
     }
 

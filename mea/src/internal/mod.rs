@@ -15,8 +15,8 @@
 mod countdown;
 pub(crate) use countdown::*;
 
-mod keyed_once;
-pub(crate) use keyed_once::*;
+mod once_table;
+pub(crate) use once_table::*;
 
 mod mutex;
 pub(crate) use mutex::*;

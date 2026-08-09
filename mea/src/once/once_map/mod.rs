@@ -18,9 +18,9 @@ use std::hash::Hash;
 use std::hash::RandomState;
 use std::sync::Arc;
 
-use crate::internal::KeyedOnceEntry;
-use crate::internal::KeyedOnceTable;
 use crate::internal::Mutex;
+use crate::internal::OnceTable;
+use crate::internal::OnceTableEntry;
 use crate::once::OnceCell;
 
 #[cfg(test)]
@@ -32,12 +32,7 @@ mod tests;
 /// to wrap the `V` in an `Arc<V>` to make cloning cheap.
 #[derive(Debug)]
 pub struct OnceMap<K, V, S = RandomState> {
-    map: Mutex<KeyedOnceTable<K, V, S>>,
-}
-
-enum ComputeState<K, V> {
-    Cached(V),
-    Uninitialized(Arc<KeyedOnceEntry<K, V>>),
+    map: Mutex<OnceTable<K, V, S>>,
 }
 
 // Holds one call's entry so Drop can clean it up if the computation is abandoned.
@@ -47,7 +42,7 @@ where
     S: BuildHasher,
 {
     once_map: &'a OnceMap<K, V, S>,
-    entry: Option<Arc<KeyedOnceEntry<K, V>>>,
+    entry: Option<Arc<OnceTableEntry<K, V>>>,
 }
 
 impl<'a, K, V, S> ComputeCleanupGuard<'a, K, V, S>
@@ -55,7 +50,7 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    fn new(once_map: &'a OnceMap<K, V, S>, entry: Arc<KeyedOnceEntry<K, V>>) -> Self {
+    fn new(once_map: &'a OnceMap<K, V, S>, entry: Arc<OnceTableEntry<K, V>>) -> Self {
         Self {
             once_map,
             entry: Some(entry),
@@ -66,7 +61,7 @@ where
         self.entry.as_deref().unwrap().cell()
     }
 
-    fn disarm_cleanup(&mut self) {
+    fn dismiss(mut self) {
         drop(self.entry.take());
     }
 }
@@ -80,7 +75,7 @@ where
         let Some(entry) = self.entry.take() else {
             return;
         };
-        if entry.cell().get().is_some() {
+        if entry.cell().initialized() {
             return;
         }
 
@@ -110,14 +105,14 @@ where
     /// Creates a new OnceMap with the default hasher.
     pub fn new() -> Self {
         Self {
-            map: Mutex::new(KeyedOnceTable::with_hasher(RandomState::new())),
+            map: Mutex::new(OnceTable::with_hasher(RandomState::new())),
         }
     }
 
     /// Creates a new OnceMap with the default hasher and the specified capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            map: Mutex::new(KeyedOnceTable::with_capacity_and_hasher(
+            map: Mutex::new(OnceTable::with_capacity_and_hasher(
                 capacity,
                 RandomState::new(),
             )),
@@ -134,23 +129,14 @@ where
     /// Creates a new OnceMap with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
         Self {
-            map: Mutex::new(KeyedOnceTable::with_hasher(hasher)),
+            map: Mutex::new(OnceTable::with_hasher(hasher)),
         }
     }
 
     /// Create a OnceMap with the specified capacity and hasher.
     pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
         Self {
-            map: Mutex::new(KeyedOnceTable::with_capacity_and_hasher(capacity, hasher)),
-        }
-    }
-
-    fn entry_state(&self, key: K) -> ComputeState<K, V> {
-        let mut map = self.map.lock();
-        let entry = map.get_or_insert(key);
-        match entry.cell().get() {
-            Some(value) => ComputeState::Cached(value.clone()),
-            None => ComputeState::Uninitialized(Arc::clone(entry)),
+            map: Mutex::new(OnceTable::with_capacity_and_hasher(capacity, hasher)),
         }
     }
 
@@ -165,14 +151,18 @@ where
     where
         F: AsyncFnOnce() -> V,
     {
-        let entry = match self.entry_state(key) {
-            ComputeState::Cached(value) => return value,
-            ComputeState::Uninitialized(entry) => entry,
+        let entry = {
+            let mut map = self.map.lock();
+            let entry = map.get_or_insert(key);
+            if let Some(value) = entry.get().cell().get() {
+                return value.clone();
+            }
+            Arc::clone(entry.get())
         };
 
-        let mut guard = ComputeCleanupGuard::new(self, entry);
+        let guard = ComputeCleanupGuard::new(self, entry);
         let result = guard.cell().get_or_init(func).await.clone();
-        guard.disarm_cleanup();
+        guard.dismiss();
         result
     }
 
@@ -187,14 +177,18 @@ where
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        let entry = match self.entry_state(key) {
-            ComputeState::Cached(value) => return Ok(value),
-            ComputeState::Uninitialized(entry) => entry,
+        let entry = {
+            let mut map = self.map.lock();
+            let entry = map.get_or_insert(key);
+            if let Some(value) = entry.get().cell().get() {
+                return Ok(value.clone());
+            }
+            Arc::clone(entry.get())
         };
 
-        let mut guard = ComputeCleanupGuard::new(self, entry);
+        let guard = ComputeCleanupGuard::new(self, entry);
         let result = guard.cell().get_or_try_init(func).await?.clone();
-        guard.disarm_cleanup();
+        guard.dismiss();
         Ok(result)
     }
 
@@ -246,7 +240,7 @@ where
     S: Default + BuildHasher,
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
-        let mut map = KeyedOnceTable::with_hasher(S::default());
+        let mut map = OnceTable::with_hasher(S::default());
         for (key, value) in iter {
             map.insert_value(key, value);
         }

@@ -12,12 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Shared storage for keyed once primitives.
-//!
-//! Keeping the key and cell in one `Arc` lets calls retain an entry's identity without requiring
-//! `K: Clone`. `HashTable` provides hashed lookup with a custom equality check, preserving borrowed
-//! key lookups and expected O(1) removal of an exact entry.
-
 use std::borrow::Borrow;
 use std::fmt;
 use std::hash::BuildHasher;
@@ -25,27 +19,29 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use hashbrown::HashTable;
+use hashbrown::hash_table::OccupiedEntry;
 
 use crate::once::OnceCell;
 
-pub(crate) struct KeyedOnceEntry<K, V> {
+pub struct OnceTableEntry<K, V> {
     hash: u64,
     key: K,
     cell: OnceCell<V>,
 }
 
-impl<K, V> KeyedOnceEntry<K, V> {
-    pub(crate) fn cell(&self) -> &OnceCell<V> {
+impl<K, V> OnceTableEntry<K, V> {
+    pub fn cell(&self) -> &OnceCell<V> {
         &self.cell
     }
 }
 
-pub(crate) struct KeyedOnceTable<K, V, S> {
-    entries: HashTable<Arc<KeyedOnceEntry<K, V>>>,
-    hash_builder: S,
+/// Shared keyed storage that lets once primitives clean up an exact entry without cloning its key.
+pub struct OnceTable<K, V, S> {
+    entries: HashTable<Arc<OnceTableEntry<K, V>>>,
+    hasher: S,
 }
 
-impl<K, V, S> fmt::Debug for KeyedOnceTable<K, V, S>
+impl<K, V, S> fmt::Debug for OnceTable<K, V, S>
 where
     K: fmt::Debug,
     V: fmt::Debug,
@@ -57,66 +53,65 @@ where
     }
 }
 
-impl<K, V, S> KeyedOnceTable<K, V, S> {
-    pub(crate) fn with_hasher(hash_builder: S) -> Self {
+impl<K, V, S> OnceTable<K, V, S> {
+    pub fn with_hasher(hasher: S) -> Self {
         Self {
             entries: HashTable::new(),
-            hash_builder,
+            hasher,
         }
     }
 
-    pub(crate) fn with_capacity_and_hasher(capacity: usize, hash_builder: S) -> Self {
+    pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
         Self {
             entries: HashTable::with_capacity(capacity),
-            hash_builder,
+            hasher,
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 }
 
-impl<K, V, S> KeyedOnceTable<K, V, S>
+impl<K, V, S> OnceTable<K, V, S>
 where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    pub(crate) fn get_or_insert(&mut self, key: K) -> &Arc<KeyedOnceEntry<K, V>> {
-        let hash = self.hash_builder.hash_one(&key);
+    pub fn get_or_insert(&mut self, key: K) -> OccupiedEntry<'_, Arc<OnceTableEntry<K, V>>> {
+        let hash = self.hasher.hash_one(&key);
         self.entries
             .entry(hash, |entry| entry.key.eq(&key), |entry| entry.hash)
             .or_insert_with(|| {
-                Arc::new(KeyedOnceEntry {
+                Arc::new(OnceTableEntry {
                     hash,
                     key,
                     cell: OnceCell::new(),
                 })
             })
-            .into_mut()
     }
 
-    pub(crate) fn get<Q>(&self, key: &Q) -> Option<&Arc<KeyedOnceEntry<K, V>>>
+    pub fn get<Q>(&self, key: &Q) -> Option<&Arc<OnceTableEntry<K, V>>>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let hash = self.hash_builder.hash_one(key);
+        let hash = self.hasher.hash_one(key);
         self.entries.find(hash, |entry| entry.key.borrow() == key)
     }
 
-    pub(crate) fn remove<Q>(&mut self, key: &Q) -> Option<Arc<KeyedOnceEntry<K, V>>>
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<Arc<OnceTableEntry<K, V>>>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let hash = self.hash_builder.hash_one(key);
+        let hash = self.hasher.hash_one(key);
         let entry = self
             .entries
             .find_entry(hash, |entry| entry.key.borrow() == key)
@@ -126,7 +121,7 @@ where
     }
 
     /// Removes the entry only if the table still contains the same allocation.
-    pub(crate) fn remove_exact(&mut self, expected: &Arc<KeyedOnceEntry<K, V>>) -> bool {
+    pub fn remove_exact(&mut self, expected: &Arc<OnceTableEntry<K, V>>) -> bool {
         let Ok(entry) = self
             .entries
             .find_entry(expected.hash, |entry| Arc::ptr_eq(entry, expected))
@@ -138,20 +133,20 @@ where
         true
     }
 
-    pub(crate) fn remove_abandoned(&mut self, entry: &Arc<KeyedOnceEntry<K, V>>) {
+    pub fn remove_abandoned(&mut self, entry: &Arc<OnceTableEntry<K, V>>) {
         // If the table still owns this entry, a count of two means the current call is its only
         // owner outside the table. remove_exact also rejects an entry that was detached or
         // replaced.
-        if Arc::strong_count(entry) == 2 && entry.cell.get().is_none() {
+        if Arc::strong_count(entry) == 2 && !entry.cell.initialized() {
             self.remove_exact(entry);
         }
     }
 
-    pub(crate) fn insert_value(&mut self, key: K, value: V) {
+    pub fn insert_value(&mut self, key: K, value: V) {
         self.remove(&key);
 
-        let hash = self.hash_builder.hash_one(&key);
-        let entry = Arc::new(KeyedOnceEntry {
+        let hash = self.hasher.hash_one(&key);
+        let entry = Arc::new(OnceTableEntry {
             hash,
             key,
             cell: OnceCell::from_value(value),
