@@ -52,7 +52,7 @@ where
     fn new(group: &'a Group<K, V, S>, key: K) -> Self {
         let entry = {
             let mut map = group.map.lock();
-            Arc::clone(map.get_or_insert(key).get())
+            Arc::clone(map.get_or_insert(key))
         };
 
         Self {
@@ -83,7 +83,7 @@ where
         let mut table = self.group.map.lock();
         // If the table still owns this entry, a count of two means the current call is its only
         // owner outside the table. remove_entry rejects an entry that was detached or replaced.
-        if Arc::strong_count(&entry) == 2 && !entry.cell().initialized() {
+        if Arc::strong_count(&entry) == 2 && !entry.initialized() {
             table.remove_entry(&entry);
         }
         // Drop this call's reference before unlocking so a waiting cleanup observes the updated
@@ -188,7 +188,6 @@ where
         let guard = WorkCleanupGuard::new(self, key);
         let entry = guard.entry();
         let result = entry
-            .cell()
             .get_or_init(async || {
                 let result = func().await;
                 self.map.lock().remove_entry(entry);
@@ -253,7 +252,6 @@ where
         let guard = WorkCleanupGuard::new(self, key);
         let entry = guard.entry();
         let result = entry
-            .cell()
             .get_or_try_init(async || {
                 let result = func().await?;
                 self.map.lock().remove_entry(entry);

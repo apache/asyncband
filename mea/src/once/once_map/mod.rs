@@ -78,7 +78,7 @@ where
         let mut table = self.once_map.map.lock();
         // If the table still owns this entry, a count of two means the current call is its only
         // owner outside the table. remove_entry rejects an entry that was detached or replaced.
-        if Arc::strong_count(&entry) == 2 && !entry.cell().initialized() {
+        if Arc::strong_count(&entry) == 2 && !entry.initialized() {
             table.remove_entry(&entry);
         }
         // Drop this call's reference before unlocking so a waiting cleanup observes the updated
@@ -155,14 +155,14 @@ where
         let entry = {
             let mut map = self.map.lock();
             let entry = map.get_or_insert(key);
-            if let Some(value) = entry.get().cell().get() {
+            if let Some(value) = entry.get() {
                 return value.clone();
             }
-            Arc::clone(entry.get())
+            Arc::clone(entry)
         };
 
         let guard = ComputeCleanupGuard::new(self, entry);
-        let result = guard.entry().cell().get_or_init(func).await.clone();
+        let result = guard.entry().get_or_init(func).await.clone();
         guard.dismiss();
         result
     }
@@ -181,14 +181,14 @@ where
         let entry = {
             let mut map = self.map.lock();
             let entry = map.get_or_insert(key);
-            if let Some(value) = entry.get().cell().get() {
+            if let Some(value) = entry.get() {
                 return Ok(value.clone());
             }
-            Arc::clone(entry.get())
+            Arc::clone(entry)
         };
 
         let guard = ComputeCleanupGuard::new(self, entry);
-        let result = guard.entry().cell().get_or_try_init(func).await?.clone();
+        let result = guard.entry().get_or_try_init(func).await?.clone();
         guard.dismiss();
         Ok(result)
     }
@@ -201,7 +201,7 @@ where
     {
         let map = self.map.lock();
         let entry = map.get(key)?;
-        entry.cell().get().cloned()
+        entry.get().cloned()
     }
 
     /// Remove the given key from the map.
@@ -230,7 +230,7 @@ where
         Q: Hash + Eq + ?Sized,
     {
         let entry = self.map.lock().remove(key)?;
-        entry.cell().get().cloned()
+        entry.get().cloned()
     }
 }
 

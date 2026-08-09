@@ -19,7 +19,6 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use hashbrown::HashTable;
-use hashbrown::hash_table::OccupiedEntry;
 
 use crate::once::OnceCell;
 
@@ -30,8 +29,26 @@ pub struct OnceTableEntry<K, V> {
 }
 
 impl<K, V> OnceTableEntry<K, V> {
-    pub fn cell(&self) -> &OnceCell<V> {
-        &self.cell
+    pub fn initialized(&self) -> bool {
+        self.cell.initialized()
+    }
+
+    pub fn get(&self) -> Option<&V> {
+        self.cell.get()
+    }
+
+    pub async fn get_or_init<F>(&self, init: F) -> &V
+    where
+        F: AsyncFnOnce() -> V,
+    {
+        self.cell.get_or_init(init).await
+    }
+
+    pub async fn get_or_try_init<E, F>(&self, init: F) -> Result<&V, E>
+    where
+        F: AsyncFnOnce() -> Result<V, E>,
+    {
+        self.cell.get_or_try_init(init).await
     }
 }
 
@@ -84,7 +101,7 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    pub fn get_or_insert(&mut self, key: K) -> OccupiedEntry<'_, Arc<OnceTableEntry<K, V>>> {
+    pub fn get_or_insert(&mut self, key: K) -> &Arc<OnceTableEntry<K, V>> {
         let hash = self.hasher.hash_one(&key);
         self.entries
             .entry(hash, |entry| entry.key.eq(&key), |entry| entry.hash)
@@ -95,6 +112,7 @@ where
                     cell: OnceCell::new(),
                 })
             })
+            .into_mut()
     }
 
     pub fn get<Q>(&self, key: &Q) -> Option<&Arc<OnceTableEntry<K, V>>>
