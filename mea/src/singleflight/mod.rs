@@ -34,6 +34,93 @@ pub struct Group<K, V, S = RandomState> {
     map: Mutex<HashMap<K, Arc<OnceCell<V>>, S>>,
 }
 
+// Holds one call's cell reference so Drop can clean up an abandoned entry.
+struct WorkCleanupGuard<'a, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    group: &'a Group<K, V, S>,
+    key: K,
+    cell: Option<Arc<OnceCell<V>>>,
+}
+
+impl<'a, K, V, S> WorkCleanupGuard<'a, K, V, S>
+where
+    K: Eq + Hash + Clone,
+    S: BuildHasher,
+{
+    fn new(group: &'a Group<K, V, S>, key: K) -> Self {
+        let cell = {
+            let mut map = group.map.lock();
+            map.entry(key.clone())
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
+        };
+
+        Self {
+            group,
+            key,
+            cell: Some(cell),
+        }
+    }
+
+    fn cell(&self) -> &OnceCell<V> {
+        self.cell.as_deref().unwrap()
+    }
+
+    fn remove_completed_entry(&self) {
+        let cell = self.cell.as_ref().unwrap();
+        let mut map = self.group.map.lock();
+        if map
+            .get(&self.key)
+            .is_some_and(|existing| Arc::ptr_eq(cell, existing))
+        {
+            map.remove(&self.key);
+        }
+    }
+
+    fn disarm_cleanup(&mut self) {
+        drop(self.cell.take());
+    }
+}
+
+impl<K, V, S> Drop for WorkCleanupGuard<'_, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    fn drop(&mut self) {
+        let Some(cell) = self.cell.take() else {
+            return;
+        };
+        if cell.get().is_some() {
+            return;
+        }
+
+        let cell_ptr = Arc::as_ptr(&cell);
+        let mut map = self.group.map.lock();
+
+        // The map and each current call own one strong reference. With the map locked, a count of
+        // two means this may be the last call using the mapped cell. Other counts mean that another
+        // call can still retry the cell, or that `forget` has already removed it.
+        let may_be_last_call = Arc::strong_count(&cell) == 2;
+        drop(cell);
+        if !may_be_last_call {
+            return;
+        }
+
+        let should_remove = map.get(&self.key).is_some_and(|existing| {
+            cell_ptr == Arc::as_ptr(existing)
+                && Arc::strong_count(existing) == 1
+                && existing.get().is_none()
+        });
+        if should_remove {
+            map.remove(&self.key);
+        }
+    }
+}
+
 impl<K, V, S> Default for Group<K, V, S>
 where
     K: Eq + Hash + Clone,
@@ -76,6 +163,9 @@ where
     ///
     /// If a duplicate comes in, the duplicate caller waits for the original to complete and
     /// receives the same results.
+    ///
+    /// If the computation is cancelled or panics, another current caller may retry it. The empty
+    /// entry is removed once no current callers remain.
     ///
     /// Once the function completes, the key, if not [`forgotten`], is removed from the group,
     /// allowing future calls with the same key to execute the function again.
@@ -124,35 +214,18 @@ where
     where
         F: AsyncFnOnce() -> V,
     {
-        // 1. Get or create the OnceCell.
-        let cell = {
-            let mut map = self.map.lock();
-            map.entry(key.clone())
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
-        };
-
-        // 2. Try to initialize the cell.
-        // OnceCell::get_or_init guarantees that only one task executes the closure.
-        let res = cell
+        let mut guard = WorkCleanupGuard::new(self, key);
+        let result = guard
+            .cell()
             .get_or_init(async || {
                 let result = func().await;
-
-                // Cleanup: remove the key from the map.
-                // We must ensure we remove the entry corresponding to *this* cell.
-                let mut map = self.map.lock();
-                if let Some(existing) = map.get(&key) {
-                    // Check if the map still points to our cell.
-                    if Arc::ptr_eq(&cell, existing) {
-                        map.remove(&key);
-                    }
-                }
-
+                guard.remove_completed_entry();
                 result
             })
-            .await;
-
-        res.clone()
+            .await
+            .clone();
+        guard.disarm_cleanup();
+        result
     }
 
     /// Executes and returns the results of the given function, making sure that only one execution
@@ -161,8 +234,8 @@ where
     /// If a duplicate comes in, the duplicate caller waits for the original to complete and
     /// receives the same results.
     ///
-    /// If the computation fails, the error is returned for the caller. Other tasks waiting for the
-    /// result will retry the computation.
+    /// If the computation fails, is cancelled or panics, other current callers may retry it. The
+    /// empty entry is removed once no current callers remain.
     ///
     /// Once the function completes successfully, the key, if not [`forgotten`], is removed from
     /// the group, allowing future calls with the same key to execute the function again.
@@ -205,35 +278,18 @@ where
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        // 1. Get or create the OnceCell.
-        let cell = {
-            let mut map = self.map.lock();
-            map.entry(key.clone())
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
-        };
-
-        // 2. Try to initialize the cell.
-        // OnceCell::get_or_try_init guarantees that only one task executes the closure.
-        let res = cell
+        let mut guard = WorkCleanupGuard::new(self, key);
+        let result = guard
+            .cell()
             .get_or_try_init(async || {
                 let result = func().await?;
-
-                // Cleanup: remove the key from the map.
-                // We must ensure we remove the entry corresponding to *this* cell.
-                let mut map = self.map.lock();
-                if let Some(existing) = map.get(&key) {
-                    // Check if the map still points to our cell.
-                    if Arc::ptr_eq(&cell, existing) {
-                        map.remove(&key);
-                    }
-                }
-
+                guard.remove_completed_entry();
                 Ok(result)
             })
-            .await?;
-
-        Ok(res.clone())
+            .await?
+            .clone();
+        guard.disarm_cleanup();
+        Ok(result)
     }
 
     /// Forgets about the given key.

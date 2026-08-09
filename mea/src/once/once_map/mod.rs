@@ -34,6 +34,80 @@ pub struct OnceMap<K, V, S = RandomState> {
     map: Mutex<HashMap<K, Arc<OnceCell<V>>, S>>,
 }
 
+// Holds one call's cell reference so Drop can clean up an abandoned entry.
+struct ComputeCleanupGuard<'a, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    once_map: &'a OnceMap<K, V, S>,
+    cell: Option<Arc<OnceCell<V>>>,
+}
+
+impl<'a, K, V, S> ComputeCleanupGuard<'a, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    fn new(once_map: &'a OnceMap<K, V, S>, key: K) -> Self {
+        let cell = {
+            let mut map = once_map.map.lock();
+            map.entry(key)
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
+        };
+
+        Self {
+            once_map,
+            cell: Some(cell),
+        }
+    }
+
+    fn cell(&self) -> &OnceCell<V> {
+        self.cell.as_deref().unwrap()
+    }
+
+    fn disarm_cleanup(&mut self) {
+        drop(self.cell.take());
+    }
+}
+
+impl<K, V, S> Drop for ComputeCleanupGuard<'_, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    fn drop(&mut self) {
+        let Some(cell) = self.cell.take() else {
+            return;
+        };
+        if cell.get().is_some() {
+            return;
+        }
+
+        let cell_ptr = Arc::as_ptr(&cell);
+        let mut map = self.once_map.map.lock();
+
+        // The map and each current call own one strong reference. With the map locked, a count of
+        // two means this may be the last call using the mapped cell. Other counts mean that another
+        // call can still retry the cell, or that the entry has already been explicitly removed.
+        let may_be_last_call = Arc::strong_count(&cell) == 2;
+        drop(cell);
+        if !may_be_last_call {
+            return;
+        }
+
+        // OnceMap intentionally does not require K: Clone, so locate the cell by allocation
+        // identity. This scan only runs when the last caller leaves a cell uninitialized.
+        map.retain(|_, existing| {
+            let should_remove = Arc::as_ptr(existing) == cell_ptr
+                && Arc::strong_count(existing) == 1
+                && existing.get().is_none();
+            !should_remove
+        });
+    }
+}
+
 impl<K, V, S> Default for OnceMap<K, V, S>
 where
     K: Eq + Hash,
@@ -89,22 +163,17 @@ where
     ///
     /// If the value for the key is already being computed by another task, this task will wait for
     /// the computation to finish and return the result.
+    ///
+    /// If the computation is cancelled or panics, another current caller may retry it. The empty
+    /// entry is removed once no current callers remain.
     pub async fn compute<F>(&self, key: K, func: F) -> V
     where
         F: AsyncFnOnce() -> V,
     {
-        // 1. Get or create the OnceCell.
-        let cell = {
-            let mut map = self.map.lock();
-            map.entry(key)
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
-        };
-
-        // 2. Try to initialize the cell.
-        // OnceCell::get_or_init guarantees that only one task executes the closure.
-        let res = cell.get_or_init(func).await;
-        res.clone()
+        let mut guard = ComputeCleanupGuard::new(self, key);
+        let result = guard.cell().get_or_init(func).await.clone();
+        guard.disarm_cleanup();
+        result
     }
 
     /// Compute the value for the given key if absent.
@@ -112,24 +181,17 @@ where
     /// If the value for the key is already being computed by another task, this task will wait for
     /// the computation to finish and return the result.
     ///
-    /// If the computation fails, the error is returned and the value is not stored. Other tasks
-    /// waiting for the value will retry the computation.
+    /// If the computation fails, is cancelled or panics, the value is not stored and other current
+    /// callers may retry the computation. The empty entry is removed once no current callers
+    /// remain.
     pub async fn try_compute<E, F>(&self, key: K, func: F) -> Result<V, E>
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        // 1. Get or create the OnceCell.
-        let cell = {
-            let mut map = self.map.lock();
-            map.entry(key)
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
-        };
-
-        // 2. Try to initialize the cell.
-        // OnceCell::get_or_try_init guarantees that only one task executes the closure.
-        let res = cell.get_or_try_init(func).await?;
-        Ok(res.clone())
+        let mut guard = ComputeCleanupGuard::new(self, key);
+        let result = guard.cell().get_or_try_init(func).await?.clone();
+        guard.disarm_cleanup();
+        Ok(result)
     }
 
     /// Get a clone of the value for the given key if exists.

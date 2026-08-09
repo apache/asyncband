@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 * Retry spurious atomic failures when completing `Once` initialization. ([#126](https://github.com/fast/mea/pull/126))
 * Make cloning a `WaitGroup` panic on counter overflow instead of silently losing track of a handle.
 * Align `Condvar` with standard condition-variable semantics by notifying only current waiters and passing a cancelled `notify_one` wakeup to another current waiter instead of storing a permit.
+* Clean up uninitialized `OnceMap` and `singleflight` entries once no callers remain after a failure, panic, or cancellation.
 
 ## v0.6.5 (2026-07-30)
 
