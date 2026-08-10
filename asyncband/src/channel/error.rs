@@ -18,36 +18,42 @@
 use std::any::type_name;
 use std::fmt;
 
-/// An error returned when trying to send on a closed channel.
-///
-/// Returned from [`UnboundedSender::send`] or [`BoundedSender::send`] if the
-/// corresponding [`UnboundedReceiver`] or [`BoundedReceiver`] has already been
-/// dropped.
-///
-/// The message that could not be sent can be retrieved again with
-/// [`SendError::into_inner`].
-///
-/// [`UnboundedSender::send`]: crate::mpsc::UnboundedSender::send
-/// [`BoundedSender::send`]: crate::mpsc::BoundedSender::send
-/// [`UnboundedReceiver`]: crate::mpsc::UnboundedReceiver
-/// [`BoundedReceiver`]: crate::mpsc::BoundedReceiver
+/// Selects which buffered value an explicit lossy send replaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FullBehavior {
+    /// Replace the oldest buffered value.
+    DropOldest,
+    /// Replace the newest buffered value.
+    DropNewest,
+}
+
+/// The result of an explicit lossy send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub enum SendOutcome<T> {
+    /// The value was sent without replacing another value.
+    Sent,
+    /// The value was sent and the contained buffered value was replaced.
+    Replaced(T),
+}
+
+/// An error returned when all receivers have been dropped.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SendError<T>(T);
 
 impl<T> SendError<T> {
-    /// Get a reference to the message that failed to be sent.
+    /// Returns a reference to the value that was not sent.
     pub fn as_inner(&self) -> &T {
         &self.0
     }
 
-    /// Consumes the error and returns the message that failed to be sent.
+    /// Returns the value that was not sent.
     pub fn into_inner(self) -> T {
         self.0
     }
 
-    /// Creates a new `SendError` with the given message.
-    pub(super) fn new(msg: T) -> SendError<T> {
-        SendError(msg)
+    pub(crate) fn new(value: T) -> Self {
+        Self(value)
     }
 }
 
@@ -65,57 +71,57 @@ impl<T> fmt::Debug for SendError<T> {
 
 impl<T> std::error::Error for SendError<T> {}
 
-/// Error returned by `try_send`.
+/// An error returned by a non-waiting send.
 #[derive(Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
-    /// The channel is full, so data may not be sent at this time, but the receiver has not yet
-    /// disconnected.
+    /// The channel is full but still connected.
     Full(T),
-    /// The receiver has become disconnected, and there will never be any more data sent on it.
+    /// All receivers have been dropped.
     Disconnected(T),
 }
 
 impl<T> TrySendError<T> {
-    /// Gets a reference to the message that failed to be sent.
+    /// Returns a reference to the value that was not sent.
     pub fn as_inner(&self) -> &T {
         match self {
-            TrySendError::Full(msg) | TrySendError::Disconnected(msg) => msg,
+            Self::Full(value) | Self::Disconnected(value) => value,
         }
     }
 
-    /// Consumes the error and returns the message that failed to be sent.
+    /// Returns the value that was not sent.
     pub fn into_inner(self) -> T {
         match self {
-            TrySendError::Full(msg) | TrySendError::Disconnected(msg) => msg,
+            Self::Full(value) | Self::Disconnected(value) => value,
         }
     }
 }
 
 impl<T> fmt::Display for TrySendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            TrySendError::Full(_) => "sending on a full channel",
-            TrySendError::Disconnected(_) => "sending on a closed channel",
-        })
+        match self {
+            Self::Full(_) => f.write_str("sending on a full channel"),
+            Self::Disconnected(_) => f.write_str("sending on a closed channel"),
+        }
     }
 }
 
 impl<T> fmt::Debug for TrySendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ty = type_name::<T>();
         match self {
-            TrySendError::Full(_) => write!(f, "TrySendError<{ty}>::Full(..)"),
-            TrySendError::Disconnected(_) => write!(f, "TrySendError<{ty}>::Disconnected(..)"),
+            Self::Full(_) => write!(f, "TrySendError<{}>::Full(..)", type_name::<T>()),
+            Self::Disconnected(_) => {
+                write!(f, "TrySendError<{}>::Disconnected(..)", type_name::<T>())
+            }
         }
     }
 }
 
 impl<T> std::error::Error for TrySendError<T> {}
 
-/// Error returned by `recv`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An error returned when a channel is closed and drained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecvError {
-    /// The sender has become disconnected, and there will never be any more data received on it.
+    /// All senders have been dropped and no buffered value remains.
     Disconnected,
 }
 
@@ -127,22 +133,21 @@ impl fmt::Display for RecvError {
 
 impl std::error::Error for RecvError {}
 
-/// Error returned by `try_recv`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An error returned by a non-waiting receive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TryRecvError {
-    /// This channel is currently empty, but the sender(s) have not yet disconnected, so data may
-    /// yet become available.
+    /// No value is currently available, but the channel is still connected.
     Empty,
-    /// The sender has become disconnected, and there will never be any more data received on it.
+    /// All senders have been dropped and no buffered value remains.
     Disconnected,
 }
 
 impl fmt::Display for TryRecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            TryRecvError::Empty => "receiving on an empty channel",
-            TryRecvError::Disconnected => "receiving on a closed channel",
-        })
+        match self {
+            Self::Empty => f.write_str("receiving on an empty channel"),
+            Self::Disconnected => f.write_str("receiving on a closed channel"),
+        }
     }
 }
 

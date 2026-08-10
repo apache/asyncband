@@ -15,19 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A multi-producer, single-consumer queue for sending values between asynchronous tasks.
+//! Higher-level coordination protocols built from synchronization primitives.
+//!
+//! Coordination protocols express application-level relationships rather than direct access to a
+//! protected value:
+//!
+//! * [shutdown] coordinates shutdown initiation, participation, and observation.
+//! * [singleflight] coalesces concurrent work for the same key.
+//!
+//! Keeping these protocols outside [crate::sync] leaves the synchronization group focused on
+//! mutexes, notifications, permits, and one-time initialization.
 
-mod bounded;
-mod error;
-mod unbounded;
-
-pub use bounded::BoundedReceiver;
-pub use bounded::BoundedSender;
-pub use bounded::bounded;
-pub use error::RecvError;
-pub use error::SendError;
-pub use error::TryRecvError;
-pub use error::TrySendError;
-pub use unbounded::UnboundedReceiver;
-pub use unbounded::UnboundedSender;
-pub use unbounded::unbounded;
+#[cfg(feature = "shutdown")]
+pub use crate::shutdown;
+#[cfg(feature = "singleflight")]
+pub use crate::singleflight;

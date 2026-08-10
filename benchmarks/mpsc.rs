@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use asyncband::mpsc;
+use std::num::NonZeroUsize;
+
+use asyncband::channel::mpsc;
 use divan::Bencher;
 use divan::black_box;
 
@@ -28,7 +30,7 @@ const SENDER_COUNTS: &[usize] = &[1, 8, 32];
 #[divan::bench(args = SENDER_COUNTS)]
 fn cancel_backpressured_senders(bencher: Bencher, sender_count: usize) {
     let mut context = bench_context();
-    let (sender, mut receiver) = mpsc::bounded(1);
+    let (sender, mut receiver) = mpsc::bounded(NonZeroUsize::new(1).unwrap());
     let senders = (0..sender_count)
         .map(|_| sender.clone())
         .collect::<Vec<_>>();
@@ -52,7 +54,7 @@ fn cancel_backpressured_senders(bencher: Bencher, sender_count: usize) {
 #[divan::bench(args = SENDER_COUNTS)]
 fn drain_backpressured_senders(bencher: Bencher, sender_count: usize) {
     let mut context = bench_context();
-    let (sender, mut receiver) = mpsc::bounded(1);
+    let (sender, mut receiver) = mpsc::bounded(NonZeroUsize::new(1).unwrap());
     let senders = (0..sender_count)
         .map(|_| sender.clone())
         .collect::<Vec<_>>();

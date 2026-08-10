@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use asyncband::barrier::Barrier;
 use asyncband::blocking::FutureExt as _;
+use asyncband::channel::oneshot;
 use asyncband::mutex::Mutex;
-use asyncband::oneshot;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_primitives_compose_across_modules() {

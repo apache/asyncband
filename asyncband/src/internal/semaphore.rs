@@ -120,55 +120,10 @@ impl Semaphore {
         fut.await
     }
 
-    /// Returns a future that is resolved when acquired `n` permits from the semaphore.
-    pub fn poll_acquire(&self, n: usize) -> Acquire<'_> {
-        Acquire {
-            permits: n,
-            index: None,
-            semaphore: self,
-            done: false,
-        }
-    }
-
     /// Adds `n` permits to the semaphore.
     pub fn release(&self, n: usize) {
         if n != 0 {
             self.insert_permits_with_lock(n, self.waiters.lock());
-        }
-    }
-
-    /// Adds `n` permits to the semaphore if there is any waiter.
-    pub fn release_if_nonempty(&self, n: usize) {
-        let waiters = self.waiters.lock();
-        if !waiters.is_empty() {
-            self.insert_permits_with_lock(n, waiters);
-        }
-    }
-
-    /// Adds as many permits until there is no waiter.
-    pub fn notify_all(&self) {
-        let mut waiters = self.waiters.lock();
-        let mut wakers = Vec::new();
-        loop {
-            match waiters.unlink_first_waiter(|node| {
-                node.permits = 0;
-                true
-            }) {
-                None => break,
-                Some((id, waiter)) => {
-                    let remove_now = waiter.waker.is_none();
-                    if let Some(waker) = waiter.waker.take() {
-                        wakers.push(waker);
-                    }
-                    if remove_now {
-                        waiters.remove_unlinked_waiter(id);
-                    }
-                }
-            }
-        }
-        drop(waiters);
-        for w in wakers.drain(..) {
-            w.wake();
         }
     }
 

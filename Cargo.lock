@@ -57,7 +57,9 @@ name = "asyncband"
 version = "0.6.7"
 dependencies = [
  "hashbrown",
+ "pollster",
  "tokio",
+ "tokio-test",
 ]
 
 [[package]]

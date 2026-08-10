@@ -30,7 +30,7 @@ Asyncband is a runtime-agnostic library providing essential synchronization prim
 
 ## Available primitives
 
-The crate enables no primitives by default. Categories describe each primitive's primary purpose and do not add another module level, so public paths remain concise, such as `asyncband::mutex` and `asyncband::once::OnceCell`.
+The crate enables no primitives by default. Synchronization primitives retain their existing root paths, while transfer APIs are grouped under `asyncband::channel`. The `sync`, `channel`, and `coordination` umbrella features enable their corresponding leaf features.
 
 | Category                | Primitive                                                                            | Feature        | Purpose                                                                 |
 | ----------------------- | ------------------------------------------------------------------------------------ | -------------- | ----------------------------------------------------------------------- |
@@ -44,12 +44,15 @@ The crate enables no primitives by default. Categories describe each primitive's
 |                         | [`Latch`](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html)             | `latch`        | Wait until a one-way countdown completes.                               |
 |                         | [`WaitGroup`](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html) | `waitgroup`    | Wait for a dynamic group of tasks to finish.                            |
 |                         | [`shutdown`](https://docs.rs/asyncband/*/asyncband/shutdown/)                        | `shutdown`     | Coordinate shutdown signals and completion.                             |
-| Channels                | [`oneshot::channel`](https://docs.rs/asyncband/*/asyncband/oneshot/fn.channel.html)  | `oneshot`      | Send one value between two tasks.                                       |
-|                         | [`mpsc::bounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.bounded.html)        | `mpsc`         | Send values from multiple producers through a bounded channel.          |
-|                         | [`mpsc::unbounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.unbounded.html)    | `mpsc`         | Send values from multiple producers through an unbounded channel.       |
-|                         | [`broadcast::overflow`](https://docs.rs/asyncband/*/asyncband/broadcast/overflow/)   | `broadcast`    | Broadcast values and report when slow receivers miss overwritten items. |
+| Channels                | [`channel::oneshot`](https://docs.rs/asyncband/*/asyncband/channel/oneshot/)         | `oneshot`      | Send one value between two tasks.                                       |
+|                         | [`channel::{spsc,mpsc,spmc,mpmc}`](https://docs.rs/asyncband/*/asyncband/channel/)   | `queue`        | Send each value to one competing receiver.                              |
+|                         | [`channel::broadcast`](https://docs.rs/asyncband/*/asyncband/channel/broadcast/)     | `broadcast`    | Select overflow, backpressure, or unbounded multicast retention.        |
+|                         | [`channel::watch`](https://docs.rs/asyncband/*/asyncband/channel/watch/)             | `watch`        | Distribute the latest state and coalesce intermediate versions.         |
+|                         | [`channel::disruptor`](https://docs.rs/asyncband/*/asyncband/channel/disruptor/)     | `disruptor`    | Publish through bounded sequenced multicast rings.                      |
 | Workload control        | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore`    | Control concurrent access with permits.                                 |
 |                         | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)      | `singleflight` | Coalesce concurrent calls for the same key.                             |
+
+See the [channel design for 0.7](docs/channel-design.md) for the topology matrix, overload policies, cancellation rules, and Disruptor invariants.
 
 ## Installation
 
@@ -99,7 +102,7 @@ All synchronization primitives in this library are runtime-agnostic, meaning the
 
 ## Thread Safety
 
-Asyncband primitives and guards implement `Send` and `Sync` only when the protected or transferred value satisfies the necessary bounds. In particular, owned read guards that may move destruction to another thread require the protected value to be `Send` as well as `Sync`. See each type's documentation for its exact bounds.
+Asyncband primitives and guards implement `Send` and `Sync` only when the protected or transferred value satisfies the necessary bounds. In particular, owned read guards that may move destruction to another thread require the protected value to be `Send` as well as `Sync`. A channel endpoint is cloneable and `Sync` only when its topology supports multiple producers or consumers; single-side endpoints require exclusive access. See each type's documentation for its exact bounds.
 
 ## Minimum Supported Rust Version (MSRV)
 

@@ -16,16 +16,16 @@
 // under the License.
 
 use asyncband::barrier::Barrier;
-use asyncband::broadcast;
+use asyncband::channel::broadcast;
+use asyncband::channel::mpsc;
+use asyncband::channel::oneshot;
 use asyncband::condvar::Condvar;
 use asyncband::latch::Latch;
-use asyncband::mpsc;
 use asyncband::mutex::Mutex;
 use asyncband::mutex::MutexGuard;
 use asyncband::once::Once;
 use asyncband::once::OnceCell;
 use asyncband::once::OnceMap;
-use asyncband::oneshot;
 use asyncband::rwlock::OwnedRwLockReadGuard;
 use asyncband::rwlock::RwLock;
 use asyncband::rwlock::RwLockReadGuard;
@@ -67,10 +67,7 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<oneshot::SendError<i64>>();
     assert_send_and_sync::<oneshot::Sender<i64>>();
     assert_send_and_sync::<mpsc::SendError<i64>>();
-    assert_send_and_sync::<mpsc::UnboundedSender<i64>>();
-    assert_send_and_sync::<mpsc::UnboundedReceiver<i64>>();
-    assert_send_and_sync::<mpsc::BoundedSender<i64>>();
-    assert_send_and_sync::<mpsc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<mpsc::Sender<i64>>();
 }
 
 #[test]
@@ -79,7 +76,7 @@ fn movable_public_types_are_send() {
 
     assert_send::<RwLockReadGuard<'_, std::sync::MutexGuard<'static, ()>>>();
     assert_send::<oneshot::Receiver<i64>>();
-    assert_send::<oneshot::Recv<i64>>();
+    assert_send::<mpsc::Receiver<i64>>();
 }
 
 #[test]
@@ -111,10 +108,7 @@ fn public_types_are_unpin() {
     assert_unpin::<oneshot::Sender<i64>>();
     assert_unpin::<oneshot::SendError<i64>>();
     assert_unpin::<oneshot::Receiver<i64>>();
-    assert_unpin::<oneshot::Recv<i64>>();
     assert_unpin::<mpsc::SendError<i64>>();
-    assert_unpin::<mpsc::UnboundedSender<i64>>();
-    assert_unpin::<mpsc::UnboundedReceiver<i64>>();
-    assert_unpin::<mpsc::BoundedSender<i64>>();
-    assert_unpin::<mpsc::BoundedReceiver<i64>>();
+    assert_unpin::<mpsc::Sender<i64>>();
+    assert_unpin::<mpsc::Receiver<i64>>();
 }

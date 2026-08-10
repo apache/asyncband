@@ -56,7 +56,7 @@
 //! | Protect shared state       | [`mutex::Mutex`], [`rwlock::RwLock`], [`condvar::Condvar`]                            | `mutex`, `rwlock`, `condvar`                |
 //! | Initialize values once     | [`once::Once`], [`once::OnceCell`], [`once::OnceMap`]                                 | `once`, `once-cell`, `once-map`             |
 //! | Coordinate tasks           | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`]        | `barrier`, `latch`, `waitgroup`, `shutdown` |
-//! | Send values                | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`], [`broadcast::overflow`] | `oneshot`, `mpsc`, `broadcast`              |
+//! | Send values                | [`channel`]                                                                          | `channel` or a channel policy feature       |
 //! | Control workloads          | [`semaphore::Semaphore`], [`singleflight::Group`]                                     | `semaphore`, `singleflight`                 |
 //! | Wait from synchronous code | [`blocking::FutureExt`]                                                               | `blocking`                                  |
 //!
@@ -93,20 +93,24 @@ mod internal;
 pub mod barrier;
 #[cfg(feature = "blocking")]
 pub mod blocking;
-#[cfg(feature = "broadcast")]
-pub mod broadcast;
+#[cfg(any(
+    feature = "broadcast",
+    feature = "disruptor",
+    feature = "oneshot",
+    feature = "queue",
+    feature = "watch",
+))]
+pub mod channel;
 #[cfg(feature = "condvar")]
 pub mod condvar;
+#[cfg(any(feature = "shutdown", feature = "singleflight"))]
+pub mod coordination;
 #[cfg(feature = "latch")]
 pub mod latch;
-#[cfg(feature = "mpsc")]
-pub mod mpsc;
 #[cfg(feature = "mutex")]
 pub mod mutex;
 #[cfg(any(feature = "once", feature = "once-cell", feature = "once-map"))]
 pub mod once;
-#[cfg(feature = "oneshot")]
-pub mod oneshot;
 #[cfg(feature = "rwlock")]
 pub mod rwlock;
 #[cfg(feature = "semaphore")]
@@ -115,8 +119,34 @@ pub mod semaphore;
 pub mod shutdown;
 #[cfg(feature = "singleflight")]
 pub mod singleflight;
+#[cfg(any(
+    feature = "barrier",
+    feature = "condvar",
+    feature = "latch",
+    feature = "mutex",
+    feature = "once",
+    feature = "once-cell",
+    feature = "once-map",
+    feature = "rwlock",
+    feature = "semaphore",
+    feature = "waitgroup",
+))]
+pub mod sync;
 #[cfg(feature = "waitgroup")]
 pub mod waitgroup;
 
-#[cfg(all(test, any(feature = "once-map", feature = "singleflight")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "once-map",
+        feature = "singleflight",
+        all(
+            feature = "broadcast",
+            feature = "disruptor",
+            feature = "oneshot",
+            feature = "queue",
+            feature = "watch",
+        ),
+    )
+))]
 mod test_support;

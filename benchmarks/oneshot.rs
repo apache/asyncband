@@ -22,7 +22,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-use asyncband::oneshot;
+use asyncband::channel::oneshot;
 use divan::Bencher;
 use divan::black_box;
 

@@ -15,13 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 use std::thread::JoinHandle;
 
-use asyncband::broadcast::overflow;
+use asyncband::channel::broadcast::overflow;
 use divan::Bencher;
 use divan::black_box;
 
@@ -42,7 +43,8 @@ struct ConcurrentSend {
 
 impl ConcurrentSend {
     fn new(sender_count: usize) -> Self {
-        let (sender, receiver) = overflow::channel(CONCURRENT_BATCH_SIZE);
+        let (sender, receiver) =
+            overflow::channel(NonZeroUsize::new(CONCURRENT_BATCH_SIZE).unwrap());
         let ready = Arc::new(Barrier::new(sender_count + 1));
         let start = Arc::new(Barrier::new(sender_count + 1));
         let done = Arc::new(Barrier::new(sender_count + 1));
@@ -59,7 +61,7 @@ impl ConcurrentSend {
                 start.wait();
                 let first = worker_index * sends_per_worker;
                 for value in first..first + sends_per_worker {
-                    sender.send(black_box(value));
+                    sender.send(black_box(value)).unwrap();
                 }
                 done.wait();
             }));
@@ -98,7 +100,8 @@ struct ConcurrentFanout {
 
 impl ConcurrentFanout {
     fn new(receiver_count: usize) -> Self {
-        let (sender, receiver) = overflow::channel(CONCURRENT_BATCH_SIZE);
+        let (sender, receiver) =
+            overflow::channel(NonZeroUsize::new(CONCURRENT_BATCH_SIZE).unwrap());
         let mut receivers = Vec::with_capacity(receiver_count);
         receivers.push(receiver);
         for _ in 1..receiver_count {
@@ -138,7 +141,7 @@ impl ConcurrentFanout {
 
     fn run(&mut self) {
         for value in 0..CONCURRENT_BATCH_SIZE {
-            self.sender.send(black_box(value));
+            self.sender.send(black_box(value)).unwrap();
         }
         self.start.wait();
         self.done.wait();
@@ -155,23 +158,23 @@ impl Drop for ConcurrentFanout {
 
 #[divan::bench]
 fn send_overwrite(bencher: Bencher) {
-    let (sender, receiver) = overflow::channel::<usize>(1);
-    bencher.bench_local(|| sender.send(black_box(1)));
+    let (sender, receiver) = overflow::channel::<usize>(NonZeroUsize::new(1).unwrap());
+    bencher.bench_local(|| sender.send(black_box(1)).unwrap());
     black_box(receiver);
 }
 
 #[divan::bench]
 fn try_recv_empty(bencher: Bencher) {
-    let (sender, mut receiver) = overflow::channel::<usize>(1);
+    let (sender, mut receiver) = overflow::channel::<usize>(NonZeroUsize::new(1).unwrap());
     bencher.bench_local(|| black_box(receiver.try_recv()));
     black_box(sender);
 }
 
 #[divan::bench]
 fn send_and_try_recv(bencher: Bencher) {
-    let (sender, mut receiver) = overflow::channel(1);
+    let (sender, mut receiver) = overflow::channel(NonZeroUsize::new(1).unwrap());
     bencher.bench_local(|| {
-        sender.send(black_box(1));
+        sender.send(black_box(1)).unwrap();
         black_box(receiver.try_recv().unwrap())
     });
 }
@@ -205,7 +208,7 @@ fn cancel_pending(bencher: Bencher) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let (sender, mut receiver) = overflow::channel::<usize>(1);
+        let (sender, mut receiver) = overflow::channel::<usize>(NonZeroUsize::new(1).unwrap());
         {
             let mut recv = pin!(receiver.recv());
             poll_pending(recv.as_mut(), &mut context);
@@ -219,11 +222,11 @@ fn deliver_to_waiter(bencher: Bencher) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let (sender, mut receiver) = overflow::channel(1);
+        let (sender, mut receiver) = overflow::channel(NonZeroUsize::new(1).unwrap());
         let mut recv = pin!(receiver.recv());
         poll_pending(recv.as_mut(), &mut context);
 
-        sender.send(black_box(1usize));
+        sender.send(black_box(1usize)).unwrap();
         let value = poll_pinned_ready(recv.as_mut(), &mut context).unwrap();
         black_box(value)
     });
@@ -234,7 +237,7 @@ fn deliver_to_receiver_batch(bencher: Bencher, receiver_count: usize) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let (sender, receiver) = overflow::channel(1);
+        let (sender, receiver) = overflow::channel(NonZeroUsize::new(1).unwrap());
         let mut receivers = (0..receiver_count)
             .map(|_| receiver.resubscribe())
             .collect::<Vec<_>>();
@@ -246,7 +249,7 @@ fn deliver_to_receiver_batch(bencher: Bencher, receiver_count: usize) {
             poll_pending(recv.as_mut(), &mut context);
         }
 
-        sender.send(black_box(1usize));
+        sender.send(black_box(1usize)).unwrap();
         for mut recv in recvs {
             let value = poll_pinned_ready(recv.as_mut(), &mut context).unwrap();
             black_box(value);

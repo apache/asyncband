@@ -38,22 +38,40 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 
+channel = ["broadcast", "disruptor", "oneshot", "queue", "watch"]
+coordination = ["shutdown", "singleflight"]
+full = ["blocking", "channel", "coordination", "sync"]
+sync = [
+  "barrier",
+  "condvar",
+  "latch",
+  "mutex",
+  "once",
+  "once-cell",
+  "once-map",
+  "rwlock",
+  "semaphore",
+  "waitgroup",
+]
+
 barrier = []
 blocking = []
 broadcast = []
 condvar = ["mutex"]
+disruptor = []
 latch = []
-mpsc = []
 mutex = []
 once = ["semaphore"]
 once-cell = ["semaphore"]
 once-map = ["dep:hashbrown", "once-cell"]
 oneshot = []
+queue = []
 rwlock = []
 semaphore = []
 shutdown = ["latch", "waitgroup"]
 singleflight = ["dep:hashbrown", "once-cell"]
 waitgroup = []
+watch = []
 
 [dependencies]
 hashbrown = { workspace = true, default-features = false, features = [
@@ -61,7 +79,9 @@ hashbrown = { workspace = true, default-features = false, features = [
 ], optional = true }
 
 [dev-dependencies]
+pollster.workspace = true
 tokio = { workspace = true, features = ["full"] }
+tokio-test.workspace = true
 
 [lints]
 workspace = true

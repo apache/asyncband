@@ -15,14 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[cfg(feature = "mpsc")]
-pub(crate) mod atomic_option_box;
-
 #[cfg(any(
     feature = "barrier",
-    feature = "broadcast",
     feature = "latch",
-    feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
@@ -46,46 +41,35 @@ pub(crate) mod once_table;
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
+    feature = "disruptor",
     feature = "latch",
-    feature = "mpsc",
     feature = "mutex",
+    feature = "oneshot",
+    feature = "queue",
     feature = "rwlock",
     feature = "semaphore",
+    feature = "watch",
     feature = "waitgroup",
 ))]
 pub(crate) mod mutex;
 
-#[cfg(feature = "broadcast")]
-pub(crate) mod rwlock;
-
-#[cfg(any(
-    feature = "mpsc",
-    feature = "mutex",
-    feature = "rwlock",
-    feature = "semaphore",
-))]
-// `mpsc` uses `poll_acquire`, `release_if_nonempty`, and `notify_all`; mutexes and rwlocks use
-// `acquire`, `try_acquire`, and `release`; the public semaphore also uses the accounting methods.
-// Each single-primitive build intentionally leaves the other groups unused.
+#[cfg(any(feature = "mutex", feature = "rwlock", feature = "semaphore"))]
+// Mutexes and rwlocks use `acquire`, `try_acquire`, and `release`; the public semaphore also uses
+// the accounting methods. Each single-primitive build intentionally leaves the other groups
+// unused.
 #[allow(dead_code)]
 pub(crate) mod semaphore;
 
-#[cfg(any(
-    feature = "mpsc",
-    feature = "mutex",
-    feature = "rwlock",
-    feature = "semaphore",
-))]
+#[cfg(any(feature = "mutex", feature = "rwlock", feature = "semaphore"))]
 pub(crate) mod waitlist;
 
 #[cfg(any(
     feature = "barrier",
-    feature = "broadcast",
     feature = "latch",
     feature = "once",
     feature = "waitgroup",
 ))]
-// `barrier` constructs a wait set with `with_capacity`, while broadcast and countdown-based
-// primitives use `new`. One constructor is therefore unused in every single-primitive build.
+// `barrier` constructs a wait set with `with_capacity`, while countdown-based primitives use
+// `new`. One constructor is therefore unused in every single-primitive build.
 #[allow(dead_code)]
 pub(crate) mod waitset;
