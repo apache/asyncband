@@ -23,6 +23,8 @@ use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 use super::support::poll_ready;
 
+const WAITER_COUNTS: &[usize] = &[1, 8, 32];
+
 #[divan::bench]
 fn cancel_pending_wait(bencher: Bencher) {
     let mut context = noop_context();
@@ -48,6 +50,27 @@ fn complete_waiter(bencher: Bencher) {
 
         poll_ready(once.call_once(async || {}), &mut context);
         poll_pinned_ready(wait.as_mut(), &mut context);
+        black_box(once.is_completed())
+    });
+}
+
+#[divan::bench(args = WAITER_COUNTS)]
+fn complete_waiter_batch(bencher: Bencher, waiter_count: usize) {
+    let mut context = noop_context();
+
+    bencher.bench_local(|| {
+        let once = Once::new();
+        let mut waiters = (0..waiter_count)
+            .map(|_| Box::pin(once.wait()))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            poll_pending(waiter.as_mut(), &mut context);
+        }
+
+        poll_ready(once.call_once(async || {}), &mut context);
+        for mut waiter in waiters {
+            poll_pinned_ready(waiter.as_mut(), &mut context);
+        }
         black_box(once.is_completed())
     });
 }

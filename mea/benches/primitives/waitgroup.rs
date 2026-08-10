@@ -23,6 +23,8 @@ use super::support::noop_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 
+const WORKER_COUNTS: &[usize] = &[1, 8, 32];
+
 #[divan::bench]
 fn cancel_pending(bencher: Bencher) {
     let mut context = noop_context();
@@ -50,6 +52,22 @@ fn complete_waiter(bencher: Bencher) {
         poll_pending(wait.as_mut(), &mut context);
 
         drop(worker);
+        poll_pinned_ready(wait.as_mut(), &mut context);
+        black_box(())
+    });
+}
+
+#[divan::bench(args = WORKER_COUNTS)]
+fn complete_worker_batch(bencher: Bencher, worker_count: usize) {
+    let mut context = noop_context();
+
+    bencher.bench_local(|| {
+        let root = WaitGroup::new();
+        let workers = (0..worker_count).map(|_| root.clone()).collect::<Vec<_>>();
+        let mut wait = pin!(root.into_future());
+        poll_pending(wait.as_mut(), &mut context);
+
+        drop(workers);
         poll_pinned_ready(wait.as_mut(), &mut context);
         black_box(())
     });

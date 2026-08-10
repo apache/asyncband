@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::pin::pin;
+use std::sync::Arc;
 
 use divan::Bencher;
 use divan::black_box;
@@ -21,6 +22,9 @@ use mea::semaphore::Semaphore;
 use super::support::noop_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
+use super::support::poll_ready;
+
+const QUEUE_DEPTHS: &[usize] = &[1, 8, 32];
 
 #[divan::bench]
 fn cancel_pending_acquire(bencher: Bencher) {
@@ -83,5 +87,74 @@ fn try_acquire_release(bencher: Bencher) {
 
     bencher.bench_local(|| {
         drop(black_box(semaphore.try_acquire(black_box(1)).unwrap()));
+    });
+}
+
+#[divan::bench]
+fn owned_try_acquire_release(bencher: Bencher) {
+    let semaphore = Arc::new(Semaphore::new(8));
+
+    bencher.bench_local(|| {
+        let permit = semaphore
+            .clone()
+            .try_acquire_owned(black_box(2))
+            .expect("permits must be available");
+        black_box(permit.permits());
+        drop(permit);
+    });
+}
+
+#[divan::bench]
+fn owned_try_acquire_rejected(bencher: Bencher) {
+    let semaphore = Arc::new(Semaphore::new(8));
+    let held = semaphore
+        .clone()
+        .try_acquire_owned(8)
+        .expect("all permits must be available");
+
+    bencher.bench_local(|| black_box(semaphore.clone().try_acquire_owned(black_box(1)).is_none()));
+
+    drop(held);
+}
+
+#[divan::bench(args = QUEUE_DEPTHS)]
+fn cancel_pending_owned_batch(bencher: Bencher, queue_depth: usize) {
+    let semaphore = Arc::new(Semaphore::new(0));
+    let mut context = noop_context();
+
+    bencher.bench_local(|| {
+        let mut waiters = (0..queue_depth)
+            .map(|index| Box::pin(semaphore.clone().acquire_owned(1 << (index % 3))))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            poll_pending(waiter.as_mut(), &mut context);
+        }
+        drop(waiters);
+        black_box(semaphore.available_permits())
+    });
+}
+
+#[divan::bench(args = QUEUE_DEPTHS)]
+fn queued_owned_burst(bencher: Bencher, queue_depth: usize) {
+    const PERMITS: usize = 8;
+
+    let mut context = noop_context();
+    bencher.bench_local(|| {
+        let semaphore = Arc::new(Semaphore::new(PERMITS));
+        let held = poll_ready(semaphore.clone().acquire_owned(PERMITS), &mut context);
+        let mut waiters = (0..queue_depth)
+            .map(|index| Box::pin(semaphore.clone().acquire_owned(1 << (index % 3))))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            poll_pending(waiter.as_mut(), &mut context);
+        }
+
+        drop(held);
+        for mut waiter in waiters {
+            let permit = poll_pinned_ready(waiter.as_mut(), &mut context);
+            black_box(permit.permits());
+            drop(permit);
+        }
+        black_box(semaphore.available_permits())
     });
 }

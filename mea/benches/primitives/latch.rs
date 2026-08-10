@@ -22,6 +22,8 @@ use super::support::noop_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 
+const WORKER_COUNTS: &[usize] = &[1, 8, 32];
+
 #[divan::bench]
 fn cancel_pending(bencher: Bencher) {
     let mut context = noop_context();
@@ -46,6 +48,23 @@ fn wake_waiter(bencher: Bencher) {
         poll_pending(wait.as_mut(), &mut context);
 
         latch.count_down();
+        poll_pinned_ready(wait.as_mut(), &mut context);
+        black_box(latch.count())
+    });
+}
+
+#[divan::bench(args = WORKER_COUNTS)]
+fn worker_fan_in(bencher: Bencher, worker_count: usize) {
+    let mut context = noop_context();
+
+    bencher.bench_local(|| {
+        let latch = Latch::new(worker_count as u32);
+        let mut wait = pin!(latch.wait());
+        poll_pending(wait.as_mut(), &mut context);
+
+        for _ in 0..worker_count {
+            latch.count_down();
+        }
         poll_pinned_ready(wait.as_mut(), &mut context);
         black_box(latch.count())
     });
