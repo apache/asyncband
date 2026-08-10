@@ -17,6 +17,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -30,6 +31,31 @@ struct TrackWake(AtomicUsize);
 impl Wake for TrackWake {
     fn wake(self: Arc<Self>) {
         self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug)]
+struct PanicOnDrop {
+    value: u64,
+    panic: bool,
+    panicked: Arc<AtomicBool>,
+}
+
+impl Clone for PanicOnDrop {
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value,
+            panic: false,
+            panicked: self.panicked.clone(),
+        }
+    }
+}
+
+impl Drop for PanicOnDrop {
+    fn drop(&mut self) {
+        if self.panic && !self.panicked.swap(true, Ordering::Relaxed) {
+            panic!("panic while replacing a broadcast slot");
+        }
     }
 }
 
@@ -172,6 +198,35 @@ async fn test_try_recv_lagged() {
     assert_eq!(rx.try_recv(), Ok(2));
     assert_eq!(rx.try_recv(), Ok(3));
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[test]
+fn panicking_send_does_not_publish_an_unwritten_slot() {
+    let panicked = Arc::new(AtomicBool::new(false));
+    let (tx, mut rx) = channel(1);
+    tx.send(PanicOnDrop {
+        value: 1,
+        panic: true,
+        panicked: panicked.clone(),
+    });
+
+    let received = rx.try_recv().unwrap();
+    assert_eq!(received.value, 1);
+    drop(received);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tx.send(PanicOnDrop {
+            value: 2,
+            panic: false,
+            panicked: panicked.clone(),
+        });
+    }));
+    assert!(result.is_err());
+    assert!(panicked.load(Ordering::Relaxed));
+
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    drop(tx);
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
 }
 
 #[tokio::test]

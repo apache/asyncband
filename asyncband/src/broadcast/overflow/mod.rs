@@ -67,11 +67,11 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
 use crate::internal::rwlock::RwLock;
@@ -117,9 +117,11 @@ pub fn channel<T: Clone>(capacity: usize) -> (Sender<T>, Receiver<T>) {
         buffer: buffer.into_boxed_slice(),
         capacity,
         mask,
-        tail_cnt: AtomicU64::new(0),
+        state: Mutex::new(State {
+            tail: 0,
+            waiters: WaitSet::new(),
+        }),
         senders: AtomicUsize::new(1),
-        waiters: Mutex::new(WaitSet::new()),
     });
     let sender = Sender {
         shared: shared.clone(),
@@ -190,25 +192,22 @@ struct Shared<T> {
     buffer: Box<[RwLock<Slot<T>>]>,
     capacity: usize,
     mask: usize,
-    /// The global tail cursor. Points to the next slot to write.
-    /// Strictly monotonically increasing.
-    tail_cnt: AtomicU64,
+    /// Serializes publication and makes checking the tail atomic with registering a waiter.
+    state: Mutex<State>,
     /// Number of active senders.
     senders: AtomicUsize,
-    /// Waiters (receivers) waiting for new messages.
-    waiters: Mutex<WaitSet>,
 }
 
-impl<T> Shared<T> {
-    fn wake_waiters(&self) {
-        let wakers = {
-            let mut waiters = self.waiters.lock();
-            waiters.take_wakers()
-        };
+struct State {
+    /// The next slot to write. Every preceding sequence has been fully published.
+    tail: u64,
+    /// Receivers waiting for a new message.
+    waiters: WaitSet,
+}
 
-        for waker in wakers {
-            waker.wake();
-        }
+fn wake_waiters(wakers: impl IntoIterator<Item = Waker>) {
+    for waker in wakers {
+        waker.wake();
     }
 }
 
@@ -235,7 +234,8 @@ impl<T> Drop for Sender<T> {
             1 => {
                 // If this is the last sender, we need to wake up the receiver so it can
                 // observe the disconnected state.
-                self.shared.wake_waiters();
+                let wakers = self.shared.state.lock().waiters.take_wakers();
+                wake_waiters(wakers);
             }
             _ => {
                 // there are still other senders left, do nothing
@@ -261,17 +261,24 @@ impl<T> Sender<T> {
     /// assert_eq!(rx.try_recv(), Ok(10));
     /// ```
     pub fn send(&self, msg: T) {
-        let tail = self.shared.tail_cnt.fetch_add(1, Ordering::SeqCst);
-        let idx = (tail as usize) & self.shared.mask;
+        let wakers = {
+            let mut state = self.shared.state.lock();
+            let tail = state.tail;
+            let idx = (tail as usize) & self.shared.mask;
 
-        {
             let mut slot = self.shared.buffer[idx].write();
             slot.msg = Some(msg);
             slot.version = tail;
-        }
+            drop(slot);
+
+            // Publish only after the slot is complete. Since all tail readers take the same lock,
+            // they can never observe a reserved or partially written sequence.
+            state.tail = tail.wrapping_add(1);
+            state.waiters.take_wakers()
+        };
 
         // Notify all waiting receivers.
-        self.shared.wake_waiters();
+        wake_waiters(wakers);
     }
 
     /// Creates a new receiver that starts receiving messages from the current tail of the channel.
@@ -295,7 +302,7 @@ impl<T> Sender<T> {
     /// ```
     pub fn subscribe(&self) -> Receiver<T> {
         // Receiver starts at the current tail.
-        let head = self.shared.tail_cnt.load(Ordering::SeqCst);
+        let head = self.shared.state.lock().tail;
         let shared = self.shared.clone();
         Receiver { shared, head }
     }
@@ -375,7 +382,8 @@ impl<T: Clone> Receiver<T> {
         let shared = &self.shared;
         let cap = shared.capacity as u64;
 
-        let tail = shared.tail_cnt.load(Ordering::SeqCst);
+        let state = shared.state.lock();
+        let tail = state.tail;
         let head = self.head;
 
         // diff represents how far behind the head is from the tail.
@@ -392,6 +400,7 @@ impl<T: Clone> Receiver<T> {
         if diff > 0 {
             let idx = (head as usize) & shared.mask;
             let slot = shared.buffer[idx].read();
+            drop(state);
 
             if slot.version == head {
                 return if let Some(msg) = &slot.msg {
@@ -413,6 +422,7 @@ impl<T: Clone> Receiver<T> {
         }
 
         // 3. No message available (diff == 0). Check for Closed.
+        drop(state);
         if shared.senders.load(Ordering::Acquire) == 0 {
             return Err(TryRecvError::Disconnected);
         }
@@ -444,7 +454,7 @@ impl<T> Receiver<T> {
     /// ```
     pub fn resubscribe(&self) -> Self {
         // Resubscribe starts at the current tail.
-        let head = self.shared.tail_cnt.load(Ordering::SeqCst);
+        let head = self.shared.state.lock().tail;
         let shared = self.shared.clone();
         Self { shared, head }
     }
@@ -484,13 +494,12 @@ impl<T: Clone> Future for Recv<'_, T> {
             }
 
             let shared = &receiver.shared;
-            let mut waiters = shared.waiters.lock();
+            let mut state = shared.state.lock();
 
             // Double check tail to avoid race conditions.
-            let tail_now = shared.tail_cnt.load(Ordering::SeqCst);
-            if tail_now != receiver.head {
+            if state.tail != receiver.head {
                 // New message arrived while acquiring the lock. Retry.
-                drop(waiters);
+                drop(state);
                 continue;
             }
 
@@ -502,8 +511,8 @@ impl<T: Clone> Future for Recv<'_, T> {
             }
 
             // Register Waker
-            let replaced_waker = waiters.register_waker(registration, cx);
-            drop(waiters);
+            let replaced_waker = state.waiters.register_waker(registration, cx);
+            drop(state);
             drop(replaced_waker);
             return Poll::Pending;
         }
@@ -514,8 +523,8 @@ impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
         if self.registration.is_some() {
             let removed_waker = {
-                let mut waiters = self.receiver.shared.waiters.lock();
-                waiters.unregister_waker(&mut self.registration)
+                let mut state = self.receiver.shared.state.lock();
+                state.waiters.unregister_waker(&mut self.registration)
             };
             drop(removed_waker);
         }

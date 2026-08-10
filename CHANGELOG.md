@@ -21,6 +21,7 @@ All notable changes to this project will be documented in this file.
 ### Bug fixes
 
 * Release cancelled wait registrations promptly and reclaim fulfilled `Semaphore::forget_exact` debt nodes.
+* Serialize broadcast publication so receivers cannot observe reserved slots or messages overwritten out of sequence.
 
 ### Improvements
 

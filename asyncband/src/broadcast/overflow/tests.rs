@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::atomic::Ordering;
-
 use super::*;
 
 // These tests stay next to the implementation because they inspect private state.
@@ -27,7 +25,7 @@ async fn sequence_number_wraparound() {
     let mut rx2 = rx.clone();
 
     let boundary = u64::MAX - 2;
-    tx.shared.tail_cnt.store(boundary, Ordering::SeqCst);
+    tx.shared.state.lock().tail = boundary;
     rx.head = boundary;
 
     tx.send(1);
@@ -54,7 +52,7 @@ async fn sequence_number_wraparound_exactly_overwritten() {
     let mut rx2 = rx.clone();
 
     let boundary = u64::MAX - 2;
-    tx.shared.tail_cnt.store(boundary, Ordering::SeqCst);
+    tx.shared.state.lock().tail = boundary;
     rx.head = boundary;
 
     tx.send(1);
@@ -83,15 +81,4 @@ fn capacity_is_rounded_to_a_power_of_two() {
     let (tx, _) = channel::<()>(5);
     assert_eq!(tx.shared.capacity, 8);
     assert_eq!(tx.shared.mask, 7);
-}
-
-#[test]
-fn try_recv_treats_an_unwritten_slot_as_empty() {
-    let (tx, mut rx) = channel::<u64>(2);
-    drop(tx);
-
-    rx.shared.tail_cnt.store(1, Ordering::SeqCst);
-
-    assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
-    assert_eq!(rx.head, 0);
 }
