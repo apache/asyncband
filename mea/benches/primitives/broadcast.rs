@@ -18,13 +18,15 @@ use divan::Bencher;
 use divan::black_box;
 use mea::broadcast::overflow;
 
-use super::support::noop_context;
+use super::support::bench_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 
+const RECEIVER_COUNTS: &[usize] = &[1, 8, 32];
+
 #[divan::bench]
 fn cancel_pending(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let (sender, mut receiver) = overflow::channel::<usize>(1);
@@ -38,7 +40,7 @@ fn cancel_pending(bencher: Bencher) {
 
 #[divan::bench]
 fn deliver_to_waiter(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let (sender, mut receiver) = overflow::channel(1);
@@ -48,5 +50,30 @@ fn deliver_to_waiter(bencher: Bencher) {
         sender.send(black_box(1usize));
         let value = poll_pinned_ready(recv.as_mut(), &mut context).unwrap();
         black_box(value)
+    });
+}
+
+#[divan::bench(args = RECEIVER_COUNTS)]
+fn deliver_to_receiver_batch(bencher: Bencher, receiver_count: usize) {
+    let mut context = bench_context();
+
+    bencher.bench_local(|| {
+        let (sender, receiver) = overflow::channel(1);
+        let mut receivers = (0..receiver_count)
+            .map(|_| receiver.resubscribe())
+            .collect::<Vec<_>>();
+        let mut recvs = receivers
+            .iter_mut()
+            .map(|receiver| Box::pin(receiver.recv()))
+            .collect::<Vec<_>>();
+        for recv in &mut recvs {
+            poll_pending(recv.as_mut(), &mut context);
+        }
+
+        sender.send(black_box(1usize));
+        for mut recv in recvs {
+            let value = poll_pinned_ready(recv.as_mut(), &mut context).unwrap();
+            black_box(value);
+        }
     });
 }

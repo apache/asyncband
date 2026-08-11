@@ -19,7 +19,7 @@ use divan::Bencher;
 use divan::black_box;
 use mea::waitgroup::WaitGroup;
 
-use super::support::noop_context;
+use super::support::bench_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 
@@ -27,7 +27,7 @@ const WORKER_COUNTS: &[usize] = &[1, 8, 32];
 
 #[divan::bench]
 fn cancel_pending(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let root = WaitGroup::new();
@@ -43,7 +43,7 @@ fn cancel_pending(bencher: Bencher) {
 
 #[divan::bench]
 fn complete_waiter(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let root = WaitGroup::new();
@@ -59,7 +59,7 @@ fn complete_waiter(bencher: Bencher) {
 
 #[divan::bench(args = WORKER_COUNTS)]
 fn complete_worker_batch(bencher: Bencher, worker_count: usize) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let root = WaitGroup::new();
@@ -69,6 +69,29 @@ fn complete_worker_batch(bencher: Bencher, worker_count: usize) {
 
         drop(workers);
         poll_pinned_ready(wait.as_mut(), &mut context);
+        black_box(())
+    });
+}
+
+#[divan::bench(args = WORKER_COUNTS)]
+fn complete_waiter_batch(bencher: Bencher, waiter_count: usize) {
+    let mut context = bench_context();
+
+    bencher.bench_local(|| {
+        let root = WaitGroup::new();
+        let worker = root.clone();
+        let wait = root.into_future();
+        let mut waiters = (0..waiter_count)
+            .map(|_| Box::pin(wait.clone()))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            poll_pending(waiter.as_mut(), &mut context);
+        }
+
+        drop(worker);
+        for mut waiter in waiters {
+            poll_pinned_ready(waiter.as_mut(), &mut context);
+        }
         black_box(())
     });
 }

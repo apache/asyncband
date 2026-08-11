@@ -19,7 +19,7 @@ use divan::Bencher;
 use divan::black_box;
 use mea::mutex::Mutex;
 
-use super::support::noop_context;
+use super::support::bench_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 use super::support::poll_ready;
@@ -29,7 +29,7 @@ const QUEUE_DEPTHS: &[usize] = &[1, 8, 32];
 #[divan::bench]
 fn uncontended_reuse(bencher: Bencher) {
     let mutex = Mutex::new(0usize);
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let mut guard = poll_ready(mutex.lock(), &mut context);
@@ -40,7 +40,7 @@ fn uncontended_reuse(bencher: Bencher) {
 
 #[divan::bench(args = QUEUE_DEPTHS)]
 fn queued_handoff(bencher: Bencher, queue_depth: usize) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let mutex = Arc::new(Mutex::new(0usize));

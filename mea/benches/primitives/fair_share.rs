@@ -20,12 +20,14 @@ use divan::Bencher;
 use divan::black_box;
 use mea::admission::FairShare;
 
-use super::support::noop_context;
+use super::support::bench_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 use super::support::poll_ready;
 
 type DeterministicFairShare = FairShare<usize, BuildHasherDefault<DefaultHasher>>;
+
+const QUEUE_DEPTHS: &[usize] = &[1, 8, 32];
 
 fn fair_share() -> DeterministicFairShare {
     FairShare::with_hasher(1, BuildHasherDefault::default())
@@ -33,7 +35,7 @@ fn fair_share() -> DeterministicFairShare {
 
 #[divan::bench]
 fn cancel_pending(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let admission = fair_share();
@@ -52,7 +54,7 @@ fn cancel_pending(bencher: Bencher) {
 
 #[divan::bench]
 fn handoff(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let admission = fair_share();
@@ -65,6 +67,51 @@ fn handoff(bencher: Bencher) {
         black_box(&permit);
         drop(permit);
 
+        black_box(admission.available_permits())
+    });
+}
+
+#[divan::bench(args = QUEUE_DEPTHS)]
+fn handoff_batch(bencher: Bencher, queue_depth: usize) {
+    let mut context = bench_context();
+
+    bencher.bench_local(|| {
+        let admission = fair_share();
+        let held = poll_ready(admission.acquire(black_box(0usize)), &mut context);
+        let mut waiters = (0..queue_depth)
+            .map(|key| Box::pin(admission.acquire(black_box(key + 1))))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            poll_pending(waiter.as_mut(), &mut context);
+        }
+
+        drop(held);
+        for mut waiter in waiters {
+            let permit = poll_pinned_ready(waiter.as_mut(), &mut context);
+            black_box(&permit);
+            drop(permit);
+        }
+        black_box(admission.available_permits())
+    });
+}
+
+#[divan::bench(args = QUEUE_DEPTHS)]
+fn cancel_pending_batch(bencher: Bencher, queue_depth: usize) {
+    let mut context = bench_context();
+
+    bencher.bench_local(|| {
+        let admission = fair_share();
+        let held = poll_ready(admission.acquire(black_box(0usize)), &mut context);
+        let mut waiters = (0..queue_depth)
+            .map(|key| Box::pin(admission.acquire(black_box(key + 1))))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            poll_pending(waiter.as_mut(), &mut context);
+        }
+
+        drop(waiters);
+        assert_eq!(admission.num_waiters(), 0);
+        drop(held);
         black_box(admission.available_permits())
     });
 }

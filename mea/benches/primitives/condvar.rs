@@ -19,14 +19,16 @@ use divan::black_box;
 use mea::condvar::Condvar;
 use mea::mutex::Mutex;
 
-use super::support::noop_context;
+use super::support::bench_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 use super::support::poll_ready;
 
+const WAITER_COUNTS: &[usize] = &[1, 8, 32];
+
 #[divan::bench]
 fn cancel_pending(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let mutex = Mutex::new(());
@@ -44,7 +46,7 @@ fn cancel_pending(bencher: Bencher) {
 
 #[divan::bench]
 fn notify_waiter(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let mutex = Mutex::new(());
@@ -57,5 +59,29 @@ fn notify_waiter(bencher: Bencher) {
         let guard = poll_pinned_ready(wait.as_mut(), &mut context);
         black_box(&guard);
         drop(guard);
+    });
+}
+
+#[divan::bench(args = WAITER_COUNTS)]
+fn notify_waiter_batch(bencher: Bencher, waiter_count: usize) {
+    let mut context = bench_context();
+
+    bencher.bench_local(|| {
+        let mutex = Mutex::new(());
+        let condvar = Condvar::new();
+        let mut waiters = Vec::with_capacity(waiter_count);
+        for _ in 0..waiter_count {
+            let guard = poll_ready(mutex.lock(), &mut context);
+            let mut wait = Box::pin(condvar.wait(guard));
+            poll_pending(wait.as_mut(), &mut context);
+            waiters.push(wait);
+        }
+
+        condvar.notify_all();
+        for mut waiter in waiters {
+            let guard = poll_pinned_ready(waiter.as_mut(), &mut context);
+            black_box(&guard);
+            drop(guard);
+        }
     });
 }

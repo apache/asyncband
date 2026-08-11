@@ -18,7 +18,7 @@ use divan::Bencher;
 use divan::black_box;
 use mea::latch::Latch;
 
-use super::support::noop_context;
+use super::support::bench_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 
@@ -26,7 +26,7 @@ const WORKER_COUNTS: &[usize] = &[1, 8, 32];
 
 #[divan::bench]
 fn cancel_pending(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let latch = Latch::new(1);
@@ -40,7 +40,7 @@ fn cancel_pending(bencher: Bencher) {
 
 #[divan::bench]
 fn wake_waiter(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let latch = Latch::new(1);
@@ -55,7 +55,7 @@ fn wake_waiter(bencher: Bencher) {
 
 #[divan::bench(args = WORKER_COUNTS)]
 fn worker_fan_in(bencher: Bencher, worker_count: usize) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let latch = Latch::new(worker_count as u32);
@@ -66,6 +66,27 @@ fn worker_fan_in(bencher: Bencher, worker_count: usize) {
             latch.count_down();
         }
         poll_pinned_ready(wait.as_mut(), &mut context);
+        black_box(latch.count())
+    });
+}
+
+#[divan::bench(args = WORKER_COUNTS)]
+fn waiter_fan_out(bencher: Bencher, waiter_count: usize) {
+    let mut context = bench_context();
+
+    bencher.bench_local(|| {
+        let latch = Latch::new(1);
+        let mut waiters = (0..waiter_count)
+            .map(|_| Box::pin(latch.wait()))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            poll_pending(waiter.as_mut(), &mut context);
+        }
+
+        latch.count_down();
+        for mut waiter in waiters {
+            poll_pinned_ready(waiter.as_mut(), &mut context);
+        }
         black_box(latch.count())
     });
 }

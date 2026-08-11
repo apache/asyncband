@@ -18,7 +18,7 @@ use divan::Bencher;
 use divan::black_box;
 use mea::rwlock::RwLock;
 
-use super::support::noop_context;
+use super::support::bench_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 use super::support::poll_ready;
@@ -30,7 +30,7 @@ fn read_heavy_reuse(bencher: Bencher) {
     const READS_PER_WRITE: usize = 8;
 
     let lock = RwLock::new(0usize);
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         for _ in 0..READS_PER_WRITE {
@@ -45,7 +45,7 @@ fn read_heavy_reuse(bencher: Bencher) {
 
 #[divan::bench(args = READER_COUNTS)]
 fn writer_handoff(bencher: Bencher, reader_count: usize) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let lock = Arc::new(RwLock::new(0usize));

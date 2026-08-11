@@ -12,15 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cell::Cell;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::pin::pin;
+use std::sync::Arc;
+use std::sync::LazyLock;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
 use std::task::Waker;
 
-pub(super) fn noop_context() -> Context<'static> {
-    Context::from_waker(Waker::noop())
+struct BenchTask;
+
+// This deliberately uses `Wake` rather than `Waker::noop()` so waiter registration and wake-up
+// exercise the reference-counting work performed by runtime task wakers.
+#[allow(clippy::manual_noop_waker)]
+impl Wake for BenchTask {
+    fn wake(self: Arc<Self>) {}
+}
+
+static BENCH_WAKER: LazyLock<Waker> = LazyLock::new(|| Waker::from(Arc::new(BenchTask)));
+
+pub(super) fn bench_context() -> Context<'static> {
+    Context::from_waker(&BENCH_WAKER)
 }
 
 pub(super) fn poll_ready<F: Future>(future: F, context: &mut Context<'_>) -> F::Output {
@@ -46,4 +62,15 @@ pub(super) fn poll_pending<F: Future>(mut future: Pin<&mut F>, context: &mut Con
 #[inline]
 pub(super) fn defer_input_drop<I, O>(input: I, output: O) -> (I, O) {
     (input, output)
+}
+
+pub(super) async fn wait_until_open(gate: &Cell<bool>) {
+    poll_fn(|_| {
+        if gate.get() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
 }

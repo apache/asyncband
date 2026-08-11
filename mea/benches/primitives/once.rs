@@ -12,22 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cell::Cell;
 use std::pin::pin;
 
 use divan::Bencher;
 use divan::black_box;
 use mea::once::Once;
+use mea::once::OnceCell;
 
-use super::support::noop_context;
+use super::support::bench_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 use super::support::poll_ready;
+use super::support::wait_until_open;
 
 const WAITER_COUNTS: &[usize] = &[1, 8, 32];
 
 #[divan::bench]
 fn cancel_pending_wait(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let once = Once::new();
@@ -41,7 +44,7 @@ fn cancel_pending_wait(bencher: Bencher) {
 
 #[divan::bench]
 fn complete_waiter(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let once = Once::new();
@@ -56,7 +59,7 @@ fn complete_waiter(bencher: Bencher) {
 
 #[divan::bench(args = WAITER_COUNTS)]
 fn complete_waiter_batch(bencher: Bencher, waiter_count: usize) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let once = Once::new();
@@ -72,5 +75,50 @@ fn complete_waiter_batch(bencher: Bencher, waiter_count: usize) {
             poll_pinned_ready(waiter.as_mut(), &mut context);
         }
         black_box(once.is_completed())
+    });
+}
+
+#[divan::bench]
+fn initialize_cell(bencher: Bencher) {
+    let mut context = bench_context();
+
+    bencher.bench_local(|| {
+        let cell = OnceCell::new();
+        let value = poll_ready(
+            cell.get_or_init(|| async { black_box(1usize) }),
+            &mut context,
+        );
+        black_box(*value)
+    });
+}
+
+#[divan::bench(args = WAITER_COUNTS)]
+fn initialize_cell_waiter_batch(bencher: Bencher, waiter_count: usize) {
+    let mut context = bench_context();
+
+    bencher.bench_local(|| {
+        let cell = OnceCell::new();
+        let gate = Cell::new(false);
+        let mut initializer = Box::pin(cell.get_or_init(|| async {
+            wait_until_open(&gate).await;
+            black_box(1usize)
+        }));
+        poll_pending(initializer.as_mut(), &mut context);
+
+        let mut waiters = (0..waiter_count)
+            .map(|_| Box::pin(cell.get_or_init(|| async { unreachable!() })))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            poll_pending(waiter.as_mut(), &mut context);
+        }
+
+        gate.set(true);
+        let value = poll_pinned_ready(initializer.as_mut(), &mut context);
+        black_box(*value);
+        drop(initializer);
+        for mut waiter in waiters {
+            let value = poll_pinned_ready(waiter.as_mut(), &mut context);
+            black_box(*value);
+        }
     });
 }

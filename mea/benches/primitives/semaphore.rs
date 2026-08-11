@@ -19,7 +19,7 @@ use divan::Bencher;
 use divan::black_box;
 use mea::semaphore::Semaphore;
 
-use super::support::noop_context;
+use super::support::bench_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 use super::support::poll_ready;
@@ -28,7 +28,7 @@ const QUEUE_DEPTHS: &[usize] = &[1, 8, 32];
 
 #[divan::bench]
 fn cancel_pending_acquire(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let semaphore = Semaphore::new(0);
@@ -42,7 +42,7 @@ fn cancel_pending_acquire(bencher: Bencher) {
 
 #[divan::bench]
 fn handoff_permit(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let semaphore = Semaphore::new(0);
@@ -120,7 +120,7 @@ fn owned_try_acquire_rejected(bencher: Bencher) {
 #[divan::bench(args = QUEUE_DEPTHS)]
 fn cancel_pending_owned_batch(bencher: Bencher, queue_depth: usize) {
     let semaphore = Arc::new(Semaphore::new(0));
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let mut waiters = (0..queue_depth)
@@ -138,7 +138,7 @@ fn cancel_pending_owned_batch(bencher: Bencher, queue_depth: usize) {
 fn queued_owned_burst(bencher: Bencher, queue_depth: usize) {
     const PERMITS: usize = 8;
 
-    let mut context = noop_context();
+    let mut context = bench_context();
     bencher.bench_local(|| {
         let semaphore = Arc::new(Semaphore::new(PERMITS));
         let held = poll_ready(semaphore.clone().acquire_owned(PERMITS), &mut context);

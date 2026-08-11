@@ -16,15 +16,19 @@ use divan::Bencher;
 use divan::black_box;
 use mea::once::OnceMap;
 
+use super::support::bench_context;
 use super::support::defer_input_drop;
-use super::support::noop_context;
+use super::support::poll_pending;
+use super::support::poll_pinned_ready;
 use super::support::poll_ready;
+use super::support::wait_until_open;
 
 const CACHED_ENTRY_COUNTS: &[usize] = &[0, 64, 1024];
+const WAITER_COUNTS: &[usize] = &[1, 8, 32];
 
 #[divan::bench]
 fn compute_vacant(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
     bencher
         .with_inputs(OnceMap::<usize, usize>::new)
         .bench_local_values(|map| {
@@ -38,7 +42,7 @@ fn compute_vacant(bencher: Bencher) {
 
 #[divan::bench]
 fn compute_occupied(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
     bencher
         .with_inputs(|| [(0, 1)].into_iter().collect::<OnceMap<_, _>>())
         .bench_local_values(|map| {
@@ -52,7 +56,7 @@ fn compute_occupied(bencher: Bencher) {
 
 #[divan::bench(args = CACHED_ENTRY_COUNTS)]
 fn try_compute_error(bencher: Bencher, cached_entries: usize) {
-    let mut context = noop_context();
+    let mut context = bench_context();
     bencher
         .with_inputs(|| {
             (0..cached_entries)
@@ -67,3 +71,33 @@ fn try_compute_error(bencher: Bencher, cached_entries: usize) {
             defer_input_drop(map, result)
         });
 }
+
+#[divan::bench(args = WAITER_COUNTS)]
+fn coalesced_compute_batch(bencher: Bencher, waiter_count: usize) {
+    let mut context = bench_context();
+
+    bencher.bench_local(|| {
+        let map = OnceMap::<usize, usize>::new();
+        let gate = Cell::new(false);
+        let mut leader = Box::pin(map.compute(0, || async {
+            wait_until_open(&gate).await;
+            black_box(1usize)
+        }));
+        poll_pending(leader.as_mut(), &mut context);
+
+        let mut waiters = (0..waiter_count)
+            .map(|_| Box::pin(map.compute(0, || async { unreachable!() })))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            poll_pending(waiter.as_mut(), &mut context);
+        }
+
+        gate.set(true);
+        black_box(poll_pinned_ready(leader.as_mut(), &mut context));
+        drop(leader);
+        for mut waiter in waiters {
+            black_box(poll_pinned_ready(waiter.as_mut(), &mut context));
+        }
+    });
+}
+use std::cell::Cell;

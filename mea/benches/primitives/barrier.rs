@@ -18,14 +18,16 @@ use divan::Bencher;
 use divan::black_box;
 use mea::barrier::Barrier;
 
-use super::support::noop_context;
+use super::support::bench_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 use super::support::poll_ready;
 
+const PARTICIPANT_COUNTS: &[usize] = &[1, 8, 32];
+
 #[divan::bench]
 fn cancel_pending(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let barrier = Barrier::new(2);
@@ -39,7 +41,7 @@ fn cancel_pending(bencher: Bencher) {
 
 #[divan::bench]
 fn complete_generation(bencher: Bencher) {
-    let mut context = noop_context();
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let barrier = Barrier::new(2);
@@ -50,5 +52,27 @@ fn complete_generation(bencher: Bencher) {
         let follower = poll_pinned_ready(first.as_mut(), &mut context);
 
         black_box((leader.is_leader(), follower.is_leader()))
+    });
+}
+
+#[divan::bench(args = PARTICIPANT_COUNTS)]
+fn complete_generation_batch(bencher: Bencher, participant_count: usize) {
+    let mut context = bench_context();
+
+    bencher.bench_local(|| {
+        let barrier = Barrier::new((participant_count + 1) as u32);
+        let mut followers = (0..participant_count)
+            .map(|_| Box::pin(barrier.wait()))
+            .collect::<Vec<_>>();
+        for follower in &mut followers {
+            poll_pending(follower.as_mut(), &mut context);
+        }
+
+        let leader = poll_ready(barrier.wait(), &mut context);
+        for mut follower in followers {
+            let result = poll_pinned_ready(follower.as_mut(), &mut context);
+            black_box(result.is_leader());
+        }
+        black_box(leader.is_leader())
     });
 }
