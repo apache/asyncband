@@ -8,16 +8,17 @@ All notable changes to this project will be documented in this file.
 
 * Prevent `OwnedMappedMutexGuard` from allowing invalid lifetime coercions. ([#121](https://github.com/fast/mea/pull/121))
 * Require the protected value of an `OwnedRwLockReadGuard` to be both `Send` and `Sync` before the guard can be sent across threads. ([#122](https://github.com/fast/mea/pull/122))
-* Wake waiting tasks only after releasing internal locks. ([#125](https://github.com/fast/mea/pull/125))
+* Prevent reentrant wakers from deadlocking or poisoning `Barrier`, `Latch`, `WaitGroup`, `Once`, and `broadcast::overflow` operations. ([#125](https://github.com/fast/mea/pull/125))
 * Retry spurious atomic failures when completing `Once` initialization. ([#126](https://github.com/fast/mea/pull/126))
-* Make cloning a `WaitGroup` panic on counter overflow instead of silently losing track of a handle.
-* Align `Condvar` with standard condition-variable semantics by notifying only current waiters and passing a cancelled `notify_one` wakeup to another current waiter instead of storing a permit.
-* Clean up uninitialized `OnceMap` and `singleflight` entries once no callers remain after a failure, panic, or cancellation.
-* Preserve semaphore permits when releasing permits panics on overflow.
+* Make cloning a `WaitGroup` panic on counter overflow instead of silently losing track of a handle. ([#128](https://github.com/fast/mea/pull/128))
+* Align `Condvar` with standard non-buffered notification semantics by notifying only current waiters and passing a cancelled `notify_one` wakeup to another current waiter. ([#132](https://github.com/fast/mea/pull/132))
+* Ensure polling or cancelling a contended `oneshot` receive does not wait for the sender to make progress. ([#138](https://github.com/fast/mea/pull/138))
+* Clean up uninitialized `OnceMap` and `singleflight::Group` entries once no callers remain after a failure, panic, or cancellation. ([#142](https://github.com/fast/mea/pull/142))
+* Keep a semaphore's permit count unchanged when `Semaphore::release` panics on overflow. ([#144](https://github.com/fast/mea/pull/144))
 
 ### Improvements
 
-* Remove unnecessary `Clone` bounds from `singleflight` keys and custom hashers used by keyed once primitives.
+* Remove unnecessary `Clone` bounds from `singleflight::Group` keys and custom hashers used by `OnceMap` and `singleflight::Group`. ([#142](https://github.com/fast/mea/pull/142))
 
 ## v0.6.5 (2026-07-30)
 

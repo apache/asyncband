@@ -53,9 +53,10 @@
 //!
 //! # Thread Safety
 //!
-//! All primitive types in this library implement `Send` and `Sync`, making them safe to share
-//! across thread boundaries. This is essential for concurrent programming where data needs to be
-//! accessed from multiple threads.
+//! MEA primitives and guards implement `Send` and `Sync` only when the protected or transferred
+//! value satisfies the necessary bounds. In particular, owned read guards that may move
+//! destruction to another thread require the protected value to be `Send` as well as `Sync`. See
+//! each type's documentation for its exact bounds.
 //!
 //! [`Barrier`]: barrier::Barrier
 //! [`Condvar`]: condvar::Condvar
