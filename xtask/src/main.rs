@@ -20,6 +20,8 @@ use clap::Subcommand;
 use semver::Version;
 use serde::Deserialize;
 
+const PACKAGE_NAME: &str = "asyncband";
+
 #[derive(Parser)]
 struct Command {
     #[clap(subcommand)]
@@ -94,13 +96,15 @@ struct CommandSemver {
 impl CommandSemver {
     fn run(self) {
         let Some(baseline_version) = find_latest_release() else {
-            println!("mea has not been published; skipping semver checks for the first release.");
+            println!(
+                "{PACKAGE_NAME} has not been published; skipping semver checks for the first release."
+            );
             return;
         };
 
         let release_type = classify_release_type(&baseline_version, &self.release_version);
         println!(
-            "Checking release {} against mea@{baseline_version} as a {} release.",
+            "Checking release {} against {PACKAGE_NAME}@{baseline_version} as a {} release.",
             self.release_version,
             release_type.as_str()
         );
@@ -177,10 +181,11 @@ fn find_latest_release() -> Option<Version> {
             .build(),
     );
 
-    let mut response = match agent.get("https://crates.io/api/v1/crates/mea").call() {
+    let url = format!("https://crates.io/api/v1/crates/{PACKAGE_NAME}");
+    let mut response = match agent.get(&url).call() {
         Ok(response) => response,
         Err(ureq::Error::StatusCode(404)) => return None,
-        Err(err) => panic!("failed to query crates.io for mea: {err}"),
+        Err(err) => panic!("failed to query crates.io for {PACKAGE_NAME}: {err}"),
     };
 
     #[derive(Deserialize)]
@@ -195,10 +200,9 @@ fn find_latest_release() -> Option<Version> {
         max_stable_version: Option<String>,
     }
 
-    let response: CratesIoResponse = response
-        .body_mut()
-        .read_json()
-        .expect("failed to decode crates.io response for mea");
+    let response: CratesIoResponse = response.body_mut().read_json().unwrap_or_else(|err| {
+        panic!("failed to decode crates.io response for {PACKAGE_NAME}: {err}")
+    });
     let version = response
         .crate_data
         .max_stable_version
@@ -320,7 +324,7 @@ fn make_semver_check_cmd(
         "semver-checks",
         "check-release",
         "--package",
-        "mea",
+        PACKAGE_NAME,
         "--all-features",
         "--baseline-version",
     ])
