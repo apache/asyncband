@@ -14,7 +14,7 @@
 
 [package]
 name = "asyncband"
-version = "0.7.0"
+version = "0.6.7"
 
 categories = ["asynchronous", "concurrency"]
 description = "A runtime-agnostic library providing essential synchronization primitives for asynchronous Rust programming."
