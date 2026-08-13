@@ -15,6 +15,11 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 
+//! > **Upcoming rename:** This crate will be renamed to
+//! > [`asyncband`](https://crates.io/crates/asyncband). Future development and releases will
+//! > continue under the new name, with documentation at
+//! > [docs.rs/asyncband](https://docs.rs/asyncband).
+//!
 //! `mea` is a runtime-agnostic library providing essential synchronization primitives for
 //! asynchronous Rust programming. The library offers a collection of well-tested, efficient
 //! synchronization tools that work with any async runtime.

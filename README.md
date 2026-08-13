@@ -1,5 +1,8 @@
 # MEA (Modular Essentials for Async)
 
+> [!IMPORTANT]
+> This crate will be renamed to [`asyncband`](https://crates.io/crates/asyncband). Future development and releases will continue under the new name, with documentation at [docs.rs/asyncband](https://docs.rs/asyncband).
+
 [![Crates.io][crates-badge]][crates-url]
 [![Documentation][docs-badge]][docs-url]
 [![MSRV 1.85][msrv-badge]](https://www.whatrustisit.com)
