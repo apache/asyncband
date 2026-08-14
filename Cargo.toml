@@ -13,15 +13,15 @@
 # limitations under the License.
 
 [workspace]
-members = ["mea", "xtask"]
+members = ["asyncband", "xtask"]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
-homepage = "https://github.com/fast/mea"
+homepage = "https://github.com/fast/asyncband"
 license = "Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/fast/mea"
+repository = "https://github.com/fast/asyncband"
 rust-version = "1.85.0"
 
 [workspace.lints.rust]

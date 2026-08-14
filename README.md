@@ -1,4 +1,7 @@
-# MEA (Modular Essentials for Async)
+# Asyncband
+
+> [!IMPORTANT]
+> **Asyncband was formerly published as MEA.** The [`mea`](https://crates.io/crates/mea) crate is deprecated and receives no further development. New development and releases use the `asyncband` crate; no compatibility crate or re-export is provided under the old name. See [Migrating from MEA](#migrating-from-mea) and the [Asyncband proposal discussion](https://lists.apache.org/thread/f31qd3jm3odomjwy3lqkk21coyqsr9xs) for details.
 
 [![Crates.io][crates-badge]][crates-url]
 [![Documentation][docs-badge]][docs-url]
@@ -6,48 +9,54 @@
 [![Apache 2.0 licensed][license-badge]][license-url]
 [![Build Status][actions-badge]][actions-url]
 
-[crates-badge]: https://img.shields.io/crates/v/mea.svg
-[crates-url]: https://crates.io/crates/mea
-[docs-badge]: https://docs.rs/mea/badge.svg
-[docs-url]: https://docs.rs/mea
+[crates-badge]: https://img.shields.io/crates/v/asyncband.svg
+[crates-url]: https://crates.io/crates/asyncband
+[docs-badge]: https://docs.rs/asyncband/badge.svg
+[docs-url]: https://docs.rs/asyncband
 [msrv-badge]: https://img.shields.io/badge/MSRV-1.85-green?logo=rust
-[license-badge]: https://img.shields.io/crates/l/mea
+[license-badge]: https://img.shields.io/crates/l/asyncband
 [license-url]: LICENSE
-[actions-badge]: https://github.com/fast/mea/actions/workflows/ci.yml/badge.svg
-[actions-url]: https://github.com/fast/mea/actions/workflows/ci.yml
+[actions-badge]: https://github.com/fast/asyncband/actions/workflows/ci.yml/badge.svg
+[actions-url]: https://github.com/fast/asyncband/actions/workflows/ci.yml
 
 ## Overview
 
-MEA is a runtime-agnostic library providing essential synchronization primitives for asynchronous Rust programming. The library offers a collection of well-tested, efficient synchronization tools that work with any async runtime.
+Asyncband is a runtime-agnostic library providing essential synchronization primitives for asynchronous Rust programming. The library offers a collection of well-tested, efficient synchronization tools that work with any async runtime.
 
 ## Features
 
-* [**Barrier**](https://docs.rs/mea/*/mea/barrier/struct.Barrier.html): A synchronization primitive that enables tasks to wait until all participants arrive.
-* [**Condvar**](https://docs.rs/mea/*/mea/condvar/struct.Condvar.html): A condition variable that allows tasks to wait for a notification.
-* [**Latch**](https://docs.rs/mea/*/mea/latch/struct.Latch.html): A synchronization primitive that allows one or more tasks to wait until a set of operations completes.
-* [**Mutex**](https://docs.rs/mea/*/mea/mutex/struct.Mutex.html): A mutual exclusion primitive for protecting shared data.
-* [**Once**](https://docs.rs/mea/*/mea/once/struct.Once.html): A primitive that ensures a one-time asynchronous operation runs at most once, even when called concurrently.
-* [**OnceCell**](https://docs.rs/mea/*/mea/once/struct.OnceCell.html): A cell that can be written to at most once, providing safe, lazy initialization.
-* [**OnceMap**](https://docs.rs/mea/*/mea/once/struct.OnceMap.html): A hash map that runs computation only once for each key and stores the result.
-* [**RwLock**](https://docs.rs/mea/*/mea/rwlock/struct.RwLock.html): A reader-writer lock that allows multiple readers or a single writer at a time.
-* [**Semaphore**](https://docs.rs/mea/*/mea/semaphore/struct.Semaphore.html): A synchronization primitive that controls access to a shared resource.
-* [**WaitGroup**](https://docs.rs/mea/*/mea/waitgroup/struct.WaitGroup.html): A synchronization primitive that allows waiting for multiple tasks to complete.
-* [**admission::FairShare**](https://docs.rs/mea/*/mea/admission/struct.FairShare.html): A work-conserving admission policy that fairly shares bounded concurrency across keys.
-* [**atomicbox**](https://docs.rs/mea/*/mea/atomicbox/): A safe, owning version of AtomicPtr for heap-allocated data.
-* [**broadcast**](https://docs.rs/mea/*/mea/broadcast/): A multi-producer, multi-consumer broadcast channel.
-* [**mpsc::bounded**](https://docs.rs/mea/*/mea/mpsc/fn.bounded.html): A multi-producer, single-consumer bounded queue for sending values between asynchronous tasks.
-* [**mpsc::unbounded**](https://docs.rs/mea/*/mea/mpsc/fn.unbounded.html): A multi-producer, single-consumer unbounded queue for sending values between asynchronous tasks.
-* [**oneshot::channel**](https://docs.rs/mea/*/mea/oneshot/): A one-shot channel for sending a single value between tasks.
-* [**shutdown**](https://docs.rs/mea/*/mea/shutdown/): A composite synchronization primitive for managing shutdown signals.
-* [**singleflight::Group**](https://docs.rs/mea/*/mea/singleflight/): A duplicate function call suppression mechanism.
+* [**Barrier**](https://docs.rs/asyncband/*/asyncband/barrier/struct.Barrier.html): A synchronization primitive that enables tasks to wait until all participants arrive.
+* [**Condvar**](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html): A condition variable that allows tasks to wait for a notification.
+* [**Latch**](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html): A synchronization primitive that allows one or more tasks to wait until a set of operations completes.
+* [**Mutex**](https://docs.rs/asyncband/*/asyncband/mutex/struct.Mutex.html): A mutual exclusion primitive for protecting shared data.
+* [**Once**](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html): A primitive that ensures a one-time asynchronous operation runs at most once, even when called concurrently.
+* [**OnceCell**](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html): A cell that can be written to at most once, providing safe, lazy initialization.
+* [**OnceMap**](https://docs.rs/asyncband/*/asyncband/once/struct.OnceMap.html): A hash map that runs computation only once for each key and stores the result.
+* [**RwLock**](https://docs.rs/asyncband/*/asyncband/rwlock/struct.RwLock.html): A reader-writer lock that allows multiple readers or a single writer at a time.
+* [**Semaphore**](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html): A synchronization primitive that controls access to a shared resource.
+* [**WaitGroup**](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html): A synchronization primitive that allows waiting for multiple tasks to complete.
+* [**admission::FairShare**](https://docs.rs/asyncband/*/asyncband/admission/struct.FairShare.html): A work-conserving admission policy that fairly shares bounded concurrency across keys.
+* [**atomicbox**](https://docs.rs/asyncband/*/asyncband/atomicbox/): A safe, owning version of AtomicPtr for heap-allocated data.
+* [**broadcast**](https://docs.rs/asyncband/*/asyncband/broadcast/): A multi-producer, multi-consumer broadcast channel.
+* [**mpsc::bounded**](https://docs.rs/asyncband/*/asyncband/mpsc/fn.bounded.html): A multi-producer, single-consumer bounded queue for sending values between asynchronous tasks.
+* [**mpsc::unbounded**](https://docs.rs/asyncband/*/asyncband/mpsc/fn.unbounded.html): A multi-producer, single-consumer unbounded queue for sending values between asynchronous tasks.
+* [**oneshot::channel**](https://docs.rs/asyncband/*/asyncband/oneshot/): A one-shot channel for sending a single value between tasks.
+* [**shutdown**](https://docs.rs/asyncband/*/asyncband/shutdown/): A composite synchronization primitive for managing shutdown signals.
+* [**singleflight::Group**](https://docs.rs/asyncband/*/asyncband/singleflight/): A duplicate function call suppression mechanism.
 
 ## Installation
 
 Add the dependency to your `Cargo.toml` via:
 
 ```shell
-cargo add mea
+cargo add asyncband
 ```
+
+## Migrating from MEA
+
+Asyncband continues the codebase formerly published as `mea`, but it uses a new Cargo package and Rust crate name. Remove the `mea` dependency, add `asyncband`, and update `mea::` paths to `asyncband::`. Existing `mea` releases remain available for builds that have not migrated, but they receive no further development.
+
+No compatibility package or re-export is provided, so downstream crates must migrate their dependency declarations individually.
 
 ## Runtime Agnostic
 
@@ -55,13 +64,13 @@ All synchronization primitives in this library are runtime-agnostic, meaning the
 
 ## Thread Safety
 
-All types in this library implement `Send` and `Sync`, making them safe to share across thread boundaries. This is essential for concurrent programming where data needs to be accessed from multiple threads.
+Asyncband primitives and guards implement `Send` and `Sync` only when the protected or transferred value satisfies the necessary bounds. In particular, owned read guards that may move destruction to another thread require the protected value to be `Send` as well as `Sync`. See each type's documentation for its exact bounds.
 
 ## Minimum Supported Rust Version (MSRV)
 
 This crate is built against the latest stable release, and its minimum supported rustc version is 1.85.0.
 
-The policy is that the minimum Rust version required to use this crate can be increased in minor version updates. For example, if MEA 1.0 requires Rust 1.20.0, then MEA 1.0.z for all values of z will also require Rust 1.20.0 or newer. However, Mea 1.y for y > 0 may require a newer minimum version of Rust.
+The policy is that the minimum Rust version required to use this crate can be increased in minor version updates. For example, if Asyncband 1.0 requires Rust 1.20.0, then Asyncband 1.0.z for all values of z will also require Rust 1.20.0 or newer. However, Asyncband 1.y for y > 0 may require a newer minimum version of Rust.
 
 ## License
 
