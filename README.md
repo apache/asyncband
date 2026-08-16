@@ -26,6 +26,7 @@ Asyncband is a runtime-agnostic library providing essential synchronization prim
 ## Features
 
 * [**Barrier**](https://docs.rs/asyncband/*/asyncband/barrier/struct.Barrier.html): A synchronization primitive that enables tasks to wait until all participants arrive.
+* [**block_on**](https://docs.rs/asyncband/*/asyncband/block_on/index.html): An opt-in minimal single-future blocking executor (enabled with the `block_on` Cargo feature).
 * [**Condvar**](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html): A condition variable that allows tasks to wait for a notification.
 * [**Latch**](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html): A synchronization primitive that allows one or more tasks to wait until a set of operations completes.
 * [**Mutex**](https://docs.rs/asyncband/*/asyncband/mutex/struct.Mutex.html): A mutual exclusion primitive for protecting shared data.
@@ -51,6 +52,41 @@ Add the dependency to your `Cargo.toml` via:
 ```shell
 cargo add asyncband
 ```
+
+## Optional `block_on` bridge
+
+For synchronous code that needs to wait on a single runtime-agnostic future without depending on
+a full executor, enable the opt-in `block_on` feature:
+
+```shell
+cargo add asyncband --features block_on
+```
+
+```rust
+use std::time::Duration;
+
+use asyncband::block_on::{block_on, FutureExt as _};
+use asyncband::block_on::block_on_timeout;
+
+let value = block_on(async { 42 });
+assert_eq!(value, 42);
+
+let value = async { 42 }.block_on();
+assert_eq!(value, 42);
+
+let value = block_on_timeout(async { 42 }, Duration::from_secs(1));
+assert_eq!(value, Ok(42));
+
+let value = async { 42 }.block_on_timeout(Duration::from_secs(1));
+assert_eq!(value, Ok(42));
+```
+
+This is a minimal single-future executor that parks the current thread, not a general-purpose async
+runtime. `block_on_timeout` adds a wall-clock deadline to the outer blocking loop and drops the
+future when that deadline is reached, but it does not provide a timer context for the future itself.
+Futures depending on a runtime-specific timer or I/O driver may not make progress, and blocking an
+executor thread can cause starvation or deadlocks. See
+[`asyncband::block_on`](https://docs.rs/asyncband/*/asyncband/block_on/index.html) for details.
 
 ## Migrating from MEA
 

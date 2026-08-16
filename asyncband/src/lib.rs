@@ -50,6 +50,8 @@
 //! * [`oneshot::channel`]: A one-shot channel for sending a single value between tasks.
 //! * [`shutdown`]: A composite synchronization primitive for managing shutdown signals.
 //! * [`singleflight::Group`]: A duplicate function call suppression mechanism.
+//! * [`block_on`]: An opt-in minimal single-future blocking executor. Enabled by the `block_on`
+//!   Cargo feature.
 //!
 //! # Runtime Agnostic
 //!
@@ -74,12 +76,16 @@
 //! [`RwLock`]: rwlock::RwLock
 //! [`Semaphore`]: semaphore::Semaphore
 //! [`WaitGroup`]: waitgroup::WaitGroup
+//! [`block_on`]: block_on
 
 mod internal;
 
 pub mod admission;
 pub mod atomicbox;
 pub mod barrier;
+#[cfg(feature = "block_on")]
+#[cfg_attr(docsrs, doc(cfg(feature = "block_on")))]
+pub mod block_on;
 pub mod broadcast;
 pub mod condvar;
 pub mod latch;

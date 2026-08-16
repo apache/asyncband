@@ -32,6 +32,10 @@ rust-version.workspace = true
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+# Opt-in minimal blocking executor for a single future. Disabled by default.
+block_on = []
+
 [dependencies]
 hashbrown = { version = "0.17.1", default-features = false, features = [
   "inline-more",
