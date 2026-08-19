@@ -55,8 +55,9 @@
 //!
 //! # Synchronous interoperability
 //!
-//! The optional [`blocking`] module lets synchronous code wait on a single runtime-agnostic future.
-//! It is an interoperability utility rather than an async primitive or a general-purpose runtime.
+//! The optional [`blocking`] module lets synchronous code wait indefinitely or with a timeout on a
+//! single runtime-agnostic future. It is an interoperability utility rather than an async primitive
+//! or a general-purpose runtime.
 //!
 //! # Runtime Agnostic
 //!

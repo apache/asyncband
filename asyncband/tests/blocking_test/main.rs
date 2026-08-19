@@ -29,8 +29,8 @@ use std::time::Duration;
 use asyncband::blocking::FutureExt as _;
 use asyncband::blocking::block_on;
 
-// Timeouts in this test target are watchdogs for detecting a stalled test process. They are not
-// part of the public blocking API or assertions about elapsed-time behavior.
+// Long timeouts in this test target are watchdogs for detecting a stalled test process, not
+// assertions about elapsed-time precision.
 const TEST_WATCHDOG: Duration = Duration::from_secs(5);
 
 #[test]
@@ -40,19 +40,36 @@ fn ready_future_returns_from_function_and_extension_method() {
 }
 
 #[test]
-fn wake_notification_resumes_the_waiting_thread() {
+fn wait_timeout_polls_before_checking_the_deadline() {
+    assert_eq!(async { 42 }.wait_timeout(Duration::ZERO), Some(42));
+    assert_eq!(
+        std::future::pending::<()>().wait_timeout(Duration::ZERO),
+        None
+    );
+}
+
+#[test]
+fn pending_future_times_out() {
+    assert_eq!(
+        std::future::pending::<()>().wait_timeout(Duration::from_millis(1)),
+        None
+    );
+}
+
+#[test]
+fn wake_notification_resumes_a_timed_wait() {
     let (completion, future, polls) = controlled_future();
     let producer = thread::spawn(move || {
         polls.recv().unwrap();
         completion.complete(7);
     });
 
-    assert_eq!(block_on(future), 7);
+    assert_eq!(future.wait_timeout(TEST_WATCHDOG), Some(7));
     producer.join().unwrap();
 }
 
 #[test]
-fn nested_block_on_calls_use_independent_notifications() {
+fn nested_waits_use_independent_notifications() {
     let (done_tx, done_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
         let mut outer_polled = false;
@@ -64,7 +81,7 @@ fn nested_block_on_calls_use_independent_notifications() {
                 outer_context.waker().wake_by_ref();
 
                 let mut inner_polled = false;
-                let inner_output = block_on(std::future::poll_fn(|inner_context| {
+                let inner_output = std::future::poll_fn(|inner_context| {
                     if inner_polled {
                         Poll::Ready(7)
                     } else {
@@ -72,8 +89,9 @@ fn nested_block_on_calls_use_independent_notifications() {
                         inner_context.waker().wake_by_ref();
                         Poll::Pending
                     }
-                }));
-                assert_eq!(inner_output, 7);
+                })
+                .wait_timeout(TEST_WATCHDOG);
+                assert_eq!(inner_output, Some(7));
                 Poll::Pending
             }
         }));
@@ -83,7 +101,7 @@ fn nested_block_on_calls_use_independent_notifications() {
     assert_eq!(
         done_rx
             .recv_timeout(TEST_WATCHDOG)
-            .expect("nested block_on calls shared or lost a notification"),
+            .expect("nested waits shared or lost a notification"),
         42
     );
     worker.join().unwrap();

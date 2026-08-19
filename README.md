@@ -69,15 +69,19 @@ cargo add asyncband --features blocking
 
 ```rust
 use asyncband::blocking::{block_on, FutureExt as _};
+use std::time::Duration;
 
 let value = block_on(async { 42 });
 assert_eq!(value, 42);
 
 let value = async { 42 }.block_on();
 assert_eq!(value, 42);
+
+let value = async { 42 }.wait_timeout(Duration::ZERO);
+assert_eq!(value, Some(42));
 ```
 
-This is a minimal single-future executor, not a general-purpose async runtime. It uses a private parker, so it does not consume wake-ups belonging to other parking operations on the same thread; recursive calls use a separate parker. Futures depending on a runtime-specific timer or I/O driver may not make progress, and blocking an executor thread can cause starvation or deadlocks. See [`asyncband::blocking`](https://docs.rs/asyncband/*/asyncband/blocking/index.html) for details.
+This is a minimal single-future executor, not a general-purpose async runtime. A timed-out `wait_timeout` drops the future. The implementation uses a private parker, so it does not consume wake-ups belonging to other parking operations on the same thread; recursive calls use a separate parker. Futures depending on a runtime-specific timer or I/O driver may not make progress, and blocking an executor thread can cause starvation or deadlocks. See [`asyncband::blocking`](https://docs.rs/asyncband/*/asyncband/blocking/index.html) for details.
 
 ## Migrating from MEA
 
@@ -118,7 +122,7 @@ This crate collects runtime-agnostic synchronization primitives from spare parts
 * **Semaphore** is derived from `tokio::sync::Semaphore`, without `close` method since it is quite tricky to use. And thus, this semaphore doesn't have the limitation of max permits. Besides, new methods like `forget_exact` are added to fit the specific use case.
 * **WaitGroup** is inspired by [`waitgroup-rs`](https://github.com/laizy/waitgroup-rs), providing different API flavor with a different implementation based on the internal `CountdownState` primitive.
 * The internal atomic pointer slot used by MPSC is derived from [`atomicbox`](https://github.com/jorendorff/atomicbox/) at commit 07756444.
-* The single-future polling loop in `blocking` is adapted from [`pollster`](https://github.com/zesterer/pollster), and its parker caching strategy follows [`futures-lite`](https://github.com/smol-rs/futures-lite).
+* The single-future polling loop in `blocking` is adapted from [`pollster`](https://github.com/zesterer/pollster), its parker caching strategy follows [`futures-lite`](https://github.com/smol-rs/futures-lite), and its private parker state machine is adapted from [`parking`](https://github.com/smol-rs/parking) 2.2.1.
 * **broadcast::overflow::channel** is derived from `tokio::sync::broadcast::channel`, with a different implementation based on the internal `WaitSet` primitive.
 * **oneshot::channel** is derived from [`oneshot`](https://github.com/faern/oneshot), with significant simplifications since we need not support synchronized receiving functions.
 

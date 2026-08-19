@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use asyncband::barrier::Barrier;
 use asyncband::blocking::FutureExt as _;
@@ -66,4 +67,12 @@ fn blocking_bridge_composes_with_public_primitives() {
 
     assert_eq!(block_on(receiver), Ok(7));
     producer.join().unwrap();
+}
+
+#[test]
+fn timed_out_wait_cancels_an_asyncband_future() {
+    let (sender, receiver) = oneshot::channel();
+
+    assert_eq!(receiver.wait_timeout(Duration::ZERO), None);
+    assert_eq!(sender.send(7).unwrap_err().into_inner(), 7);
 }
