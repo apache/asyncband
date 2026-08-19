@@ -44,14 +44,14 @@
 //!
 //! # Primitive categories
 //!
-//! The public primitives are grouped conceptually by purpose while their modules remain at the
-//! crate root so module paths continue to match Cargo feature names:
+//! The public primitives are grouped by their primary user-facing purpose while their modules
+//! remain at the crate root so module paths continue to match Cargo feature names:
 //!
-//! * Synchronization: `Mutex`, `RwLock`, `Semaphore`, `Barrier`, `Condvar`, `Latch`, `WaitGroup`,
-//!   `Once`, `OnceCell`, and `OnceMap`.
-//! * Communication: oneshot, bounded and unbounded MPSC, and overflowing broadcast channels.
-//! * Composed coordination: graceful shutdown.
-//! * Concurrency control: fair-share admission control and duplicate-call suppression.
+//! * Shared state: `Mutex`, `RwLock`, and `Condvar`.
+//! * One-time initialization: `Once`, `OnceCell`, and `OnceMap`.
+//! * Task coordination: `Barrier`, `Latch`, `WaitGroup`, and graceful shutdown.
+//! * Channels: oneshot, bounded and unbounded MPSC, and overflowing broadcast channels.
+//! * Workload control: `Semaphore`, fair-share admission control, and duplicate-call suppression.
 //!
 //! # Runtime Agnostic
 //!

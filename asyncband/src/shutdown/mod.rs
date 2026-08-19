@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A composite synchronization primitive for managing shutdown signals.
+//! Coordination primitives for graceful task shutdown.
 //!
 //! This module provides [`new_pair`] to create a pair of handles for managing shutdown signals:
 //!
