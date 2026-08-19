@@ -51,6 +51,8 @@ jobs:
         with:
           tool: typos-cli,taplo-cli,hawkeye@7.0.0-alpha.1
       - run: cargo x lint
+      - name: Check feature matrix
+        run: cargo x check
 
   test:
     name: Run tests
@@ -58,7 +60,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-24.04, macos-14, windows-2022 ]
-        rust-version: [ "1.85.0", "stable" ]
+        rust-version: [ "1.86.0", "stable" ]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:

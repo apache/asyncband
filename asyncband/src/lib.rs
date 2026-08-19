@@ -28,31 +28,17 @@
 //! compatibility crate or re-export is provided. Replace the `mea` dependency with `asyncband` and
 //! update `mea::` paths to `asyncband::`.
 //!
-//! # Features
+//! # Cargo features
 //!
-//! * [`Barrier`]: A synchronization point where multiple tasks can wait until all participants
-//!   arrive
-//! * [`Condvar`]: A condition variable that allows tasks to wait for a notification
-//! * [`Latch`]: A single-use barrier that allows one or more tasks to wait until a signal is given
-//! * [`Mutex`]: A mutual exclusion primitive for protecting shared data
-//! * [`Once`]: A primitive that ensures a one-time asynchronous operation runs at most once, even
-//!   when called concurrently
-//! * [`OnceCell`]: A cell that can be written to at most once and provides safe concurrent access
-//! * [`OnceMap`]: A hash map that runs computation only once for each key and stores the result.
-//! * [`RwLock`]: A reader-writer lock that allows multiple readers or a single writer at a time
-//! * [`Semaphore`]: A synchronization primitive that controls access to a shared resource
-//! * [`WaitGroup`]: A synchronization primitive that allows waiting for multiple tasks to complete
-//! * [`admission::FairShare`]: A work-conserving admission policy that fairly shares bounded
-//!   concurrency across keys
-//! * [`atomicbox`]: A safe, owning version of `AtomicPtr` for heap-allocated data.
-//! * [`broadcast`]: A multi-producer, multi-consumer broadcast channel.
-//! * [`mpsc::bounded`]: A multi-producer, single-consumer bounded queue for sending values between
-//!   asynchronous tasks.
-//! * [`mpsc::unbounded`]: A multi-producer, single-consumer unbounded queue for sending values
-//!   between asynchronous tasks.
-//! * [`oneshot::channel`]: A one-shot channel for sending a single value between tasks.
-//! * [`shutdown`]: A composite synchronization primitive for managing shutdown signals.
-//! * [`singleflight::Group`]: A duplicate function call suppression mechanism.
+//! The crate enables no primitives by default. Each public module has a same-named opt-in feature,
+//! so applications only compile the primitives they use:
+//!
+//! ```toml
+//! asyncband = { version = "0.7", features = ["mutex", "oneshot"] }
+//! ```
+//!
+//! Features that build on other primitives enable those dependencies automatically. For example,
+//! `condvar` enables `mutex`, while `shutdown` enables `latch` and `waitgroup`.
 //!
 //! # Runtime Agnostic
 //!
@@ -66,40 +52,81 @@
 //! transferred value satisfies the necessary bounds. In particular, owned read guards that may move
 //! destruction to another thread require the protected value to be `Send` as well as `Sync`. See
 //! each type's documentation for its exact bounds.
-//!
-//! [`Barrier`]: barrier::Barrier
-//! [`Condvar`]: condvar::Condvar
-//! [`Latch`]: latch::Latch
-//! [`Mutex`]: mutex::Mutex
-//! [`Once`]: once::Once
-//! [`OnceCell`]: once::OnceCell
-//! [`OnceMap`]: once::OnceMap
-//! [`RwLock`]: rwlock::RwLock
-//! [`Semaphore`]: semaphore::Semaphore
-//! [`WaitGroup`]: waitgroup::WaitGroup
-
+#[cfg(any(
+    feature = "admission",
+    feature = "barrier",
+    feature = "broadcast",
+    feature = "condvar",
+    feature = "latch",
+    feature = "mpsc",
+    feature = "mutex",
+    feature = "once",
+    feature = "rwlock",
+    feature = "semaphore",
+    feature = "singleflight",
+    feature = "waitgroup",
+))]
 mod internal;
 
+#[cfg(feature = "admission")]
+#[cfg_attr(docsrs, doc(cfg(feature = "admission")))]
 pub mod admission;
+#[cfg(feature = "atomicbox")]
+#[cfg_attr(docsrs, doc(cfg(feature = "atomicbox")))]
 pub mod atomicbox;
+#[cfg(feature = "barrier")]
+#[cfg_attr(docsrs, doc(cfg(feature = "barrier")))]
 pub mod barrier;
+#[cfg(feature = "broadcast")]
+#[cfg_attr(docsrs, doc(cfg(feature = "broadcast")))]
 pub mod broadcast;
+#[cfg(feature = "condvar")]
+#[cfg_attr(docsrs, doc(cfg(feature = "condvar")))]
 pub mod condvar;
+#[cfg(feature = "latch")]
+#[cfg_attr(docsrs, doc(cfg(feature = "latch")))]
 pub mod latch;
+#[cfg(feature = "mpsc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mpsc")))]
 pub mod mpsc;
+#[cfg(feature = "mutex")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mutex")))]
 pub mod mutex;
+#[cfg(feature = "once")]
+#[cfg_attr(docsrs, doc(cfg(feature = "once")))]
 pub mod once;
+#[cfg(feature = "oneshot")]
+#[cfg_attr(docsrs, doc(cfg(feature = "oneshot")))]
 pub mod oneshot;
+#[cfg(feature = "rwlock")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
 pub mod rwlock;
+#[cfg(feature = "semaphore")]
+#[cfg_attr(docsrs, doc(cfg(feature = "semaphore")))]
 pub mod semaphore;
+#[cfg(feature = "shutdown")]
+#[cfg_attr(docsrs, doc(cfg(feature = "shutdown")))]
 pub mod shutdown;
+#[cfg(feature = "singleflight")]
+#[cfg_attr(docsrs, doc(cfg(feature = "singleflight")))]
 pub mod singleflight;
+#[cfg(feature = "waitgroup")]
+#[cfg_attr(docsrs, doc(cfg(feature = "waitgroup")))]
 pub mod waitgroup;
 
-#[cfg(doctest)]
+#[cfg(all(doctest, feature = "mutex", feature = "rwlock"))]
 pub mod guard_variance_tests;
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(
+        feature = "condvar",
+        feature = "mpsc",
+        feature = "once",
+        feature = "shutdown",
+        feature = "waitgroup",
+    )
+))]
 fn test_runtime() -> &'static tokio::runtime::Runtime {
     use std::sync::OnceLock;
 
@@ -108,7 +135,15 @@ fn test_runtime() -> &'static tokio::runtime::Runtime {
     RT.get_or_init(|| Runtime::new().unwrap())
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(
+        feature = "admission",
+        feature = "condvar",
+        feature = "once",
+        feature = "singleflight",
+    )
+))]
 pub(crate) fn poll_once<F: std::future::Future>(
     future: std::pin::Pin<&mut F>,
 ) -> std::task::Poll<F::Output> {
@@ -116,7 +151,24 @@ pub(crate) fn poll_once<F: std::future::Future>(
     future.poll(&mut context)
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    feature = "admission",
+    feature = "atomicbox",
+    feature = "barrier",
+    feature = "broadcast",
+    feature = "condvar",
+    feature = "latch",
+    feature = "mpsc",
+    feature = "mutex",
+    feature = "once",
+    feature = "oneshot",
+    feature = "rwlock",
+    feature = "semaphore",
+    feature = "shutdown",
+    feature = "singleflight",
+    feature = "waitgroup",
+))]
 mod tests {
     use crate::admission::FairShare;
     use crate::admission::FairSharePermit;

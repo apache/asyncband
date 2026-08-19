@@ -291,6 +291,7 @@ pub struct MutexGuard<'a, T: ?Sized> {
     lock: &'a Mutex<T>,
 }
 
+#[cfg(feature = "condvar")]
 pub(crate) fn guard_lock<'a, T: ?Sized>(guard: &MutexGuard<'a, T>) -> &'a Mutex<T> {
     guard.lock
 }
@@ -470,6 +471,7 @@ pub struct OwnedMutexGuard<T: ?Sized> {
     lock: Arc<Mutex<T>>,
 }
 
+#[cfg(feature = "condvar")]
 pub(crate) fn owned_guard_lock<T: ?Sized>(guard: &OwnedMutexGuard<T>) -> Arc<Mutex<T>> {
     guard.lock.clone()
 }

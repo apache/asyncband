@@ -35,10 +35,30 @@ rust-version.workspace = true
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+default = []
+
+# Each primitive has its own feature, so users can opt in to only what they need.
+admission = []
+atomicbox = []
+barrier = []
+broadcast = []
+condvar = ["mutex"]
+latch = []
+mpsc = ["atomicbox"]
+mutex = []
+once = ["dep:hashbrown", "semaphore"]
+oneshot = []
+rwlock = []
+semaphore = []
+shutdown = ["latch", "waitgroup"]
+singleflight = ["once"]
+waitgroup = []
+
 [dependencies]
 hashbrown = { version = "0.17.1", default-features = false, features = [
   "inline-more",
-] }
+], optional = true }
 
 [dev-dependencies]
 divan = { version = "0.1.21" }
@@ -50,6 +70,23 @@ tokio-test = { version = "0.4.5" }
 harness = false
 name = "primitives"
 path = "benches/primitives/main.rs"
+required-features = [
+  "admission",
+  "atomicbox",
+  "barrier",
+  "broadcast",
+  "condvar",
+  "latch",
+  "mpsc",
+  "mutex",
+  "once",
+  "oneshot",
+  "rwlock",
+  "semaphore",
+  "shutdown",
+  "singleflight",
+  "waitgroup",
+]
 
 [lints]
 workspace = true

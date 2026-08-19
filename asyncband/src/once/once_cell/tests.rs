@@ -23,7 +23,6 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use super::*;
-use crate::latch::Latch;
 
 struct Foo {
     value: Arc<AtomicBool>,
@@ -78,21 +77,21 @@ fn multi_init() {
     rt.block_on(async {
         const N: usize = 100;
 
-        let latch = Arc::new(Latch::new(N as u32));
         let values = Arc::new(Mutex::new(vec![0; N]));
+        let mut handles = Vec::with_capacity(N);
 
         for i in 0..N {
-            let latch = latch.clone();
             let values = values.clone();
-            rt.spawn(async move {
+            handles.push(rt.spawn(async move {
                 let result = CELL.get_or_init(move || async move { i + 1000 }).await;
                 let mut values = values.lock().await;
                 values[i] = *result;
-                latch.count_down();
-            });
+            }));
         }
 
-        latch.wait().await;
+        for handle in handles {
+            handle.await.unwrap();
+        }
         let cell_value = CELL.get().unwrap();
         for (index, value) in values.lock().await.iter().enumerate() {
             assert_eq!(*value, *cell_value, "mismatch at index {index}");

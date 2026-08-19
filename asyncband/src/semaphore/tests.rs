@@ -23,7 +23,6 @@ use std::task::Waker;
 use std::vec::Vec;
 
 use super::*;
-use crate::latch::Latch;
 
 #[test]
 fn no_permits() {
@@ -205,21 +204,21 @@ async fn acquire_then_forget_exact() {
     s.forget_exact(3);
     assert_eq!(s.available_permits(), 2);
 
-    let acquired = Arc::new(Latch::new(1));
+    let (acquired_tx, mut acquired_rx) = tokio::sync::oneshot::channel();
 
-    let acquired_clone = acquired.clone();
     let s_clone = s.clone();
     tokio::spawn(async move {
-        let _p = s_clone.acquire(3).await;
-        acquired_clone.count_down();
+        let permit = s_clone.acquire(3).await;
+        drop(permit);
+        acquired_tx.send(()).unwrap();
     });
-    assert!(acquired.try_wait().is_err());
+    assert!(acquired_rx.try_recv().is_err());
 
     s.forget_exact(2);
     s.release(2);
-    assert!(acquired.try_wait().is_err());
+    assert!(acquired_rx.try_recv().is_err());
 
     s.release(1);
-    acquired.wait().await;
+    acquired_rx.await.unwrap();
     assert_eq!(s.available_permits(), 3);
 }

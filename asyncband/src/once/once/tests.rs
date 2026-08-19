@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -23,7 +22,6 @@ use std::time::Duration;
 use tokio_test::assert_ready;
 
 use super::*;
-use crate::latch::Latch;
 use crate::test_runtime;
 
 #[tokio::test]
@@ -58,21 +56,16 @@ fn test_once_multi_task() {
     test_runtime().block_on(async {
         const N: usize = 100;
 
-        let latch = Arc::new(Latch::new(N as u32));
         let mut handles = Vec::with_capacity(N);
 
         for _ in 0..N {
-            let latch = latch.clone();
             handles.push(tokio::spawn(async move {
                 ONCE.call_once(async || {
                     COUNTER.fetch_add(1, Ordering::SeqCst);
                 })
                 .await;
-                latch.count_down();
             }));
         }
-
-        latch.wait().await;
 
         for handle in handles {
             handle.await.unwrap();
