@@ -68,11 +68,9 @@ cargo add asyncband --features blocking
 ```
 
 ```rust
-use asyncband::blocking::{block_on, FutureExt as _};
 use std::time::Duration;
 
-let value = block_on(async { 42 });
-assert_eq!(value, 42);
+use asyncband::blocking::FutureExt as _;
 
 let value = async { 42 }.block_on();
 assert_eq!(value, 42);
@@ -80,6 +78,8 @@ assert_eq!(value, 42);
 let value = async { 42 }.wait_timeout(Duration::ZERO);
 assert_eq!(value, Some(42));
 ```
+
+`asyncband::blocking::FutureExt::block_on(future)` is the equivalent UFCS spelling when function syntax is preferred; it calls the same trait method rather than a separate free function.
 
 This is a minimal single-future executor, not a general-purpose async runtime. A timed-out `wait_timeout` drops the future. The implementation uses a private parker, so it does not consume wake-ups belonging to other parking operations on the same thread; recursive calls use a separate parker. Futures depending on a runtime-specific timer or I/O driver may not make progress, and blocking an executor thread can cause starvation or deadlocks. See [`asyncband::blocking`](https://docs.rs/asyncband/*/asyncband/blocking/index.html) for details.
 

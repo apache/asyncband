@@ -27,16 +27,15 @@ use std::thread;
 use std::time::Duration;
 
 use asyncband::blocking::FutureExt as _;
-use asyncband::blocking::block_on;
 
 // Long timeouts in this test target are watchdogs for detecting a stalled test process, not
 // assertions about elapsed-time precision.
 const TEST_WATCHDOG: Duration = Duration::from_secs(5);
 
 #[test]
-fn ready_future_returns_from_function_and_extension_method() {
-    assert_eq!(block_on(async { 42 }), 42);
+fn block_on_supports_method_and_ufcs_syntax() {
     assert_eq!(async { 42 }.block_on(), 42);
+    assert_eq!(asyncband::blocking::FutureExt::block_on(async { 7 }), 7);
 }
 
 #[test]
@@ -73,7 +72,7 @@ fn nested_waits_use_independent_notifications() {
     let (done_tx, done_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
         let mut outer_polled = false;
-        let output = block_on(std::future::poll_fn(|outer_context| {
+        let output = std::future::poll_fn(|outer_context| {
             if outer_polled {
                 Poll::Ready(42)
             } else {
@@ -94,7 +93,8 @@ fn nested_waits_use_independent_notifications() {
                 assert_eq!(inner_output, Some(7));
                 Poll::Pending
             }
-        }));
+        })
+        .block_on();
         done_tx.send(output).unwrap();
     });
 
@@ -114,7 +114,7 @@ fn block_on_preserves_the_current_threads_park_token() {
     let (done_tx, done_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
         worker_thread_tx.send(thread::current()).unwrap();
-        assert_eq!(block_on(future), 7);
+        assert_eq!(future.block_on(), 7);
 
         thread::park();
         done_tx.send(()).unwrap();

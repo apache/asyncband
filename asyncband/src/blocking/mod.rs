@@ -20,19 +20,20 @@
 //! This module bridges synchronous Rust code to a single future. Enable it with the opt-in
 //! `blocking` Cargo feature.
 //!
-//! [`block_on()`] waits until a future completes. [`FutureExt`] provides the same operation in
-//! suffix position, plus a bounded wait that returns [`None`] when its timeout elapses:
+//! [`FutureExt`] lets synchronous callers wait until a future completes, either indefinitely or
+//! until a timeout elapses:
 //!
 //! ```
 //! use std::time::Duration;
 //!
 //! use asyncband::blocking::FutureExt as _;
-//! use asyncband::blocking::block_on;
 //!
-//! assert_eq!(block_on(async { 42 }), 42);
 //! assert_eq!(async { 42 }.block_on(), 42);
 //! assert_eq!(async { 42 }.wait_timeout(Duration::ZERO), Some(42));
 //! ```
+//!
+//! Callers that prefer function syntax can invoke the same trait method with UFCS, for example
+//! `FutureExt::block_on(future)`; there is no separate free-function entry point.
 //!
 //! # Execution model
 //!
@@ -48,9 +49,10 @@
 //!
 //! # Executor threads
 //!
-//! Do not call [`block_on()`] from an async executor task. Blocking an executor thread can starve
-//! other tasks and can deadlock when the future waits on work assigned to that executor. Call it
-//! only from synchronous code, such as `main`, a dedicated thread, or a sync-to-async boundary.
+//! Do not call [`FutureExt::block_on`] or [`FutureExt::wait_timeout`] from an async executor task.
+//! Blocking an executor thread can starve other tasks and can deadlock when the future waits on
+//! work assigned to that executor. Call these methods only from synchronous code, such as `main`,
+//! a dedicated thread, or a sync-to-async boundary.
 
 mod parker;
 
@@ -86,7 +88,18 @@ pub trait FutureExt: IntoFuture {
     where
         Self: Sized,
     {
-        block_on(self)
+        let mut future = pin!(self.into_future());
+
+        with_parker(|parker, waker| {
+            let mut context = Context::from_waker(waker);
+
+            loop {
+                match future.as_mut().poll(&mut context) {
+                    Poll::Pending => parker.park(),
+                    Poll::Ready(output) => return output,
+                }
+            }
+        })
     }
 
     /// Blocks the current thread until this future is ready or `timeout` elapses.
@@ -102,7 +115,27 @@ pub trait FutureExt: IntoFuture {
     where
         Self: Sized,
     {
-        wait_timeout(self, timeout)
+        let Some(deadline) = Instant::now().checked_add(timeout) else {
+            // A duration beyond Instant's range cannot expire during the process lifetime.
+            return Some(FutureExt::block_on(self));
+        };
+        let mut future = pin!(self.into_future());
+
+        with_parker(|parker, waker| {
+            let mut context = Context::from_waker(waker);
+
+            loop {
+                if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+                    return Some(output);
+                }
+
+                let now = Instant::now();
+                if now >= deadline {
+                    return None;
+                }
+                parker.park_timeout(deadline.saturating_duration_since(now));
+            }
+        })
     }
 }
 
@@ -136,57 +169,5 @@ fn with_parker<T>(wait: impl FnOnce(&Parker, &Waker) -> T) -> T {
         };
 
         wait(parker, waker)
-    })
-}
-
-/// Blocks the current thread until `future` is ready.
-///
-/// The future is polled on the current thread. When it returns [`Poll::Pending`], the thread waits
-/// until its waker is notified. This function does not schedule tasks, provide timers, or drive
-/// I/O.
-///
-/// # Example
-///
-/// ```
-/// use asyncband::blocking::block_on;
-///
-/// assert_eq!(block_on(async { 42 }), 42);
-/// ```
-pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
-    let mut future = pin!(future.into_future());
-
-    with_parker(|parker, waker| {
-        let mut context = Context::from_waker(waker);
-
-        loop {
-            match future.as_mut().poll(&mut context) {
-                Poll::Pending => parker.park(),
-                Poll::Ready(output) => return output,
-            }
-        }
-    })
-}
-
-fn wait_timeout<F: IntoFuture>(future: F, timeout: Duration) -> Option<F::Output> {
-    let Some(deadline) = Instant::now().checked_add(timeout) else {
-        // A duration beyond Instant's range cannot expire during the process lifetime.
-        return Some(block_on(future));
-    };
-    let mut future = pin!(future.into_future());
-
-    with_parker(|parker, waker| {
-        let mut context = Context::from_waker(waker);
-
-        loop {
-            if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
-                return Some(output);
-            }
-
-            let now = Instant::now();
-            if now >= deadline {
-                return None;
-            }
-            parker.park_timeout(deadline.saturating_duration_since(now));
-        }
     })
 }

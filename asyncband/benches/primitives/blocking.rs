@@ -23,13 +23,12 @@ use std::thread;
 use std::time::Duration;
 
 use asyncband::blocking::FutureExt as _;
-use asyncband::blocking::block_on;
 use divan::Bencher;
 use divan::black_box;
 
 #[divan::bench]
 fn ready(bencher: Bencher) {
-    bencher.bench_local(|| block_on(async { black_box(42usize) }));
+    bencher.bench_local(|| async { black_box(42usize) }.block_on());
 }
 
 #[divan::bench]
@@ -45,7 +44,7 @@ fn ready_with_timeout(bencher: Bencher) {
 fn self_wake(bencher: Bencher) {
     bencher.bench_local(|| {
         let mut polled = false;
-        block_on(poll_fn(|context| {
+        poll_fn(|context| {
             if polled {
                 Poll::Ready(())
             } else {
@@ -53,7 +52,8 @@ fn self_wake(bencher: Bencher) {
                 context.waker().wake_by_ref();
                 Poll::Pending
             }
-        }))
+        })
+        .block_on()
     });
 }
 
@@ -68,7 +68,7 @@ fn cross_thread_wake(bencher: Bencher) {
 
     bencher.bench_local(|| {
         let mut polled = false;
-        block_on(poll_fn(|context| {
+        poll_fn(|context| {
             if polled {
                 Poll::Ready(())
             } else {
@@ -76,7 +76,8 @@ fn cross_thread_wake(bencher: Bencher) {
                 wakers_tx.send(context.waker().clone()).unwrap();
                 Poll::Pending
             }
-        }))
+        })
+        .block_on()
     });
 
     drop(wakers_tx);

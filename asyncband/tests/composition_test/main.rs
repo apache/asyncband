@@ -21,7 +21,6 @@ use std::time::Duration;
 
 use asyncband::barrier::Barrier;
 use asyncband::blocking::FutureExt as _;
-use asyncband::blocking::block_on;
 use asyncband::mutex::Mutex;
 use asyncband::oneshot;
 
@@ -60,12 +59,12 @@ async fn public_primitives_compose_across_modules() {
 fn blocking_bridge_composes_with_public_primitives() {
     let mutex = Mutex::new(1);
     *mutex.lock().block_on() += 1;
-    assert_eq!(*block_on(mutex.lock()), 2);
+    assert_eq!(*mutex.lock().block_on(), 2);
 
     let (sender, receiver) = oneshot::channel();
     let producer = thread::spawn(move || sender.send(7).unwrap());
 
-    assert_eq!(block_on(receiver), Ok(7));
+    assert_eq!(receiver.block_on(), Ok(7));
     producer.join().unwrap();
 }
 
