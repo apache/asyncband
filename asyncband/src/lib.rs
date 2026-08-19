@@ -69,49 +69,34 @@
 mod internal;
 
 #[cfg(feature = "admission")]
-#[cfg_attr(docsrs, doc(cfg(feature = "admission")))]
 pub mod admission;
 #[cfg(feature = "atomicbox")]
-#[cfg_attr(docsrs, doc(cfg(feature = "atomicbox")))]
 pub mod atomicbox;
 #[cfg(feature = "barrier")]
-#[cfg_attr(docsrs, doc(cfg(feature = "barrier")))]
 pub mod barrier;
 #[cfg(feature = "broadcast")]
-#[cfg_attr(docsrs, doc(cfg(feature = "broadcast")))]
 pub mod broadcast;
 #[cfg(feature = "condvar")]
-#[cfg_attr(docsrs, doc(cfg(feature = "condvar")))]
 pub mod condvar;
 #[cfg(feature = "latch")]
-#[cfg_attr(docsrs, doc(cfg(feature = "latch")))]
 pub mod latch;
 #[cfg(feature = "mpsc")]
-#[cfg_attr(docsrs, doc(cfg(feature = "mpsc")))]
 pub mod mpsc;
 #[cfg(feature = "mutex")]
-#[cfg_attr(docsrs, doc(cfg(feature = "mutex")))]
 pub mod mutex;
 #[cfg(feature = "once")]
-#[cfg_attr(docsrs, doc(cfg(feature = "once")))]
 pub mod once;
 #[cfg(feature = "oneshot")]
-#[cfg_attr(docsrs, doc(cfg(feature = "oneshot")))]
 pub mod oneshot;
 #[cfg(feature = "rwlock")]
-#[cfg_attr(docsrs, doc(cfg(feature = "rwlock")))]
 pub mod rwlock;
 #[cfg(feature = "semaphore")]
-#[cfg_attr(docsrs, doc(cfg(feature = "semaphore")))]
 pub mod semaphore;
 #[cfg(feature = "shutdown")]
-#[cfg_attr(docsrs, doc(cfg(feature = "shutdown")))]
 pub mod shutdown;
 #[cfg(feature = "singleflight")]
-#[cfg_attr(docsrs, doc(cfg(feature = "singleflight")))]
 pub mod singleflight;
 #[cfg(feature = "waitgroup")]
-#[cfg_attr(docsrs, doc(cfg(feature = "waitgroup")))]
 pub mod waitgroup;
 
 #[cfg(all(doctest, feature = "mutex", feature = "rwlock"))]

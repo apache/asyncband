@@ -29,7 +29,8 @@
     feature = "singleflight",
     feature = "waitgroup",
 ))]
-// Individual primitives intentionally use different subsets of this shared storage helper.
+// `admission`, `WaitList`, and `WaitSet` use different `Arena` operations. A single-primitive
+// build therefore leaves part of this shared API unused, while the all-feature build uses it.
 #[allow(dead_code)]
 mod arena;
 #[cfg(any(
@@ -49,7 +50,8 @@ mod arena;
 pub(crate) use arena::*;
 
 #[cfg(any(feature = "latch", feature = "once", feature = "waitgroup"))]
-// Latches, once values, and wait groups use different countdown transitions.
+// `waitgroup` increments and decrements the countdown, while `latch` and `once` only decrement it.
+// Consequently, `increment` is unused when either of the latter features is built alone.
 #[allow(dead_code)]
 mod countdown;
 #[cfg(any(feature = "latch", feature = "once", feature = "waitgroup"))]
@@ -102,7 +104,9 @@ pub(crate) use rwlock::*;
     feature = "rwlock",
     feature = "semaphore",
 ))]
-// Public primitives expose different subsets of the internal semaphore operations.
+// `mpsc` uses `poll_acquire`, `release_if_nonempty`, and `notify_all`; mutexes and rwlocks use
+// `acquire`, `try_acquire`, and `release`; the public semaphore also uses the accounting methods.
+// Each single-primitive build intentionally leaves the other groups unused.
 #[allow(dead_code)]
 mod semaphore;
 #[cfg(any(
@@ -137,7 +141,8 @@ pub(crate) use waitlist::*;
     feature = "once",
     feature = "waitgroup",
 ))]
-// Individual primitives construct and inspect wait sets through different entry points.
+// `barrier` constructs a wait set with `with_capacity`, while broadcast and countdown-based
+// primitives use `new`. One constructor is therefore unused in every single-primitive build.
 #[allow(dead_code)]
 mod waitset;
 #[cfg(any(
