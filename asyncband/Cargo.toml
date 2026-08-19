@@ -40,12 +40,11 @@ default = []
 
 # Each primitive has its own feature, so users can opt in to only what they need.
 admission = []
-atomicbox = []
 barrier = []
 broadcast = []
 condvar = ["mutex"]
 latch = []
-mpsc = ["atomicbox"]
+mpsc = []
 mutex = []
 once = ["dep:hashbrown", "semaphore"]
 oneshot = []
@@ -66,13 +65,107 @@ pollster = { version = "1.0.1", features = ["macro"] }
 tokio = { version = "1.53.1", features = ["full"] }
 tokio-test = { version = "0.4.5" }
 
+[[test]]
+name = "admission_test"
+path = "tests/admission_test/main.rs"
+required-features = ["admission"]
+
+[[test]]
+name = "barrier_test"
+path = "tests/barrier_test/main.rs"
+required-features = ["barrier"]
+
+[[test]]
+name = "broadcast_test"
+path = "tests/broadcast_test/main.rs"
+required-features = ["broadcast"]
+
+[[test]]
+name = "condvar_test"
+path = "tests/condvar_test/main.rs"
+required-features = ["condvar"]
+
+[[test]]
+name = "composition_test"
+path = "tests/composition_test/main.rs"
+required-features = ["barrier", "mutex", "oneshot"]
+
+[[test]]
+name = "latch_test"
+path = "tests/latch_test/main.rs"
+required-features = ["latch"]
+
+[[test]]
+name = "mpsc_test"
+path = "tests/mpsc_test/main.rs"
+required-features = ["mpsc"]
+
+[[test]]
+name = "mutex_test"
+path = "tests/mutex_test/main.rs"
+required-features = ["mutex"]
+
+[[test]]
+name = "once_test"
+path = "tests/once_test/main.rs"
+required-features = ["once"]
+
+[[test]]
+name = "oneshot_test"
+path = "tests/oneshot_test/main.rs"
+required-features = ["oneshot"]
+
+[[test]]
+name = "rwlock_test"
+path = "tests/rwlock_test/main.rs"
+required-features = ["rwlock"]
+
+[[test]]
+name = "semaphore_test"
+path = "tests/semaphore_test/main.rs"
+required-features = ["semaphore"]
+
+[[test]]
+name = "shutdown_test"
+path = "tests/shutdown_test/main.rs"
+required-features = ["shutdown"]
+
+[[test]]
+name = "singleflight_test"
+path = "tests/singleflight_test/main.rs"
+required-features = ["singleflight"]
+
+[[test]]
+name = "traits_test"
+path = "tests/traits_test/main.rs"
+required-features = [
+  "admission",
+  "barrier",
+  "broadcast",
+  "condvar",
+  "latch",
+  "mpsc",
+  "mutex",
+  "once",
+  "oneshot",
+  "rwlock",
+  "semaphore",
+  "shutdown",
+  "singleflight",
+  "waitgroup",
+]
+
+[[test]]
+name = "waitgroup_test"
+path = "tests/waitgroup_test/main.rs"
+required-features = ["waitgroup"]
+
 [[bench]]
 harness = false
 name = "primitives"
 path = "benches/primitives/main.rs"
 required-features = [
   "admission",
-  "atomicbox",
   "barrier",
   "broadcast",
   "condvar",

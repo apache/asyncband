@@ -93,9 +93,6 @@ pub use read_guard::RwLockReadGuard;
 mod write_guard;
 pub use write_guard::RwLockWriteGuard;
 
-#[cfg(test)]
-mod test;
-
 /// A reader-writer lock that allows multiple readers or a single writer at a time.
 ///
 /// See the [module level documentation](self) for more.

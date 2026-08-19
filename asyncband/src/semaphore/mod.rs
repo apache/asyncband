@@ -86,7 +86,7 @@ use std::sync::Arc;
 use crate::internal;
 
 #[cfg(test)]
-mod tests;
+mod whitebox_tests;
 
 /// An async counting semaphore for controlling access to a set of resources.
 ///

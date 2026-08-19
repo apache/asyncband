@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// `doc_cfg` automatically infers feature badges from `cfg` attributes, so individual modules do
+// not need matching `doc(cfg(...))` attributes.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 
@@ -39,6 +41,17 @@
 //!
 //! Features that build on other primitives enable those dependencies automatically. For example,
 //! `condvar` enables `mutex`, while `shutdown` enables `latch` and `waitgroup`.
+//!
+//! # Primitive categories
+//!
+//! The public primitives are grouped conceptually by purpose while their modules remain at the
+//! crate root so module paths continue to match Cargo feature names:
+//!
+//! * Synchronization: `Mutex`, `RwLock`, `Semaphore`, `Barrier`, `Condvar`, `Latch`, `WaitGroup`,
+//!   `Once`, `OnceCell`, and `OnceMap`.
+//! * Communication: oneshot, bounded and unbounded MPSC, and overflowing broadcast channels.
+//! * Composed coordination: graceful shutdown.
+//! * Concurrency control: fair-share admission control and duplicate-call suppression.
 //!
 //! # Runtime Agnostic
 //!
@@ -70,8 +83,6 @@ mod internal;
 
 #[cfg(feature = "admission")]
 pub mod admission;
-#[cfg(feature = "atomicbox")]
-pub mod atomicbox;
 #[cfg(feature = "barrier")]
 pub mod barrier;
 #[cfg(feature = "broadcast")]
@@ -102,166 +113,5 @@ pub mod waitgroup;
 #[cfg(all(doctest, feature = "mutex", feature = "rwlock"))]
 pub mod guard_variance_tests;
 
-#[cfg(all(
-    test,
-    any(
-        feature = "condvar",
-        feature = "mpsc",
-        feature = "once",
-        feature = "shutdown",
-        feature = "waitgroup",
-    )
-))]
-fn test_runtime() -> &'static tokio::runtime::Runtime {
-    use std::sync::OnceLock;
-
-    use tokio::runtime::Runtime;
-    static RT: OnceLock<Runtime> = OnceLock::new();
-    RT.get_or_init(|| Runtime::new().unwrap())
-}
-
-#[cfg(all(
-    test,
-    any(
-        feature = "admission",
-        feature = "condvar",
-        feature = "once",
-        feature = "singleflight",
-    )
-))]
-pub(crate) fn poll_once<F: std::future::Future>(
-    future: std::pin::Pin<&mut F>,
-) -> std::task::Poll<F::Output> {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    future.poll(&mut context)
-}
-
-#[cfg(all(
-    test,
-    feature = "admission",
-    feature = "atomicbox",
-    feature = "barrier",
-    feature = "broadcast",
-    feature = "condvar",
-    feature = "latch",
-    feature = "mpsc",
-    feature = "mutex",
-    feature = "once",
-    feature = "oneshot",
-    feature = "rwlock",
-    feature = "semaphore",
-    feature = "shutdown",
-    feature = "singleflight",
-    feature = "waitgroup",
-))]
-mod tests {
-    use crate::admission::FairShare;
-    use crate::admission::FairSharePermit;
-    use crate::admission::OwnedFairSharePermit;
-    use crate::barrier::Barrier;
-    use crate::broadcast;
-    use crate::condvar::Condvar;
-    use crate::latch::Latch;
-    use crate::mpsc;
-    use crate::mutex::Mutex;
-    use crate::mutex::MutexGuard;
-    use crate::once::Once;
-    use crate::once::OnceCell;
-    use crate::once::OnceMap;
-    use crate::oneshot;
-    use crate::rwlock::OwnedRwLockReadGuard;
-    use crate::rwlock::RwLock;
-    use crate::rwlock::RwLockReadGuard;
-    use crate::rwlock::RwLockWriteGuard;
-    use crate::semaphore::Semaphore;
-    use crate::shutdown::ShutdownRecv;
-    use crate::shutdown::ShutdownSend;
-    use crate::shutdown::ShutdownWatch;
-    use crate::singleflight;
-    use crate::waitgroup::Wait;
-    use crate::waitgroup::WaitGroup;
-
-    #[test]
-    fn assert_send_and_sync() {
-        fn do_assert_send_and_sync<T: Send + Sync>() {}
-        do_assert_send_and_sync::<FairShare<String>>();
-        do_assert_send_and_sync::<FairSharePermit<'_, String>>();
-        do_assert_send_and_sync::<OwnedFairSharePermit<String>>();
-        do_assert_send_and_sync::<Barrier>();
-        do_assert_send_and_sync::<Condvar>();
-        do_assert_send_and_sync::<Once>();
-        do_assert_send_and_sync::<OnceCell<u32>>();
-        do_assert_send_and_sync::<OnceMap<String, u32>>();
-        do_assert_send_and_sync::<singleflight::Group<String, u32>>();
-        do_assert_send_and_sync::<Latch>();
-        do_assert_send_and_sync::<Semaphore>();
-        do_assert_send_and_sync::<ShutdownSend>();
-        do_assert_send_and_sync::<ShutdownRecv>();
-        do_assert_send_and_sync::<ShutdownWatch>();
-        do_assert_send_and_sync::<WaitGroup>();
-        do_assert_send_and_sync::<Mutex<i64>>();
-        do_assert_send_and_sync::<MutexGuard<'_, i64>>();
-        do_assert_send_and_sync::<RwLock<i64>>();
-        do_assert_send_and_sync::<OwnedRwLockReadGuard<i64>>();
-        do_assert_send_and_sync::<RwLockReadGuard<'_, i64>>();
-        do_assert_send_and_sync::<RwLockWriteGuard<'_, i64>>();
-        do_assert_send_and_sync::<broadcast::overflow::Sender<i64>>();
-        do_assert_send_and_sync::<broadcast::overflow::Receiver<i64>>();
-        do_assert_send_and_sync::<broadcast::overflow::RecvError>();
-        do_assert_send_and_sync::<broadcast::overflow::TryRecvError>();
-        do_assert_send_and_sync::<oneshot::SendError<i64>>();
-        do_assert_send_and_sync::<oneshot::Sender<i64>>();
-        do_assert_send_and_sync::<mpsc::SendError<i64>>();
-        do_assert_send_and_sync::<mpsc::UnboundedSender<i64>>();
-        do_assert_send_and_sync::<mpsc::UnboundedReceiver<i64>>();
-        do_assert_send_and_sync::<mpsc::BoundedSender<i64>>();
-        do_assert_send_and_sync::<mpsc::BoundedReceiver<i64>>();
-    }
-
-    #[test]
-    fn assert_send() {
-        fn do_assert_send<T: Send>() {}
-        do_assert_send::<RwLockReadGuard<'_, std::sync::MutexGuard<'static, ()>>>();
-        do_assert_send::<oneshot::Receiver<i64>>();
-        do_assert_send::<oneshot::Recv<i64>>();
-    }
-
-    #[test]
-    fn assert_unpin() {
-        fn do_assert_unpin<T: Unpin>() {}
-        do_assert_unpin::<FairShare<String>>();
-        do_assert_unpin::<FairSharePermit<'_, String>>();
-        do_assert_unpin::<OwnedFairSharePermit<String>>();
-        do_assert_unpin::<Barrier>();
-        do_assert_unpin::<Condvar>();
-        do_assert_unpin::<Latch>();
-        do_assert_unpin::<Once>();
-        do_assert_unpin::<OnceCell<u32>>();
-        do_assert_unpin::<OnceMap<String, u32>>();
-        do_assert_unpin::<singleflight::Group<String, u32>>();
-        do_assert_unpin::<Semaphore>();
-        do_assert_unpin::<ShutdownSend>();
-        do_assert_unpin::<ShutdownRecv>();
-        do_assert_unpin::<ShutdownWatch>();
-        do_assert_unpin::<WaitGroup>();
-        do_assert_unpin::<Wait>();
-        do_assert_unpin::<Mutex<i64>>();
-        do_assert_unpin::<MutexGuard<'_, i64>>();
-        do_assert_unpin::<RwLock<i64>>();
-        do_assert_unpin::<RwLockReadGuard<'_, i64>>();
-        do_assert_unpin::<RwLockWriteGuard<'_, i64>>();
-        do_assert_unpin::<broadcast::overflow::Sender<i64>>();
-        do_assert_unpin::<broadcast::overflow::Receiver<i64>>();
-        do_assert_unpin::<broadcast::overflow::RecvError>();
-        do_assert_unpin::<broadcast::overflow::TryRecvError>();
-        do_assert_unpin::<oneshot::Sender<i64>>();
-        do_assert_unpin::<oneshot::SendError<i64>>();
-        do_assert_unpin::<oneshot::Receiver<i64>>();
-        do_assert_unpin::<oneshot::Recv<i64>>();
-        do_assert_unpin::<mpsc::SendError<i64>>();
-        do_assert_unpin::<mpsc::UnboundedSender<i64>>();
-        do_assert_unpin::<mpsc::UnboundedReceiver<i64>>();
-        do_assert_unpin::<mpsc::BoundedSender<i64>>();
-        do_assert_unpin::<mpsc::BoundedReceiver<i64>>();
-    }
-}
+#[cfg(all(test, feature = "once"))]
+mod test_support;

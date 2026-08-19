@@ -18,12 +18,16 @@
 use std::sync::Arc;
 use std::task::Poll;
 
+use asyncband::condvar::Condvar;
+use asyncband::mutex::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::condvar::Condvar;
-use crate::mutex::Mutex;
-use crate::poll_once;
-use crate::test_runtime;
+#[path = "../support/poll.rs"]
+mod poll_support;
+#[path = "../support/runtime.rs"]
+mod runtime_support;
+use poll_support::poll_once;
+use runtime_support::test_runtime;
 
 fn expect_ready<T>(poll: Poll<T>) -> T {
     match poll {

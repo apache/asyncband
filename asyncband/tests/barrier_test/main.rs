@@ -15,11 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use asyncband::barrier::Barrier;
 use tokio_test::assert_pending;
 use tokio_test::assert_ready;
 use tokio_test::task::spawn;
-
-use crate::barrier::Barrier;
 
 #[test]
 fn zero_does_not_block() {

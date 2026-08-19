@@ -20,8 +20,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crate::poll_once;
-use crate::singleflight::Group;
+use asyncband::singleflight::Group;
 
 #[tokio::test]
 async fn test_simple() {
@@ -136,52 +135,6 @@ async fn test_forget() {
 }
 
 #[tokio::test]
-async fn test_panic_safe() {
-    let group = Arc::new(Group::<&str, String>::new());
-
-    // Task that panics
-    let g1 = group.clone();
-    let h1 = tokio::spawn(async move {
-        g1.work("key", || async {
-            panic!("oops");
-        })
-        .await
-    });
-
-    // Wait for h1 to panic and exit
-    let err = h1.await.unwrap_err();
-    assert!(err.is_panic());
-    assert!(group.map.lock().is_empty());
-
-    // Next task should succeed (new attempt)
-    let res = group.work("key", || async { "success".to_string() }).await;
-    assert_eq!(res, "success");
-}
-
-#[tokio::test]
-async fn test_cancelled_work_removes_empty_entry() {
-    let group = Arc::new(Group::<&str, &str>::new());
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-
-    let group_clone = group.clone();
-    let task = tokio::spawn(async move {
-        group_clone
-            .work("key", || async move {
-                started_tx.send(()).unwrap();
-                std::future::pending().await
-            })
-            .await
-    });
-
-    started_rx.await.unwrap();
-    assert_eq!(group.map.lock().len(), 1);
-
-    task.abort();
-    assert!(task.await.unwrap_err().is_cancelled());
-    assert!(group.map.lock().is_empty());
-}
-
-#[tokio::test]
 async fn test_try_work_simple() {
     let group = Group::new();
     let res = group
@@ -221,45 +174,4 @@ async fn test_try_work_coalescing() {
     }
 
     assert_eq!(counter.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn test_try_work_failure() {
-    let group = Group::new();
-    let res = group
-        .try_work("key", || async { Err::<&str, &str>("error") })
-        .await;
-    assert_eq!(res, Err("error"));
-    assert!(group.map.lock().is_empty());
-
-    // Retry should work
-    let res2 = group
-        .try_work("key", || async { Ok::<&str, ()>("success") })
-        .await;
-    assert_eq!(res2, Ok("success"));
-}
-
-#[tokio::test]
-async fn test_try_work_wait_and_retry() {
-    let group = Group::new();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-
-    let first = group.try_work("key", || async move {
-        release_rx.await.unwrap();
-        Err::<&str, &str>("fail")
-    });
-    tokio::pin!(first);
-    assert!(poll_once(first.as_mut()).is_pending());
-
-    let retry = group.try_work("key", || async { Ok::<&str, &str>("success") });
-    tokio::pin!(retry);
-    assert!(poll_once(retry.as_mut()).is_pending());
-
-    release_tx.send(()).unwrap();
-    assert_eq!(first.await, Err("fail"));
-
-    // The failed caller must not remove the cell while an existing waiter can still retry it.
-    assert_eq!(group.map.lock().len(), 1);
-    assert_eq!(retry.await, Ok("success"));
-    assert!(group.map.lock().is_empty());
 }

@@ -23,7 +23,7 @@ use std::task::Context;
 use std::task::Wake;
 use std::task::Waker;
 
-use super::*;
+use asyncband::broadcast::overflow::*;
 
 struct TrackWake(AtomicUsize);
 
@@ -145,81 +145,6 @@ async fn test_resubscribe() {
 }
 
 #[tokio::test]
-async fn test_overflow() {
-    let (tx, mut rx) = channel(4);
-    let mut rx2 = rx.clone();
-
-    let boundary = u64::MAX - 2;
-    tx.shared.tail_cnt.store(boundary, Ordering::SeqCst);
-    rx.head = boundary;
-
-    tx.send(1);
-    assert_eq!(rx.recv().await, Ok(1));
-
-    tx.send(2);
-    tx.send(3);
-    tx.send(4);
-    tx.send(5);
-    tx.send(6);
-    tx.send(7);
-    tx.send(8);
-
-    assert_eq!(rx.recv().await, Err(RecvError::Lagged(3)));
-    assert_eq!(rx.recv().await, Ok(5));
-    assert_eq!(rx.recv().await, Ok(6));
-    assert_eq!(rx.recv().await, Ok(7));
-    assert_eq!(rx.recv().await, Ok(8));
-
-    assert_eq!(rx2.recv().await, Err(RecvError::Lagged(1)));
-    assert_eq!(rx2.recv().await, Ok(5));
-    assert_eq!(rx2.recv().await, Ok(6));
-    assert_eq!(rx2.recv().await, Ok(7));
-    assert_eq!(rx2.recv().await, Ok(8));
-}
-
-#[tokio::test]
-async fn test_overflow_exactly_overwritten() {
-    let (tx, mut rx) = channel(4);
-    let mut rx2 = rx.clone();
-
-    let boundary = u64::MAX - 2;
-    tx.shared.tail_cnt.store(boundary, Ordering::SeqCst);
-    rx.head = boundary;
-
-    tx.send(1);
-    assert_eq!(rx.recv().await, Ok(1));
-
-    tx.send(2);
-    tx.send(3);
-    tx.send(4);
-    tx.send(5);
-
-    assert_eq!(rx.recv().await, Ok(2));
-    // Note: wrapping just hit the head.
-    // This requires the tail to wrap around the entire u64 space (approx 584 years at 10^9 msg/s),
-    // which effectively creates an ABA problem where version 0 (wrapped) looks like version 0
-    // (start). This is a known limitation of the wrapping arithmetic logic, accepted for
-    // performance reasons as it is practically impossible to trigger without manually setting
-    // the tail.
-    assert_eq!(rx2.recv().await, Ok(4));
-}
-
-#[tokio::test]
-async fn test_capacity_rounding() {
-    let (tx, _) = channel::<()>(3);
-    assert_eq!(tx.shared.capacity, 4);
-    assert_eq!(tx.shared.mask, 3);
-
-    let (tx, _) = channel::<()>(4);
-    assert_eq!(tx.shared.capacity, 4);
-    assert_eq!(tx.shared.mask, 3);
-
-    let (tx, _) = channel::<()>(5);
-    assert_eq!(tx.shared.capacity, 8);
-    assert_eq!(tx.shared.mask, 7);
-}
-
-#[tokio::test]
 async fn test_try_recv() {
     let (tx, mut rx) = channel(16);
 
@@ -247,18 +172,6 @@ async fn test_try_recv_lagged() {
     assert_eq!(rx.try_recv(), Ok(2));
     assert_eq!(rx.try_recv(), Ok(3));
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
-}
-
-#[tokio::test]
-async fn test_try_recv_unwritten_slot_is_empty() {
-    let (tx, mut rx) = channel::<u64>(2);
-    drop(tx);
-
-    // Simulate tail advanced but slot not written yet
-    rx.shared.tail_cnt.store(1, Ordering::SeqCst);
-
-    assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
-    assert_eq!(rx.head, 0);
 }
 
 #[tokio::test]

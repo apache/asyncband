@@ -15,19 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A multi-producer, single-consumer queue for sending values between asynchronous tasks.
+use std::sync::Arc;
 
-mod bounded;
-mod error;
-mod unbounded;
+use super::WaitGroup;
+use crate::internal::CountdownState;
 
-pub use bounded::BoundedReceiver;
-pub use bounded::BoundedSender;
-pub use bounded::bounded;
-pub use error::RecvError;
-pub use error::SendError;
-pub use error::TryRecvError;
-pub use error::TrySendError;
-pub use unbounded::UnboundedReceiver;
-pub use unbounded::UnboundedSender;
-pub use unbounded::unbounded;
+#[test]
+#[should_panic(expected = "WaitGroup counter overflow")]
+fn clone_panics_on_counter_overflow() {
+    let wg = WaitGroup {
+        state: Arc::new(CountdownState::new(u32::MAX)),
+    };
+
+    let _ = wg.clone();
+}

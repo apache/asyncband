@@ -65,9 +65,6 @@ use std::task::Poll;
 use crate::internal::CountdownState;
 use crate::internal::WaitRegistration;
 
-#[cfg(test)]
-mod tests;
-
 /// A synchronization primitive that can be used to coordinate multiple tasks.
 ///
 /// See the [module level documentation](self) for more.

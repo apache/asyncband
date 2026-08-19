@@ -22,7 +22,7 @@ use std::task::Context;
 use std::task::Waker;
 use std::vec::Vec;
 
-use super::*;
+use asyncband::semaphore::Semaphore;
 
 #[test]
 fn no_permits() {
@@ -183,19 +183,6 @@ fn wake_then_drop() {
         }
     }
     assert_eq!(s.available_permits(), 2);
-}
-
-#[test]
-fn fulfilled_forget_exact_debt_reclaims_its_waiter_node() {
-    let s = Semaphore::new(0);
-
-    for _ in 0..3 {
-        s.forget_exact(1);
-        assert_eq!(s.s.num_waiter_nodes(), 1);
-
-        s.release(1);
-        assert_eq!(s.s.num_waiter_nodes(), 0);
-    }
 }
 
 #[tokio::test]

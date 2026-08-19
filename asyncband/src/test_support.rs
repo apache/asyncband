@@ -15,19 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A multi-producer, single-consumer queue for sending values between asynchronous tasks.
+use std::future::Future;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
+use std::task::Waker;
 
-mod bounded;
-mod error;
-mod unbounded;
-
-pub use bounded::BoundedReceiver;
-pub use bounded::BoundedSender;
-pub use bounded::bounded;
-pub use error::RecvError;
-pub use error::SendError;
-pub use error::TryRecvError;
-pub use error::TrySendError;
-pub use unbounded::UnboundedReceiver;
-pub use unbounded::UnboundedSender;
-pub use unbounded::unbounded;
+pub(crate) fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
+    future.poll(&mut Context::from_waker(Waker::noop()))
+}

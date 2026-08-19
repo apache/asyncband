@@ -15,6 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(feature = "mpsc")]
+mod atomic_option_box;
+#[cfg(feature = "mpsc")]
+pub(crate) use atomic_option_box::*;
+
 #[cfg(any(
     feature = "admission",
     feature = "barrier",

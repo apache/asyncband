@@ -75,9 +75,6 @@ use crate::mutex;
 use crate::mutex::MutexGuard;
 use crate::mutex::OwnedMutexGuard;
 
-#[cfg(test)]
-mod tests;
-
 /// A condition variable that allows tasks to wait for a notification.
 ///
 /// See the [module level documentation](self) for more.

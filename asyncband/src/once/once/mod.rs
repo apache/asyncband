@@ -24,9 +24,6 @@ use crate::internal::CountdownState;
 use crate::internal::WaitRegistration;
 use crate::semaphore::Semaphore;
 
-#[cfg(test)]
-mod tests;
-
 /// A synchronization primitive which can be used to run a one-time async initialization.
 ///
 /// Unlike [`std::sync::Once`], this type never blocks a thread. The provided closure must

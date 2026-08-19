@@ -80,9 +80,6 @@ use crate::internal::Mutex;
 use crate::internal::WaitRegistration;
 use crate::internal::WaitSet;
 
-#[cfg(test)]
-mod tests;
-
 /// A synchronization primitive for multiple tasks that need to wait for each other.
 ///
 /// See the [module level documentation](self) for more.

@@ -23,8 +23,11 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
 
-use super::FairShare;
-use crate::poll_once;
+use asyncband::admission::FairShare;
+
+#[path = "../support/poll.rs"]
+mod support;
+use support::poll_once;
 
 #[test]
 #[should_panic(expected = "FairShare requires at least one permit")]

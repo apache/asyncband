@@ -27,9 +27,6 @@
 //! time or work cost.
 
 mod fair_share;
-#[cfg(test)]
-mod tests;
-
 pub use fair_share::FairShare;
 pub use fair_share::FairSharePermit;
 pub use fair_share::OwnedFairSharePermit;

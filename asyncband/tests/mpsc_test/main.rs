@@ -17,13 +17,15 @@
 
 use std::time::Instant;
 
+use asyncband::mpsc;
+use asyncband::mpsc::RecvError;
+use asyncband::mpsc::TryRecvError;
+use asyncband::mpsc::TrySendError;
 use tokio_test::assert_ok;
 
-use crate::mpsc;
-use crate::mpsc::RecvError;
-use crate::mpsc::TryRecvError;
-use crate::mpsc::TrySendError;
-use crate::test_runtime;
+#[path = "../support/runtime.rs"]
+mod support;
+use support::test_runtime;
 
 #[test]
 fn test_unbounded_pressure() {
@@ -266,7 +268,8 @@ async fn send_after_close_bounded() {
     assert_eq!(rx.recv().await, Ok(1));
 
     drop(rx);
-    assert_eq!(tx.send(2).await, Err(mpsc::SendError::new(2)));
+    let error = tx.send(2).await.unwrap_err();
+    assert_eq!(error.into_inner(), 2);
 }
 
 #[test]

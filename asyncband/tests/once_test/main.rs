@@ -15,19 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A multi-producer, single-consumer queue for sending values between asynchronous tasks.
-
-mod bounded;
-mod error;
-mod unbounded;
-
-pub use bounded::BoundedReceiver;
-pub use bounded::BoundedSender;
-pub use bounded::bounded;
-pub use error::RecvError;
-pub use error::SendError;
-pub use error::TryRecvError;
-pub use error::TrySendError;
-pub use unbounded::UnboundedReceiver;
-pub use unbounded::UnboundedSender;
-pub use unbounded::unbounded;
+mod once;
+mod once_cell;
+mod once_map;

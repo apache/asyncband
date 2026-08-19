@@ -69,9 +69,6 @@ use std::sync::Arc;
 
 use crate::internal;
 
-#[cfg(test)]
-mod test;
-
 /// An async mutex for protecting shared data.
 ///
 /// See the [module level documentation](self) for more.

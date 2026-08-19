@@ -18,18 +18,11 @@
 use std::future::IntoFuture;
 use std::time::Duration;
 
-use super::*;
-use crate::test_runtime;
+use asyncband::waitgroup::WaitGroup;
 
-#[test]
-#[should_panic(expected = "WaitGroup counter overflow")]
-fn test_clone_panics_on_counter_overflow() {
-    let wg = WaitGroup {
-        state: Arc::new(CountdownState::new(u32::MAX)),
-    };
-
-    let _ = wg.clone();
-}
+#[path = "../support/runtime.rs"]
+mod support;
+use support::test_runtime;
 
 #[test]
 fn test_wait_group_drop() {

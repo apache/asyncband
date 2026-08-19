@@ -15,19 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A multi-producer, single-consumer queue for sending values between asynchronous tasks.
+use std::sync::OnceLock;
 
-mod bounded;
-mod error;
-mod unbounded;
+use tokio::runtime::Runtime;
 
-pub use bounded::BoundedReceiver;
-pub use bounded::BoundedSender;
-pub use bounded::bounded;
-pub use error::RecvError;
-pub use error::SendError;
-pub use error::TryRecvError;
-pub use error::TrySendError;
-pub use unbounded::UnboundedReceiver;
-pub use unbounded::UnboundedSender;
-pub use unbounded::unbounded;
+pub fn test_runtime() -> &'static Runtime {
+    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| Runtime::new().unwrap())
+}

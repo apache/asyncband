@@ -27,7 +27,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-use crate::atomicbox::AtomicOptionBox;
+use crate::internal::AtomicOptionBox;
 use crate::mpsc::RecvError;
 use crate::mpsc::SendError;
 use crate::mpsc::TryRecvError;

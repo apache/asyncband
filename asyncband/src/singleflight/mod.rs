@@ -28,7 +28,7 @@ use crate::internal::OnceTable;
 use crate::internal::OnceTableEntry;
 
 #[cfg(test)]
-mod tests;
+mod whitebox_tests;
 
 /// Group represents a class of work and forms a namespace in which
 /// units of work can be executed with duplicate suppression.

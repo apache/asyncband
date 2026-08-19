@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use super::*;
+use asyncband::mutex::*;
 
 #[test]
 fn test_try_lock_never_blocks() {

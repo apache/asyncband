@@ -17,8 +17,11 @@
 
 use std::future::pending;
 
-use super::*;
-use crate::test_runtime;
+use asyncband::shutdown::*;
+
+#[path = "../support/runtime.rs"]
+mod support;
+use support::test_runtime;
 
 #[test]
 fn test_single_pair() {

@@ -27,7 +27,7 @@ use std::task::Waker;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::*;
+use asyncband::latch::*;
 
 macro_rules! assert_time {
     ($time:expr, $mills:literal $(,)?) => {

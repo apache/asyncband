@@ -79,7 +79,7 @@ use crate::internal::WaitRegistration;
 use crate::internal::WaitSet;
 
 #[cfg(test)]
-mod tests;
+mod whitebox_tests;
 
 /// Creates a new broadcast channel with the given hint `capacity`. The actual capacity may be
 /// greater than the provided `capacity`.

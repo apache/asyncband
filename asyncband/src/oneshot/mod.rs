@@ -106,7 +106,7 @@ pub use self::sender::SendError;
 pub use self::sender::Sender;
 
 #[cfg(test)]
-mod tests;
+mod whitebox_tests;
 
 /// Creates a new oneshot channel and returns the [`Sender`] and [`Receiver`].
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {

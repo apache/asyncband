@@ -25,27 +25,29 @@ Asyncband is a runtime-agnostic library providing essential synchronization prim
 
 ## Available primitives
 
-Each module is an opt-in Cargo feature. The crate enables no primitives by default.
+Each module is an opt-in Cargo feature. The crate enables no primitives by default. Categories describe each primitive's role; they do not add another module level, so public paths continue to match feature names such as `asyncband::mutex` and `asyncband::mpsc`.
 
-| Feature | Main API | Purpose |
-| --- | --- | --- |
-| `admission` | [`FairShare`](https://docs.rs/asyncband/*/asyncband/admission/struct.FairShare.html) | Fairly share bounded concurrency across keys. |
-| `atomicbox` | [`AtomicBox`](https://docs.rs/asyncband/*/asyncband/atomicbox/struct.AtomicBox.html), [`AtomicOptionBox`](https://docs.rs/asyncband/*/asyncband/atomicbox/struct.AtomicOptionBox.html) | Own heap-allocated values behind atomic pointers. |
-| `barrier` | [`Barrier`](https://docs.rs/asyncband/*/asyncband/barrier/struct.Barrier.html) | Wait until all participants reach a synchronization point. |
-| `broadcast` | [`broadcast::overflow`](https://docs.rs/asyncband/*/asyncband/broadcast/overflow/) | Send each value to multiple receivers. |
-| `condvar` | [`Condvar`](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html) | Wait for notifications while releasing a mutex. |
-| `latch` | [`Latch`](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html) | Wait until a one-way countdown completes. |
-| `mpsc` | [`bounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.bounded.html), [`unbounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.unbounded.html) | Send values from multiple producers to one consumer. |
-| `mutex` | [`Mutex`](https://docs.rs/asyncband/*/asyncband/mutex/struct.Mutex.html) | Protect shared data with asynchronous mutual exclusion. |
-| `once` | [`Once`](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html), [`OnceCell`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html), [`OnceMap`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceMap.html) | Coordinate one-time asynchronous initialization. |
-| `oneshot` | [`oneshot::channel`](https://docs.rs/asyncband/*/asyncband/oneshot/fn.channel.html) | Send one value between two tasks. |
-| `rwlock` | [`RwLock`](https://docs.rs/asyncband/*/asyncband/rwlock/struct.RwLock.html) | Allow multiple readers or one writer. |
-| `semaphore` | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | Control concurrent access with permits. |
-| `shutdown` | [`shutdown`](https://docs.rs/asyncband/*/asyncband/shutdown/) | Coordinate shutdown signals and completion. |
-| `singleflight` | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html) | Coalesce concurrent calls for the same key. |
-| `waitgroup` | [`WaitGroup`](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html) | Wait for a dynamic group of tasks to finish. |
+| Category | Primitive | Feature | Purpose |
+| --- | --- | --- | --- |
+| Synchronization | [`Mutex`](https://docs.rs/asyncband/*/asyncband/mutex/struct.Mutex.html) | `mutex` | Protect shared data with asynchronous mutual exclusion. |
+| Synchronization | [`RwLock`](https://docs.rs/asyncband/*/asyncband/rwlock/struct.RwLock.html) | `rwlock` | Allow multiple readers or one writer. |
+| Synchronization | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore` | Control concurrent access with permits. |
+| Synchronization | [`Barrier`](https://docs.rs/asyncband/*/asyncband/barrier/struct.Barrier.html) | `barrier` | Wait until all participants reach a synchronization point. |
+| Synchronization | [`Condvar`](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html) | `condvar` | Wait for notifications while releasing a mutex. |
+| Synchronization | [`Latch`](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html) | `latch` | Wait until a one-way countdown completes. |
+| Synchronization | [`WaitGroup`](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html) | `waitgroup` | Wait for a dynamic group of tasks to finish. |
+| Synchronization | [`Once`](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html) | `once` | Run asynchronous initialization exactly once. |
+| Synchronization | [`OnceCell`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html) | `once` | Initialize and store one asynchronous value. |
+| Synchronization | [`OnceMap`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceMap.html) | `once` | Initialize and store one value per key. |
+| Communication | [`oneshot::channel`](https://docs.rs/asyncband/*/asyncband/oneshot/fn.channel.html) | `oneshot` | Send one value between two tasks. |
+| Communication | [`mpsc::bounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.bounded.html) | `mpsc` | Send values from multiple producers through a bounded channel. |
+| Communication | [`mpsc::unbounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.unbounded.html) | `mpsc` | Send values from multiple producers through an unbounded channel. |
+| Communication | [`broadcast::overflow`](https://docs.rs/asyncband/*/asyncband/broadcast/overflow/) | `broadcast` | Broadcast values and report when slow receivers miss overwritten items. |
+| Composed coordination | [`shutdown`](https://docs.rs/asyncband/*/asyncband/shutdown/) | `shutdown` | Coordinate shutdown signals and completion. |
+| Concurrency control | [`FairShare`](https://docs.rs/asyncband/*/asyncband/admission/struct.FairShare.html) | `admission` | Fairly share bounded concurrency across keys. |
+| Concurrency control | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html) | `singleflight` | Coalesce concurrent calls for the same key. |
 
-Features that build on other primitives enable them automatically: `condvar` enables `mutex`, `mpsc` enables `atomicbox`, `once` enables `semaphore`, `shutdown` enables `latch` and `waitgroup`, and `singleflight` enables `once`.
+Features that build on other primitives enable them automatically: `condvar` enables `mutex`, `once` enables `semaphore`, `shutdown` enables `latch` and `waitgroup`, and `singleflight` enables `once`.
 
 ## Installation
 
@@ -95,7 +97,7 @@ This crate collects runtime-agnostic synchronization primitives from spare parts
 * **RwLock** is derived from `tokio::sync::RwLock`, but the `max_readers` can be any `NonZeroUsize` (effectively any positive `usize`) instead of `[0, u32::MAX >> 3]`. No blocking method is provided, since it can be easily implemented with block_on of any runtime.
 * **Semaphore** is derived from `tokio::sync::Semaphore`, without `close` method since it is quite tricky to use. And thus, this semaphore doesn't have the limitation of max permits. Besides, new methods like `forget_exact` are added to fit the specific use case.
 * **WaitGroup** is inspired by [`waitgroup-rs`](https://github.com/laizy/waitgroup-rs), providing different API flavor with a different implementation based on the internal `CountdownState` primitive.
-* **atomicbox** is forked from [`atomicbox`](https://github.com/jorendorff/atomicbox/) at commit 07756444.
+* The internal atomic pointer slot used by MPSC is derived from [`atomicbox`](https://github.com/jorendorff/atomicbox/) at commit 07756444.
 * **broadcast::overflow::channel** is derived from `tokio::sync::broadcast::channel`, with a different implementation based on the internal `WaitSet` primitive.
 * **oneshot::channel** is derived from [`oneshot`](https://github.com/faern/oneshot), with significant simplifications since we need not support synchronized receiving functions.
 

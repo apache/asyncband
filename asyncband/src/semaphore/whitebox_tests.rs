@@ -15,19 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A multi-producer, single-consumer queue for sending values between asynchronous tasks.
+use super::Semaphore;
 
-mod bounded;
-mod error;
-mod unbounded;
+#[test]
+fn fulfilled_forget_exact_debt_reclaims_its_waiter_node() {
+    let semaphore = Semaphore::new(0);
 
-pub use bounded::BoundedReceiver;
-pub use bounded::BoundedSender;
-pub use bounded::bounded;
-pub use error::RecvError;
-pub use error::SendError;
-pub use error::TryRecvError;
-pub use error::TrySendError;
-pub use unbounded::UnboundedReceiver;
-pub use unbounded::UnboundedSender;
-pub use unbounded::unbounded;
+    for _ in 0..3 {
+        semaphore.forget_exact(1);
+        assert_eq!(semaphore.s.num_waiter_nodes(), 1);
+
+        semaphore.release(1);
+        assert_eq!(semaphore.s.num_waiter_nodes(), 0);
+    }
+}

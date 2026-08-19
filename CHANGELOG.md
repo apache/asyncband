@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Breaking changes
 
 * Make every primitive an opt-in Cargo feature and enable no primitives by default; downstream dependencies must list the primitives they use.
+* Remove the public `atomicbox` module and feature; the atomic pointer helper is now an implementation detail of `mpsc`.
 * Rename `oneshot::Sender::is_closed` and `oneshot::Receiver::is_closed` to `is_disconnected`.
 * Raise the minimum supported Rust version from 1.85.0 to 1.86.0.
 

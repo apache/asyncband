@@ -63,9 +63,6 @@ use crate::latch::Latch;
 use crate::waitgroup::Wait;
 use crate::waitgroup::WaitGroup;
 
-#[cfg(test)]
-mod tests;
-
 /// Create a pair of handles for managing shutdown signals.
 ///
 /// See the [module level documentation](self) for more.
@@ -76,7 +73,10 @@ pub fn new_pair() -> (ShutdownSend, ShutdownRecv) {
         latch: latch.clone(),
         wait: wg.clone().into_future(),
     };
-    let recv = ShutdownRecv { latch, wg };
+    let recv = ShutdownRecv {
+        latch,
+        _wait_group: wg,
+    };
     (send, recv)
 }
 
@@ -107,8 +107,8 @@ impl ShutdownSend {
 #[derive(Debug, Clone)]
 pub struct ShutdownRecv {
     latch: Arc<Latch>,
-    #[allow(dead_code)] // hold the wait group
-    wg: WaitGroup,
+    // Keeps this receiver registered as a shutdown participant until it is dropped.
+    _wait_group: WaitGroup,
 }
 
 impl ShutdownRecv {

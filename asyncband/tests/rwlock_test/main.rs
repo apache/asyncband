@@ -19,11 +19,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Weak;
 
-use super::*;
-use crate::rwlock::OwnedMappedRwLockReadGuard;
-use crate::rwlock::OwnedMappedRwLockWriteGuard;
-use crate::rwlock::OwnedRwLockReadGuard;
-use crate::rwlock::OwnedRwLockWriteGuard;
+use asyncband::rwlock::*;
 
 #[test]
 fn test_try_read_write_never_blocks() {
