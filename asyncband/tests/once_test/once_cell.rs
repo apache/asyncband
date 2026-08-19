@@ -1,26 +1,27 @@
-// Copyright 2024 tison <wander4096@gmail.com>
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+//   http://www.apache.org/licenses/LICENSE-2.0
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use asyncband::once::OnceCell;
 use tokio::sync::Mutex;
-
-use super::*;
-use crate::latch::Latch;
 
 struct Foo {
     value: Arc<AtomicBool>,
@@ -75,21 +76,21 @@ fn multi_init() {
     rt.block_on(async {
         const N: usize = 100;
 
-        let latch = Arc::new(Latch::new(N as u32));
         let values = Arc::new(Mutex::new(vec![0; N]));
+        let mut handles = Vec::with_capacity(N);
 
         for i in 0..N {
-            let latch = latch.clone();
             let values = values.clone();
-            rt.spawn(async move {
+            handles.push(rt.spawn(async move {
                 let result = CELL.get_or_init(move || async move { i + 1000 }).await;
                 let mut values = values.lock().await;
                 values[i] = *result;
-                latch.count_down();
-            });
+            }));
         }
 
-        latch.wait().await;
+        for handle in handles {
+            handle.await.unwrap();
+        }
         let cell_value = CELL.get().unwrap();
         for (index, value) in values.lock().await.iter().enumerate() {
             assert_eq!(*value, *cell_value, "mismatch at index {index}");

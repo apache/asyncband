@@ -1,16 +1,19 @@
-// Copyright 2024 tison <wander4096@gmail.com>
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+//   http://www.apache.org/licenses/LICENSE-2.0
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
 
 use std::fmt;
 use std::mem::ManuallyDrop;
@@ -64,12 +67,13 @@ impl<T> IntoFuture for Receiver<T> {
 }
 
 impl<T> Receiver<T> {
-    /// Returns true if the associated [`Sender`] was dropped before sending a message, or if the
-    /// message has already been received.
+    /// Returns `true` if the channel is disconnected.
     ///
-    /// If `true` is returned, all future calls to receive the message are guaranteed to return
-    /// [`RecvError`]. Future calls to this method are also guaranteed to return `true`.
-    pub fn is_closed(&self) -> bool {
+    /// This occurs when the associated [`Sender`] is dropped without sending a message, or after
+    /// the message is received.
+    ///
+    /// If `true` is returned, all future receive operations are guaranteed to return an error.
+    pub fn is_disconnected(&self) -> bool {
         // SAFETY: The existence of `self` guarantees that the receiver is still alive. If the
         // sender was dropped, it observed the live receiver and left allocation cleanup to it, so
         // `channel_ptr` remains valid.

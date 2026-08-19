@@ -5,7 +5,7 @@
 
 [![Crates.io][crates-badge]][crates-url]
 [![Documentation][docs-badge]][docs-url]
-[![MSRV 1.85][msrv-badge]](https://www.whatrustisit.com)
+[![MSRV 1.86][msrv-badge]](https://www.whatrustisit.com)
 [![Apache 2.0 licensed][license-badge]][license-url]
 [![Build Status][actions-badge]][actions-url]
 
@@ -13,7 +13,7 @@
 [crates-url]: https://crates.io/crates/asyncband
 [docs-badge]: https://docs.rs/asyncband/badge.svg
 [docs-url]: https://docs.rs/asyncband
-[msrv-badge]: https://img.shields.io/badge/MSRV-1.85-green?logo=rust
+[msrv-badge]: https://img.shields.io/badge/MSRV-1.86-green?logo=rust
 [license-badge]: https://img.shields.io/crates/l/asyncband
 [license-url]: LICENSE
 [actions-badge]: https://github.com/fast/asyncband/actions/workflows/ci.yml/badge.svg
@@ -23,35 +23,41 @@
 
 Asyncband is a runtime-agnostic library providing essential synchronization primitives for asynchronous Rust programming. The library offers a collection of well-tested, efficient synchronization tools that work with any async runtime.
 
-## Features
+## Available primitives
 
-* [**Barrier**](https://docs.rs/asyncband/*/asyncband/barrier/struct.Barrier.html): A synchronization primitive that enables tasks to wait until all participants arrive.
-* [**block_on**](https://docs.rs/asyncband/*/asyncband/block_on/index.html): An opt-in minimal single-future blocking executor (enabled with the `block_on` Cargo feature).
-* [**Condvar**](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html): A condition variable that allows tasks to wait for a notification.
-* [**Latch**](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html): A synchronization primitive that allows one or more tasks to wait until a set of operations completes.
-* [**Mutex**](https://docs.rs/asyncband/*/asyncband/mutex/struct.Mutex.html): A mutual exclusion primitive for protecting shared data.
-* [**Once**](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html): A primitive that ensures a one-time asynchronous operation runs at most once, even when called concurrently.
-* [**OnceCell**](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html): A cell that can be written to at most once, providing safe, lazy initialization.
-* [**OnceMap**](https://docs.rs/asyncband/*/asyncband/once/struct.OnceMap.html): A hash map that runs computation only once for each key and stores the result.
-* [**RwLock**](https://docs.rs/asyncband/*/asyncband/rwlock/struct.RwLock.html): A reader-writer lock that allows multiple readers or a single writer at a time.
-* [**Semaphore**](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html): A synchronization primitive that controls access to a shared resource.
-* [**WaitGroup**](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html): A synchronization primitive that allows waiting for multiple tasks to complete.
-* [**admission::FairShare**](https://docs.rs/asyncband/*/asyncband/admission/struct.FairShare.html): A work-conserving admission policy that fairly shares bounded concurrency across keys.
-* [**atomicbox**](https://docs.rs/asyncband/*/asyncband/atomicbox/): A safe, owning version of AtomicPtr for heap-allocated data.
-* [**broadcast**](https://docs.rs/asyncband/*/asyncband/broadcast/): A multi-producer, multi-consumer broadcast channel.
-* [**mpsc::bounded**](https://docs.rs/asyncband/*/asyncband/mpsc/fn.bounded.html): A multi-producer, single-consumer bounded queue for sending values between asynchronous tasks.
-* [**mpsc::unbounded**](https://docs.rs/asyncband/*/asyncband/mpsc/fn.unbounded.html): A multi-producer, single-consumer unbounded queue for sending values between asynchronous tasks.
-* [**oneshot::channel**](https://docs.rs/asyncband/*/asyncband/oneshot/): A one-shot channel for sending a single value between tasks.
-* [**shutdown**](https://docs.rs/asyncband/*/asyncband/shutdown/): A composite synchronization primitive for managing shutdown signals.
-* [**singleflight::Group**](https://docs.rs/asyncband/*/asyncband/singleflight/): A duplicate function call suppression mechanism.
+Each module is an opt-in Cargo feature. The crate enables no primitives by default. Categories describe each primitive's primary purpose; they do not add another module level, so public paths continue to match feature names such as `asyncband::mutex` and `asyncband::mpsc`.
+
+| Category | Primitive | Feature | Purpose |
+| --- | --- | --- | --- |
+| Shared state | [`Mutex`](https://docs.rs/asyncband/*/asyncband/mutex/struct.Mutex.html) | `mutex` | Protect shared data with asynchronous mutual exclusion. |
+|  | [`RwLock`](https://docs.rs/asyncband/*/asyncband/rwlock/struct.RwLock.html) | `rwlock` | Allow multiple readers or one writer. |
+|  | [`Condvar`](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html) | `condvar` | Wait for notifications while releasing a mutex. |
+| One-time initialization | [`Once`](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html) | `once` | Run asynchronous initialization exactly once. |
+|  | [`OnceCell`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html) | `once` | Initialize and store one asynchronous value. |
+|  | [`OnceMap`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceMap.html) | `once` | Initialize and store one value per key. |
+| Task coordination | [`Barrier`](https://docs.rs/asyncband/*/asyncband/barrier/struct.Barrier.html) | `barrier` | Wait until all participants reach a synchronization point. |
+|  | [`Latch`](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html) | `latch` | Wait until a one-way countdown completes. |
+|  | [`WaitGroup`](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html) | `waitgroup` | Wait for a dynamic group of tasks to finish. |
+|  | [`shutdown`](https://docs.rs/asyncband/*/asyncband/shutdown/) | `shutdown` | Coordinate shutdown signals and completion. |
+| Channels | [`oneshot::channel`](https://docs.rs/asyncband/*/asyncband/oneshot/fn.channel.html) | `oneshot` | Send one value between two tasks. |
+|  | [`mpsc::bounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.bounded.html) | `mpsc` | Send values from multiple producers through a bounded channel. |
+|  | [`mpsc::unbounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.unbounded.html) | `mpsc` | Send values from multiple producers through an unbounded channel. |
+|  | [`broadcast::overflow`](https://docs.rs/asyncband/*/asyncband/broadcast/overflow/) | `broadcast` | Broadcast values and report when slow receivers miss overwritten items. |
+| Workload control | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore` | Control concurrent access with permits. |
+|  | [`FairShare`](https://docs.rs/asyncband/*/asyncband/admission/struct.FairShare.html) | `admission` | Fairly share bounded concurrency across keys. |
+|  | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html) | `singleflight` | Coalesce concurrent calls for the same key. |
+
+Features that build on other primitives enable them automatically: `condvar` enables `mutex`, `once` enables `semaphore`, `shutdown` enables `latch` and `waitgroup`, and `singleflight` enables `once`.
 
 ## Installation
 
 Add the dependency to your `Cargo.toml` via:
 
 ```shell
-cargo add asyncband
+cargo add asyncband --features mutex,oneshot
 ```
+
+List every primitive your application uses in `features`; a bare `cargo add asyncband` intentionally exposes no primitive modules.
 
 ## Optional `block_on` bridge
 
@@ -104,7 +110,7 @@ Asyncband primitives and guards implement `Send` and `Sync` only when the protec
 
 ## Minimum Supported Rust Version (MSRV)
 
-This crate is built against the latest stable release, and its minimum supported rustc version is 1.85.0.
+This crate is built against the latest stable release, and its minimum supported rustc version is 1.86.0.
 
 The policy is that the minimum Rust version required to use this crate can be increased in minor version updates. For example, if Asyncband 1.0 requires Rust 1.20.0, then Asyncband 1.0.z for all values of z will also require Rust 1.20.0 or newer. However, Asyncband 1.y for y > 0 may require a newer minimum version of Rust.
 
@@ -126,7 +132,7 @@ This crate collects runtime-agnostic synchronization primitives from spare parts
 * **RwLock** is derived from `tokio::sync::RwLock`, but the `max_readers` can be any `NonZeroUsize` (effectively any positive `usize`) instead of `[0, u32::MAX >> 3]`. No blocking method is provided, since it can be easily implemented with block_on of any runtime.
 * **Semaphore** is derived from `tokio::sync::Semaphore`, without `close` method since it is quite tricky to use. And thus, this semaphore doesn't have the limitation of max permits. Besides, new methods like `forget_exact` are added to fit the specific use case.
 * **WaitGroup** is inspired by [`waitgroup-rs`](https://github.com/laizy/waitgroup-rs), providing different API flavor with a different implementation based on the internal `CountdownState` primitive.
-* **atomicbox** is forked from [`atomicbox`](https://github.com/jorendorff/atomicbox/) at commit 07756444.
+* The internal atomic pointer slot used by MPSC is derived from [`atomicbox`](https://github.com/jorendorff/atomicbox/) at commit 07756444.
 * **broadcast::overflow::channel** is derived from `tokio::sync::broadcast::channel`, with a different implementation based on the internal `WaitSet` primitive.
 * **oneshot::channel** is derived from [`oneshot`](https://github.com/faern/oneshot), with significant simplifications since we need not support synchronized receiving functions.
 

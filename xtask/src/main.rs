@@ -1,17 +1,21 @@
-// Copyright 2024 tison <wander4096@gmail.com>
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+//   http://www.apache.org/licenses/LICENSE-2.0
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
 
+use std::path::Path;
 use std::process::Command as StdCommand;
 use std::time::Duration;
 
@@ -33,6 +37,7 @@ impl Command {
         match self.sub {
             SubCommand::Bench(cmd) => cmd.run(),
             SubCommand::Build(cmd) => cmd.run(),
+            SubCommand::Check(cmd) => cmd.run(),
             SubCommand::Lint(cmd) => cmd.run(),
             SubCommand::Semver(cmd) => cmd.run(),
             SubCommand::Test(cmd) => cmd.run(),
@@ -46,6 +51,8 @@ enum SubCommand {
     Bench(CommandBench),
     #[clap(about = "Compile workspace packages.")]
     Build(CommandBuild),
+    #[clap(about = "Check asyncband under the feature matrix.")]
+    Check(CommandCheck),
     #[clap(about = "Run workspace quality checks.")]
     Lint(CommandLint),
     #[clap(about = "Verify API compatibility for a planned release.")]
@@ -76,6 +83,21 @@ impl CommandBuild {
 }
 
 #[derive(Parser)]
+struct CommandCheck;
+
+impl CommandCheck {
+    fn run(self) {
+        let features = asyncband_features();
+
+        run_command(make_check_cmd(&[]));
+        for feature in features.chunks(1) {
+            run_command(make_check_cmd(feature));
+        }
+        run_command(make_check_cmd(&features));
+    }
+}
+
+#[derive(Parser)]
 struct CommandTest {
     #[arg(long, help = "Run tests serially and do not capture output.")]
     no_capture: bool,
@@ -83,8 +105,31 @@ struct CommandTest {
 
 impl CommandTest {
     fn run(self) {
-        run_command(make_test_cmd(self.no_capture, &["block_on"]));
+        run_command(make_test_cmd(self.no_capture, &asyncband_features()));
     }
+}
+
+fn asyncband_features() -> Vec<String> {
+    use cargo_metadata::Metadata;
+    use cargo_metadata::MetadataCommand;
+
+    let manifest = Path::new(env!("CARGO_WORKSPACE_DIR")).join("Cargo.toml");
+    let Metadata { packages, .. } = MetadataCommand::new()
+        .manifest_path(manifest)
+        .exec()
+        .expect("failed to get cargo metadata");
+    let package = packages
+        .into_iter()
+        .find(|package| package.name == PACKAGE_NAME)
+        .expect("failed to find asyncband package");
+
+    let mut features = package
+        .features
+        .into_keys()
+        .filter(|feature| feature != "default")
+        .collect::<Vec<_>>();
+    features.sort();
+    features
 }
 
 #[derive(Parser)]
@@ -240,7 +285,7 @@ fn classify_release_type(baseline: &Version, release: &Version) -> SemverRelease
 
 fn make_bench_cmd() -> StdCommand {
     let mut cmd = find_command("cargo");
-    cmd.args(["bench", "--workspace", "--bench", "*"]);
+    cmd.args(["bench", "--workspace", "--all-features", "--bench", "*"]);
     cmd
 }
 
@@ -261,14 +306,31 @@ fn make_build_cmd(locked: bool) -> StdCommand {
     cmd
 }
 
-fn make_test_cmd(no_capture: bool, features: &[&str]) -> StdCommand {
+fn make_test_cmd(no_capture: bool, features: &[String]) -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.args(["test", "--workspace", "--no-default-features"]);
-    if !features.is_empty() {
-        cmd.args(["--features", features.join(",").as_str()]);
+    for feature in features {
+        cmd.args(["--features", feature]);
     }
     if no_capture {
         cmd.args(["--", "--nocapture"]);
+    }
+    cmd
+}
+
+fn make_check_cmd(features: &[String]) -> StdCommand {
+    let mut cmd = find_command("cargo");
+    cmd.env("RUSTFLAGS", "-Dwarnings");
+    cmd.args([
+        "+nightly",
+        "check",
+        "--package",
+        PACKAGE_NAME,
+        "--all-targets",
+        "--no-default-features",
+    ]);
+    for feature in features {
+        cmd.args(["--features", feature]);
     }
     cmd
 }
@@ -334,10 +396,10 @@ fn make_semver_check_cmd(
 }
 
 fn make_hawkeye_cmd(fix: bool) -> StdCommand {
-    ensure_installed("hawkeye", "hawkeye");
+    ensure_installed("hawkeye", "hawkeye@7.0.0-alpha.1");
     let mut cmd = find_command("hawkeye");
     if fix {
-        cmd.args(["format", "--fail-if-updated=false"]);
+        cmd.args(["format"]);
     } else {
         cmd.args(["check"]);
     }

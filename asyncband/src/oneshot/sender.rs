@@ -1,16 +1,19 @@
-// Copyright 2024 tison <wander4096@gmail.com>
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+//   http://www.apache.org/licenses/LICENSE-2.0
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
 
 use std::any::type_name;
 use std::fmt;
@@ -113,10 +116,13 @@ impl<T> Sender<T> {
         }
     }
 
-    /// Returns true if the associated [`Receiver`] has been dropped.
+    /// Returns `true` if the channel is disconnected.
     ///
-    /// If true is returned, a future call to send is guaranteed to return an error.
-    pub fn is_closed(&self) -> bool {
+    /// This occurs when the associated receiving endpoint is dropped.
+    ///
+    /// If `true` is returned, a future call to [`send`](Sender::send) is guaranteed to return an
+    /// error.
+    pub fn is_disconnected(&self) -> bool {
         // SAFETY: The channel exists on the heap for the entire duration of this method, and we
         // only ever acquire shared references to it. Note that if the receiver disconnects it
         // does not free the channel.
