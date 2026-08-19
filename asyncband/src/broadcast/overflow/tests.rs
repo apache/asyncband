@@ -19,6 +19,8 @@ use std::sync::atomic::Ordering;
 
 use super::*;
 
+// These tests stay next to the implementation because they inspect private state.
+
 #[tokio::test]
 async fn sequence_number_wraparound() {
     let (tx, mut rx) = channel(4);

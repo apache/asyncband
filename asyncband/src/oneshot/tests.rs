@@ -30,6 +30,8 @@ use self::support::WakerProbe;
 use self::support::spawn_named;
 use crate::oneshot;
 
+// These tests stay next to the implementation because they inspect private state.
+
 #[test]
 fn poll_returns_while_sender_owns_waker() {
     let (sender, receiver) = oneshot::channel();

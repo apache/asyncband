@@ -20,6 +20,8 @@ use std::sync::Arc;
 use super::Group;
 use crate::test_support::poll_once;
 
+// These tests stay next to the implementation because they inspect private state.
+
 #[tokio::test]
 async fn panicked_work_removes_empty_entry() {
     let group = Arc::new(Group::<&str, String>::new());

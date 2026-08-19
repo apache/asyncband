@@ -26,7 +26,7 @@ use crate::internal::OnceTable;
 use crate::internal::OnceTableEntry;
 
 #[cfg(test)]
-mod whitebox_tests;
+mod tests;
 
 /// A hash map that runs computation only once for each key and stores the result.
 ///

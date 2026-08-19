@@ -20,6 +20,8 @@ use std::sync::Arc;
 use super::OnceMap;
 use crate::test_support::poll_once;
 
+// These tests stay next to the implementation because they inspect private state.
+
 #[tokio::test]
 async fn failed_compute_removes_empty_entry() {
     let map = OnceMap::new();

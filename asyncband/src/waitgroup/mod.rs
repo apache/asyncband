@@ -65,7 +65,7 @@ use crate::internal::CountdownState;
 use crate::internal::WaitRegistration;
 
 #[cfg(test)]
-mod whitebox_tests;
+mod tests;
 
 /// A synchronization primitive for waiting on multiple tasks to complete.
 ///

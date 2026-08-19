@@ -15,17 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
+use super::Semaphore;
 
-use super::WaitGroup;
-use crate::internal::CountdownState;
+// This test stays next to the implementation because it inspects private state.
 
 #[test]
-#[should_panic(expected = "WaitGroup counter overflow")]
-fn clone_panics_on_counter_overflow() {
-    let wg = WaitGroup {
-        state: Arc::new(CountdownState::new(u32::MAX)),
-    };
+fn fulfilled_forget_exact_debt_reclaims_its_waiter_node() {
+    let semaphore = Semaphore::new(0);
 
-    let _ = wg.clone();
+    for _ in 0..3 {
+        semaphore.forget_exact(1);
+        assert_eq!(semaphore.s.num_waiter_nodes(), 1);
+
+        semaphore.release(1);
+        assert_eq!(semaphore.s.num_waiter_nodes(), 0);
+    }
 }
