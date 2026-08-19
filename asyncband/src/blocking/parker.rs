@@ -32,8 +32,8 @@ const NOTIFIED: usize = 2;
 
 pub(super) struct Parker {
     state: Arc<ParkerState>,
-    // A parker has one waiting thread. Its waker-backed state remains Send + Sync.
-    _single_waiter: PhantomData<Cell<()>>,
+    // This marker keeps the single-waiter Parker !Sync while its waker state remains Sync.
+    single_waiter: PhantomData<Cell<()>>,
 }
 
 struct ParkerState {
@@ -50,7 +50,7 @@ impl Parker {
                 lock: Mutex::new(()),
                 condvar: Condvar::new(),
             }),
-            _single_waiter: PhantomData,
+            single_waiter: PhantomData,
         }
     }
 
