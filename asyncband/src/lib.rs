@@ -32,8 +32,8 @@
 //!
 //! # Cargo features
 //!
-//! The crate enables no primitives by default. Each public module has a same-named opt-in feature,
-//! so applications only compile the primitives they use:
+//! The crate enables no primitives or utilities by default. Each public module has a same-named
+//! opt-in feature, so applications only compile the APIs they use:
 //!
 //! ```toml
 //! asyncband = { version = "0.7", features = ["mutex", "oneshot"] }
@@ -55,7 +55,8 @@
 //!
 //! # Synchronous interoperability
 //!
-//! The optional [`block_on`] module provides a minimal single-future executor for synchronous code.
+//! The optional [`blocking`] module lets synchronous code wait on a single runtime-agnostic future.
+//! It is an interoperability utility rather than an async primitive or a general-purpose runtime.
 //!
 //! # Runtime Agnostic
 //!
@@ -89,8 +90,8 @@ mod internal;
 pub mod admission;
 #[cfg(feature = "barrier")]
 pub mod barrier;
-#[cfg(feature = "block_on")]
-pub mod block_on;
+#[cfg(feature = "blocking")]
+pub mod blocking;
 #[cfg(feature = "broadcast")]
 pub mod broadcast;
 #[cfg(feature = "condvar")]

@@ -19,6 +19,7 @@ use asyncband::admission::FairShare;
 use asyncband::admission::FairSharePermit;
 use asyncband::admission::OwnedFairSharePermit;
 use asyncband::barrier::Barrier;
+use asyncband::blocking::Timeout;
 use asyncband::broadcast;
 use asyncband::condvar::Condvar;
 use asyncband::latch::Latch;
@@ -49,6 +50,7 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<FairSharePermit<'_, String>>();
     assert_send_and_sync::<OwnedFairSharePermit<String>>();
     assert_send_and_sync::<Barrier>();
+    assert_send_and_sync::<Timeout>();
     assert_send_and_sync::<Condvar>();
     assert_send_and_sync::<Once>();
     assert_send_and_sync::<OnceCell<u32>>();
@@ -96,6 +98,7 @@ fn public_types_are_unpin() {
     assert_unpin::<FairSharePermit<'_, String>>();
     assert_unpin::<OwnedFairSharePermit<String>>();
     assert_unpin::<Barrier>();
+    assert_unpin::<Timeout>();
     assert_unpin::<Condvar>();
     assert_unpin::<Latch>();
     assert_unpin::<Once>();

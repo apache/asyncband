@@ -38,10 +38,10 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 
-# Each primitive has its own feature, so users can opt in to only what they need.
+# Each public module has its own feature, so users can opt in to only what they need.
 admission = []
 barrier = []
-block_on = []
+blocking = []
 broadcast = []
 condvar = ["mutex"]
 latch = []
@@ -77,6 +77,11 @@ path = "tests/barrier_test/main.rs"
 required-features = ["barrier"]
 
 [[test]]
+name = "blocking_test"
+path = "tests/blocking_test/main.rs"
+required-features = ["blocking"]
+
+[[test]]
 name = "broadcast_test"
 path = "tests/broadcast_test/main.rs"
 required-features = ["broadcast"]
@@ -89,7 +94,7 @@ required-features = ["condvar"]
 [[test]]
 name = "composition_test"
 path = "tests/composition_test/main.rs"
-required-features = ["barrier", "mutex", "oneshot"]
+required-features = ["barrier", "blocking", "mutex", "oneshot"]
 
 [[test]]
 name = "latch_test"
@@ -142,6 +147,7 @@ path = "tests/traits_test/main.rs"
 required-features = [
   "admission",
   "barrier",
+  "blocking",
   "broadcast",
   "condvar",
   "latch",
