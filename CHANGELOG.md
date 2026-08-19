@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
-* Add an opt-in `asyncband::blocking` bridge with `block_on`, `block_on_for`, and `BlockingExt` for waiting on runtime-agnostic futures from synchronous code.
+* Add an opt-in `asyncband::blocking` bridge with `block_on` and `FutureExt` for waiting on runtime-agnostic futures from synchronous code.
 
 ### Breaking changes
 

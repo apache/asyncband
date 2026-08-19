@@ -147,7 +147,6 @@ path = "tests/traits_test/main.rs"
 required-features = [
   "admission",
   "barrier",
-  "blocking",
   "broadcast",
   "condvar",
   "latch",

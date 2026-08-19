@@ -17,12 +17,10 @@
 
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
 use asyncband::barrier::Barrier;
-use asyncband::blocking::BlockingExt as _;
+use asyncband::blocking::FutureExt as _;
 use asyncband::blocking::block_on;
-use asyncband::blocking::block_on_for;
 use asyncband::mutex::Mutex;
 use asyncband::oneshot;
 
@@ -59,13 +57,9 @@ async fn public_primitives_compose_across_modules() {
 
 #[test]
 fn blocking_bridge_composes_with_public_primitives() {
-    let mutex = Arc::new(Mutex::new(1));
-    let contender = mutex.clone();
-    let holder = block_on(mutex.lock());
-
-    assert!(block_on_for(contender.lock(), Duration::ZERO).is_err());
-    drop(holder);
-    assert_eq!(*mutex.lock().block_on_for(Duration::ZERO).unwrap(), 1);
+    let mutex = Mutex::new(1);
+    *mutex.lock().block_on() += 1;
+    assert_eq!(*block_on(mutex.lock()), 2);
 
     let (sender, receiver) = oneshot::channel();
     let producer = thread::spawn(move || sender.send(7).unwrap());

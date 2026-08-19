@@ -16,7 +16,6 @@
 // under the License.
 
 use std::future::Future;
-use std::future::pending;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -27,10 +26,10 @@ use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 
-use asyncband::blocking::BlockingExt as _;
-use asyncband::blocking::Timeout;
+use asyncband::blocking::FutureExt as _;
 use asyncband::blocking::block_on;
-use asyncband::blocking::block_on_for;
+
+const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[test]
 fn ready_future_returns_from_function_and_extension_method() {
@@ -39,10 +38,10 @@ fn ready_future_returns_from_function_and_extension_method() {
 }
 
 #[test]
-fn wake_notification_resumes_the_parked_thread() {
-    let (completion, future, first_poll) = controlled_future();
+fn wake_notification_resumes_the_waiting_thread() {
+    let (completion, future, polls) = controlled_future();
     let producer = thread::spawn(move || {
-        first_poll.recv().unwrap();
+        polls.recv().unwrap();
         completion.complete(7);
     });
 
@@ -51,38 +50,30 @@ fn wake_notification_resumes_the_parked_thread() {
 }
 
 #[test]
-fn bounded_wait_returns_ready_output_from_function_and_extension_method() {
-    assert_eq!(block_on_for(async { 42 }, Duration::ZERO), Ok(42));
-    assert_eq!(async { 42 }.block_on_for(Duration::ZERO), Ok(42));
-}
+fn block_on_preserves_the_current_threads_park_token() {
+    let (completion, future, polls) = controlled_future();
+    let (worker_thread_tx, worker_thread_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        worker_thread_tx.send(thread::current()).unwrap();
+        assert_eq!(block_on(future), 7);
 
-#[test]
-fn bounded_wait_resumes_after_a_cross_thread_wake() {
-    let (completion, future, first_poll) = controlled_future();
-    let producer = thread::spawn(move || {
-        first_poll.recv().unwrap();
-        completion.complete(7);
+        thread::park();
+        done_tx.send(()).unwrap();
     });
 
-    assert_eq!(block_on_for(future, Duration::from_secs(1)), Ok(7));
-    producer.join().unwrap();
-}
+    let worker_thread = worker_thread_rx.recv().unwrap();
+    polls.recv_timeout(TEST_TIMEOUT).unwrap();
 
-#[test]
-fn zero_wait_times_out_a_pending_future() {
-    assert_eq!(block_on_for(pending::<()>(), Duration::ZERO), Err(Timeout));
-}
+    worker_thread.unpark();
+    completion.wake();
+    polls.recv_timeout(TEST_TIMEOUT).unwrap();
+    completion.complete(7);
 
-#[test]
-fn unrepresentable_deadline_does_not_expire_immediately() {
-    let (completion, future, first_poll) = controlled_future();
-    let producer = thread::spawn(move || {
-        first_poll.recv().unwrap();
-        completion.complete(7);
-    });
-
-    assert_eq!(block_on_for(future, Duration::MAX), Ok(7));
-    producer.join().unwrap();
+    done_rx
+        .recv_timeout(TEST_TIMEOUT)
+        .expect("block_on consumed an unrelated thread park token");
+    worker.join().unwrap();
 }
 
 struct Shared<T> {
@@ -99,7 +90,14 @@ struct Completion<T> {
 }
 
 impl<T> Completion<T> {
-    fn complete(self, output: T) {
+    fn wake(&self) {
+        let waker = self.shared.state.lock().unwrap().waker.clone();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn complete(&self, output: T) {
         let waker = {
             let mut state = self.shared.state.lock().unwrap();
             state.output = Some(output);
@@ -114,7 +112,7 @@ impl<T> Completion<T> {
 
 struct ControlledFuture<T> {
     shared: Arc<Shared<T>>,
-    first_poll: Option<mpsc::Sender<()>>,
+    polls: mpsc::Sender<()>,
 }
 
 impl<T> Future for ControlledFuture<T> {
@@ -130,11 +128,7 @@ impl<T> Future for ControlledFuture<T> {
 
         state.waker = Some(cx.waker().clone());
         drop(state);
-
-        if let Some(first_poll) = this.first_poll.take() {
-            first_poll.send(()).unwrap();
-        }
-
+        this.polls.send(()).unwrap();
         Poll::Pending
     }
 }
@@ -146,7 +140,7 @@ fn controlled_future<T>() -> (Completion<T>, ControlledFuture<T>, mpsc::Receiver
             waker: None,
         }),
     });
-    let (first_poll_tx, first_poll_rx) = mpsc::channel();
+    let (polls_tx, polls_rx) = mpsc::channel();
 
     (
         Completion {
@@ -154,8 +148,8 @@ fn controlled_future<T>() -> (Completion<T>, ControlledFuture<T>, mpsc::Receiver
         },
         ControlledFuture {
             shared,
-            first_poll: Some(first_poll_tx),
+            polls: polls_tx,
         },
-        first_poll_rx,
+        polls_rx,
     )
 }

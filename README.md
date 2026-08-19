@@ -68,24 +68,16 @@ cargo add asyncband --features blocking
 ```
 
 ```rust
-use std::time::Duration;
-
-use asyncband::blocking::{block_on, block_on_for, BlockingExt as _};
+use asyncband::blocking::{block_on, FutureExt as _};
 
 let value = block_on(async { 42 });
 assert_eq!(value, 42);
 
 let value = async { 42 }.block_on();
 assert_eq!(value, 42);
-
-let value = block_on_for(async { 42 }, Duration::from_secs(1));
-assert_eq!(value, Ok(42));
-
-let value = async { 42 }.block_on_for(Duration::from_secs(1));
-assert_eq!(value, Ok(42));
 ```
 
-This is a minimal single-future executor that parks the current thread, not a general-purpose async runtime. `block_on_for` limits the outer blocking loop and drops a still-pending future when the wait expires, but it does not provide an async timer context or interrupt a long-running poll. Futures depending on a runtime-specific timer or I/O driver may not make progress, and blocking an executor thread can cause starvation or deadlocks. See [`asyncband::blocking`](https://docs.rs/asyncband/*/asyncband/blocking/index.html) for details.
+This is a minimal single-future executor, not a general-purpose async runtime. Each call waits on its own signal, so it does not consume wake-ups belonging to other parking operations on the same thread. Futures depending on a runtime-specific timer or I/O driver may not make progress, and blocking an executor thread can cause starvation or deadlocks. See [`asyncband::blocking`](https://docs.rs/asyncband/*/asyncband/blocking/index.html) for details.
 
 ## Migrating from MEA
 
@@ -126,7 +118,7 @@ This crate collects runtime-agnostic synchronization primitives from spare parts
 * **Semaphore** is derived from `tokio::sync::Semaphore`, without `close` method since it is quite tricky to use. And thus, this semaphore doesn't have the limitation of max permits. Besides, new methods like `forget_exact` are added to fit the specific use case.
 * **WaitGroup** is inspired by [`waitgroup-rs`](https://github.com/laizy/waitgroup-rs), providing different API flavor with a different implementation based on the internal `CountdownState` primitive.
 * The internal atomic pointer slot used by MPSC is derived from [`atomicbox`](https://github.com/jorendorff/atomicbox/) at commit 07756444.
-* The single-future parking loop in `blocking` is adapted from [`pollster`](https://github.com/zesterer/pollster) 1.0.1.
+* The single-future parking loop in `blocking` is adapted from [`pollster`](https://github.com/zesterer/pollster) 0.4.0.
 * **broadcast::overflow::channel** is derived from `tokio::sync::broadcast::channel`, with a different implementation based on the internal `WaitSet` primitive.
 * **oneshot::channel** is derived from [`oneshot`](https://github.com/faern/oneshot), with significant simplifications since we need not support synchronized receiving functions.
 
