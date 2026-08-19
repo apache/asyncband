@@ -44,9 +44,9 @@ fn send_before_await() {
 #[test]
 fn await_with_dropped_sender() {
     let (sender, receiver) = oneshot::channel::<u128>();
-    assert!(!receiver.is_closed());
+    assert!(!receiver.is_disconnected());
     drop(sender);
-    assert!(receiver.is_closed());
+    assert!(receiver.is_disconnected());
     assert_eq!(
         pollster::block_on(receiver),
         Err(oneshot::RecvError::Disconnected)
@@ -58,9 +58,10 @@ fn try_recv_success_then_disconnected() {
     let (tx, rx) = oneshot::channel::<i32>();
     tx.send(10).unwrap();
 
+    assert!(!rx.is_disconnected());
     assert_eq!(rx.try_recv(), Ok(10));
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
-    assert!(rx.is_closed());
+    assert!(rx.is_disconnected());
     assert!(!rx.has_message());
     assert_eq!(
         pollster::block_on(rx.into_future()),
@@ -81,8 +82,9 @@ fn send_error_preserves_message_until_consumed() {
     let (sender, receiver) = oneshot::channel();
     let (message, message_drop_count) = DropProbe::new(17u128);
 
+    assert!(!sender.is_disconnected());
     drop(receiver);
-    assert!(sender.is_closed());
+    assert!(sender.is_disconnected());
 
     let error = sender.send(message).unwrap_err();
     assert_eq!(message_drop_count.load(Ordering::Relaxed), 0);
@@ -124,7 +126,7 @@ fn dropping_unpolled_recv_closes_channel() {
 
     drop(receiver);
 
-    assert!(sender.is_closed());
+    assert!(sender.is_disconnected());
     assert_eq!(sender.send(17).unwrap_err().into_inner(), 17);
 }
 
@@ -378,7 +380,7 @@ fn poll_with_different_wakers_across_threads() {
 
     receiver_thread.join().unwrap();
     assert_eq!(WakerProbe::live_waker_count(&waker_probe1), 1);
-    assert!(sender.is_closed());
+    assert!(sender.is_disconnected());
 }
 
 #[test]
@@ -396,7 +398,7 @@ fn drop_pending_receiver_closes_channel_and_drops_waker() {
     drop(receiver);
     assert_eq!(WakerProbe::live_waker_count(&waker_probe), 1);
     assert_eq!(waker_probe.wake_count(), 0);
-    assert!(sender.is_closed());
+    assert!(sender.is_disconnected());
 
     let error = sender.send(1234).unwrap_err();
     assert_eq!(*error.as_inner(), 1234);
