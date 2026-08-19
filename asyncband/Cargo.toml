@@ -41,7 +41,7 @@ default = []
 # Each public module has its own feature, so users can opt in to only what they need.
 admission = []
 barrier = []
-blocking = []
+blocking = ["dep:parking"]
 broadcast = []
 condvar = ["mutex"]
 latch = []
@@ -59,6 +59,7 @@ waitgroup = []
 hashbrown = { version = "0.17.1", default-features = false, features = [
   "inline-more",
 ], optional = true }
+parking = { version = "2.2.1", optional = true }
 
 [dev-dependencies]
 divan = { version = "0.1.21" }
@@ -147,6 +148,7 @@ path = "tests/traits_test/main.rs"
 required-features = [
   "admission",
   "barrier",
+  "blocking",
   "broadcast",
   "condvar",
   "latch",

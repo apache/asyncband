@@ -16,6 +16,7 @@
 // under the License.
 
 mod barrier;
+mod blocking;
 mod broadcast;
 mod condvar;
 mod fair_share;

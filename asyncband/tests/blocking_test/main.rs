@@ -29,7 +29,9 @@ use std::time::Duration;
 use asyncband::blocking::FutureExt as _;
 use asyncband::blocking::block_on;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+// Timeouts in this test target are watchdogs for detecting a stalled test process. They are not
+// part of the public blocking API or assertions about elapsed-time behavior.
+const TEST_WATCHDOG: Duration = Duration::from_secs(5);
 
 #[test]
 fn ready_future_returns_from_function_and_extension_method() {
@@ -50,6 +52,44 @@ fn wake_notification_resumes_the_waiting_thread() {
 }
 
 #[test]
+fn nested_block_on_calls_use_independent_notifications() {
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let mut outer_polled = false;
+        let output = block_on(std::future::poll_fn(|outer_context| {
+            if outer_polled {
+                Poll::Ready(42)
+            } else {
+                outer_polled = true;
+                outer_context.waker().wake_by_ref();
+
+                let mut inner_polled = false;
+                let inner_output = block_on(std::future::poll_fn(|inner_context| {
+                    if inner_polled {
+                        Poll::Ready(7)
+                    } else {
+                        inner_polled = true;
+                        inner_context.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                }));
+                assert_eq!(inner_output, 7);
+                Poll::Pending
+            }
+        }));
+        done_tx.send(output).unwrap();
+    });
+
+    assert_eq!(
+        done_rx
+            .recv_timeout(TEST_WATCHDOG)
+            .expect("nested block_on calls shared or lost a notification"),
+        42
+    );
+    worker.join().unwrap();
+}
+
+#[test]
 fn block_on_preserves_the_current_threads_park_token() {
     let (completion, future, polls) = controlled_future();
     let (worker_thread_tx, worker_thread_rx) = mpsc::channel();
@@ -63,15 +103,15 @@ fn block_on_preserves_the_current_threads_park_token() {
     });
 
     let worker_thread = worker_thread_rx.recv().unwrap();
-    polls.recv_timeout(TEST_TIMEOUT).unwrap();
+    polls.recv_timeout(TEST_WATCHDOG).unwrap();
 
     worker_thread.unpark();
     completion.wake();
-    polls.recv_timeout(TEST_TIMEOUT).unwrap();
+    polls.recv_timeout(TEST_WATCHDOG).unwrap();
     completion.complete(7);
 
     done_rx
-        .recv_timeout(TEST_TIMEOUT)
+        .recv_timeout(TEST_WATCHDOG)
         .expect("block_on consumed an unrelated thread park token");
     worker.join().unwrap();
 }

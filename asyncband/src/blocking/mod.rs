@@ -34,9 +34,9 @@
 //! # Execution model
 //!
 //! [`block_on()`] is a lightweight single-future executor, not a general-purpose async runtime. It
-//! polls the future on the calling thread and waits on a signal dedicated to that invocation while
-//! the future is pending. The dedicated signal keeps nested calls and unrelated uses of
-//! [`thread::park`](std::thread::park) on the same thread from consuming each other's wake-ups.
+//! polls the future on the calling thread and waits on a private parker while the future is
+//! pending. Recursive calls receive a separate parker, and the parker does not share the
+//! notification token used by [`thread::park`](std::thread::park).
 //!
 //! No timer, I/O, or task scheduler is provided. Futures that depend on a runtime-specific driver,
 //! such as Tokio timers, I/O resources, or spawned tasks, may therefore make no progress. This
@@ -49,15 +49,14 @@
 //! other tasks and can deadlock when the future waits on work assigned to that executor. Call it
 //! only from synchronous code, such as `main`, a dedicated thread, or a sync-to-async boundary.
 
+use std::cell::RefCell;
 use std::future::IntoFuture;
 use std::pin::pin;
-use std::sync::Arc;
-use std::sync::Condvar;
-use std::sync::Mutex;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Wake;
 use std::task::Waker;
+
+use parking::Parker;
 
 /// Extension methods for waiting on a future from synchronous code.
 ///
@@ -83,54 +82,16 @@ pub trait FutureExt: IntoFuture {
 
 impl<F: IntoFuture> FutureExt for F {}
 
-// The per-invocation signal is adapted from pollster 0.4.0, licensed under MIT OR Apache-2.0:
-// https://docs.rs/pollster/0.4.0/src/pollster/lib.rs.html
-struct Parker {
-    notified: Mutex<bool>,
-    condvar: Condvar,
+fn parker_and_waker() -> (Parker, Waker) {
+    let parker = Parker::new();
+    let waker = Waker::from(parker.unparker());
+    (parker, waker)
 }
 
-impl Parker {
-    fn new() -> Self {
-        Self {
-            notified: Mutex::new(false),
-            condvar: Condvar::new(),
-        }
-    }
-
-    fn park(&self) {
-        let mut notified = self.notified.lock().unwrap();
-        while !*notified {
-            notified = self.condvar.wait(notified).unwrap();
-        }
-        *notified = false;
-    }
-
-    fn unpark(&self) {
-        let should_notify = {
-            let mut notified = self.notified.lock().unwrap();
-            if *notified {
-                false
-            } else {
-                *notified = true;
-                true
-            }
-        };
-
-        if should_notify {
-            self.condvar.notify_one();
-        }
-    }
-}
-
-impl Wake for Parker {
-    fn wake(self: Arc<Self>) {
-        self.unpark();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.unpark();
-    }
+thread_local! {
+    // This cache follows futures-lite's block_on design. Holding the mutable borrow while polling
+    // makes a recursive call take the fresh-parker path instead of sharing a notification token.
+    static CACHE: RefCell<(Parker, Waker)> = RefCell::new(parker_and_waker());
 }
 
 /// Blocks the current thread until `future` is ready.
@@ -148,14 +109,27 @@ impl Wake for Parker {
 /// ```
 pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
     let mut future = pin!(future.into_future());
-    let parker = Arc::new(Parker::new());
-    let waker = Waker::from(Arc::clone(&parker));
-    let mut context = Context::from_waker(&waker);
 
-    loop {
-        match future.as_mut().poll(&mut context) {
-            Poll::Pending => parker.park(),
-            Poll::Ready(output) => return output,
+    CACHE.with(|cache| {
+        let cached;
+        let fresh;
+        let (parker, waker) = match cache.try_borrow_mut() {
+            Ok(pair) => {
+                cached = pair;
+                &*cached
+            }
+            Err(_) => {
+                fresh = parker_and_waker();
+                &fresh
+            }
+        };
+        let mut context = Context::from_waker(waker);
+
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Pending => parker.park(),
+                Poll::Ready(output) => return output,
+            }
         }
-    }
+    })
 }
