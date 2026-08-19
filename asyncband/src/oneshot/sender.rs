@@ -116,12 +116,12 @@ impl<T> Sender<T> {
         }
     }
 
-    /// Returns `true` if the channel is disconnected because the associated receiving endpoint
-    /// has been dropped.
+    /// Returns `true` if the channel is disconnected.
+    ///
+    /// This occurs when the associated receiving endpoint is dropped.
     ///
     /// If `true` is returned, a future call to [`send`](Sender::send) is guaranteed to return an
-    /// error, and future calls to this method are guaranteed to return `true`. A `false` result
-    /// does not guarantee that the receiver will remain connected.
+    /// error.
     pub fn is_disconnected(&self) -> bool {
         // SAFETY: The channel exists on the heap for the entire duration of this method, and we
         // only ever acquire shared references to it. Note that if the receiver disconnects it

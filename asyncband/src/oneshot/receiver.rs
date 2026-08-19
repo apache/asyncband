@@ -69,13 +69,10 @@ impl<T> IntoFuture for Receiver<T> {
 impl<T> Receiver<T> {
     /// Returns `true` if the channel is disconnected.
     ///
-    /// The channel becomes disconnected when the associated [`Sender`] is dropped without sending
-    /// a message, or after this receiver consumes the message. A message waiting to be received
-    /// does not count as disconnected.
+    /// This occurs when the associated [`Sender`] is dropped without sending a message, or after
+    /// the message is received.
     ///
-    /// If `true` is returned, all future receive operations are guaranteed to return an error, and
-    /// future calls to this method are guaranteed to return `true`. A `false` result does not
-    /// guarantee that the sender will remain connected.
+    /// If `true` is returned, all future receive operations are guaranteed to return an error.
     pub fn is_disconnected(&self) -> bool {
         // SAFETY: The existence of `self` guarantees that the receiver is still alive. If the
         // sender was dropped, it observed the live receiver and left allocation cleanup to it, so
