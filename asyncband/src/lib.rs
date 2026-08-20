@@ -38,7 +38,8 @@
 //! Then use the selected primitives directly:
 //!
 //! ```
-//! # async fn example() {
+//! # #[tokio::main]
+//! # async fn main() {
 //! use asyncband::mutex::Mutex;
 //!
 //! let counter = Mutex::new(0);
@@ -81,17 +82,17 @@
 //! Primitives and guards implement `Send` and `Sync` only when their protected or transferred
 //! values satisfy the required bounds. Consult each type's documentation for its exact contract.
 //!
-//! # Incubation status
+//! # Apache Incubator disclaimer
 //!
-//! > Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software
-//! > Foundation (ASF), sponsored by the Apache Incubator PMC.
-//! >
-//! > Incubation is required of all newly accepted projects until a further review indicates that
-//! > the infrastructure, communications, and decision making process have stabilized in a manner
-//! > consistent with other successful ASF projects.
-//! >
-//! > While incubation status is not necessarily a reflection of the completeness or stability of
-//! > the code, it does indicate that the project has yet to be fully endorsed by the ASF.
+//! Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software
+//! Foundation (ASF), sponsored by the Apache Incubator PMC.
+//!
+//! Incubation is required of all newly accepted projects until a further review indicates that the
+//! infrastructure, communications, and decision making process have stabilized in a manner
+//! consistent with other successful ASF projects.
+//!
+//! While incubation status is not necessarily a reflection of the completeness or stability of the
+//! code, it does indicate that the project has yet to be fully endorsed by the ASF.
 #[cfg(any(
     feature = "admission",
     feature = "barrier",
