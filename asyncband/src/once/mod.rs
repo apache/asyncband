@@ -15,13 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Asynchronous primitives for one-time async coordination.
-//!
-//! Each primitive has its own Cargo feature:
-//!
-//! * `once` enables [`Once`], which runs an asynchronous operation at most once.
-//! * `once-cell` enables [`OnceCell`], which asynchronously initializes and stores one value.
-//! * `once-map` enables [`OnceMap`], which initializes and stores one value per key.
+//! Asynchronous primitives for one-time coordination.
 
 #[cfg(feature = "once")]
 #[allow(clippy::module_inception)]

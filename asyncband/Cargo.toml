@@ -57,37 +57,12 @@ singleflight = ["dep:hashbrown", "once-cell"]
 waitgroup = []
 
 [dependencies]
-hashbrown = { version = "0.17.1", default-features = false, features = [
+hashbrown = { workspace = true, default-features = false, features = [
   "inline-more",
 ], optional = true }
 
 [dev-dependencies]
-divan = { version = "0.1.21" }
-tokio = { version = "1.53.1", features = ["full"] }
-
-[[bench]]
-harness = false
-name = "primitives"
-path = "benches/primitives/main.rs"
-required-features = [
-  "admission",
-  "barrier",
-  "blocking",
-  "broadcast",
-  "condvar",
-  "latch",
-  "mpsc",
-  "mutex",
-  "once",
-  "once-cell",
-  "once-map",
-  "oneshot",
-  "rwlock",
-  "semaphore",
-  "shutdown",
-  "singleflight",
-  "waitgroup",
-]
+tokio = { workspace = true, features = ["full"] }
 
 [lints]
 workspace = true

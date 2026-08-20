@@ -16,26 +16,43 @@
 # under the License.
 
 [package]
-name = "x"
+name = "test-integration"
 publish = false
 
 edition.workspace = true
-homepage.workspace = true
-license.workspace = true
-readme.workspace = true
-repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-cargo_metadata.workspace = true
-clap = { workspace = true, features = ["derive"] }
-semver.workspace = true
-serde = { workspace = true, features = ["derive"] }
-ureq = { workspace = true, default-features = false, features = [
-  "json",
-  "rustls",
+tokio = { workspace = true, features = ["full"] }
+
+[dev-dependencies]
+asyncband = { workspace = true, features = [
+  "admission",
+  "barrier",
+  "blocking",
+  "broadcast",
+  "condvar",
+  "latch",
+  "mpsc",
+  "mutex",
+  "once",
+  "once-cell",
+  "once-map",
+  "oneshot",
+  "rwlock",
+  "semaphore",
+  "shutdown",
+  "singleflight",
+  "waitgroup",
 ] }
-which.workspace = true
+pollster = { workspace = true, features = ["macro"] }
+tokio-test.workspace = true
+
+[lib]
+bench = false
+doc = false
+doctest = false
+test = false
 
 [lints]
 workspace = true

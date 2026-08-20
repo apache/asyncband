@@ -26,8 +26,7 @@
 //!
 //! # Getting started
 //!
-//! Public APIs live in top-level modules, and no features are enabled by default. Most modules use
-//! a same-named Cargo feature; the `once` module has separate features for its three primitives.
+//! Public APIs are enabled through opt-in Cargo features, and no features are enabled by default.
 //! Enable the APIs your application needs:
 //!
 //! ```toml
@@ -50,9 +49,8 @@
 //! # }
 //! ```
 //!
-//! Features that build on other public primitives enable their dependencies automatically:
-//! `condvar` enables `mutex`; `once` and `once-cell` enable `semaphore`; `once-map` and
-//! `singleflight` enable `once-cell`; and `shutdown` enables `latch` and `waitgroup`.
+//! Feature dependencies are enabled automatically, so applications only need to select the APIs
+//! they use directly.
 //!
 //! # API guide
 //!

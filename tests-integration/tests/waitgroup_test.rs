@@ -19,7 +19,7 @@ use std::future::IntoFuture;
 use std::time::Duration;
 
 use asyncband::waitgroup::WaitGroup;
-use asyncband_test_integration::test_runtime;
+use test_integration::test_runtime;
 
 #[test]
 fn test_wait_group_drop() {

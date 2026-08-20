@@ -16,14 +16,14 @@
 # under the License.
 
 [package]
-name = "asyncband-test-integration"
+name = "benchmarks"
 publish = false
 
 edition.workspace = true
 rust-version.workspace = true
 
-[dependencies]
-asyncband = { path = "../../asyncband", features = [
+[dev-dependencies]
+asyncband = { workspace = true, features = [
   "admission",
   "barrier",
   "blocking",
@@ -42,17 +42,12 @@ asyncband = { path = "../../asyncband", features = [
   "singleflight",
   "waitgroup",
 ] }
-tokio = { version = "1.53.1", features = ["full"] }
+divan.workspace = true
 
-[dev-dependencies]
-pollster = { version = "1.0.1", features = ["macro"] }
-tokio-test = { version = "0.4.5" }
-
-[lib]
-bench = false
-doc = false
-doctest = false
-test = false
+[[bench]]
+name = "benchmarks"
+path = "main.rs"
+harness = false
 
 [lints]
 workspace = true

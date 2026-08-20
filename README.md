@@ -30,7 +30,7 @@ Asyncband is a runtime-agnostic library providing essential synchronization prim
 
 ## Available primitives
 
-The crate enables no primitives by default. Most modules have a same-named opt-in Cargo feature; the `once` module uses one feature per primitive. Categories describe each primitive's primary purpose and do not add another module level, so public paths remain concise, such as `asyncband::mutex` and `asyncband::once::OnceCell`.
+The crate enables no primitives by default. Categories describe each primitive's primary purpose and do not add another module level, so public paths remain concise, such as `asyncband::mutex` and `asyncband::once::OnceCell`.
 
 | Category                | Primitive                                                                            | Feature        | Purpose                                                                 |
 | ----------------------- | ------------------------------------------------------------------------------------ | -------------- | ----------------------------------------------------------------------- |
@@ -52,7 +52,7 @@ The crate enables no primitives by default. Most modules have a same-named opt-i
 |                         | [`FairShare`](https://docs.rs/asyncband/*/asyncband/admission/struct.FairShare.html) | `admission`    | Fairly share bounded concurrency across keys.                           |
 |                         | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)      | `singleflight` | Coalesce concurrent calls for the same key.                             |
 
-Features that build on other public primitives enable them automatically: `condvar` enables `mutex`; `once` and `once-cell` enable `semaphore`; `once-map` and `singleflight` enable `once-cell`; and `shutdown` enables `latch` and `waitgroup`.
+Feature dependencies are enabled automatically, so applications only need to select the APIs they use directly.
 
 ## Installation
 
