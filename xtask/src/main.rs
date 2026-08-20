@@ -171,8 +171,7 @@ impl CommandLint {
         run_command(make_taplo_cmd(self.fix));
         run_command(make_typos_cmd());
         run_command(make_hawkeye_cmd(self.fix));
-        run_command(make_doc_cmd(false));
-        run_command(make_doc_cmd(true));
+        run_command(make_doc_cmd());
     }
 }
 
@@ -363,13 +362,16 @@ fn make_clippy_cmd(fix: bool) -> StdCommand {
     cmd
 }
 
-fn make_doc_cmd(all_features: bool) -> StdCommand {
+fn make_doc_cmd() -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.env("RUSTDOCFLAGS", "-D warnings --cfg docsrs");
-    cmd.args(["+nightly", "doc", "--workspace", "--no-deps"]);
-    if all_features {
-        cmd.arg("--all-features");
-    }
+    cmd.args([
+        "+nightly",
+        "doc",
+        "--workspace",
+        "--all-features",
+        "--no-deps",
+    ]);
     cmd
 }
 
