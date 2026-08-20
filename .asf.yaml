@@ -53,7 +53,7 @@ github:
         - id: PragmaTwice
           type: User
       wait_timer: 0
-      prevent_self_review: true
+      prevent_self_review: false
       deployment_branch_policy:
         protected_branches: false
         policies:

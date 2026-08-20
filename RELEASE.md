@@ -52,7 +52,7 @@ The `asyncband` crate already exists, so a crate owner can configure [crates.io 
 | Workflow filename | `release.yml` |
 | Environment | `release` |
 
-The workflow obtains a short-lived OIDC token and keeps no long-lived crates.io token in GitHub. The `release` GitHub environment is managed by `.asf.yaml`: it accepts version tags, requires approval from another project committer, and prevents self-review.
+The workflow obtains a short-lived OIDC token and keeps no long-lived crates.io token in GitHub. The `release` GitHub environment is managed by `.asf.yaml`: it accepts version tags and requires approval from one of the configured project committers. The person who pushed the tag may approve the deployment.
 
 After one successful Trusted Publishing release, remove any legacy `CARGO_REGISTRY_TOKEN` repository or environment secret and enable **Require trusted publishing for all new versions** in the crate settings. Keep at least two active crate owners so that the publisher configuration can be recovered without depending on one person.
 
@@ -183,7 +183,7 @@ git tag --sign "v${VERSION}" \
 git push https://github.com/apache/asyncband.git "v${VERSION}"
 ```
 
-The final tag starts the crates.io publishing job. A project committer other than the person who pushed the tag must compare the final tag with the approved RC, confirm that the Incubator vote passed, and approve the `release` environment deployment. The workflow verifies that the tag exactly matches the package version and publishes with a short-lived crates.io token.
+The final tag starts the crates.io publishing job. Before approving the `release` environment deployment, a configured project committer must compare the final tag with the approved RC and confirm that the Incubator vote passed. The person who pushed the tag may perform this approval. The workflow verifies that the tag exactly matches the package version and publishes with a short-lived crates.io token.
 
 After publication:
 
