@@ -88,7 +88,7 @@ assert_eq!(value, Some(42));
 
 ### Async first, blocking by adaptation
 
-Async and synchronous synchronization primitives have different optimization constraints. Once an async primitive is runtime-agnostic, synchronous code can usually drive its future with a `block_on` adapter; [`pollster`](https://github.com/zesterer/pollster) demonstrates how little machinery this requires. Asyncband's `blocking` feature follows the same lightweight model with a thread-parking single-future executor: pending work parks the calling thread and its waker resumes it, providing practical blocking interoperability without busy-waiting or a full async runtime.
+Async and synchronous synchronization primitives have different optimization constraints. Once an async primitive is runtime-agnostic, synchronous code can usually drive its future with a `block_on` adapter. Asyncband's `blocking` feature provides this adapter with a lightweight, thread-parking single-future executor: pending work parks the calling thread and its waker resumes it, providing practical blocking interoperability without busy-waiting or a full async runtime.
 
 A sync-first implementation can still exploit OS- or platform-specific facilities for better performance. Asyncband therefore optimizes its primitives for async code and keeps blocking as a boundary adapter instead of duplicating sync and async methods across every type. This keeps the public API focused while leaving sync-oriented optimizations to dedicated libraries.
 
