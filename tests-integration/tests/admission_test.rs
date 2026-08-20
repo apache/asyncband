@@ -51,6 +51,22 @@ fn tracks_available_permits() {
 }
 
 #[test]
+fn tracks_waiters() {
+    let admission = FairShare::new(1);
+    let held = admission.try_acquire("held").unwrap();
+
+    {
+        let acquire = admission.acquire("waiting");
+        let mut acquire = pin!(acquire);
+        assert!(poll_once(acquire.as_mut()).is_pending());
+        assert_eq!(admission.num_waiters(), 1);
+    }
+
+    assert_eq!(admission.num_waiters(), 0);
+    drop(held);
+}
+
+#[test]
 fn uses_all_permits_without_reservations() {
     let admission = FairShare::new(3);
     let permits = [

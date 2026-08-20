@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
+* Add `admission::PriorityShare` to combine shared-capacity priority thresholds with fair sharing among owners at the same priority.
 * Add an opt-in `asyncband::blocking::FutureExt` bridge with `block_on` and `wait_timeout` methods for waiting on runtime-agnostic futures from synchronous code.
 
 ### Breaking changes
