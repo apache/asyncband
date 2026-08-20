@@ -20,12 +20,71 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 
-//! Apache Asyncband (Incubating) is a runtime-agnostic library providing essential synchronization
-//! primitives for asynchronous Rust programming. The library offers a collection of well-tested,
-//! efficient synchronization tools that work with any async runtime.
+//! Runtime-agnostic synchronization primitives for asynchronous Rust.
 //!
-//! > Apache Asyncband is an effort undergoing incubation at the Apache Software Foundation (ASF),
-//! > sponsored by the Apache Incubator PMC.
+//! `asyncband` provides locks, initialization tools, task coordination, channels, and workload
+//! controls without tying an application to a particular async runtime. The primitives use standard
+//! futures and wakers, so they can run on Tokio, async-std, smol, or a custom executor.
+//!
+//! # Getting started
+//!
+//! Public APIs live in top-level modules. Each module is controlled by a same-named Cargo feature,
+//! and no features are enabled by default. Enable the modules your application needs:
+//!
+//! ```toml
+//! asyncband = { version = "0.7", features = ["mutex", "oneshot"] }
+//! ```
+//!
+//! Then use the selected primitives directly:
+//!
+//! ```
+//! # async fn example() {
+//! use asyncband::mutex::Mutex;
+//!
+//! let counter = Mutex::new(0);
+//! {
+//!     let mut value = counter.lock().await;
+//!     *value += 1;
+//! }
+//! assert_eq!(*counter.lock().await, 1);
+//! # }
+//! ```
+//!
+//! Features that build on other primitives enable their dependencies automatically: `condvar`
+//! enables `mutex`, `once` enables `semaphore`, `shutdown` enables `latch` and `waitgroup`, and
+//! `singleflight` enables `once`.
+//!
+//! # API guide
+//!
+//! | Use case | APIs | Cargo features |
+//! | --- | --- | --- |
+//! | Protect shared state | [`mutex::Mutex`], [`rwlock::RwLock`], [`condvar::Condvar`] | `mutex`, `rwlock`, `condvar` |
+//! | Initialize values once | [`once::Once`], [`once::OnceCell`], [`once::OnceMap`] | `once` |
+//! | Coordinate tasks | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`] | `barrier`, `latch`, `waitgroup`, `shutdown` |
+//! | Send values | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`], [`broadcast::overflow`] | `oneshot`, `mpsc`, `broadcast` |
+//! | Control workloads | [`semaphore::Semaphore`], [`admission::FairShare`], [`singleflight::Group`] | `semaphore`, `admission`, `singleflight` |
+//! | Wait from synchronous code | [`blocking::FutureExt`] | `blocking` |
+//!
+//! # Runtime and blocking model
+//!
+//! The async primitives do not start threads, spawn tasks, or require a runtime-specific reactor.
+//! Await them inside any executor that polls standard Rust futures.
+//!
+//! Async APIs are the primary interface. The optional [`blocking`] module is a boundary adapter for
+//! synchronous callers: its single-future executor parks the calling thread and resumes it through
+//! the future's waker. It is not a general-purpose async runtime, and futures that depend on a
+//! runtime-specific timer or I/O driver may not make progress. See the module documentation for the
+//! full execution constraints.
+//!
+//! # Thread safety
+//!
+//! Primitives and guards implement `Send` and `Sync` only when their protected or transferred
+//! values satisfy the required bounds. Consult each type's documentation for its exact contract.
+//!
+//! # Incubation status
+//!
+//! > Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software
+//! > Foundation (ASF), sponsored by the Apache Incubator PMC.
 //! >
 //! > Incubation is required of all newly accepted projects until a further review indicates that
 //! > the infrastructure, communications, and decision making process have stabilized in a manner
@@ -33,54 +92,6 @@
 //! >
 //! > While incubation status is not necessarily a reflection of the completeness or stability of
 //! > the code, it does indicate that the project has yet to be fully endorsed by the ASF.
-//!
-//! # Migrating from MEA
-//!
-//! Asyncband continues the project formerly published as `mea`. The old crate is deprecated and no
-//! compatibility crate or re-export is provided. Replace the `mea` dependency with `asyncband` and
-//! update `mea::` paths to `asyncband::`.
-//!
-//! # Cargo features
-//!
-//! The crate enables no primitives or utilities by default. Each public module has a same-named
-//! opt-in feature, so applications only compile the APIs they use:
-//!
-//! ```toml
-//! asyncband = { version = "0.7", features = ["mutex", "oneshot"] }
-//! ```
-//!
-//! Features that build on other primitives enable those dependencies automatically. For example,
-//! `condvar` enables `mutex`, while `shutdown` enables `latch` and `waitgroup`.
-//!
-//! # Primitive categories
-//!
-//! The public primitives are grouped by their primary user-facing purpose while their modules
-//! remain at the crate root so module paths continue to match Cargo feature names:
-//!
-//! * Shared state: `Mutex`, `RwLock`, and `Condvar`.
-//! * One-time initialization: `Once`, `OnceCell`, and `OnceMap`.
-//! * Task coordination: `Barrier`, `Latch`, `WaitGroup`, and graceful shutdown.
-//! * Channels: oneshot, bounded and unbounded MPSC, and overflowing broadcast channels.
-//! * Workload control: `Semaphore`, fair-share admission control, and duplicate-call suppression.
-//!
-//! # Synchronous interoperability
-//!
-//! The optional [`blocking`] module lets synchronous code wait indefinitely or with a timeout on a
-//! single runtime-agnostic future. It is an interoperability utility rather than an async primitive
-//! or a general-purpose runtime.
-//!
-//! # Runtime Agnostic
-//!
-//! All synchronization primitives in this library are runtime-agnostic, meaning they can be used
-//! with any async runtime like tokio, async-std, or others. This makes the library highly versatile
-//! and portable.
-//!
-//! # Thread Safety
-//!
-//! Asyncband primitives and guards implement `Send` and `Sync` only when the protected or
-//! transferred value satisfies the necessary bounds. In particular, owned read guards that may move
-//! destruction to another thread require the protected value to be `Send` as well as `Sync`. See
-//! each type's documentation for its exact bounds.
 #[cfg(any(
     feature = "admission",
     feature = "barrier",
