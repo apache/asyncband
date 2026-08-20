@@ -21,10 +21,10 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-homepage = "https://github.com/fast/asyncband"
+homepage = "https://github.com/apache/asyncband"
 license = "Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/fast/asyncband"
+repository = "https://github.com/apache/asyncband"
 rust-version = "1.86.0"
 
 [workspace.lints.rust]
@@ -32,10 +32,3 @@ unknown_lints = "deny"
 
 [workspace.lints.clippy]
 dbg_macro = "deny"
-
-[workspace.metadata.release]
-pre-release-commit-message = "chore: release v{{version}}"
-pre-release-hook = ["cargo", "x", "semver", "--release-version", "{{version}}"]
-shared-version = true
-sign-tag = true
-tag-name = "v{{version}}"

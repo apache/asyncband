@@ -21,8 +21,8 @@
 [msrv-badge]: https://img.shields.io/badge/MSRV-1.86-green?logo=rust
 [license-badge]: https://img.shields.io/crates/l/asyncband
 [license-url]: LICENSE
-[actions-badge]: https://github.com/fast/asyncband/actions/workflows/ci.yml/badge.svg
-[actions-url]: https://github.com/fast/asyncband/actions/workflows/ci.yml
+[actions-badge]: https://github.com/apache/asyncband/actions/workflows/ci.yml/badge.svg
+[actions-url]: https://github.com/apache/asyncband/actions/workflows/ci.yml
 
 ## Overview
 
@@ -109,6 +109,10 @@ Asyncband primitives and guards implement `Send` and `Sync` only when the protec
 This crate is built against the latest stable release, and its minimum supported rustc version is 1.86.0.
 
 The policy is that the minimum Rust version required to use this crate can be increased in minor version updates. For example, if Asyncband 1.0 requires Rust 1.20.0, then Asyncband 1.0.z for all values of z will also require Rust 1.20.0 or newer. However, Asyncband 1.y for y > 0 may require a newer minimum version of Rust.
+
+## Releasing
+
+Release managers should follow the [Apache Incubator release guide](https://github.com/apache/asyncband/blob/main/RELEASE.md).
 
 ## License
 

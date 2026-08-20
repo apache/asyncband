@@ -41,6 +41,24 @@ github:
     allow_auto_merge: true
     allow_update_branch: true
     del_branch_on_merge: true
+  environments:
+    release:
+      required_reviewers:
+        - id: jbonofre
+          type: User
+        - id: Xuanwo
+          type: User
+        - id: tisonkun
+          type: User
+        - id: PragmaTwice
+          type: User
+      wait_timer: 0
+      prevent_self_review: true
+      deployment_branch_policy:
+        protected_branches: false
+        policies:
+          - name: "v*.*.*"
+            type: tag
   rulesets:
     - name: ci
       type: branch
@@ -59,6 +77,14 @@ github:
         - name: Required
           app_slug: github-actions
       required_status_checks_strict: false
+    - name: release-tags
+      type: tag
+      branches:
+        includes:
+          - "v*.*.*"
+        excludes: []
+      restrict_deletion: true
+      restrict_force_push: true
 
 notifications:
   commits: commits@asyncband.apache.org

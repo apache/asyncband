@@ -26,9 +26,6 @@ readme.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-[package.metadata.release]
-release = false
-
 [dependencies]
 cargo_metadata = { version = "0.23.1" }
 clap = { version = "4.6.5", features = ["derive"] }
