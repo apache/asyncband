@@ -45,12 +45,12 @@ The public verification URL is <https://downloads.apache.org/incubator/asyncband
 
 The `asyncband` crate already exists, so a crate owner can configure [crates.io Trusted Publishing](https://crates.io/docs/trusted-publishing) without a bootstrap publication. In the crate's **Settings → Trusted Publishing** page, add a GitHub Actions publisher with these exact values:
 
-| Setting | Value |
-| --- | --- |
-| Repository owner | `apache` |
-| Repository name | `asyncband` |
+| Setting           | Value         |
+| ----------------- | ------------- |
+| Repository owner  | `apache`      |
+| Repository name   | `asyncband`   |
 | Workflow filename | `release.yml` |
-| Environment | `release` |
+| Environment       | `release`     |
 
 The workflow obtains a short-lived OIDC token and keeps no long-lived crates.io token in GitHub. The `release` GitHub environment is managed by `.asf.yaml`: it accepts version tags and requires approval from one of the configured project committers. The person who pushed the tag may approve the deployment.
 

@@ -56,25 +56,25 @@
 //!
 //! # API guide
 //!
-//! | Use case | APIs | Cargo features |
-//! | --- | --- | --- |
-//! | Protect shared state | [`mutex::Mutex`], [`rwlock::RwLock`], [`condvar::Condvar`] | `mutex`, `rwlock`, `condvar` |
-//! | Initialize values once | [`once::Once`], [`once::OnceCell`], [`once::OnceMap`] | `once` |
-//! | Coordinate tasks | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`] | `barrier`, `latch`, `waitgroup`, `shutdown` |
-//! | Send values | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`], [`broadcast::overflow`] | `oneshot`, `mpsc`, `broadcast` |
-//! | Control workloads | [`semaphore::Semaphore`], [`admission::FairShare`], [`singleflight::Group`] | `semaphore`, `admission`, `singleflight` |
-//! | Wait from synchronous code | [`blocking::FutureExt`] | `blocking` |
+//! | Use case                   | APIs                                                                                                                                    | Cargo features                              |
+//! | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+//! | Protect shared state       | [`mutex::Mutex`][mutex], [`rwlock::RwLock`][rwlock], [`condvar::Condvar`][condvar]                                                      | `mutex`, `rwlock`, `condvar`                |
+//! | Initialize values once     | [`once::Once`][once], [`once::OnceCell`][once-cell], [`once::OnceMap`][once-map]                                                        | `once`                                      |
+//! | Coordinate tasks           | [`barrier::Barrier`][barrier], [`latch::Latch`][latch], [`waitgroup::WaitGroup`][waitgroup], [`shutdown`][shutdown]                     | `barrier`, `latch`, `waitgroup`, `shutdown` |
+//! | Send values                | [`oneshot::channel`][oneshot], [`mpsc::bounded`][mpsc-bounded], [`mpsc::unbounded`][mpsc-unbounded], [`broadcast::overflow`][broadcast] | `oneshot`, `mpsc`, `broadcast`              |
+//! | Control workloads          | [`semaphore::Semaphore`][semaphore], [`admission::FairShare`][fair-share], [`singleflight::Group`][singleflight]                        | `semaphore`, `admission`, `singleflight`    |
+//! | Wait from synchronous code | [`blocking::FutureExt`][blocking-future-ext]                                                                                            | `blocking`                                  |
 //!
 //! # Runtime and blocking model
 //!
 //! The async primitives do not start threads, spawn tasks, or require a runtime-specific reactor.
 //! Await them inside any executor that polls standard Rust futures.
 //!
-//! Async APIs are the primary interface. The optional [`blocking`] module is a boundary adapter for
-//! synchronous callers: its single-future executor parks the calling thread and resumes it through
-//! the future's waker. It is not a general-purpose async runtime, and futures that depend on a
-//! runtime-specific timer or I/O driver may not make progress. See the module documentation for the
-//! full execution constraints.
+//! Async APIs are the primary interface. The optional [`blocking`][blocking] module is a boundary
+//! adapter for synchronous callers: its single-future executor parks the calling thread and resumes
+//! it through the future's waker. It is not a general-purpose async runtime, and futures that
+//! depend on a runtime-specific timer or I/O driver may not make progress. See the module
+//! documentation for the full execution constraints.
 //!
 //! # Thread safety
 //!
@@ -92,6 +92,26 @@
 //! >
 //! > While incubation status is not necessarily a reflection of the completeness or stability of
 //! > the code, it does indicate that the project has yet to be fully endorsed by the ASF.
+//!
+//! [barrier]: https://docs.rs/asyncband/latest/asyncband/barrier/struct.Barrier.html
+//! [blocking]: https://docs.rs/asyncband/latest/asyncband/blocking/
+//! [blocking-future-ext]: https://docs.rs/asyncband/latest/asyncband/blocking/trait.FutureExt.html
+//! [broadcast]: https://docs.rs/asyncband/latest/asyncband/broadcast/overflow/
+//! [condvar]: https://docs.rs/asyncband/latest/asyncband/condvar/struct.Condvar.html
+//! [fair-share]: https://docs.rs/asyncband/latest/asyncband/admission/struct.FairShare.html
+//! [latch]: https://docs.rs/asyncband/latest/asyncband/latch/struct.Latch.html
+//! [mpsc-bounded]: https://docs.rs/asyncband/latest/asyncband/mpsc/fn.bounded.html
+//! [mpsc-unbounded]: https://docs.rs/asyncband/latest/asyncband/mpsc/fn.unbounded.html
+//! [mutex]: https://docs.rs/asyncband/latest/asyncband/mutex/struct.Mutex.html
+//! [once]: https://docs.rs/asyncband/latest/asyncband/once/struct.Once.html
+//! [once-cell]: https://docs.rs/asyncband/latest/asyncband/once/struct.OnceCell.html
+//! [once-map]: https://docs.rs/asyncband/latest/asyncband/once/struct.OnceMap.html
+//! [oneshot]: https://docs.rs/asyncband/latest/asyncband/oneshot/fn.channel.html
+//! [rwlock]: https://docs.rs/asyncband/latest/asyncband/rwlock/struct.RwLock.html
+//! [semaphore]: https://docs.rs/asyncband/latest/asyncband/semaphore/struct.Semaphore.html
+//! [shutdown]: https://docs.rs/asyncband/latest/asyncband/shutdown/
+//! [singleflight]: https://docs.rs/asyncband/latest/asyncband/singleflight/struct.Group.html
+//! [waitgroup]: https://docs.rs/asyncband/latest/asyncband/waitgroup/struct.WaitGroup.html
 #[cfg(any(
     feature = "admission",
     feature = "barrier",
