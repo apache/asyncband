@@ -19,7 +19,6 @@
 pub(crate) mod atomic_option_box;
 
 #[cfg(any(
-    feature = "admission",
     feature = "barrier",
     feature = "broadcast",
     feature = "latch",
@@ -29,8 +28,8 @@ pub(crate) mod atomic_option_box;
     feature = "semaphore",
     feature = "waitgroup",
 ))]
-// `admission`, `WaitList`, and `WaitSet` use different `Arena` operations. A single-primitive
-// build therefore leaves part of this shared API unused, while the all-feature build uses it.
+// `WaitList` and `WaitSet` use different `Arena` operations. A single-primitive build therefore
+// leaves part of this shared API unused, while the all-feature build uses it.
 #[allow(dead_code)]
 pub(crate) mod arena;
 
@@ -45,7 +44,6 @@ pub(crate) mod countdown;
 pub(crate) mod once_table;
 
 #[cfg(any(
-    feature = "admission",
     feature = "barrier",
     feature = "broadcast",
     feature = "latch",

@@ -8,12 +8,12 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
-* Add `admission::PriorityShare` to combine shared-capacity priority thresholds with fair sharing among owners at the same priority.
 * Add an opt-in `asyncband::blocking::FutureExt` bridge with `block_on` and `wait_timeout` methods for waiting on runtime-agnostic futures from synchronous code.
 
 ### Breaking changes
 
 * Gate all exported primitives behind opt-in Cargo features and enable no features by default; downstream dependencies must explicitly enable the APIs they use.
+* Remove `admission::FairShare` and its `admission` Cargo feature from the feature set.
 * Remove the `asyncband::atomicbox` module and its `AtomicBox` and `AtomicOptionBox` types from the public API.
 * Rename `oneshot::Sender::is_closed` and `oneshot::Receiver::is_closed` to `is_disconnected`.
 * Raise the minimum supported Rust version from 1.85.0 to 1.86.0.

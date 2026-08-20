@@ -27,7 +27,6 @@ tokio = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 asyncband = { workspace = true, features = [
-  "admission",
   "barrier",
   "blocking",
   "broadcast",

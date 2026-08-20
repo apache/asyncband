@@ -15,12 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use asyncband::admission::FairShare;
-use asyncband::admission::FairSharePermit;
-use asyncband::admission::OwnedFairSharePermit;
-use asyncband::admission::OwnedPrioritySharePermit;
-use asyncband::admission::PriorityShare;
-use asyncband::admission::PrioritySharePermit;
 use asyncband::barrier::Barrier;
 use asyncband::broadcast;
 use asyncband::condvar::Condvar;
@@ -48,12 +42,6 @@ use asyncband::waitgroup::WaitGroup;
 fn public_types_are_send_and_sync() {
     fn assert_send_and_sync<T: Send + Sync>() {}
 
-    assert_send_and_sync::<FairShare<String>>();
-    assert_send_and_sync::<FairSharePermit<'_, String>>();
-    assert_send_and_sync::<OwnedFairSharePermit<String>>();
-    assert_send_and_sync::<PriorityShare<String>>();
-    assert_send_and_sync::<PrioritySharePermit<'_, String>>();
-    assert_send_and_sync::<OwnedPrioritySharePermit<String>>();
     assert_send_and_sync::<Barrier>();
     assert_send_and_sync::<Condvar>();
     assert_send_and_sync::<Once>();
@@ -98,12 +86,6 @@ fn movable_public_types_are_send() {
 fn public_types_are_unpin() {
     fn assert_unpin<T: Unpin>() {}
 
-    assert_unpin::<FairShare<String>>();
-    assert_unpin::<FairSharePermit<'_, String>>();
-    assert_unpin::<OwnedFairSharePermit<String>>();
-    assert_unpin::<PriorityShare<String>>();
-    assert_unpin::<PrioritySharePermit<'_, String>>();
-    assert_unpin::<OwnedPrioritySharePermit<String>>();
     assert_unpin::<Barrier>();
     assert_unpin::<Condvar>();
     assert_unpin::<Latch>();

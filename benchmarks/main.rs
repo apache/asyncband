@@ -19,7 +19,6 @@ mod barrier;
 mod blocking;
 mod broadcast;
 mod condvar;
-mod fair_share;
 mod latch;
 mod mpsc;
 mod mutex;

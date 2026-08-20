@@ -17,8 +17,6 @@
 
 use std::mem;
 use std::num::NonZeroUsize;
-use std::ops::Index;
-use std::ops::IndexMut;
 
 /// A stable index into an [`Arena`] for as long as its slot remains occupied.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -166,28 +164,6 @@ impl<T> Arena<T> {
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.len
-    }
-}
-
-impl<T> Index<ArenaKey> for Arena<T> {
-    type Output = T;
-
-    #[track_caller]
-    fn index(&self, key: ArenaKey) -> &Self::Output {
-        match self.slots.get(key.0) {
-            Some(Slot::Occupied(value)) => value,
-            Some(Slot::Vacant(_)) | None => panic!("arena key must be occupied"),
-        }
-    }
-}
-
-impl<T> IndexMut<ArenaKey> for Arena<T> {
-    #[track_caller]
-    fn index_mut(&mut self, key: ArenaKey) -> &mut Self::Output {
-        match self.slots.get_mut(key.0) {
-            Some(Slot::Occupied(value)) => value,
-            Some(Slot::Vacant(_)) | None => panic!("arena key must be occupied"),
-        }
     }
 }
 

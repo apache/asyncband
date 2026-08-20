@@ -38,7 +38,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 
-admission = []
 barrier = []
 blocking = []
 broadcast = []

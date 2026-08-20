@@ -24,7 +24,6 @@ rust-version.workspace = true
 
 [dev-dependencies]
 asyncband = { workspace = true, features = [
-  "admission",
   "barrier",
   "blocking",
   "broadcast",
