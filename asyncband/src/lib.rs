@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// `doc_cfg` automatically infers feature badges from `cfg` attributes, so individual modules do
-// not need matching `doc(cfg(...))` attributes.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 
@@ -82,7 +80,7 @@
 //! Primitives and guards implement `Send` and `Sync` only when their protected or transferred
 //! values satisfy the required bounds. Consult each type's documentation for its exact contract.
 //!
-//! # Apache Incubator disclaimer
+//! # Disclaimer
 //!
 //! Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software
 //! Foundation (ASF), sponsored by the Apache Incubator PMC.
