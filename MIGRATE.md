@@ -1,5 +1,7 @@
 # Migrating from MEA
 
+> Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Please read the [DISCLAIMER](DISCLAIMER).
+
 Asyncband continues the codebase formerly published as [`mea`](https://crates.io/crates/mea), but it uses a new Cargo package and Rust crate name. Existing `mea` releases remain available for builds that have not migrated, but they receive no further development.
 
 ## Recommended migration path

@@ -1,5 +1,7 @@
 # History
 
+> Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Please read the [DISCLAIMER](DISCLAIMER).
+
 Asyncband collects runtime-agnostic synchronization primitives informed by several existing implementations. Only components that draw on external designs or code are listed here.
 
 - `barrier::Barrier` is inspired by [`std::sync::Barrier`](https://doc.rust-lang.org/std/sync/struct.Barrier.html) and [`tokio::sync::Barrier`](https://docs.rs/tokio/latest/tokio/sync/struct.Barrier.html), with a different implementation based on the internal `WaitSet` primitive.

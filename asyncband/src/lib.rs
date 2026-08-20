@@ -20,9 +20,13 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 
-//! `asyncband` is a runtime-agnostic library providing essential synchronization primitives for
-//! asynchronous Rust programming. The library offers a collection of well-tested, efficient
-//! synchronization tools that work with any async runtime.
+//! Apache Asyncband (Incubating) is a runtime-agnostic library providing essential synchronization
+//! primitives for asynchronous Rust programming. The library offers a collection of well-tested,
+//! efficient synchronization tools that work with any async runtime.
+//!
+//! > Apache Asyncband is an effort undergoing incubation at the Apache Software Foundation (ASF),
+//! > sponsored by the Apache Incubator PMC. Please read the
+//! > [DISCLAIMER](https://github.com/apache/asyncband/blob/main/DISCLAIMER).
 //!
 //! # Migrating from MEA
 //!

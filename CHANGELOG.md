@@ -1,5 +1,7 @@
 # Changelog
 
+> Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Please read the [DISCLAIMER](DISCLAIMER).
+
 All notable changes to this project will be documented in this file.
 
 ## Unreleased

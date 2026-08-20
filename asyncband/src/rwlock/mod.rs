@@ -26,12 +26,11 @@
 //! will allow any number of readers to acquire the lock as long as a writer is not holding the
 //! lock.
 //!
-//! The priority policy of Tokio's read-write lock is fair (or [write-preferring]), in order to
-//! ensure that readers cannot starve writers. Fairness is ensured using a first-in, first-out queue
-//! for the tasks awaiting the lock; if a task that wishes to acquire the write lock is at the head
-//! of the queue, read locks will not be given out until the write lock has been released. This is
-//! in contrast to the Rust standard library's `std::sync::RwLock`, where the priority policy is
-//! dependent on the operating system's implementation.
+//! The priority policy of this read-write lock is fair (or [write-preferring]), ensuring that
+//! readers cannot starve writers. Fairness is maintained using a first-in, first-out queue for
+//! tasks awaiting the lock. If a writer reaches the head of the queue, readers will not acquire
+//! the lock until that writer has acquired and released it. In contrast, the priority policy of
+//! the Rust standard library's `std::sync::RwLock` depends on the operating system.
 //!
 //! The type parameter `T` represents the data that this lock protects. It is required that `T`
 //! satisfies [`Send`] to be shared across threads. The RAII guards returned from the locking
