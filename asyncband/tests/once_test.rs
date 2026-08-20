@@ -22,9 +22,9 @@ use std::time::Duration;
 use asyncband::once::Once;
 use tokio_test::assert_ready;
 
-#[path = "../support/runtime.rs"]
-mod support;
-use support::test_runtime;
+#[path = "support/runtime.rs"]
+mod runtime_support;
+use runtime_support::test_runtime;
 
 #[tokio::test]
 async fn test_call_once_runs_only_once() {

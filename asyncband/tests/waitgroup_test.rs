@@ -20,9 +20,9 @@ use std::time::Duration;
 
 use asyncband::waitgroup::WaitGroup;
 
-#[path = "../support/runtime.rs"]
-mod support;
-use support::test_runtime;
+#[path = "support/runtime.rs"]
+mod runtime_support;
+use runtime_support::test_runtime;
 
 #[test]
 fn test_wait_group_drop() {

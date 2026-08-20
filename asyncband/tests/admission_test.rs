@@ -25,9 +25,9 @@ use std::task::Poll;
 
 use asyncband::admission::FairShare;
 
-#[path = "../support/poll.rs"]
-mod support;
-use support::poll_once;
+#[path = "support/poll.rs"]
+mod poll_support;
+use poll_support::poll_once;
 
 #[test]
 #[should_panic(expected = "FairShare requires at least one permit")]

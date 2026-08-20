@@ -22,9 +22,9 @@ use asyncband::condvar::Condvar;
 use asyncband::mutex::Mutex;
 use tokio::task::JoinHandle;
 
-#[path = "../support/poll.rs"]
+#[path = "support/poll.rs"]
 mod poll_support;
-#[path = "../support/runtime.rs"]
+#[path = "support/runtime.rs"]
 mod runtime_support;
 use poll_support::poll_once;
 use runtime_support::test_runtime;
