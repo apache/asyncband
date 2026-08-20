@@ -16,92 +16,49 @@
 // under the License.
 
 #[cfg(feature = "mpsc")]
-mod atomic_option_box;
-#[cfg(feature = "mpsc")]
-pub(crate) use atomic_option_box::*;
+pub(crate) mod atomic_option_box;
 
 #[cfg(any(
     feature = "admission",
     feature = "barrier",
     feature = "broadcast",
-    feature = "condvar",
     feature = "latch",
     feature = "mpsc",
     feature = "mutex",
-    feature = "once",
     feature = "rwlock",
     feature = "semaphore",
-    feature = "singleflight",
     feature = "waitgroup",
 ))]
 // `admission`, `WaitList`, and `WaitSet` use different `Arena` operations. A single-primitive
 // build therefore leaves part of this shared API unused, while the all-feature build uses it.
 #[allow(dead_code)]
-mod arena;
-#[cfg(any(
-    feature = "admission",
-    feature = "barrier",
-    feature = "broadcast",
-    feature = "condvar",
-    feature = "latch",
-    feature = "mpsc",
-    feature = "mutex",
-    feature = "once",
-    feature = "rwlock",
-    feature = "semaphore",
-    feature = "singleflight",
-    feature = "waitgroup",
-))]
-pub(crate) use arena::*;
+pub(crate) mod arena;
 
 #[cfg(any(feature = "latch", feature = "once", feature = "waitgroup"))]
 // `waitgroup` increments and decrements the countdown, while `latch` and `once` only decrement it.
 // Consequently, `increment` is unused when either of the latter features is built alone.
 #[allow(dead_code)]
-mod countdown;
-#[cfg(any(feature = "latch", feature = "once", feature = "waitgroup"))]
-pub(crate) use countdown::*;
+pub(crate) mod countdown;
 
-#[cfg(any(feature = "once", feature = "singleflight"))]
-mod once_table;
-#[cfg(any(feature = "once", feature = "singleflight"))]
-pub(crate) use once_table::*;
+#[cfg(any(feature = "once-map", feature = "singleflight"))]
+#[cfg_attr(not(feature = "once-map"), allow(dead_code))]
+pub(crate) mod once_table;
 
 #[cfg(any(
     feature = "admission",
     feature = "barrier",
     feature = "broadcast",
-    feature = "condvar",
     feature = "latch",
     feature = "mpsc",
     feature = "mutex",
-    feature = "once",
     feature = "rwlock",
     feature = "semaphore",
-    feature = "singleflight",
     feature = "waitgroup",
 ))]
-mod mutex;
-#[cfg(any(
-    feature = "admission",
-    feature = "barrier",
-    feature = "broadcast",
-    feature = "condvar",
-    feature = "latch",
-    feature = "mpsc",
-    feature = "mutex",
-    feature = "once",
-    feature = "rwlock",
-    feature = "semaphore",
-    feature = "singleflight",
-    feature = "waitgroup",
-))]
-pub(crate) use mutex::*;
+pub(crate) mod mutex;
 
 #[cfg(feature = "broadcast")]
-mod rwlock;
-#[cfg(feature = "broadcast")]
-pub(crate) use rwlock::*;
+pub(crate) mod rwlock;
 
 #[cfg(any(
     feature = "mpsc",
@@ -113,31 +70,15 @@ pub(crate) use rwlock::*;
 // `acquire`, `try_acquire`, and `release`; the public semaphore also uses the accounting methods.
 // Each single-primitive build intentionally leaves the other groups unused.
 #[allow(dead_code)]
-mod semaphore;
-#[cfg(any(
-    feature = "mpsc",
-    feature = "mutex",
-    feature = "rwlock",
-    feature = "semaphore",
-))]
-pub(crate) use semaphore::*;
+pub(crate) mod semaphore;
 
 #[cfg(any(
-    feature = "condvar",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
 ))]
-mod waitlist;
-#[cfg(any(
-    feature = "condvar",
-    feature = "mpsc",
-    feature = "mutex",
-    feature = "rwlock",
-    feature = "semaphore",
-))]
-pub(crate) use waitlist::*;
+pub(crate) mod waitlist;
 
 #[cfg(any(
     feature = "barrier",
@@ -149,12 +90,4 @@ pub(crate) use waitlist::*;
 // `barrier` constructs a wait set with `with_capacity`, while broadcast and countdown-based
 // primitives use `new`. One constructor is therefore unused in every single-primitive build.
 #[allow(dead_code)]
-mod waitset;
-#[cfg(any(
-    feature = "barrier",
-    feature = "broadcast",
-    feature = "latch",
-    feature = "once",
-    feature = "waitgroup",
-))]
-pub(crate) use waitset::*;
+pub(crate) mod waitset;

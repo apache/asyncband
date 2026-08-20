@@ -20,9 +20,9 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::internal::Mutex;
-use crate::internal::WaitRegistration;
-use crate::internal::WaitSet;
+use crate::internal::mutex::Mutex;
+use crate::internal::waitset::WaitRegistration;
+use crate::internal::waitset::WaitSet;
 
 #[derive(Debug)]
 pub struct CountdownState {

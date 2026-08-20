@@ -20,9 +20,9 @@ use std::num::NonZeroUsize;
 use std::task::Context;
 use std::task::Waker;
 
-use crate::internal::Arena;
-use crate::internal::ArenaKey;
-use crate::internal::ArenaValues;
+use crate::internal::arena::Arena;
+use crate::internal::arena::ArenaKey;
+use crate::internal::arena::ArenaValues;
 
 /// A single-owner handle to a registered waiter.
 ///

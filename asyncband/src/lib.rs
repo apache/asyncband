@@ -26,8 +26,9 @@
 //!
 //! # Getting started
 //!
-//! Public APIs live in top-level modules. Each module is controlled by a same-named Cargo feature,
-//! and no features are enabled by default. Enable the modules your application needs:
+//! Public APIs live in top-level modules, and no features are enabled by default. Most modules use
+//! a same-named Cargo feature; the `once` module has separate features for its three primitives.
+//! Enable the APIs your application needs:
 //!
 //! ```toml
 //! asyncband = { version = "0.7", features = ["mutex", "oneshot"] }
@@ -49,16 +50,16 @@
 //! # }
 //! ```
 //!
-//! Features that build on other primitives enable their dependencies automatically: `condvar`
-//! enables `mutex`, `once` enables `semaphore`, `shutdown` enables `latch` and `waitgroup`, and
-//! `singleflight` enables `once`.
+//! Features that build on other public primitives enable their dependencies automatically:
+//! `condvar` enables `mutex`; `once` and `once-cell` enable `semaphore`; `once-map` and
+//! `singleflight` enable `once-cell`; and `shutdown` enables `latch` and `waitgroup`.
 //!
 //! # API guide
 //!
 //! | Use case                   | APIs                                                                                  | Cargo features                              |
 //! | -------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------- |
 //! | Protect shared state       | [`mutex::Mutex`], [`rwlock::RwLock`], [`condvar::Condvar`]                            | `mutex`, `rwlock`, `condvar`                |
-//! | Initialize values once     | [`once::Once`], [`once::OnceCell`], [`once::OnceMap`]                                 | `once`                                      |
+//! | Initialize values once     | [`once::Once`], [`once::OnceCell`], [`once::OnceMap`]                                 | `once`, `once-cell`, `once-map`             |
 //! | Coordinate tasks           | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`]        | `barrier`, `latch`, `waitgroup`, `shutdown` |
 //! | Send values                | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`], [`broadcast::overflow`] | `oneshot`, `mpsc`, `broadcast`              |
 //! | Control workloads          | [`semaphore::Semaphore`], [`admission::FairShare`], [`singleflight::Group`]           | `semaphore`, `admission`, `singleflight`    |
@@ -91,20 +92,6 @@
 //!
 //! While incubation status is not necessarily a reflection of the completeness or stability of the
 //! code, it does indicate that the project has yet to be fully endorsed by the ASF.
-#[cfg(any(
-    feature = "admission",
-    feature = "barrier",
-    feature = "broadcast",
-    feature = "condvar",
-    feature = "latch",
-    feature = "mpsc",
-    feature = "mutex",
-    feature = "once",
-    feature = "rwlock",
-    feature = "semaphore",
-    feature = "singleflight",
-    feature = "waitgroup",
-))]
 mod internal;
 
 #[cfg(feature = "admission")]
@@ -123,7 +110,7 @@ pub mod latch;
 pub mod mpsc;
 #[cfg(feature = "mutex")]
 pub mod mutex;
-#[cfg(feature = "once")]
+#[cfg(any(feature = "once", feature = "once-cell", feature = "once-map"))]
 pub mod once;
 #[cfg(feature = "oneshot")]
 pub mod oneshot;
@@ -138,8 +125,5 @@ pub mod singleflight;
 #[cfg(feature = "waitgroup")]
 pub mod waitgroup;
 
-#[cfg(all(doctest, feature = "mutex", feature = "rwlock"))]
-pub mod guard_variance_tests;
-
-#[cfg(all(test, feature = "once"))]
+#[cfg(all(test, any(feature = "once-map", feature = "singleflight")))]
 mod test_support;

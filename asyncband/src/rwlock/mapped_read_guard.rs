@@ -20,7 +20,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
 
-use crate::internal;
+use crate::internal::semaphore;
 
 /// RAII structure used to release the shared read access of a lock when dropped, for a mapped
 /// component of the locked data.
@@ -82,7 +82,7 @@ use crate::internal;
 #[must_use = "if unused the RwLock will immediately unlock"]
 pub struct MappedRwLockReadGuard<'a, T: ?Sized> {
     d: NonNull<T>,
-    s: &'a internal::Semaphore,
+    s: &'a semaphore::Semaphore,
     variance: PhantomData<fn() -> T>,
 }
 
@@ -98,7 +98,7 @@ unsafe impl<T: ?Sized + Sync> Send for MappedRwLockReadGuard<'_, T> {}
 unsafe impl<T: ?Sized + Sync> Sync for MappedRwLockReadGuard<'_, T> {}
 
 impl<'a, T: ?Sized> MappedRwLockReadGuard<'a, T> {
-    pub(crate) fn new(d: NonNull<T>, s: &'a internal::Semaphore) -> Self {
+    pub(crate) fn new(d: NonNull<T>, s: &'a semaphore::Semaphore) -> Self {
         Self {
             d,
             s,

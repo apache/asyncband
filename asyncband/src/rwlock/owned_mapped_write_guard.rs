@@ -88,6 +88,23 @@ use crate::rwlock::RwLock;
 /// assert_eq!(profile_guard.email, "newemail@example.com");
 /// # }
 /// ```
+///
+/// # Variance
+///
+/// The guard is invariant over its mapped type `U`, as required for mutable access:
+///
+/// ```compile_fail
+/// use asyncband::rwlock::OwnedMappedRwLockWriteGuard;
+///
+/// fn shorten<'short>(
+///     guard: OwnedMappedRwLockWriteGuard<(), &'static str>,
+///     value: &'short str,
+/// ) -> OwnedMappedRwLockWriteGuard<(), &'short str> {
+///     let mut guard: OwnedMappedRwLockWriteGuard<(), &'short str> = guard;
+///     *guard = value;
+///     guard
+/// }
+/// ```
 #[must_use = "if unused the RwLock will immediately unlock"]
 pub struct OwnedMappedRwLockWriteGuard<T: ?Sized, U: ?Sized> {
     d: NonNull<U>,

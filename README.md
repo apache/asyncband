@@ -30,7 +30,7 @@ Asyncband is a runtime-agnostic library providing essential synchronization prim
 
 ## Available primitives
 
-Each module is an opt-in Cargo feature. The crate enables no primitives by default. Categories describe each primitive's primary purpose; they do not add another module level, so public paths continue to match feature names such as `asyncband::mutex` and `asyncband::mpsc`.
+The crate enables no primitives by default. Most modules have a same-named opt-in Cargo feature; the `once` module uses one feature per primitive. Categories describe each primitive's primary purpose and do not add another module level, so public paths remain concise, such as `asyncband::mutex` and `asyncband::once::OnceCell`.
 
 | Category                | Primitive                                                                            | Feature        | Purpose                                                                 |
 | ----------------------- | ------------------------------------------------------------------------------------ | -------------- | ----------------------------------------------------------------------- |
@@ -38,8 +38,8 @@ Each module is an opt-in Cargo feature. The crate enables no primitives by defau
 |                         | [`RwLock`](https://docs.rs/asyncband/*/asyncband/rwlock/struct.RwLock.html)          | `rwlock`       | Allow multiple readers or one writer.                                   |
 |                         | [`Condvar`](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html)       | `condvar`      | Wait for notifications while releasing a mutex.                         |
 | One-time initialization | [`Once`](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html)                | `once`         | Run asynchronous initialization exactly once.                           |
-|                         | [`OnceCell`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html)        | `once`         | Initialize and store one asynchronous value.                            |
-|                         | [`OnceMap`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceMap.html)          | `once`         | Initialize and store one value per key.                                 |
+|                         | [`OnceCell`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html)        | `once-cell`    | Initialize and store one asynchronous value.                            |
+|                         | [`OnceMap`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceMap.html)          | `once-map`     | Initialize and store one value per key.                                 |
 | Task coordination       | [`Barrier`](https://docs.rs/asyncband/*/asyncband/barrier/struct.Barrier.html)       | `barrier`      | Wait until all participants reach a synchronization point.              |
 |                         | [`Latch`](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html)             | `latch`        | Wait until a one-way countdown completes.                               |
 |                         | [`WaitGroup`](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html) | `waitgroup`    | Wait for a dynamic group of tasks to finish.                            |
@@ -52,7 +52,7 @@ Each module is an opt-in Cargo feature. The crate enables no primitives by defau
 |                         | [`FairShare`](https://docs.rs/asyncband/*/asyncband/admission/struct.FairShare.html) | `admission`    | Fairly share bounded concurrency across keys.                           |
 |                         | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)      | `singleflight` | Coalesce concurrent calls for the same key.                             |
 
-Features that build on other primitives enable them automatically: `condvar` enables `mutex`, `once` enables `semaphore`, `shutdown` enables `latch` and `waitgroup`, and `singleflight` enables `once`.
+Features that build on other public primitives enable them automatically: `condvar` enables `mutex`; `once` and `once-cell` enable `semaphore`; `once-map` and `singleflight` enable `once-cell`; and `shutdown` enables `latch` and `waitgroup`.
 
 ## Installation
 

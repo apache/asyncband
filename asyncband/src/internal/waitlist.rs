@@ -17,8 +17,8 @@
 
 use std::num::NonZeroUsize;
 
-use crate::internal::Arena;
-use crate::internal::ArenaKey;
+use crate::internal::arena::Arena;
+use crate::internal::arena::ArenaKey;
 
 /// A linked waiter queue whose detached nodes remain addressable until removal.
 #[derive(Debug)]

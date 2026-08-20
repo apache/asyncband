@@ -12,7 +12,8 @@ All notable changes to this project will be documented in this file.
 
 ### Breaking changes
 
-* Gate all exported primitive modules behind same-named opt-in Cargo features and enable no features by default; downstream dependencies must explicitly enable the modules they use.
+* Gate all exported primitives behind opt-in Cargo features and enable no features by default; downstream dependencies must explicitly enable the APIs they use.
+* Split the `once` Cargo feature into `once`, `once-cell`, and `once-map` while keeping all three primitives in the `asyncband::once` module.
 * Remove the `asyncband::atomicbox` module and its `AtomicBox` and `AtomicOptionBox` types from the public API.
 * Rename `oneshot::Sender::is_closed` and `oneshot::Receiver::is_closed` to `is_disconnected`.
 * Raise the minimum supported Rust version from 1.85.0 to 1.86.0.

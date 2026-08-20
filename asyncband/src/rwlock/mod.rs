@@ -73,7 +73,7 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::num::NonZeroUsize;
 
-use crate::internal::Semaphore;
+use crate::internal::semaphore::Semaphore;
 
 mod mapped_read_guard;
 pub use mapped_read_guard::MappedRwLockReadGuard;

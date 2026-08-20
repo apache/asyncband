@@ -27,9 +27,9 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-use crate::internal::Arena;
-use crate::internal::ArenaKey;
-use crate::internal::Mutex;
+use crate::internal::arena::Arena;
+use crate::internal::arena::ArenaKey;
+use crate::internal::mutex::Mutex;
 
 /// An admission controller that fairly shares a fixed number of permits across keys.
 ///

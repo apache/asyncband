@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use super::WaitGroup;
-use crate::internal::CountdownState;
+use crate::internal::countdown::CountdownState;
 
 // This test stays next to the implementation because it inspects private state.
 

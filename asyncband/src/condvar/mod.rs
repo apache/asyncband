@@ -68,9 +68,9 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-use crate::internal::Mutex;
-use crate::internal::WaitList;
-use crate::internal::WaiterId;
+use crate::internal::mutex::Mutex;
+use crate::internal::waitlist::WaitList;
+use crate::internal::waitlist::WaiterId;
 use crate::mutex;
 use crate::mutex::MutexGuard;
 use crate::mutex::OwnedMutexGuard;

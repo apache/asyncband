@@ -76,9 +76,9 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::internal::Mutex;
-use crate::internal::WaitRegistration;
-use crate::internal::WaitSet;
+use crate::internal::mutex::Mutex;
+use crate::internal::waitset::WaitRegistration;
+use crate::internal::waitset::WaitSet;
 
 /// A synchronization primitive for multiple tasks that need to wait for each other.
 ///

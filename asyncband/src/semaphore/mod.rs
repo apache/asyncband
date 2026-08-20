@@ -83,7 +83,7 @@
 
 use std::sync::Arc;
 
-use crate::internal;
+use crate::internal::semaphore;
 
 #[cfg(test)]
 mod tests;
@@ -93,7 +93,7 @@ mod tests;
 /// See the [module level documentation](self) for more.
 #[derive(Debug)]
 pub struct Semaphore {
-    s: internal::Semaphore,
+    s: semaphore::Semaphore,
 }
 
 impl Semaphore {
@@ -108,7 +108,7 @@ impl Semaphore {
     /// ```
     pub const fn new(permits: usize) -> Self {
         Self {
-            s: internal::Semaphore::new(permits),
+            s: semaphore::Semaphore::new(permits),
         }
     }
 

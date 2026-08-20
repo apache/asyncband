@@ -38,7 +38,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 
-# Each public module has its own feature, so users can opt in to only what they need.
+# Most public modules have a same-named feature; `once` has one feature per primitive.
 admission = []
 barrier = []
 blocking = []
@@ -47,12 +47,14 @@ condvar = ["mutex"]
 latch = []
 mpsc = []
 mutex = []
-once = ["dep:hashbrown", "semaphore"]
+once = ["semaphore"]
+once-cell = ["semaphore"]
+once-map = ["dep:hashbrown", "once-cell"]
 oneshot = []
 rwlock = []
 semaphore = []
 shutdown = ["latch", "waitgroup"]
-singleflight = ["once"]
+singleflight = ["dep:hashbrown", "once-cell"]
 waitgroup = []
 
 [dependencies]
@@ -113,8 +115,18 @@ required-features = ["mutex"]
 
 [[test]]
 name = "once_test"
-path = "tests/once_test/main.rs"
+path = "tests/once_test/once.rs"
 required-features = ["once"]
+
+[[test]]
+name = "once_cell_test"
+path = "tests/once_test/once_cell.rs"
+required-features = ["once-cell"]
+
+[[test]]
+name = "once_map_test"
+path = "tests/once_test/once_map.rs"
+required-features = ["once-map"]
 
 [[test]]
 name = "oneshot_test"
@@ -154,6 +166,8 @@ required-features = [
   "mpsc",
   "mutex",
   "once",
+  "once-cell",
+  "once-map",
   "oneshot",
   "rwlock",
   "semaphore",
@@ -181,6 +195,8 @@ required-features = [
   "mpsc",
   "mutex",
   "once",
+  "once-cell",
+  "once-map",
   "oneshot",
   "rwlock",
   "semaphore",

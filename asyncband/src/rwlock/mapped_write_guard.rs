@@ -22,7 +22,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ptr::NonNull;
 
-use crate::internal;
+use crate::internal::semaphore;
 use crate::rwlock::MappedRwLockReadGuard;
 
 /// RAII structure used to release the exclusive write access of a lock when dropped, for a mapped
@@ -83,10 +83,27 @@ use crate::rwlock::MappedRwLockReadGuard;
 /// assert_eq!(profile_guard.email, "newemail@example.com");
 /// # }
 /// ```
+///
+/// # Variance
+///
+/// The guard is invariant over `T`, as required for mutable access:
+///
+/// ```compile_fail
+/// use asyncband::rwlock::MappedRwLockWriteGuard;
+///
+/// fn shorten<'lock, 'short: 'lock>(
+///     guard: MappedRwLockWriteGuard<'lock, &'static str>,
+///     value: &'short str,
+/// ) -> MappedRwLockWriteGuard<'lock, &'short str> {
+///     let mut guard: MappedRwLockWriteGuard<'lock, &'short str> = guard;
+///     *guard = value;
+///     guard
+/// }
+/// ```
 #[must_use = "if unused the RwLock will immediately unlock"]
 pub struct MappedRwLockWriteGuard<'a, T: ?Sized> {
     d: NonNull<T>,
-    s: &'a internal::Semaphore,
+    s: &'a semaphore::Semaphore,
     permits_acquired: usize,
     // Mutable access requires invariance over T.
     variance: PhantomData<&'a mut T>,
@@ -102,7 +119,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for MappedRwLockWriteGuard<'_, T> {}
 unsafe impl<T: ?Sized + Send> Send for MappedRwLockWriteGuard<'_, T> {}
 
 impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
-    pub(crate) fn new(d: NonNull<T>, s: &'a internal::Semaphore, permits_acquired: usize) -> Self {
+    pub(crate) fn new(d: NonNull<T>, s: &'a semaphore::Semaphore, permits_acquired: usize) -> Self {
         Self {
             d,
             s,

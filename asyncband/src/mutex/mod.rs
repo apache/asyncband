@@ -67,14 +67,14 @@ use std::ops::DerefMut;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use crate::internal;
+use crate::internal::semaphore;
 
 /// An async mutex for protecting shared data.
 ///
 /// See the [module level documentation](self) for more.
 pub struct Mutex<T: ?Sized> {
     /// Semaphore used to control access to protected data, ensuring mutual exclusion
-    s: internal::Semaphore,
+    s: semaphore::Semaphore,
     /// Container storing the protected data, allowing interior mutability
     c: UnsafeCell<T>,
 }
@@ -116,7 +116,7 @@ impl<T> Mutex<T> {
     /// let mutex = Mutex::new(5);
     /// ```
     pub const fn new(t: T) -> Self {
-        let s = internal::Semaphore::new(1);
+        let s = semaphore::Semaphore::new(1);
         let c = UnsafeCell::new(t);
         Self { s, c }
     }
@@ -283,6 +283,23 @@ impl<T: ?Sized> Mutex<T> {
 /// [`try_lock`]: Mutex::try_lock
 ///
 /// See the [module level documentation](self) for more.
+///
+/// # Variance
+///
+/// The guard is invariant over `T`, as required for mutable access:
+///
+/// ```compile_fail
+/// use asyncband::mutex::MutexGuard;
+///
+/// fn shorten<'lock, 'short: 'lock>(
+///     guard: MutexGuard<'lock, &'static str>,
+///     value: &'short str,
+/// ) -> MutexGuard<'lock, &'short str> {
+///     let mut guard: MutexGuard<'lock, &'short str> = guard;
+///     *guard = value;
+///     guard
+/// }
+/// ```
 #[must_use = "if unused the Mutex will immediately unlock"]
 pub struct MutexGuard<'a, T: ?Sized> {
     lock: &'a Mutex<T>,
@@ -463,6 +480,23 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
 /// succeed yet again.
 ///
 /// See the [module level documentation](self) for more.
+///
+/// # Variance
+///
+/// The guard is invariant over `T`, as required for mutable access:
+///
+/// ```compile_fail
+/// use asyncband::mutex::OwnedMutexGuard;
+///
+/// fn shorten<'short>(
+///     guard: OwnedMutexGuard<&'static str>,
+///     value: &'short str,
+/// ) -> OwnedMutexGuard<&'short str> {
+///     let mut guard: OwnedMutexGuard<&'short str> = guard;
+///     *guard = value;
+///     guard
+/// }
+/// ```
 #[must_use = "if unused the Mutex will immediately unlock"]
 pub struct OwnedMutexGuard<T: ?Sized> {
     lock: Arc<Mutex<T>>,
@@ -670,12 +704,29 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
 /// assert_eq!(profile_guard.email, "user@example.com");
 /// # }
 /// ```
+///
+/// # Variance
+///
+/// The guard is invariant over `T`, as required for mutable access:
+///
+/// ```compile_fail
+/// use asyncband::mutex::MappedMutexGuard;
+///
+/// fn shorten<'lock, 'short: 'lock>(
+///     guard: MappedMutexGuard<'lock, &'static str>,
+///     value: &'short str,
+/// ) -> MappedMutexGuard<'lock, &'short str> {
+///     let mut guard: MappedMutexGuard<'lock, &'short str> = guard;
+///     *guard = value;
+///     guard
+/// }
+/// ```
 #[must_use = "if unused the Mutex will immediately unlock"]
 pub struct MappedMutexGuard<'a, T: ?Sized> {
     /// Non-null pointer to the mapped data
     d: NonNull<T>,
     /// Reference to the original mutex's semaphore, used for releasing the lock
-    s: &'a internal::Semaphore,
+    s: &'a semaphore::Semaphore,
     // Mutable access requires invariance over T.
     variance: PhantomData<&'a mut T>,
 }
@@ -893,6 +944,23 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
 ///
 /// assert_eq!(*value_guard, 42);
 /// # }
+/// ```
+///
+/// # Variance
+///
+/// The guard is invariant over its mapped type `U`, as required for mutable access:
+///
+/// ```compile_fail
+/// use asyncband::mutex::OwnedMappedMutexGuard;
+///
+/// fn shorten<'short>(
+///     guard: OwnedMappedMutexGuard<(), &'static str>,
+///     value: &'short str,
+/// ) -> OwnedMappedMutexGuard<(), &'short str> {
+///     let mut guard: OwnedMappedMutexGuard<(), &'short str> = guard;
+///     *guard = value;
+///     guard
+/// }
 /// ```
 #[must_use = "if unused the Mutex will immediately unlock"]
 pub struct OwnedMappedMutexGuard<T: ?Sized, U: ?Sized> {

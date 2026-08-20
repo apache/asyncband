@@ -23,9 +23,9 @@ use std::hash::Hash;
 use std::hash::RandomState;
 use std::sync::Arc;
 
-use crate::internal::Mutex;
-use crate::internal::OnceTable;
-use crate::internal::OnceTableEntry;
+use crate::internal::mutex::Mutex;
+use crate::internal::once_table::OnceTable;
+use crate::internal::once_table::OnceTableEntry;
 
 #[cfg(test)]
 mod tests;

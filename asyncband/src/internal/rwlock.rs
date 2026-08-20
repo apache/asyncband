@@ -39,7 +39,7 @@ impl<T: ?Sized> RwLock<T> {
 mod tests {
     use std::sync::Arc;
 
-    use crate::internal::RwLock;
+    use crate::internal::rwlock::RwLock;
 
     #[test]
     fn test_poison_rwlock() {

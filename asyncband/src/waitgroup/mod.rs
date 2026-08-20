@@ -61,8 +61,8 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::internal::CountdownState;
-use crate::internal::WaitRegistration;
+use crate::internal::countdown::CountdownState;
+use crate::internal::waitset::WaitRegistration;
 
 #[cfg(test)]
 mod tests;

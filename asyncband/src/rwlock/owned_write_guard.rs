@@ -110,6 +110,23 @@ impl<T: ?Sized> RwLock<T> {
 /// This structure is created by the [`RwLock::write`] method.
 ///
 /// See the [module level documentation](crate::rwlock) for more.
+///
+/// # Variance
+///
+/// The guard is invariant over `T`, as required for mutable access:
+///
+/// ```compile_fail
+/// use asyncband::rwlock::OwnedRwLockWriteGuard;
+///
+/// fn shorten<'short>(
+///     guard: OwnedRwLockWriteGuard<&'static str>,
+///     value: &'short str,
+/// ) -> OwnedRwLockWriteGuard<&'short str> {
+///     let mut guard: OwnedRwLockWriteGuard<&'short str> = guard;
+///     *guard = value;
+///     guard
+/// }
+/// ```
 #[must_use = "if unused the RwLock will immediately unlock"]
 pub struct OwnedRwLockWriteGuard<T: ?Sized> {
     pub(super) permits_acquired: usize,
