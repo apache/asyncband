@@ -38,7 +38,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 
-# Most public modules have a same-named feature; `once` has one feature per primitive.
 admission = []
 barrier = []
 blocking = []
