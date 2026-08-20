@@ -21,7 +21,7 @@ use asyncband::mpsc;
 use asyncband::mpsc::RecvError;
 use asyncband::mpsc::TryRecvError;
 use asyncband::mpsc::TrySendError;
-use test_integration::test_runtime;
+use tests_integration::test_runtime;
 use tokio_test::assert_ok;
 
 #[test]

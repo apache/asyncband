@@ -16,7 +16,7 @@
 # under the License.
 
 [package]
-name = "test-integration"
+name = "tests-integration"
 publish = false
 
 edition.workspace = true

@@ -20,7 +20,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use asyncband::once::Once;
-use test_integration::test_runtime;
+use tests_integration::test_runtime;
 use tokio_test::assert_ready;
 
 #[tokio::test]

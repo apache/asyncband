@@ -20,8 +20,8 @@ use std::task::Poll;
 
 use asyncband::condvar::Condvar;
 use asyncband::mutex::Mutex;
-use test_integration::poll_once;
-use test_integration::test_runtime;
+use tests_integration::poll_once;
+use tests_integration::test_runtime;
 use tokio::task::JoinHandle;
 
 fn expect_ready<T>(poll: Poll<T>) -> T {
