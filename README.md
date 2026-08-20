@@ -1,7 +1,12 @@
 # Apache Asyncband (Incubating)
 
 > [!IMPORTANT]
-> **Asyncband was formerly published as MEA.** The [`mea`](https://crates.io/crates/mea) crate is deprecated and receives no further development. New development and releases use the `asyncband` crate; no compatibility crate or re-export is provided under the old name. See [Migrating from MEA](#migrating-from-mea) and the [Asyncband proposal discussion](https://lists.apache.org/thread/f31qd3jm3odomjwy3lqkk21coyqsr9xs) for details.
+>
+> Apache Asyncband (incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC.
+>
+> Please read the [DISCLAIMER](DISCLAIMER) and a full explanation of ["incubating"](https://incubator.apache.org/policy/incubation.html).
+>
+> **Asyncband was formerly published as MEA.** The `mea` crate is deprecated and receives no further development. See the [migration guide](MIGRATE.md) for migration instructions and details about the rename.
 
 [![Crates.io][crates-badge]][crates-url]
 [![Documentation][docs-badge]][docs-url]
@@ -81,13 +86,15 @@ assert_eq!(value, Some(42));
 
 `asyncband::blocking::FutureExt::block_on(future)` is the equivalent UFCS spelling when function syntax is preferred; it calls the same trait method rather than a separate free function.
 
+### Async first, blocking by adaptation
+
+Async and synchronous synchronization primitives have different optimization constraints. Once an async primitive is runtime-agnostic, synchronous code can usually drive its future with a `block_on` adapter; [`pollster`](https://github.com/zesterer/pollster) demonstrates how little machinery this requires. Asyncband's `blocking` feature follows the same lightweight model with a thread-parking single-future executor: pending work parks the calling thread and its waker resumes it, providing practical blocking interoperability without busy-waiting or a full async runtime.
+
+A sync-first implementation can still exploit OS- or platform-specific facilities for better performance. Asyncband therefore optimizes its primitives for async code and keeps blocking as a boundary adapter instead of duplicating sync and async methods across every type. This keeps the public API focused while leaving sync-oriented optimizations to dedicated libraries.
+
+### Execution constraints
+
 This is a minimal single-future executor, not a general-purpose async runtime. A timed-out `wait_timeout` drops the future. The implementation uses a private parker, so it does not consume wake-ups belonging to other parking operations on the same thread; recursive calls use a separate parker. Futures depending on a runtime-specific timer or I/O driver may not make progress, and blocking an executor thread can cause starvation or deadlocks. See [`asyncband::blocking`](https://docs.rs/asyncband/*/asyncband/blocking/index.html) for details.
-
-## Migrating from MEA
-
-Asyncband continues the codebase formerly published as `mea`, but it uses a new Cargo package and Rust crate name. Remove the `mea` dependency, add `asyncband`, and update `mea::` paths to `asyncband::`. Existing `mea` releases remain available for builds that have not migrated, but they receive no further development.
-
-No compatibility package or re-export is provided, so downstream crates must migrate their dependency declarations individually.
 
 ## Runtime Agnostic
 
@@ -109,23 +116,4 @@ This project is licensed under [Apache License, Version 2.0](LICENSE).
 
 ## History
 
-This crate collects runtime-agnostic synchronization primitives from spare parts:
-
-* **admission::FairShare** is written from scratch to bound global concurrency while balancing held permits across contending keys.
-* **Barrier** is inspired by `std::sync::Barrier` and `tokio::sync::Barrier`, with a different implementation based on the internal `WaitSet` primitive.
-* **Condvar** is inspired by `std::sync::Condvar` and `async_std::sync::Condvar`, with a fair FIFO waiter queue and standard non-buffered notification semantics.
-* **Latch** is inspired by [`latches`](https://github.com/mirromutth/latches), with a different implementation based on the internal `CountdownState` primitive. No sync variant is provided, since it can be easily implemented with block_on of any runtime.
-* **Mutex** is derived from `tokio::sync::Mutex`. No blocking method is provided, since it can be easily implemented with block_on of any runtime.
-* **OnceCell** is derived from `tokio::sync::OnceCell`, but using our own semaphore implementation.
-* **OnceMap** is inspired by `uv-once-map` but the interface and implementation are redesigned.
-* **RwLock** is derived from `tokio::sync::RwLock`, but the `max_readers` can be any `NonZeroUsize` (effectively any positive `usize`) instead of `[0, u32::MAX >> 3]`. No blocking method is provided, since it can be easily implemented with block_on of any runtime.
-* **Semaphore** is derived from `tokio::sync::Semaphore`, without `close` method since it is quite tricky to use. And thus, this semaphore doesn't have the limitation of max permits. Besides, new methods like `forget_exact` are added to fit the specific use case.
-* **WaitGroup** is inspired by [`waitgroup-rs`](https://github.com/laizy/waitgroup-rs), providing different API flavor with a different implementation based on the internal `CountdownState` primitive.
-* The internal atomic pointer slot used by MPSC is derived from [`atomicbox`](https://github.com/jorendorff/atomicbox/) at commit 07756444.
-* The single-future polling loop in `blocking` is adapted from [`pollster`](https://github.com/zesterer/pollster), its parker caching strategy follows [`futures-lite`](https://github.com/smol-rs/futures-lite), and its private parker state machine is adapted from [`parking`](https://github.com/smol-rs/parking) 2.2.1.
-* **broadcast::overflow::channel** is derived from `tokio::sync::broadcast::channel`, with a different implementation based on the internal `WaitSet` primitive.
-* **oneshot::channel** is derived from [`oneshot`](https://github.com/faern/oneshot), with significant simplifications since we need not support synchronized receiving functions.
-
-Other parts are written from scratch.
-
-NB. The optimization considerations are different when implementing a sync primitive for sync code and async code. Generally speaking, once you have an async + runtime-agnostic implementation, you can immediately have a sync implementation by block_on any async runtime ([`pollster`](https://github.com/zesterer/pollster) is the most lightweight runtime that park the current thread). However, a sync-oriented implementation may leverage some platform-specific features to achieve better performance. This library is designed for async code, so it doesn't consider sync-oriented optimization. I often find libraries that try to provide both sync and async implementations end up with a clumsy API design. So I prefer to keep them separate.
+See [HISTORY.md](HISTORY.md) for the external implementations that informed Asyncband's primitives.
