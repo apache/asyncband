@@ -42,12 +42,12 @@ asyncband = { workspace = true, features = [
   "singleflight",
   "waitgroup",
 ] }
-divan.workspace = true
+divan = { workspace = true }
 
 [[bench]]
+harness = false
 name = "benchmarks"
 path = "main.rs"
-harness = false
 
 [lints]
 workspace = true

@@ -52,8 +52,6 @@ The crate enables no primitives by default. Categories describe each primitive's
 |                         | [`FairShare`](https://docs.rs/asyncband/*/asyncband/admission/struct.FairShare.html) | `admission`    | Fairly share bounded concurrency across keys.                           |
 |                         | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)      | `singleflight` | Coalesce concurrent calls for the same key.                             |
 
-Feature dependencies are enabled automatically, so applications only need to select the APIs they use directly.
-
 ## Installation
 
 Add the dependency to your `Cargo.toml` via:

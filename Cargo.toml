@@ -28,18 +28,21 @@ repository = "https://github.com/apache/asyncband"
 rust-version = "1.86.0"
 
 [workspace.dependencies]
+# Workspace dependencies
+asyncband = { path = "asyncband" }
+
+# Optional runtime dependencies
 hashbrown = { version = "0.17.1", default-features = false }
 
-asyncband = { path = "asyncband" }
-divan = { version = "0.1.21" }
-pollster = { version = "1.0.1" }
-tokio = { version = "1.53.1" }
-tokio-test = { version = "0.4.5" }
-
+# Dev dependencies
 cargo_metadata = { version = "0.23.1" }
 clap = { version = "4.6.5" }
+divan = { version = "0.1.21" }
+pollster = { version = "1.0.1" }
 semver = { version = "1.0.28" }
 serde = { version = "1.0.229" }
+tokio = { version = "1.53.1" }
+tokio-test = { version = "0.4.5" }
 ureq = { version = "3.3.0", default-features = false }
 which = { version = "8.0.5" }
 

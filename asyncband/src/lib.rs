@@ -49,9 +49,6 @@
 //! # }
 //! ```
 //!
-//! Feature dependencies are enabled automatically, so applications only need to select the APIs
-//! they use directly.
-//!
 //! # API guide
 //!
 //! | Use case                   | APIs                                                                                  | Cargo features                              |

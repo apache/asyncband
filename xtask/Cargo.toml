@@ -27,15 +27,15 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-cargo_metadata.workspace = true
+cargo_metadata = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-semver.workspace = true
+semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 ureq = { workspace = true, default-features = false, features = [
   "json",
   "rustls",
 ] }
-which.workspace = true
+which = { workspace = true }
 
 [lints]
 workspace = true
