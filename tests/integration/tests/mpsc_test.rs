@@ -21,11 +21,8 @@ use asyncband::mpsc;
 use asyncband::mpsc::RecvError;
 use asyncband::mpsc::TryRecvError;
 use asyncband::mpsc::TrySendError;
+use asyncband_test_integration::test_runtime;
 use tokio_test::assert_ok;
-
-#[path = "support/runtime.rs"]
-mod runtime_support;
-use runtime_support::test_runtime;
 
 #[test]
 fn test_unbounded_pressure() {

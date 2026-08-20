@@ -58,6 +58,14 @@ version = "0.6.7"
 dependencies = [
  "divan",
  "hashbrown",
+ "tokio",
+]
+
+[[package]]
+name = "asyncband-test-integration"
+version = "0.0.0"
+dependencies = [
+ "asyncband",
  "pollster",
  "tokio",
  "tokio-test",

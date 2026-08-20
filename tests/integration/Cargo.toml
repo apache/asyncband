@@ -15,20 +15,44 @@
 # specific language governing permissions and limitations
 # under the License.
 
-[workspace]
-members = ["asyncband", "tests/integration", "xtask"]
-resolver = "2"
+[package]
+name = "asyncband-test-integration"
+publish = false
 
-[workspace.package]
-edition = "2024"
-homepage = "https://github.com/apache/asyncband"
-license = "Apache-2.0"
-readme = "README.md"
-repository = "https://github.com/apache/asyncband"
-rust-version = "1.86.0"
+edition.workspace = true
+rust-version.workspace = true
 
-[workspace.lints.rust]
-unknown_lints = "deny"
+[dependencies]
+asyncband = { path = "../../asyncband", features = [
+  "admission",
+  "barrier",
+  "blocking",
+  "broadcast",
+  "condvar",
+  "latch",
+  "mpsc",
+  "mutex",
+  "once",
+  "once-cell",
+  "once-map",
+  "oneshot",
+  "rwlock",
+  "semaphore",
+  "shutdown",
+  "singleflight",
+  "waitgroup",
+] }
+tokio = { version = "1.53.1", features = ["full"] }
 
-[workspace.lints.clippy]
-dbg_macro = "deny"
+[dev-dependencies]
+pollster = { version = "1.0.1", features = ["macro"] }
+tokio-test = { version = "0.4.5" }
+
+[lib]
+bench = false
+doc = false
+doctest = false
+test = false
+
+[lints]
+workspace = true
