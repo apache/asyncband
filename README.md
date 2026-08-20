@@ -1,4 +1,4 @@
-# Asyncband
+# Apache Asyncband (Incubating)
 
 > [!IMPORTANT]
 > **Asyncband was formerly published as MEA.** The [`mea`](https://crates.io/crates/mea) crate is deprecated and receives no further development. New development and releases use the `asyncband` crate; no compatibility crate or re-export is provided under the old name. See [Migrating from MEA](#migrating-from-mea) and the [Asyncband proposal discussion](https://lists.apache.org/thread/f31qd3jm3odomjwy3lqkk21coyqsr9xs) for details.
