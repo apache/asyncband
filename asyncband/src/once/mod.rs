@@ -17,6 +17,8 @@
 
 //! Asynchronous primitives for one-time coordination.
 
+#[cfg(feature = "lazy-lock")]
+mod lazy_lock;
 #[cfg(feature = "once")]
 #[allow(clippy::module_inception)]
 mod once;
@@ -25,6 +27,10 @@ mod once_cell;
 #[cfg(feature = "once-map")]
 mod once_map;
 
+#[cfg(feature = "lazy-lock")]
+pub use self::lazy_lock::LazyLock;
+#[cfg(feature = "lazy-lock")]
+pub use self::lazy_lock::LazyLockFuture;
 #[cfg(feature = "once")]
 pub use self::once::Once;
 #[cfg(feature = "once-cell")]

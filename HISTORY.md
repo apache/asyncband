@@ -10,6 +10,7 @@ Asyncband collects runtime-agnostic synchronization primitives informed by sever
 - `condvar::Condvar` is inspired by [`std::sync::Condvar`](https://doc.rust-lang.org/std/sync/struct.Condvar.html) and [`async_std::sync::Condvar`](https://docs.rs/async-std/latest/async_std/sync/struct.Condvar.html), with a fair FIFO waiter queue and standard non-buffered notification semantics.
 - `latch::Latch` is inspired by [`latches`](https://github.com/mirromutth/latches), with a different implementation based on the internal `CountdownState` primitive.
 - `mutex::Mutex` is derived from [`tokio::sync::Mutex`](https://docs.rs/tokio/latest/tokio/sync/struct.Mutex.html).
+- `once::LazyLock` is inspired by [`std::sync::LazyLock`](https://doc.rust-lang.org/std/sync/struct.LazyLock.html) and [`async-lazy`](https://github.com/Jules-Bertholet/async-lazy), with restart-on-cancellation semantics built from Asyncband primitives.
 - `once::OnceCell` is derived from [`tokio::sync::OnceCell`](https://docs.rs/tokio/latest/tokio/sync/struct.OnceCell.html), but uses Asyncband's semaphore implementation.
 - `once::OnceMap` is inspired by [`uv-once-map`](https://github.com/astral-sh/uv/tree/main/crates/uv-once-map), with a redesigned interface and implementation.
 - `oneshot::channel` is derived from the [`oneshot`](https://github.com/faern/oneshot) crate, with significant simplifications because Asyncband does not provide synchronized receive operations.

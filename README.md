@@ -39,6 +39,7 @@ The crate enables no primitives by default. Categories describe each primitive's
 |                         | [`Condvar`](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html)       | `condvar`      | Wait for notifications while releasing a mutex.                         |
 | One-time initialization | [`Once`](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html)                | `once`         | Run asynchronous initialization exactly once.                           |
 |                         | [`OnceCell`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html)        | `once-cell`    | Initialize and store one asynchronous value.                            |
+|                         | [`LazyLock`](https://docs.rs/asyncband/*/asyncband/once/struct.LazyLock.html)        | `lazy-lock`    | Lazily initialize a value with a stored asynchronous function.          |
 |                         | [`OnceMap`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceMap.html)          | `once-map`     | Initialize and store one value per key.                                 |
 | Task coordination       | [`Barrier`](https://docs.rs/asyncband/*/asyncband/barrier/struct.Barrier.html)       | `barrier`      | Wait until all participants reach a synchronization point.              |
 |                         | [`Latch`](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html)             | `latch`        | Wait until a one-way countdown completes.                               |

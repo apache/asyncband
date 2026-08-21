@@ -22,6 +22,7 @@ use asyncband::latch::Latch;
 use asyncband::mpsc;
 use asyncband::mutex::Mutex;
 use asyncband::mutex::MutexGuard;
+use asyncband::once::LazyLock;
 use asyncband::once::Once;
 use asyncband::once::OnceCell;
 use asyncband::once::OnceMap;
@@ -44,6 +45,7 @@ fn public_types_are_send_and_sync() {
 
     assert_send_and_sync::<Barrier>();
     assert_send_and_sync::<Condvar>();
+    assert_send_and_sync::<LazyLock<u32>>();
     assert_send_and_sync::<Once>();
     assert_send_and_sync::<OnceCell<u32>>();
     assert_send_and_sync::<OnceMap<String, u32>>();
@@ -89,6 +91,7 @@ fn public_types_are_unpin() {
     assert_unpin::<Barrier>();
     assert_unpin::<Condvar>();
     assert_unpin::<Latch>();
+    assert_unpin::<LazyLock<u32>>();
     assert_unpin::<Once>();
     assert_unpin::<OnceCell<u32>>();
     assert_unpin::<OnceMap<String, u32>>();

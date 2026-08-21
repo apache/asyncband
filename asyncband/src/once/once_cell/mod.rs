@@ -409,9 +409,15 @@ impl<T> OnceCell<T> {
     }
 
     fn set_value(&self, value: T, permit: SemaphorePermit<'_>) -> &T {
-        // Hold the permit to ensure exclusive access.
         let _permit = permit;
+        unsafe { self.set_value_unchecked(value) }
+    }
 
+    /// # Safety
+    ///
+    /// No other initialization may access the cell.
+    pub(crate) unsafe fn set_value_unchecked(&self, value: T) -> &T {
+        debug_assert!(!self.initialized());
         let value_ptr = self.value.get();
         unsafe { value_ptr.write(MaybeUninit::new(value)) };
 
