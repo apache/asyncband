@@ -17,12 +17,14 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Wake;
 use std::task::Waker;
+use std::thread;
 
 use asyncband::broadcast::overflow::*;
 
@@ -225,8 +227,92 @@ fn panicking_send_does_not_publish_an_unwritten_slot() {
     assert!(panicked.load(Ordering::Relaxed));
 
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    tx.send(PanicOnDrop {
+        value: 3,
+        panic: false,
+        panicked: panicked.clone(),
+    });
+    assert_eq!(rx.try_recv().unwrap().value, 3);
+
     drop(tx);
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+}
+
+#[test]
+fn concurrent_overwrite_preserves_sequence_and_lag_count() {
+    const MESSAGE_COUNT: u64 = 200_000;
+
+    let (tx, mut rx) = channel(2);
+    let producer = thread::spawn(move || {
+        for value in 0..MESSAGE_COUNT {
+            tx.send(value);
+        }
+    });
+
+    let mut next = 0_u64;
+    loop {
+        match rx.try_recv() {
+            Ok(value) => {
+                assert_eq!(value, next);
+                next = next.wrapping_add(1);
+            }
+            Err(TryRecvError::Lagged(missed)) => {
+                assert!(missed > 0);
+                next = next.wrapping_add(missed);
+            }
+            Err(TryRecvError::Empty) => thread::yield_now(),
+            Err(TryRecvError::Disconnected) => break,
+        }
+    }
+
+    producer.join().unwrap();
+    assert_eq!(next, MESSAGE_COUNT);
+}
+
+#[test]
+fn concurrent_receivers_observe_the_same_sequence() {
+    const MESSAGE_COUNT: usize = 4096;
+    const RECEIVER_COUNT: usize = 8;
+
+    let (tx, receiver) = channel(MESSAGE_COUNT);
+    let mut receivers = Vec::with_capacity(RECEIVER_COUNT);
+    receivers.push(receiver);
+    for _ in 1..RECEIVER_COUNT {
+        receivers.push(receivers[0].clone());
+    }
+
+    let ready = Arc::new(Barrier::new(RECEIVER_COUNT + 1));
+    let workers = receivers
+        .into_iter()
+        .map(|mut receiver| {
+            let ready = ready.clone();
+            thread::spawn(move || {
+                ready.wait();
+                let mut received = Vec::with_capacity(MESSAGE_COUNT);
+                loop {
+                    match receiver.try_recv() {
+                        Ok(value) => received.push(value),
+                        Err(TryRecvError::Empty) => thread::yield_now(),
+                        Err(TryRecvError::Disconnected) => return received,
+                        Err(TryRecvError::Lagged(missed)) => {
+                            panic!("receiver unexpectedly lagged by {missed}")
+                        }
+                    }
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    ready.wait();
+    for value in 0..MESSAGE_COUNT {
+        tx.send(value);
+    }
+    drop(tx);
+
+    let expected = (0..MESSAGE_COUNT).collect::<Vec<_>>();
+    for worker in workers {
+        assert_eq!(worker.join().unwrap(), expected);
+    }
 }
 
 #[tokio::test]

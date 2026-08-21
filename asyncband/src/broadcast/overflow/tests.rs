@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::sync::atomic::Ordering;
+
 use super::*;
 
 // These tests stay next to the implementation because they inspect private state.
@@ -25,7 +27,7 @@ async fn sequence_number_wraparound() {
     let mut rx2 = rx.clone();
 
     let boundary = u64::MAX - 2;
-    tx.shared.state.lock().tail = boundary;
+    tx.shared.tail.store(boundary, Ordering::Release);
     rx.head = boundary;
 
     tx.send(1);
@@ -52,7 +54,7 @@ async fn sequence_number_wraparound_exactly_overwritten() {
     let mut rx2 = rx.clone();
 
     let boundary = u64::MAX - 2;
-    tx.shared.state.lock().tail = boundary;
+    tx.shared.tail.store(boundary, Ordering::Release);
     rx.head = boundary;
 
     tx.send(1);

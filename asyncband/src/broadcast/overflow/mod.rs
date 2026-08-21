@@ -67,6 +67,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -117,8 +118,8 @@ pub fn channel<T: Clone>(capacity: usize) -> (Sender<T>, Receiver<T>) {
         buffer: buffer.into_boxed_slice(),
         capacity,
         mask,
+        tail: AtomicU64::new(0),
         state: Mutex::new(State {
-            tail: 0,
             waiters: WaitSet::new(),
         }),
         senders: AtomicUsize::new(1),
@@ -192,15 +193,15 @@ struct Shared<T> {
     buffer: Box<[RwLock<Slot<T>>]>,
     capacity: usize,
     mask: usize,
-    /// Serializes publication and makes checking the tail atomic with registering a waiter.
+    /// The next sequence after the contiguous prefix of fully published slots.
+    tail: AtomicU64,
+    /// Serializes senders and makes publishing atomic with draining or registering waiters.
     state: Mutex<State>,
     /// Number of active senders.
     senders: AtomicUsize,
 }
 
 struct State {
-    /// The next slot to write. Every preceding sequence has been fully published.
-    tail: u64,
     /// Receivers waiting for a new message.
     waiters: WaitSet,
 }
@@ -263,17 +264,21 @@ impl<T> Sender<T> {
     pub fn send(&self, msg: T) {
         let wakers = {
             let mut state = self.shared.state.lock();
-            let tail = state.tail;
+            let tail = self.shared.tail.load(Ordering::Relaxed);
             let idx = (tail as usize) & self.shared.mask;
 
             let mut slot = self.shared.buffer[idx].write();
             slot.msg = Some(msg);
             slot.version = tail;
+
+            // Publish the completed slot before releasing its write lock. A receiver that sees the
+            // new tail either held the old slot lock first or waits until the new value is
+            // complete.
+            self.shared
+                .tail
+                .store(tail.wrapping_add(1), Ordering::Release);
             drop(slot);
 
-            // Publish only after the slot is complete. Since all tail readers take the same lock,
-            // they can never observe a reserved or partially written sequence.
-            state.tail = tail.wrapping_add(1);
             state.waiters.take_wakers()
         };
 
@@ -302,7 +307,7 @@ impl<T> Sender<T> {
     /// ```
     pub fn subscribe(&self) -> Receiver<T> {
         // Receiver starts at the current tail.
-        let head = self.shared.state.lock().tail;
+        let head = self.shared.tail.load(Ordering::Acquire);
         let shared = self.shared.clone();
         Receiver { shared, head }
     }
@@ -382,52 +387,63 @@ impl<T: Clone> Receiver<T> {
         let shared = &self.shared;
         let cap = shared.capacity as u64;
 
-        let state = shared.state.lock();
-        let tail = state.tail;
-        let head = self.head;
+        loop {
+            let tail = shared.tail.load(Ordering::Acquire);
+            let head = self.head;
 
-        // diff represents how far behind the head is from the tail.
-        let diff = tail.wrapping_sub(head);
+            // diff represents how far behind the head is from the tail.
+            let diff = tail.wrapping_sub(head);
 
-        // 1. Check for Lag
-        if diff > cap {
-            let missed = diff - cap;
-            self.head = tail.wrapping_sub(cap);
-            return Err(TryRecvError::Lagged(missed));
-        }
-
-        // 2. Check if a message is available
-        if diff > 0 {
-            let idx = (head as usize) & shared.mask;
-            let slot = shared.buffer[idx].read();
-            drop(state);
-
-            if slot.version == head {
-                return if let Some(msg) = &slot.msg {
-                    self.head = head.wrapping_add(1);
-                    Ok(msg.clone())
-                } else {
-                    Err(TryRecvError::Empty)
-                };
+            // 1. Check for Lag
+            if diff > cap {
+                let missed = diff - cap;
+                self.head = tail.wrapping_sub(cap);
+                return Err(TryRecvError::Lagged(missed));
             }
 
-            drop(slot);
+            // 2. Check if a message is available
+            if diff > 0 {
+                let idx = (head as usize) & shared.mask;
+                let slot = shared.buffer[idx].read();
 
-            // If version != head, the slot was overwritten.
-            // This means we lagged, but the `diff > cap` check missed it (likely due to overflow
-            // wrapping). We treat this as a lag.
-            let missed = tail.wrapping_sub(self.head).wrapping_sub(cap);
-            self.head = tail.wrapping_sub(cap);
-            return Err(TryRecvError::Lagged(missed));
+                if slot.version == head {
+                    return if let Some(msg) = &slot.msg {
+                        self.head = head.wrapping_add(1);
+                        Ok(msg.clone())
+                    } else {
+                        Err(TryRecvError::Empty)
+                    };
+                }
+
+                drop(slot);
+
+                // The slot may have been overwritten after the first tail snapshot. Publication
+                // happens while holding the slot write lock, so a fresh tail now includes that
+                // overwrite and produces an accurate lag count.
+                let tail = shared.tail.load(Ordering::Acquire);
+                let diff = tail.wrapping_sub(head);
+                if diff > cap {
+                    let missed = diff - cap;
+                    self.head = tail.wrapping_sub(cap);
+                    return Err(TryRecvError::Lagged(missed));
+                }
+
+                return Err(TryRecvError::Empty);
+            }
+
+            // 3. No message available (diff == 0). Check for Closed.
+            if shared.senders.load(Ordering::Acquire) == 0 {
+                // Observing the final sender drop synchronizes with all preceding sends, but the
+                // first tail snapshot predates that acquire. Reload it before declaring the
+                // channel drained so a published final message cannot be hidden by closure.
+                if shared.tail.load(Ordering::Acquire) != head {
+                    continue;
+                }
+                return Err(TryRecvError::Disconnected);
+            }
+
+            return Err(TryRecvError::Empty);
         }
-
-        // 3. No message available (diff == 0). Check for Closed.
-        drop(state);
-        if shared.senders.load(Ordering::Acquire) == 0 {
-            return Err(TryRecvError::Disconnected);
-        }
-
-        Err(TryRecvError::Empty)
     }
 }
 
@@ -454,7 +470,7 @@ impl<T> Receiver<T> {
     /// ```
     pub fn resubscribe(&self) -> Self {
         // Resubscribe starts at the current tail.
-        let head = self.shared.state.lock().tail;
+        let head = self.shared.tail.load(Ordering::Acquire);
         let shared = self.shared.clone();
         Self { shared, head }
     }
@@ -497,7 +513,7 @@ impl<T: Clone> Future for Recv<'_, T> {
             let mut state = shared.state.lock();
 
             // Double check tail to avoid race conditions.
-            if state.tail != receiver.head {
+            if shared.tail.load(Ordering::Acquire) != receiver.head {
                 // New message arrived while acquiring the lock. Retry.
                 drop(state);
                 continue;
