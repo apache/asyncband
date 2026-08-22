@@ -1,13 +1,5 @@
 # Apache Asyncband (Incubating)
 
-> [!IMPORTANT]
->
-> Apache Asyncband (incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC.
->
-> Please read the [DISCLAIMER](DISCLAIMER) and a full explanation of ["incubating"](https://incubator.apache.org/policy/incubation.html).
->
-> **Asyncband was formerly published as MEA.** The `mea` crate is deprecated and receives no further development. See the [migration guide](MIGRATE.md) for migration instructions and details about the rename.
-
 [![Crates.io][crates-badge]][crates-url]
 [![Documentation][docs-badge]][docs-url]
 [![MSRV 1.86][msrv-badge]](https://www.whatrustisit.com)
@@ -23,6 +15,14 @@
 [license-url]: LICENSE
 [actions-badge]: https://github.com/apache/asyncband/actions/workflows/ci.yml/badge.svg
 [actions-url]: https://github.com/apache/asyncband/actions/workflows/ci.yml
+
+> [!IMPORTANT]
+>
+> Apache Asyncband (incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC.
+>
+> Please read the [DISCLAIMER](DISCLAIMER) and a full explanation of ["incubating"](https://incubator.apache.org/policy/incubation.html).
+>
+> **Asyncband was formerly published as MEA.** The `mea` crate is deprecated and receives no further development. See the [migration guide](MIGRATE.md) for migration instructions and details about the rename.
 
 ## Overview
 
