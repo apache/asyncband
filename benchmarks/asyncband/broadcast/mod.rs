@@ -15,24 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod barrier;
-mod blocking;
-mod broadcast;
-mod condvar;
-mod latch;
-mod mpsc;
-mod mutex;
-mod once;
-mod once_map;
-mod oneshot;
-mod pool;
-mod rwlock;
-mod semaphore;
-mod shutdown;
-mod singleflight;
-mod support;
-mod waitgroup;
-
-fn main() {
-    divan::main();
-}
+mod unbounded;
