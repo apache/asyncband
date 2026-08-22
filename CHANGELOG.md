@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file.
 * Gate all exported primitives behind opt-in Cargo features and enable no features by default; downstream dependencies must explicitly enable the APIs they use.
 * Remove `admission::FairShare` and its `admission` Cargo feature from the feature set.
 * Remove the `asyncband::atomicbox` module and its `AtomicBox` and `AtomicOptionBox` types from the public API.
+* Remove `Semaphore::try_acquire_and_forget`, `Semaphore::acquire_and_forget`, `Semaphore::try_acquire_owned_and_forget`, and `Semaphore::acquire_owned_and_forget`; acquire a permit and call its `forget` method instead.
 * Rename `oneshot::Sender::is_closed` and `oneshot::Receiver::is_closed` to `is_disconnected`.
 * Replace `Semaphore::forget` with `Semaphore::drain_permits` and `Semaphore::forget_exact` with `Semaphore::reduce_permits`; permit-level `forget` methods are unchanged.
 * Raise the minimum supported Rust version from 1.85.0 to 1.86.0.
