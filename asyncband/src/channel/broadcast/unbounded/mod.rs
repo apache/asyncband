@@ -28,11 +28,21 @@
 //! consumed them or the receiver is dropped. Use [`Sender::buffer_len`] to monitor the number of
 //! messages currently retained by the shared buffer.
 //!
+//! The buffer keeps the capacity a steady workload needs, so a channel that repeatedly fills and
+//! drains does not reallocate. Capacity grown for a one-off burst is released once a later cycle
+//! drains completely without needing it.
+//!
 //! # Receivers
 //!
 //! Each receiver has an independent cursor. Use [`Sender::subscribe`] to create a receiver that
-//! starts at the current tail of the channel, or [`Receiver::resubscribe`] to skip this receiver's
-//! backlog and start a new receiver at the current tail.
+//! starts at the current tail of the channel, [`Receiver::clone`] to create one that shares this
+//! receiver's unread backlog, or [`Receiver::resubscribe`] to skip this receiver's backlog and
+//! start a new receiver at the current tail.
+//!
+//! Messages are reclaimed once the slowest receiver moves past them, which scans one slot per
+//! receiver. Only the receive that advances the slowest cursor pays for that scan, and the channel
+//! keeps a slot for every receiver it hands out, so the cost follows the largest number of
+//! receivers that were ever active at once rather than the number active now.
 //!
 //! # Examples
 //!
@@ -63,21 +73,27 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() {
-//! let (tx, mut rx) = unbounded::channel();
+//! let (tx, mut rx1) = unbounded::channel();
+//! let mut rx2 = tx.subscribe();
 //!
 //! tx.send(1);
 //! tx.send(2);
-//! tx.send(3);
 //!
-//! assert_eq!(rx.recv().await, Ok(1));
-//! assert_eq!(rx.recv().await, Ok(2));
-//! assert_eq!(rx.recv().await, Ok(3));
+//! // One receiver draining the channel does not discard what the other has not read yet.
+//! assert_eq!(rx1.recv().await, Ok(1));
+//! assert_eq!(rx1.recv().await, Ok(2));
+//! assert_eq!(tx.buffer_len(), 2);
+//!
+//! assert_eq!(rx2.recv().await, Ok(1));
+//! assert_eq!(rx2.recv().await, Ok(2));
+//! assert_eq!(tx.buffer_len(), 0);
 //! # }
 //! ```
 
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
+use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -117,9 +133,10 @@ pub fn channel<T: Clone>() -> (Sender<T>, Receiver<T>) {
             head_receivers: 1,
             tail: 0,
             receivers,
+            peak_len: 0,
+            waiters: WaitSet::new(),
         }),
         senders: AtomicUsize::new(1),
-        waiters: Mutex::new(WaitSet::new()),
     });
     let sender = Sender {
         shared: shared.clone(),
@@ -166,8 +183,16 @@ impl fmt::Display for TryRecvError {
 
 impl std::error::Error for TryRecvError {}
 
+/// Retained capacity below which the shared buffer is never shrunk back.
+const MIN_RETAINED_CAPACITY: usize = 64;
+
 struct Inner<T> {
     /// Messages whose versions are in the range `[head, tail)`.
+    ///
+    /// Each message is held behind an `Arc` so a receive can hand the payload out of the critical
+    /// section. Cloning the `Arc` under the lock keeps `T::clone` — and, for reclaimed messages,
+    /// `T::drop` — outside it, which matters because both are arbitrary user code that may call
+    /// back into this channel.
     buffer: VecDeque<Arc<T>>,
     /// The version of the first message in `buffer`.
     head: u64,
@@ -177,6 +202,10 @@ struct Inner<T> {
     tail: u64,
     /// Cursor for each active receiver.
     receivers: Arena<u64>,
+    /// The largest backlog retained since the buffer was last empty.
+    peak_len: usize,
+    /// Receivers parked in [`Receiver::recv`].
+    waiters: WaitSet,
 }
 
 impl<T> Inner<T> {
@@ -236,6 +265,14 @@ impl<T> Inner<T> {
             let offset = (head - self.head) as usize;
             let msg = self.buffer[offset].clone();
             let reclaimed = self.advance_receiver(key, head + 1);
+            // A reclaim triggered by this receive always begins with this receiver's own message:
+            // the reclaim path runs only for a cursor sitting at `head`, so the first slot drained
+            // is `msg`. `take_msg` relies on this to recognise that it owns the payload.
+            debug_assert!(
+                reclaimed
+                    .first()
+                    .is_none_or(|first| Arc::ptr_eq(first, &msg))
+            );
             Some((msg, reclaimed))
         } else {
             None
@@ -263,16 +300,41 @@ impl<T> Inner<T> {
 
         self.head = next_head;
         self.head_receivers = head_receivers;
+        self.shrink_buffer();
         reclaimed
+    }
+
+    /// Returns the allocation grown for a stalled receiver once that backlog is behind us.
+    ///
+    /// Without this, a single burst pins its peak allocation for the lifetime of the channel.
+    /// The decision is deliberately made only when the buffer drains completely, and against the
+    /// peak of the cycle that just ended rather than the current length: a channel that repeatedly
+    /// fills and drains keeps a peak as large as its bursts, so it holds its allocation instead of
+    /// reallocating on every cycle. Only once a full cycle stays small does the buffer give the
+    /// memory back.
+    fn shrink_buffer(&mut self) {
+        if !self.buffer.is_empty() {
+            return;
+        }
+
+        let peak = mem::take(&mut self.peak_len);
+        let capacity = self.buffer.capacity();
+        if capacity > MIN_RETAINED_CAPACITY && peak <= capacity / 4 {
+            self.buffer.shrink_to(MIN_RETAINED_CAPACITY.max(peak * 2));
+        }
     }
 }
 
 struct Shared<T> {
+    /// Buffer, receiver cursors, and parked receivers, all under a single lock.
+    ///
+    /// The wait set lives here rather than beside it so that publishing a message and draining the
+    /// waiters happen in one critical section. That is what makes the park path race-free: a
+    /// receiver that finds no message and then registers still holds this lock, so a concurrent
+    /// `send` cannot slip between the two steps and skip the wake-up.
     inner: Mutex<Inner<T>>,
     /// Number of active senders.
     senders: AtomicUsize,
-    /// Waiters (receivers) waiting for new messages.
-    waiters: Mutex<WaitSet>,
 }
 
 /// A sender handle to the broadcast channel.
@@ -285,10 +347,19 @@ pub struct Sender<T> {
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
+        // Relaxed is enough because this count publishes nothing on its own: receivers read it
+        // only to decide whether the channel is closed, and every message it could hide is
+        // published under `inner`, which a receiver holds before it observes the count.
         self.shared.senders.fetch_add(1, Ordering::Relaxed);
         Self {
             shared: self.shared.clone(),
         }
+    }
+}
+
+impl<T> fmt::Debug for Sender<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sender").finish_non_exhaustive()
     }
 }
 
@@ -298,10 +369,7 @@ impl<T> Drop for Sender<T> {
             1 => {
                 // If this is the last sender, we need to wake up the receiver so it can
                 // observe the disconnected state.
-                let wakers = {
-                    let mut waiters = self.shared.waiters.lock();
-                    waiters.take_wakers()
-                };
+                let wakers = self.shared.inner.lock().waiters.take_wakers();
                 for waker in wakers {
                     waker.wake();
                 }
@@ -339,7 +407,9 @@ impl<T> Sender<T> {
     pub fn send(&self, msg: T) {
         let msg = Arc::new(msg);
 
-        {
+        // Publishing and draining the wait set share one critical section, so a receiver can never
+        // observe an empty buffer and park after this message became visible.
+        let wakers = {
             let mut inner = self.shared.inner.lock();
             inner.tail = inner
                 .tail
@@ -356,14 +426,14 @@ impl<T> Sender<T> {
                 inner.head = inner.tail;
             } else {
                 inner.buffer.push_back(msg);
+                inner.peak_len = inner.peak_len.max(inner.buffer.len());
             }
-        }
 
-        // Notify all waiting receivers.
-        let wakers = {
-            let mut waiters = self.shared.waiters.lock();
-            waiters.take_wakers()
+            inner.waiters.take_wakers()
         };
+
+        // Notify all waiting receivers. An unsent message is dropped here too, once the lock is
+        // released.
         for waker in wakers {
             waker.wake();
         }
@@ -442,9 +512,52 @@ impl<T> Sender<T> {
 /// A receiver handle to the broadcast channel.
 ///
 /// Each receiver sees every message sent to the channel while the receiver is active.
+///
+/// Cloning a receiver creates one that shares this receiver's unread backlog, while
+/// [`Receiver::resubscribe`] creates one that starts at the current tail instead.
 pub struct Receiver<T> {
     shared: Arc<Shared<T>>,
     key: SlotId,
+}
+
+impl<T> Clone for Receiver<T> {
+    /// Creates a receiver that starts from this receiver's current position.
+    ///
+    /// The clone reads this receiver's unread backlog and every later message. Use
+    /// [`Receiver::resubscribe`] instead to start at the current tail and skip the backlog.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::unbounded;
+    ///
+    /// let (tx, mut rx) = unbounded::channel();
+    /// tx.send(1);
+    ///
+    /// let mut clone = rx.clone();
+    /// assert_eq!(rx.try_recv(), Ok(1));
+    /// assert_eq!(clone.try_recv(), Ok(1));
+    /// ```
+    fn clone(&self) -> Self {
+        let key = {
+            let mut inner = self.shared.inner.lock();
+            let head = *inner
+                .receivers
+                .get(self.key)
+                .expect("active broadcast receiver must be registered");
+            inner.insert_receiver(head)
+        };
+        Self {
+            shared: self.shared.clone(),
+            key,
+        }
+    }
+}
+
+impl<T> fmt::Debug for Receiver<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Receiver").finish_non_exhaustive()
+    }
 }
 
 impl<T> Drop for Receiver<T> {
@@ -512,8 +625,32 @@ impl<T: Clone> Receiver<T> {
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
         let (msg, reclaimed) = self.try_recv_shared()?;
-        drop(reclaimed);
-        Ok((*msg).clone())
+        Ok(take_msg(msg, reclaimed))
+    }
+}
+
+/// Drops the reclaimed backlog, then yields the received message, both with the channel unlocked.
+///
+/// A non-empty backlog means this receive drained `msg` from the buffer, so once the backlog is
+/// dropped this receive holds the only reference and the payload can be moved out instead of
+/// cloned. A channel with a single receiver therefore never clones a payload.
+///
+/// Ownership is decided from that bookkeeping rather than by probing the reference count. An
+/// [`Arc::try_unwrap`] on every receive would fail under fan-out, and its failed compare-exchange
+/// writes to a cache line that every receiver draining the message shares.
+fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Vec<Arc<T>>) -> T {
+    let sole_owner = !reclaimed.is_empty();
+    drop(reclaimed);
+
+    if !sole_owner {
+        return (*msg).clone();
+    }
+
+    // Another receiver can still hold an in-flight reference to the same message, so the clone
+    // remains the fallback.
+    match Arc::try_unwrap(msg) {
+        Ok(msg) => msg,
+        Err(msg) => (*msg).clone(),
     }
 }
 
@@ -623,8 +760,8 @@ impl<T> Drop for Recv<'_, T> {
         }
 
         let waker = {
-            let mut waiters = self.receiver.shared.waiters.lock();
-            waiters.unregister_waker(&mut self.registration)
+            let mut inner = self.receiver.shared.inner.lock();
+            inner.waiters.unregister_waker(&mut self.registration)
         };
         drop(waker);
     }
@@ -639,45 +776,30 @@ impl<T: Clone> Future for Recv<'_, T> {
             registration,
         } = self.get_mut();
 
-        match receiver.try_recv_shared() {
-            Ok((msg, reclaimed)) => {
-                *registration = None;
-                drop(reclaimed);
-                return Poll::Ready(Ok((*msg).clone()));
-            }
-            Err(TryRecvError::Disconnected) => {
-                *registration = None;
-                return Poll::Ready(Err(RecvError::Disconnected));
-            }
-            Err(TryRecvError::Empty) => {}
-        }
-
+        // One critical section decides between all three outcomes. Senders append messages and
+        // drain the wait set under this same lock, so registering here cannot miss a wake-up and
+        // cannot observe a closed channel that still has a message for this receiver.
         let received = {
-            let mut waiters = receiver.shared.waiters.lock();
             let mut inner = receiver.shared.inner.lock();
 
-            if let Some(received) = inner.receive(receiver.key) {
-                received
-            } else {
-                // A sender may have disconnected after the first `try_recv` returned `Empty`.
-                // Check again before registering the waker so `recv` does not miss the final wake.
-                if receiver.shared.senders.load(Ordering::Acquire) == 0 {
-                    *registration = None;
-                    return Poll::Ready(Err(RecvError::Disconnected));
-                }
+            match inner.receive(receiver.key) {
+                Some(received) => received,
+                None => {
+                    if receiver.shared.senders.load(Ordering::Acquire) == 0 {
+                        *registration = None;
+                        return Poll::Ready(Err(RecvError::Disconnected));
+                    }
 
-                // Register Waker
-                let waker = waiters.register_waker(registration, cx);
-                drop(waiters);
-                drop(inner);
-                drop(waker);
-                return Poll::Pending;
+                    let waker = inner.waiters.register_waker(registration, cx);
+                    drop(inner);
+                    drop(waker);
+                    return Poll::Pending;
+                }
             }
         };
 
         let (msg, reclaimed) = received;
         *registration = None;
-        drop(reclaimed);
-        Poll::Ready(Ok((*msg).clone()))
+        Poll::Ready(Ok(take_msg(msg, reclaimed)))
     }
 }
