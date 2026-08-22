@@ -129,55 +129,56 @@ impl Semaphore {
         self.s.available_permits()
     }
 
-    /// Reduces the semaphore's permits by a maximum of `n`.
+    /// Atomically drains up to `up_to` permits that are currently available.
     ///
-    /// Returns the actual number of permits that were reduced. This may be less
-    /// than `n` if there are insufficient permits available.
-    ///
-    /// This is useful when you want to permanently remove permits from the semaphore.
+    /// Returns the number of permits actually drained, which may be less than `up_to`.
+    /// This operation neither creates nor cancels a deficit against future releases and does not
+    /// affect permits that have already been acquired.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Semaphore::new(5);
-    /// assert_eq!(sem.forget(3), 3); // Removes 3 permits
-    /// assert_eq!(sem.available_permits(), 2);
+    /// let sem = Semaphore::new(4);
+    /// let held = sem.try_acquire(2).unwrap();
     ///
-    /// // Trying to forget more permits than available
-    /// assert_eq!(sem.forget(3), 2); // Only removes remaining 2 permits
+    /// assert_eq!(sem.drain_permits(1), 1);
+    /// assert_eq!(sem.available_permits(), 1);
+    /// assert_eq!(sem.drain_permits(3), 1);
     /// assert_eq!(sem.available_permits(), 0);
+    ///
+    /// drop(held);
+    /// assert_eq!(sem.available_permits(), 2);
     /// ```
-    pub fn forget(&self, n: usize) -> usize {
-        self.s.forget(n)
+    #[must_use = "`drain_permits` may drain fewer permits than requested"]
+    pub fn drain_permits(&self, up_to: usize) -> usize {
+        self.s.drain_permits(up_to)
     }
 
-    /// Reduces the semaphore's permits by exactly `n`.
+    /// Reduces the semaphore's logical permit balance by exactly `n`.
     ///
-    /// If the semaphore has not enough permits, this would enqueue front an empty waiter to
-    /// consume the permits, which ensures the permits are reduced by exactly `n`.
-    ///
-    /// This is useful when you want to permanently remove permits from the semaphore.
+    /// This method returns immediately. If fewer than `n` permits are currently available, future
+    /// releases repay the resulting deficit before ordinary queued acquisitions may proceed.
+    /// Permits that have already been acquired remain valid and are not revoked.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Semaphore::new(5);
-    /// sem.forget_exact(3); // Removes 3 permits
-    /// assert_eq!(sem.available_permits(), 2);
-    ///
-    /// // Trying to forget more permits than available
-    /// sem.forget_exact(3); // Only removes remaining 2 permits
+    /// let sem = Semaphore::new(1);
+    /// sem.reduce_permits(3); // Consumes 1 available permit and records a deficit of 2.
     /// assert_eq!(sem.available_permits(), 0);
     ///
-    /// sem.release(5); // Adds 5 permits
-    /// assert_eq!(sem.available_permits(), 4); // Only 4 permits are available
+    /// sem.release(2); // Repays the deficit, so neither permit becomes available.
+    /// assert_eq!(sem.available_permits(), 0);
+    ///
+    /// sem.release(1); // With the deficit repaid, this permit becomes available.
+    /// assert_eq!(sem.available_permits(), 1);
     /// ```
-    pub fn forget_exact(&self, n: usize) {
-        self.s.forget_exact(n);
+    pub fn reduce_permits(&self, n: usize) {
+        self.s.reduce_permits(n);
     }
 
     /// Adds `n` new permits to the semaphore.
@@ -235,8 +236,8 @@ impl Semaphore {
 
     /// Attempts to acquire `n` permits from the semaphore without blocking.
     ///
-    /// This method performs as a combinator of [`Semaphore::try_acquire`] and
-    /// [`Semaphore::forget`].
+    /// This method is equivalent to successfully calling [`Semaphore::try_acquire`] and then
+    /// calling [`SemaphorePermit::forget`] on the returned permit.
     pub fn try_acquire_and_forget(&self, permits: usize) -> bool {
         self.s.try_acquire(permits)
     }
@@ -283,8 +284,8 @@ impl Semaphore {
 
     /// Acquires `n` permits from the semaphore.
     ///
-    /// This method performs as a combinator of [`Semaphore::acquire`] and
-    /// [`Semaphore::forget`].
+    /// This method is equivalent to calling [`Semaphore::acquire`] and then calling
+    /// [`SemaphorePermit::forget`] on the returned permit.
     pub async fn acquire_and_forget(&self, permits: usize) {
         self.s.acquire(permits).await;
     }
@@ -316,7 +317,7 @@ impl Semaphore {
     /// assert!(p3.is_none());
     /// ```
     ///
-    /// [`forget`]: SemaphorePermit::forget
+    /// [`forget`]: OwnedSemaphorePermit::forget
     pub fn try_acquire_owned(self: Arc<Self>, permits: usize) -> Option<OwnedSemaphorePermit> {
         if self.s.try_acquire(permits) {
             Some(OwnedSemaphorePermit { sem: self, permits })
@@ -329,8 +330,8 @@ impl Semaphore {
     ///
     /// The semaphore must be wrapped in an [`Arc`] to call this method.
     ///
-    /// This method performs as a combinator of [`Semaphore::try_acquire_owned`] and
-    /// [`Semaphore::forget`].
+    /// This method is equivalent to successfully calling [`Semaphore::try_acquire_owned`] and
+    /// then calling [`OwnedSemaphorePermit::forget`] on the returned permit.
     pub fn try_acquire_owned_and_forget(self: Arc<Self>, permits: usize) -> bool {
         self.s.try_acquire(permits)
     }
@@ -382,8 +383,8 @@ impl Semaphore {
     ///
     /// The semaphore must be wrapped in an [`Arc`] to call this method.
     ///
-    /// This method performs as a combinator of [`Semaphore::acquire_owned`] and
-    /// [`Semaphore::forget`].
+    /// This method is equivalent to calling [`Semaphore::acquire_owned`] and then calling
+    /// [`OwnedSemaphorePermit::forget`] on the returned permit.
     pub async fn acquire_owned_and_forget(self: Arc<Self>, permits: usize) {
         self.s.acquire(permits).await;
     }

@@ -20,11 +20,11 @@ use super::Semaphore;
 // This test stays next to the implementation because it inspects private state.
 
 #[test]
-fn fulfilled_forget_exact_debt_reclaims_its_waiter_node() {
+fn fulfilled_reduce_permits_debt_reclaims_its_waiter_node() {
     let semaphore = Semaphore::new(0);
 
     for _ in 0..3 {
-        semaphore.forget_exact(1);
+        semaphore.reduce_permits(1);
         assert_eq!(semaphore.s.num_waiter_nodes(), 1);
 
         semaphore.release(1);

@@ -78,34 +78,33 @@ impl Semaphore {
         }
     }
 
-    /// Decrease the semaphore's permits by a maximum of `n`.
+    /// Drains up to `up_to` permits that are currently available.
     ///
-    /// Return the number of permits that were actually reduced.
-    pub fn forget(&self, n: usize) -> usize {
-        if n == 0 {
+    /// Returns the number of permits that were actually drained.
+    pub fn drain_permits(&self, up_to: usize) -> usize {
+        if up_to == 0 {
             return 0;
         }
 
         let mut current = self.permits.load(Ordering::Acquire);
         loop {
-            let new = current.saturating_sub(n);
+            let new = current.saturating_sub(up_to);
             match self.permits.compare_exchange_weak(
                 current,
                 new,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return n.min(current),
+                Ok(_) => return up_to.min(current),
                 Err(actual) => current = actual,
             }
         }
     }
 
-    /// Decrease the semaphore's permits by `n`.
+    /// Reduces the semaphore's logical permit balance by exactly `n`.
     ///
-    /// If the semaphore has not enough permits, enqueue front an empty waiter to consume the
-    /// permits.
-    pub fn forget_exact(&self, n: usize) {
+    /// If fewer than `n` permits are available, a queue-head debt node consumes future releases.
+    pub fn reduce_permits(&self, n: usize) {
         acquired_or_enqueue(self, n, None, None, false);
     }
 

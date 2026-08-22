@@ -16,11 +16,12 @@ All notable changes to this project will be documented in this file.
 * Remove `admission::FairShare` and its `admission` Cargo feature from the feature set.
 * Remove the `asyncband::atomicbox` module and its `AtomicBox` and `AtomicOptionBox` types from the public API.
 * Rename `oneshot::Sender::is_closed` and `oneshot::Receiver::is_closed` to `is_disconnected`.
+* Replace `Semaphore::forget` with `Semaphore::drain_permits` and `Semaphore::forget_exact` with `Semaphore::reduce_permits`; permit-level `forget` methods are unchanged.
 * Raise the minimum supported Rust version from 1.85.0 to 1.86.0.
 
 ### Bug fixes
 
-* Release cancelled wait registrations promptly and reclaim fulfilled `Semaphore::forget_exact` debt nodes.
+* Release cancelled wait registrations promptly and reclaim fulfilled `Semaphore::reduce_permits` debt nodes.
 * Serialize broadcast publication so receivers cannot observe reserved slots or messages overwritten out of sequence.
 
 ### Improvements

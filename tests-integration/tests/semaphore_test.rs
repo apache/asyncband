@@ -19,6 +19,7 @@ use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
+use std::task::Poll;
 use std::task::Waker;
 use std::vec::Vec;
 
@@ -185,27 +186,25 @@ fn wake_then_drop() {
     assert_eq!(s.available_permits(), 2);
 }
 
-#[tokio::test]
-async fn acquire_then_forget_exact() {
-    let s = Arc::new(Semaphore::new(5));
-    s.forget_exact(3);
-    assert_eq!(s.available_permits(), 2);
+#[test]
+fn reduce_permits_takes_priority_over_pending_acquires() {
+    let s = Semaphore::new(0);
+    let mut acquire = pin!(s.acquire(1));
+    let waker = Waker::noop();
+    let mut context = Context::from_waker(waker);
 
-    let (acquired_tx, mut acquired_rx) = tokio::sync::oneshot::channel();
+    assert!(acquire.as_mut().poll(&mut context).is_pending());
 
-    let s_clone = s.clone();
-    tokio::spawn(async move {
-        let permit = s_clone.acquire(3).await;
-        drop(permit);
-        acquired_tx.send(()).unwrap();
-    });
-    assert!(acquired_rx.try_recv().is_err());
-
-    s.forget_exact(2);
-    s.release(2);
-    assert!(acquired_rx.try_recv().is_err());
+    s.reduce_permits(1);
+    s.release(1);
+    assert!(acquire.as_mut().poll(&mut context).is_pending());
 
     s.release(1);
-    acquired_rx.await.unwrap();
-    assert_eq!(s.available_permits(), 3);
+    let Poll::Ready(permit) = acquire.as_mut().poll(&mut context) else {
+        panic!("acquire should complete after the reduction debt is repaid");
+    };
+    assert_eq!(s.available_permits(), 0);
+
+    drop(permit);
+    assert_eq!(s.available_permits(), 1);
 }

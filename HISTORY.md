@@ -14,5 +14,5 @@ Asyncband collects runtime-agnostic synchronization primitives informed by sever
 - `once::OnceMap` is inspired by [`uv-once-map`](https://github.com/astral-sh/uv/tree/main/crates/uv-once-map), with a redesigned interface and implementation.
 - `oneshot::channel` is derived from the [`oneshot`](https://github.com/faern/oneshot) crate, with significant simplifications because Asyncband does not provide synchronized receive operations.
 - `rwlock::RwLock` is derived from [`tokio::sync::RwLock`](https://docs.rs/tokio/latest/tokio/sync/struct.RwLock.html), but accepts any `NonZeroUsize` as `max_readers` instead of Tokio's restricted range.
-- `semaphore::Semaphore` is derived from [`tokio::sync::Semaphore`](https://docs.rs/tokio/latest/tokio/sync/struct.Semaphore.html), but omits `close`, avoids Tokio's fixed maximum-permit constant, and adds operations such as `forget_exact` for Asyncband's use cases.
+- `semaphore::Semaphore` is derived from [`tokio::sync::Semaphore`](https://docs.rs/tokio/latest/tokio/sync/struct.Semaphore.html), but omits `close`, avoids Tokio's fixed maximum-permit constant, and adds operations such as `reduce_permits` for Asyncband's use cases.
 - `waitgroup::WaitGroup` is inspired by [`waitgroup-rs`](https://github.com/laizy/waitgroup-rs), with a different API and an implementation based on the internal `CountdownState` primitive.

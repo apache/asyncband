@@ -67,7 +67,7 @@ fn fulfill_debt_repeatedly(bencher: Bencher) {
     bencher.bench_local(|| {
         let semaphore = Semaphore::new(0);
         for _ in 0..CYCLES {
-            semaphore.forget_exact(black_box(1));
+            semaphore.reduce_permits(black_box(1));
             semaphore.release(black_box(1));
         }
         black_box(semaphore.available_permits())
