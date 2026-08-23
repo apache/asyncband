@@ -55,6 +55,12 @@ impl WaitSet {
         }
     }
 
+    /// Returns whether no task is currently registered.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.waiters.is_empty()
+    }
+
     /// Takes all registered wakers as an owning iterator without waking them.
     #[inline]
     pub fn take_wakers(&mut self) -> impl Iterator<Item = Waker> + 'static {

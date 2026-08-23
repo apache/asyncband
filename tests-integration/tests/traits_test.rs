@@ -15,11 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::any::TypeId;
 use std::cell::Cell;
 
 use asyncband::barrier::Barrier;
+use asyncband::broadcast;
 use asyncband::condvar::Condvar;
 use asyncband::latch::Latch;
+use asyncband::mpmc;
 use asyncband::mpsc;
 use asyncband::mutex::Mutex;
 use asyncband::mutex::MutexGuard;
@@ -40,8 +43,11 @@ use asyncband::shutdown::Shutdown;
 use asyncband::shutdown::ShutdownGuard;
 use asyncband::shutdown::ShutdownWatch;
 use asyncband::singleflight;
+use asyncband::spmc;
+use asyncband::spsc;
 use asyncband::waitgroup::Wait;
 use asyncband::waitgroup::WaitGroup;
+use asyncband::watch;
 
 struct PoolManager;
 
@@ -97,6 +103,20 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<mpsc::UnboundedReceiver<i64>>();
     assert_send_and_sync::<mpsc::BoundedSender<i64>>();
     assert_send_and_sync::<mpsc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<mpmc::UnboundedSender<i64>>();
+    assert_send_and_sync::<mpmc::UnboundedReceiver<i64>>();
+    assert_send_and_sync::<mpmc::BoundedSender<i64>>();
+    assert_send_and_sync::<mpmc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<spmc::UnboundedReceiver<i64>>();
+    assert_send_and_sync::<spmc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::UnboundedSender<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::UnboundedReceiver<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::BoundedSender<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<broadcast::spmc::UnboundedReceiver<i64>>();
+    assert_send_and_sync::<broadcast::spmc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<watch::Sender<i64>>();
+    assert_send_and_sync::<watch::Receiver<i64>>();
 }
 
 #[test]
@@ -107,6 +127,14 @@ fn movable_public_types_are_send() {
     assert_send::<oneshot::Receiver<i64>>();
     assert_send::<oneshot::Recv<i64>>();
     assert_send::<pool::unbounded::Object<Cell<u8>>>();
+    assert_send::<spsc::UnboundedSender<i64>>();
+    assert_send::<spsc::UnboundedReceiver<i64>>();
+    assert_send::<spsc::BoundedSender<i64>>();
+    assert_send::<spsc::BoundedReceiver<i64>>();
+    assert_send::<spmc::UnboundedSender<i64>>();
+    assert_send::<spmc::BoundedSender<i64>>();
+    assert_send::<broadcast::spmc::UnboundedSender<i64>>();
+    assert_send::<broadcast::spmc::BoundedSender<i64>>();
 }
 
 #[test]
@@ -145,6 +173,28 @@ fn public_types_are_unpin() {
     assert_unpin::<mpsc::UnboundedReceiver<i64>>();
     assert_unpin::<mpsc::BoundedSender<i64>>();
     assert_unpin::<mpsc::BoundedReceiver<i64>>();
+    assert_unpin::<spsc::UnboundedSender<i64>>();
+    assert_unpin::<spsc::UnboundedReceiver<i64>>();
+    assert_unpin::<spsc::BoundedSender<i64>>();
+    assert_unpin::<spsc::BoundedReceiver<i64>>();
+    assert_unpin::<spmc::UnboundedSender<i64>>();
+    assert_unpin::<spmc::UnboundedReceiver<i64>>();
+    assert_unpin::<spmc::BoundedSender<i64>>();
+    assert_unpin::<spmc::BoundedReceiver<i64>>();
+    assert_unpin::<mpmc::UnboundedSender<i64>>();
+    assert_unpin::<mpmc::UnboundedReceiver<i64>>();
+    assert_unpin::<mpmc::BoundedSender<i64>>();
+    assert_unpin::<mpmc::BoundedReceiver<i64>>();
+    assert_unpin::<broadcast::spmc::UnboundedSender<i64>>();
+    assert_unpin::<broadcast::spmc::UnboundedReceiver<i64>>();
+    assert_unpin::<broadcast::spmc::BoundedSender<i64>>();
+    assert_unpin::<broadcast::spmc::BoundedReceiver<i64>>();
+    assert_unpin::<broadcast::mpmc::UnboundedSender<i64>>();
+    assert_unpin::<broadcast::mpmc::UnboundedReceiver<i64>>();
+    assert_unpin::<broadcast::mpmc::BoundedSender<i64>>();
+    assert_unpin::<broadcast::mpmc::BoundedReceiver<i64>>();
+    assert_unpin::<watch::Sender<i64>>();
+    assert_unpin::<watch::Receiver<i64>>();
 }
 
 #[test]
@@ -154,4 +204,33 @@ fn unbounded_manual_manager_traits_do_not_depend_on_the_object() {
 
     assert_copy::<pool::unbounded::NeverManageObject<String>>();
     assert_debug::<pool::unbounded::NeverManageObject<String>>();
+}
+
+#[test]
+fn channel_endpoints_are_nominal_types() {
+    assert_ne!(
+        TypeId::of::<mpsc::BoundedSender<i64>>(),
+        TypeId::of::<mpmc::BoundedSender<i64>>()
+    );
+    assert_ne!(
+        TypeId::of::<spmc::BoundedReceiver<i64>>(),
+        TypeId::of::<broadcast::spmc::BoundedReceiver<i64>>()
+    );
+    assert_ne!(
+        TypeId::of::<broadcast::mpmc::BoundedSender<i64>>(),
+        TypeId::of::<broadcast::mpmc::UnboundedSender<i64>>()
+    );
+
+    assert_eq!(
+        TypeId::of::<mpsc::SendError<i64>>(),
+        TypeId::of::<mpmc::SendError<i64>>()
+    );
+    assert_eq!(
+        TypeId::of::<spmc::TryRecvError>(),
+        TypeId::of::<broadcast::mpmc::TryRecvError>()
+    );
+    assert_eq!(
+        TypeId::of::<watch::RecvError>(),
+        TypeId::of::<spsc::RecvError>()
+    );
 }

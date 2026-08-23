@@ -15,26 +15,28 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod barrier;
-mod blocking;
-mod broadcast;
-mod condvar;
-mod latch;
-mod mpsc;
-mod mutex;
-mod once;
-mod once_map;
-mod oneshot;
-mod pool;
-mod queue;
-mod rwlock;
-mod semaphore;
-mod shutdown;
-mod singleflight;
-mod support;
-mod waitgroup;
-mod watch;
+use asyncband::watch;
+use divan::Bencher;
+use divan::black_box;
 
-fn main() {
-    divan::main();
+use super::support::bench_context;
+use super::support::poll_ready;
+
+#[divan::bench]
+fn send_and_borrow(bencher: Bencher) {
+    let (sender, receiver) = watch::channel(0usize);
+    bencher.bench_local(|| {
+        sender.send(black_box(1usize)).unwrap();
+        black_box(receiver.borrow())
+    });
+}
+
+#[divan::bench]
+fn send_and_changed(bencher: Bencher) {
+    let mut context = bench_context();
+    let (sender, mut receiver) = watch::channel(0usize);
+    bencher.bench_local(|| {
+        sender.send(black_box(1usize)).unwrap();
+        black_box(poll_ready(receiver.changed(), &mut context).unwrap())
+    });
 }

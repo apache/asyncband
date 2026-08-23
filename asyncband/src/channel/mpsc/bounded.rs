@@ -28,13 +28,13 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
+use super::RecvError;
+use super::SendError;
+use super::TryRecvError;
+use super::TrySendError;
 use crate::internal::atomic_waker::AtomicWaker;
 use crate::internal::semaphore::Acquire;
 use crate::internal::semaphore::Semaphore;
-use crate::mpsc::RecvError;
-use crate::mpsc::SendError;
-use crate::mpsc::TryRecvError;
-use crate::mpsc::error::TrySendError;
 
 /// Creates a bounded mpsc channel for communicating between asynchronous
 /// tasks with backpressure.

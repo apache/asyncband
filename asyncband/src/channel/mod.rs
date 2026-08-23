@@ -15,26 +15,29 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod barrier;
-mod blocking;
-mod broadcast;
-mod condvar;
-mod latch;
-mod mpsc;
-mod mutex;
-mod once;
-mod once_map;
-mod oneshot;
-mod pool;
-mod queue;
-mod rwlock;
-mod semaphore;
-mod shutdown;
-mod singleflight;
-mod support;
-mod waitgroup;
-mod watch;
+#[cfg(any(
+    feature = "broadcast",
+    feature = "mpmc",
+    feature = "mpsc",
+    feature = "spmc",
+    feature = "spsc",
+    feature = "watch",
+))]
+mod error;
 
-fn main() {
-    divan::main();
-}
+#[cfg(feature = "broadcast")]
+pub mod broadcast;
+#[cfg(feature = "mpmc")]
+pub mod mpmc;
+#[cfg(any(feature = "mpsc", feature = "spsc"))]
+pub mod mpsc;
+#[cfg(feature = "oneshot")]
+pub mod oneshot;
+#[cfg(any(feature = "mpmc", feature = "spmc"))]
+mod queue;
+#[cfg(feature = "spmc")]
+pub mod spmc;
+#[cfg(feature = "spsc")]
+pub mod spsc;
+#[cfg(feature = "watch")]
+pub mod watch;

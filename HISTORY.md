@@ -9,6 +9,7 @@ Asyncband collects composable, runtime-agnostic concurrency building blocks info
 - `condvar::Condvar` is inspired by [`std::sync::Condvar`](https://doc.rust-lang.org/std/sync/struct.Condvar.html) and [`async_std::sync::Condvar`](https://docs.rs/async-std/latest/async_std/sync/struct.Condvar.html), with a fair FIFO waiter queue and standard non-buffered notification semantics.
 - `latch::Latch` is inspired by [`latches`](https://github.com/mirromutth/latches), with a different implementation based on the internal `CountdownState` primitive.
 - `mutex::Mutex` is derived from [`tokio::sync::Mutex`](https://docs.rs/tokio/latest/tokio/sync/struct.Mutex.html).
+- The cloneable competing-receiver topology of `spmc` and `mpmc` is informed by [`flume`](https://github.com/zesterer/flume), with an independent runtime-agnostic implementation built on Asyncband's waiter arena.
 - `once::OnceCell` is derived from [`tokio::sync::OnceCell`](https://docs.rs/tokio/latest/tokio/sync/struct.OnceCell.html), but uses Asyncband's semaphore implementation.
 - `once::OnceMap` is inspired by [`uv-once-map`](https://github.com/astral-sh/uv/tree/main/crates/uv-once-map), with a redesigned interface and implementation.
 - `oneshot::channel` is derived from the [`oneshot`](https://github.com/faern/oneshot) crate, with significant simplifications because Asyncband does not provide synchronized receive operations.
@@ -16,3 +17,4 @@ Asyncband collects composable, runtime-agnostic concurrency building blocks info
 - `rwlock::RwLock` is derived from [`tokio::sync::RwLock`](https://docs.rs/tokio/latest/tokio/sync/struct.RwLock.html), but accepts any `NonZeroUsize` as `max_readers` instead of Tokio's restricted range.
 - `semaphore::Semaphore` is derived from [`tokio::sync::Semaphore`](https://docs.rs/tokio/latest/tokio/sync/struct.Semaphore.html), but omits `close`, avoids Tokio's fixed maximum-permit constant, and adds operations such as `reduce_permits` for Asyncband's use cases.
 - `waitgroup::WaitGroup` is inspired by [`waitgroup-rs`](https://github.com/laizy/waitgroup-rs), with a different API and an implementation based on the internal `CountdownState` primitive.
+- `watch` is inspired by [`tokio::sync::watch`](https://docs.rs/tokio/latest/tokio/sync/watch/), but returns owned `Arc` snapshots instead of runtime-specific borrow guards.

@@ -26,8 +26,10 @@ rust-version.workspace = true
 asyncband = { workspace = true, features = [
   "barrier",
   "blocking",
+  "broadcast",
   "condvar",
   "latch",
+  "mpmc",
   "mpsc",
   "mutex",
   "once",
@@ -39,7 +41,10 @@ asyncband = { workspace = true, features = [
   "semaphore",
   "shutdown",
   "singleflight",
+  "spmc",
+  "spsc",
   "waitgroup",
+  "watch",
 ] }
 divan = { workspace = true }
 

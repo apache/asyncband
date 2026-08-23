@@ -20,17 +20,8 @@ use std::fmt;
 
 /// An error returned when trying to send on a closed channel.
 ///
-/// Returned from [`UnboundedSender::send`] or [`BoundedSender::send`] if the
-/// corresponding [`UnboundedReceiver`] or [`BoundedReceiver`] has already been
-/// dropped.
-///
 /// The message that could not be sent can be retrieved again with
 /// [`SendError::into_inner`].
-///
-/// [`UnboundedSender::send`]: crate::mpsc::UnboundedSender::send
-/// [`BoundedSender::send`]: crate::mpsc::BoundedSender::send
-/// [`UnboundedReceiver`]: crate::mpsc::UnboundedReceiver
-/// [`BoundedReceiver`]: crate::mpsc::BoundedReceiver
 #[derive(Clone, PartialEq, Eq)]
 pub struct SendError<T>(T);
 
@@ -46,7 +37,7 @@ impl<T> SendError<T> {
     }
 
     /// Creates a new `SendError` with the given message.
-    pub(super) fn new(msg: T) -> SendError<T> {
+    pub(crate) fn new(msg: T) -> SendError<T> {
         SendError(msg)
     }
 }
@@ -66,6 +57,13 @@ impl<T> fmt::Debug for SendError<T> {
 impl<T> std::error::Error for SendError<T> {}
 
 /// Error returned by `try_send`.
+#[cfg(any(
+    feature = "broadcast",
+    feature = "mpmc",
+    feature = "mpsc",
+    feature = "spmc",
+    feature = "spsc",
+))]
 #[derive(Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
     /// The channel is full, so data may not be sent at this time, but the receiver has not yet
@@ -75,6 +73,13 @@ pub enum TrySendError<T> {
     Disconnected(T),
 }
 
+#[cfg(any(
+    feature = "broadcast",
+    feature = "mpmc",
+    feature = "mpsc",
+    feature = "spmc",
+    feature = "spsc",
+))]
 impl<T> TrySendError<T> {
     /// Gets a reference to the message that failed to be sent.
     pub fn as_inner(&self) -> &T {
@@ -91,6 +96,13 @@ impl<T> TrySendError<T> {
     }
 }
 
+#[cfg(any(
+    feature = "broadcast",
+    feature = "mpmc",
+    feature = "mpsc",
+    feature = "spmc",
+    feature = "spsc",
+))]
 impl<T> fmt::Display for TrySendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -100,6 +112,13 @@ impl<T> fmt::Display for TrySendError<T> {
     }
 }
 
+#[cfg(any(
+    feature = "broadcast",
+    feature = "mpmc",
+    feature = "mpsc",
+    feature = "spmc",
+    feature = "spsc",
+))]
 impl<T> fmt::Debug for TrySendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ty = type_name::<T>();
@@ -110,6 +129,13 @@ impl<T> fmt::Debug for TrySendError<T> {
     }
 }
 
+#[cfg(any(
+    feature = "broadcast",
+    feature = "mpmc",
+    feature = "mpsc",
+    feature = "spmc",
+    feature = "spsc",
+))]
 impl<T> std::error::Error for TrySendError<T> {}
 
 /// Error returned by `recv`.
@@ -128,6 +154,13 @@ impl fmt::Display for RecvError {
 impl std::error::Error for RecvError {}
 
 /// Error returned by `try_recv`.
+#[cfg(any(
+    feature = "broadcast",
+    feature = "mpmc",
+    feature = "mpsc",
+    feature = "spmc",
+    feature = "spsc",
+))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TryRecvError {
     /// This channel is currently empty, but the sender(s) have not yet disconnected, so data may
@@ -137,6 +170,13 @@ pub enum TryRecvError {
     Disconnected,
 }
 
+#[cfg(any(
+    feature = "broadcast",
+    feature = "mpmc",
+    feature = "mpsc",
+    feature = "spmc",
+    feature = "spsc",
+))]
 impl fmt::Display for TryRecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -146,4 +186,11 @@ impl fmt::Display for TryRecvError {
     }
 }
 
+#[cfg(any(
+    feature = "broadcast",
+    feature = "mpmc",
+    feature = "mpsc",
+    feature = "spmc",
+    feature = "spsc",
+))]
 impl std::error::Error for TryRecvError {}

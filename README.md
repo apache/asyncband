@@ -54,7 +54,7 @@ async fn increment() {
 }
 ```
 
-Public paths stay direct—such as `asyncband::mutex`, `asyncband::pool`, and `asyncband::once::OnceCell`—while Cargo features keep unused implementations out of the build.
+Public paths stay direct—such as `asyncband::mutex`, `asyncband::mpsc`, and `asyncband::once::OnceCell`—while Cargo features keep unused implementations out of the build. The `channel` feature enables every channel API without adding an `asyncband::channel` namespace.
 
 ## Examples
 
@@ -77,6 +77,12 @@ Runnable examples live in the [`examples`](examples) workspace crate. They demon
 |                         | [`shutdown`](https://docs.rs/asyncband/*/asyncband/shutdown/)                        | `shutdown`     | Coordinate shutdown signals and completion.                             |
 | Channels                | [`oneshot`](https://docs.rs/asyncband/*/asyncband/oneshot/)                         | `oneshot`      | Send one value between two tasks.                                       |
 |                         | [`mpsc`](https://docs.rs/asyncband/*/asyncband/mpsc/)                               | `mpsc`         | Send values from multiple producers through bounded or unbounded channels. |
+|                         | [`spsc`](https://docs.rs/asyncband/*/asyncband/spsc/)                                | `spsc`         | Queue each value for one producer and one receiver.                      |
+|                         | [`spmc`](https://docs.rs/asyncband/*/asyncband/spmc/)                                | `spmc`         | Let multiple receivers compete for values from one producer.            |
+|                         | [`mpmc`](https://docs.rs/asyncband/*/asyncband/mpmc/)                                | `mpmc`         | Let multiple producers and receivers share a competing queue.           |
+|                         | [`broadcast::spmc`](https://docs.rs/asyncband/*/asyncband/broadcast/spmc/)           | `broadcast`    | Broadcast every value from one producer to every subscription.          |
+|                         | [`broadcast::mpmc`](https://docs.rs/asyncband/*/asyncband/broadcast/mpmc/)           | `broadcast`    | Broadcast one committed order from concurrent producers.                |
+|                         | [`watch`](https://docs.rs/asyncband/*/asyncband/watch/)                              | `watch`        | Retain the latest state and coalesce intermediate updates.               |
 | Resource reuse          | [`pool`](https://docs.rs/asyncband/*/asyncband/pool/)                               | `pool`         | Reuse objects through bounded or unbounded pool variants.               |
 | Workload coordination   | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore`    | Control concurrent access with permits.                                 |
 |                         | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)      | `singleflight` | Coalesce concurrent calls for the same key.                             |

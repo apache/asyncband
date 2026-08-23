@@ -11,13 +11,17 @@ All notable changes to this project will be documented in this file.
 * Add an opt-in `asyncband::blocking::FutureExt` bridge with `block_on` and `wait_timeout` methods for waiting on runtime-agnostic futures from synchronous code.
 * Add opt-in bounded and unbounded runtime-agnostic object pools under `asyncband::pool`.
 * Add opt-in `asyncband::once::LazyCell` for values that own one asynchronous initializer and preserve its in-flight future across caller cancellation.
+* Add opt-in SPSC, SPMC, and MPMC competing queues with topology-specific endpoint capabilities.
+* Add opt-in lossless bounded and unbounded SPMC and MPMC broadcast channels.
+* Add an opt-in latest-state watch channel.
+* Add a `channel` umbrella feature that enables every channel API while keeping their public paths at the crate root.
 
 ### Breaking changes
 
 * Gate all exported primitives behind opt-in Cargo features and enable no features by default; downstream dependencies must explicitly enable the APIs they use.
 * Remove `admission::FairShare` and its `admission` Cargo feature from the feature set.
 * Remove the `asyncband::atomicbox` module and its `AtomicBox` and `AtomicOptionBox` types from the public API.
-* Remove the lossy `broadcast::overflow` channel and its `broadcast` Cargo feature; future broadcast APIs will use explicit bounded and unbounded lossless semantics.
+* Remove the lossy `broadcast::overflow` API; the `broadcast` Cargo feature now selects explicit bounded and unbounded lossless channels.
 * Remove `Semaphore::try_acquire_and_forget`, `Semaphore::acquire_and_forget`, `Semaphore::try_acquire_owned_and_forget`, and `Semaphore::acquire_owned_and_forget`; acquire a permit and call its `forget` method instead.
 * Rename `oneshot::Sender::is_closed` and `oneshot::Receiver::is_closed` to `is_disconnected`.
 * Replace `Semaphore::forget` with `Semaphore::drain_permits` and `Semaphore::forget_exact` with `Semaphore::reduce_permits`; permit-level `forget` methods are unchanged.

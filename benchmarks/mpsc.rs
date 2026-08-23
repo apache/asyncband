@@ -22,8 +22,54 @@ use divan::black_box;
 use super::support::bench_context;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
+use super::support::poll_ready;
 
 const SENDER_COUNTS: &[usize] = &[1, 8, 32];
+const CAPACITIES: &[usize] = &[1, 64];
+
+#[divan::bench(args = CAPACITIES)]
+fn bounded_try_round_trip(bencher: Bencher, capacity: usize) {
+    let (sender, mut receiver) = mpsc::bounded(capacity);
+
+    bencher.bench_local(|| {
+        sender.try_send(black_box(1usize)).unwrap();
+        black_box(receiver.try_recv().unwrap())
+    });
+}
+
+#[divan::bench(args = CAPACITIES)]
+fn bounded_ready_send_round_trip(bencher: Bencher, capacity: usize) {
+    let mut context = bench_context();
+    let (sender, mut receiver) = mpsc::bounded(capacity);
+
+    bencher.bench_local(|| {
+        poll_ready(sender.send(black_box(1usize)), &mut context).unwrap();
+        black_box(receiver.try_recv().unwrap())
+    });
+}
+
+#[divan::bench]
+fn unbounded_round_trip(bencher: Bencher) {
+    let (sender, mut receiver) = mpsc::unbounded();
+
+    bencher.bench_local(|| {
+        sender.send(black_box(1usize)).unwrap();
+        black_box(receiver.try_recv().unwrap())
+    });
+}
+
+#[divan::bench]
+fn deliver_to_waiting_receiver(bencher: Bencher) {
+    let mut context = bench_context();
+    let (sender, mut receiver) = mpsc::unbounded();
+
+    bencher.bench_local(|| {
+        let mut recv = Box::pin(receiver.recv());
+        poll_pending(recv.as_mut(), &mut context);
+        sender.send(black_box(1usize)).unwrap();
+        black_box(poll_pinned_ready(recv.as_mut(), &mut context).unwrap())
+    });
+}
 
 #[divan::bench]
 fn reregister_pending_receiver(bencher: Bencher) {

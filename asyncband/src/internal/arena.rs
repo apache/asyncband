@@ -136,6 +136,12 @@ impl<T> Arena<T> {
         }
     }
 
+    /// Returns whether the arena has no occupied slots.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Removes the value stored at `id`.
     ///
     /// # Panics

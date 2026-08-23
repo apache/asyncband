@@ -56,10 +56,15 @@
 //! | Protect shared state       | [`mutex::Mutex`], [`rwlock::RwLock`], [`condvar::Condvar`]                            | `mutex`, `rwlock`, `condvar`                |
 //! | Initialize values once     | [`once::Once`], [`once::OnceCell`], [`once::LazyCell`], [`once::OnceMap`]             | `once`, `once-cell`, `lazy-cell`, `once-map` |
 //! | Coordinate tasks           | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`]        | `barrier`, `latch`, `waitgroup`, `shutdown` |
-//! | Send values                | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`]                          | `oneshot`, `mpsc`                           |
+//! | Transfer one value         | [`oneshot::channel`]                                                                  | `oneshot`                                   |
+//! | Compete for queued values  | [`spsc`], [`mpsc`], [`spmc`], [`mpmc`]                                                | matching module name                        |
+//! | Broadcast every value      | [`broadcast::spmc`], [`broadcast::mpmc`]                                              | `broadcast`                                 |
+//! | Observe latest state       | [`watch`]                                                                             | `watch`                                     |
 //! | Reuse objects              | [`pool::bounded`], [`pool::unbounded`]                                                | `pool`                                      |
 //! | Coordinate workloads       | [`semaphore::Semaphore`], [`singleflight::Group`]                                     | `semaphore`, `singleflight`                 |
 //! | Wait from synchronous code | [`blocking::FutureExt`]                                                               | `blocking`                                  |
+//!
+//! Enable `channel` to select every channel feature without adding a public `channel` path.
 //!
 //! # Scope and runtime model
 //!
@@ -100,18 +105,23 @@
 //!
 //! While incubation status is not necessarily a reflection of the completeness or stability of the
 //! code, it does indicate that the project has yet to be fully endorsed by the ASF.
+mod channel;
 mod internal;
 
 #[cfg(feature = "barrier")]
 pub mod barrier;
 #[cfg(feature = "blocking")]
 pub mod blocking;
+#[cfg(feature = "broadcast")]
+pub use self::channel::broadcast;
 #[cfg(feature = "condvar")]
 pub mod condvar;
 #[cfg(feature = "latch")]
 pub mod latch;
+#[cfg(feature = "mpmc")]
+pub use self::channel::mpmc;
 #[cfg(feature = "mpsc")]
-pub mod mpsc;
+pub use self::channel::mpsc;
 #[cfg(feature = "mutex")]
 pub mod mutex;
 #[cfg(any(
@@ -122,7 +132,9 @@ pub mod mutex;
 ))]
 pub mod once;
 #[cfg(feature = "oneshot")]
-pub mod oneshot;
+pub use self::channel::oneshot;
+#[cfg(feature = "spsc")]
+pub use self::channel::spsc;
 #[cfg(feature = "pool")]
 pub mod pool;
 #[cfg(feature = "rwlock")]
@@ -133,8 +145,12 @@ pub mod semaphore;
 pub mod shutdown;
 #[cfg(feature = "singleflight")]
 pub mod singleflight;
+#[cfg(feature = "spmc")]
+pub use self::channel::spmc;
 #[cfg(feature = "waitgroup")]
 pub mod waitgroup;
+#[cfg(feature = "watch")]
+pub use self::channel::watch;
 
 #[cfg(all(test, any(feature = "once-map", feature = "singleflight")))]
 mod test_support;
