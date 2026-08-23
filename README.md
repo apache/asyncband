@@ -99,7 +99,15 @@ let value = async { 42 }.wait_timeout(Duration::ZERO);
 assert_eq!(value, Some(42));
 ```
 
-`wait_timeout` drops the future on timeout. Futures that depend on a runtime-specific timer or I/O driver still need that runtime's driver to make progress, and blocking an executor thread can cause starvation or deadlocks. See the [`blocking` module documentation](https://docs.rs/asyncband/*/asyncband/blocking/) for the full contract.
+### Async first, blocking by adaptation
+
+Async and synchronous synchronization primitives have different optimization constraints. Once an async operation is exposed as a runtime-agnostic future, synchronous code can usually drive that future through a `block_on` adapter. Asyncband therefore designs its primitives for async use and provides blocking interoperability at the boundary instead of duplicating synchronous methods across every type.
+
+A sync-first implementation can exploit OS- or platform-specific facilities that an async implementation cannot assume. Libraries focused on synchronous code can therefore make different and sometimes better tradeoffs. Asyncband leaves those optimizations to dedicated libraries rather than treating blocking adaptation as a second family of primitives.
+
+### Execution constraints
+
+The `blocking` module is a lightweight, thread-parking single-future executor, not a general-purpose async runtime. `wait_timeout` drops the future on timeout. Futures that depend on a runtime-specific timer or I/O driver still need that runtime's driver to make progress, and blocking an executor thread can cause starvation or deadlocks. See the [`blocking` module documentation](https://docs.rs/asyncband/*/asyncband/blocking/) for the full contract.
 
 ## Thread safety
 

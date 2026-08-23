@@ -72,9 +72,15 @@
 //! remain with the caller. Await Asyncband futures inside any executor that polls standard Rust
 //! futures, and compose those runtime services around them.
 //!
-//! Async APIs are the primary interface. The optional [`blocking`] module is a boundary adapter for
-//! synchronous callers: its single-future executor parks the calling thread and resumes it through
-//! the future's waker. It is not a general-purpose async runtime, and futures that depend on a
+//! # Async first, blocking by adaptation
+//!
+//! Async and synchronous primitives have different optimization constraints. Asyncband designs its
+//! primitives for async use and provides the optional [`blocking`] module as a boundary adapter
+//! instead of duplicating synchronous methods across every type. Sync-first implementations can
+//! exploit OS- or platform-specific facilities and remain the domain of dedicated libraries.
+//!
+//! The adapter's single-future executor parks the calling thread and resumes it through the
+//! future's waker. It is not a general-purpose async runtime, and futures that depend on a
 //! runtime-specific timer or I/O driver may not make progress. See the module documentation for the
 //! full execution constraints.
 //!

@@ -29,5 +29,3 @@ All notable changes to this project will be documented in this file.
 ### Improvements
 
 * Remove the `slab` dependency in favor of a focused internal waiter arena.
-* Refine object-pool lifecycle and maintenance APIs with exact idle status, return-time usage metadata, detachment hooks during retention, fallible `replenish_to`, and synchronous `try_get` for manually populated pools.
-* Clarify Asyncband's scope as composable, runtime-agnostic concurrency building blocks that keep execution and timing policy with callers.
