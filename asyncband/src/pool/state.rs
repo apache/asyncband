@@ -22,13 +22,13 @@ use crate::pool::QueueStrategy;
 use crate::pool::RetainResult;
 
 #[derive(Debug)]
-pub(crate) struct ObjectState<T> {
-    pub(crate) o: T,
-    pub(crate) status: ObjectStatus,
+pub struct ObjectState<T> {
+    pub o: T,
+    pub status: ObjectStatus,
 }
 
 impl<T> ObjectState<T> {
-    pub(crate) fn new(o: T) -> Self {
+    pub fn new(o: T) -> Self {
         Self {
             o,
             status: ObjectStatus::default(),
@@ -37,48 +37,48 @@ impl<T> ObjectState<T> {
 }
 
 #[derive(Debug)]
-pub(crate) struct PoolState<T> {
+pub struct PoolState<T> {
     idle: VecDeque<ObjectState<T>>,
     current_size: usize,
 }
 
 impl<T> PoolState<T> {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             idle: VecDeque::new(),
             current_size: 0,
         }
     }
 
-    pub(crate) fn current_size(&self) -> usize {
+    pub fn current_size(&self) -> usize {
         self.current_size
     }
 
-    pub(crate) fn idle_count(&self) -> usize {
+    pub fn idle_count(&self) -> usize {
         self.idle.len()
     }
 
-    pub(crate) fn pop(&mut self, strategy: QueueStrategy) -> Option<ObjectState<T>> {
+    pub fn pop(&mut self, strategy: QueueStrategy) -> Option<ObjectState<T>> {
         match strategy {
             QueueStrategy::Fifo => self.idle.pop_front(),
             QueueStrategy::Lifo => self.idle.pop_back(),
         }
     }
 
-    pub(crate) fn add_idle(&mut self, state: ObjectState<T>) {
+    pub fn add_idle(&mut self, state: ObjectState<T>) {
         self.current_size += 1;
         self.idle.push_back(state);
     }
 
-    pub(crate) fn add_active(&mut self) {
+    pub fn add_active(&mut self) {
         self.current_size += 1;
     }
 
-    pub(crate) fn return_idle(&mut self, state: ObjectState<T>) {
+    pub fn return_idle(&mut self, state: ObjectState<T>) {
         self.idle.push_back(state);
     }
 
-    pub(crate) fn detach(&mut self) {
+    pub fn detach(&mut self) {
         self.current_size = self
             .current_size
             .checked_sub(1)
@@ -86,10 +86,7 @@ impl<T> PoolState<T> {
     }
 
     /// Retains matching idle objects without losing any object if the predicate panics.
-    pub(crate) fn retain(
-        &mut self,
-        mut f: impl FnMut(&mut T, ObjectStatus) -> bool,
-    ) -> RetainResult<T> {
+    pub fn retain(&mut self, mut f: impl FnMut(&mut T, ObjectStatus) -> bool) -> RetainResult<T> {
         let len = self.idle.len();
         let mut retained = 0;
         let mut current = 0;

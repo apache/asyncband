@@ -191,7 +191,7 @@ impl<M: ManageObject> Pool<M> {
     /// The pool reserves only capacity that is immediately available and never waits for
     /// checked-out objects. Existing idle objects count toward the target, and the pool's
     /// maximum size is never exceeded. Concurrent calls and checkouts can change the observed
-    /// idle count while this method is running, so the target is best effort rather than a
+    /// idle count while this method is running, so the target is the best effort rather than a
     /// postcondition.
     ///
     /// Returns the number of objects created. If [`ManageObject::create`] fails, objects created by

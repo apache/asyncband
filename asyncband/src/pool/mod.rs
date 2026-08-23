@@ -171,14 +171,14 @@
 //! }
 //! ```
 
-pub use common::ManageObject;
-pub use common::ObjectStatus;
-pub use common::QueueStrategy;
-pub use common::RecycleCancelledStrategy;
-pub use common::RetainResult;
-
 mod common;
 mod state;
 
 pub mod bounded;
 pub mod unbounded;
+
+pub use self::common::ManageObject;
+pub use self::common::ObjectStatus;
+pub use self::common::QueueStrategy;
+pub use self::common::RecycleCancelledStrategy;
+pub use self::common::RetainResult;
