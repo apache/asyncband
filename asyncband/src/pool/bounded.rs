@@ -167,6 +167,35 @@ pub struct Pool<M: ManageObject> {
     slots: Mutex<PoolDeque<ObjectState<M::Object>>>,
 }
 
+/// Restores the pool's user count when a `get` attempt fails or is cancelled.
+///
+/// A successful `get` transfers responsibility for decrementing the count to the returned
+/// [`Object`].
+// TODO: Replace this pool-specific guard with the standard library's `DropGuard` once
+// https://github.com/rust-lang/rust/issues/144426 stabilizes.
+struct UserCountGuard<'a> {
+    users: Option<&'a AtomicUsize>,
+}
+
+impl<'a> UserCountGuard<'a> {
+    fn new(users: &'a AtomicUsize) -> Self {
+        users.fetch_add(1, Ordering::Relaxed);
+        Self { users: Some(users) }
+    }
+
+    fn commit(mut self) {
+        self.users = None;
+    }
+}
+
+impl Drop for UserCountGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(users) = self.users {
+            users.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
 #[derive(Debug)]
 struct PoolDeque<T> {
     deque: VecDeque<T>,
@@ -289,13 +318,7 @@ impl<M: ManageObject> Pool<M> {
     /// This method should be called with a pool wrapped in an [`Arc`]. If the pool reaches the
     /// maximum size, this method waits until an object is returned to the pool or detached from it.
     pub async fn get(self: &Arc<Self>) -> Result<Object<M>, M::Error> {
-        self.users.fetch_add(1, Ordering::Relaxed);
-
-        // TODO(*) replace scopeguard with std DropGuard once stabilized
-        //  https://github.com/rust-lang/rust/issues/144426
-        let guard = scopeguard::guard((), |()| {
-            self.users.fetch_sub(1, Ordering::Relaxed);
-        });
+        let user_count_guard = UserCountGuard::new(&self.users);
 
         let permit = self.permits.clone().acquire_owned(1).await;
 
@@ -346,7 +369,7 @@ impl<M: ManageObject> Pool<M> {
             };
         };
 
-        scopeguard::ScopeGuard::into_inner(guard);
+        user_count_guard.commit();
         Ok(object)
     }
 

@@ -49,7 +49,7 @@ once = ["semaphore"]
 once-cell = ["semaphore"]
 once-map = ["dep:hashbrown", "once-cell"]
 oneshot = []
-pool = ["dep:scopeguard", "semaphore"]
+pool = ["semaphore"]
 rwlock = []
 semaphore = []
 shutdown = ["latch", "waitgroup"]
@@ -60,7 +60,6 @@ waitgroup = []
 hashbrown = { workspace = true, default-features = false, features = [
   "inline-more",
 ], optional = true }
-scopeguard = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

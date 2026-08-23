@@ -33,7 +33,6 @@ asyncband = { path = "asyncband" }
 
 # Optional runtime dependencies
 hashbrown = { version = "0.17.1", default-features = false }
-scopeguard = { version = "1.2.0" }
 
 # Dev dependencies
 cargo_metadata = { version = "0.23.1" }

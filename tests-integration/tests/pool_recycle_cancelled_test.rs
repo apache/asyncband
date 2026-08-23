@@ -174,6 +174,53 @@ mod bounded_tests {
         );
     }
 
+    /// Test that cancelling `get()` releases its user-count registration.
+    #[tokio::test]
+    async fn test_cancelled_get_releases_user_count() {
+        let created_count = Arc::new(AtomicUsize::new(0));
+        let manager = SlowRecycleManager::new(created_count, Duration::from_millis(100));
+        let pool = Pool::new(PoolConfig::new(1), manager);
+
+        let object = pool.get().await.unwrap();
+        drop(object);
+
+        let mut get = Box::pin(pool.get());
+        assert!(tests_integration::poll_once(get.as_mut()).is_pending());
+        drop(get);
+
+        assert_eq!(pool.status().wait_count, 0);
+    }
+
+    /// Test that a failed create call releases its user-count registration.
+    #[tokio::test]
+    async fn test_failed_create_releases_user_count() {
+        struct FailingManager;
+
+        impl ManageObject for FailingManager {
+            type Object = ();
+            type Error = ();
+
+            async fn create(&self) -> Result<Self::Object, Self::Error> {
+                Err(())
+            }
+
+            async fn is_recyclable(
+                &self,
+                _o: &mut Self::Object,
+                _status: &ObjectStatus,
+            ) -> Result<(), Self::Error> {
+                Ok(())
+            }
+        }
+
+        let pool = Pool::new(PoolConfig::new(1), FailingManager);
+        assert!(pool.get().await.is_err());
+
+        let status = pool.status();
+        assert_eq!(status.current_size, 0);
+        assert_eq!(status.wait_count, 0);
+    }
+
     /// Test that failed is_recyclable always properly detaches objects.
     #[tokio::test]
     async fn test_failed_recyclable_still_detaches() {
