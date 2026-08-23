@@ -18,19 +18,19 @@
 use std::future::Future;
 use std::time::Instant;
 
-/// Statistics regarding an object returned by the pool.
+/// Lifecycle metadata for a pooled object.
 #[derive(Debug, Clone, Copy)]
 pub struct ObjectStatus {
     created: Instant,
-    pub(crate) recycled: Option<Instant>,
-    pub(crate) recycle_count: usize,
+    last_returned: Option<Instant>,
+    recycle_count: usize,
 }
 
 impl Default for ObjectStatus {
     fn default() -> Self {
         Self {
             created: Instant::now(),
-            recycled: None,
+            last_returned: None,
             recycle_count: 0,
         }
     }
@@ -42,15 +42,36 @@ impl ObjectStatus {
         self.created
     }
 
-    /// Returns the instant when this object was last used.
+    /// Returns the instant when this object was last returned to the pool.
+    ///
+    /// If the object has not been returned yet, this returns its creation time. While an object is
+    /// checked out, the value therefore describes the end of its previous use, if any.
     pub fn last_used(&self) -> Instant {
-        self.recycled.unwrap_or(self.created)
+        self.last_returned.unwrap_or(self.created)
     }
 
-    /// Returns the number of times the object was recycled.
+    /// Returns the number of successful checkouts from the idle queue.
     pub fn recycle_count(&self) -> usize {
         self.recycle_count
     }
+
+    pub(crate) fn mark_recycled(&mut self) {
+        self.recycle_count += 1;
+    }
+
+    pub(crate) fn mark_returned(&mut self) {
+        self.last_returned = Some(Instant::now());
+    }
+}
+
+/// The result returned by a pool's `retain` method.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct RetainResult<T> {
+    /// The number of retained objects.
+    pub retained: usize,
+    /// The objects removed from the pool, after the manager's detachment hook has run.
+    pub removed: Vec<T>,
 }
 
 /// A trait whose instance creates new objects and recycles existing ones.
@@ -73,10 +94,14 @@ pub trait ManageObject: Send + Sync {
         status: &ObjectStatus,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// A callback invoked when an object is detached from the pool.
+    /// A callback invoked when an object is detached from a live pool.
     ///
-    /// If this instance does not hold any references to the object, then the default
-    /// implementation can be used which does nothing.
+    /// This includes explicit detachment, failed or cancelled recycling, and removal through
+    /// `retain`. The callback runs without the pool's internal lock held. It is not invoked when
+    /// the pool itself is dropped or when an object can no longer reach its pool.
+    ///
+    /// If this instance does not hold any references to the object, the default implementation can
+    /// be used, which does nothing.
     fn on_detached(&self, _o: &mut Self::Object) {}
 }
 
@@ -94,7 +119,7 @@ pub enum QueueStrategy {
     Lifo,
 }
 
-/// Strategy when recycling object has been cancelled.
+/// Strategy to apply when object recycling is cancelled.
 ///
 /// This enum controls the behavior when the recycling process (specifically the
 /// [`ManageObject::is_recyclable`] check) is cancelled; for example, when the

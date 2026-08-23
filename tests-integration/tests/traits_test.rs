@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::Cell;
+
 use asyncband::barrier::Barrier;
 use asyncband::condvar::Condvar;
 use asyncband::latch::Latch;
@@ -87,6 +89,7 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<pool::bounded::Object<PoolManager>>();
     assert_send_and_sync::<pool::unbounded::Pool<i64>>();
     assert_send_and_sync::<pool::unbounded::Object<i64>>();
+    assert_send_and_sync::<pool::unbounded::Pool<Cell<u8>>>();
     assert_send_and_sync::<mpsc::SendError<i64>>();
     assert_send_and_sync::<mpsc::UnboundedSender<i64>>();
     assert_send_and_sync::<mpsc::UnboundedReceiver<i64>>();
@@ -101,6 +104,7 @@ fn movable_public_types_are_send() {
     assert_send::<RwLockReadGuard<'_, std::sync::MutexGuard<'static, ()>>>();
     assert_send::<oneshot::Receiver<i64>>();
     assert_send::<oneshot::Recv<i64>>();
+    assert_send::<pool::unbounded::Object<Cell<u8>>>();
 }
 
 #[test]
@@ -138,4 +142,13 @@ fn public_types_are_unpin() {
     assert_unpin::<mpsc::UnboundedReceiver<i64>>();
     assert_unpin::<mpsc::BoundedSender<i64>>();
     assert_unpin::<mpsc::BoundedReceiver<i64>>();
+}
+
+#[test]
+fn unbounded_manual_manager_traits_do_not_depend_on_the_object() {
+    fn assert_copy<T: Copy>() {}
+    fn assert_debug<T: std::fmt::Debug>() {}
+
+    assert_copy::<pool::unbounded::NeverManageObject<String>>();
+    assert_debug::<pool::unbounded::NeverManageObject<String>>();
 }

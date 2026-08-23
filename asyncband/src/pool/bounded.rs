@@ -17,22 +17,20 @@
 
 //! Bounded object pools.
 //!
-//! A bounded pool creates and recycles objects with full management. You _cannot_ put an object to
-//! the pool manually.
+//! A bounded pool uses a [`ManageObject`] implementation to create, validate, and detach objects.
+//! Objects cannot be inserted manually.
 //!
 //! The pool is bounded by the `max_size` config option of [`PoolConfig`]. If the pool reaches the
-//! maximum size, it will block all the [`Pool::get`] calls until an object is returned to the pool
-//! or an object is detached from the pool.
+//! maximum size, additional [`Pool::get`] calls wait until an object is returned to or detached
+//! from the pool.
 //!
-//! Typically, a bounded pool is used wrapped in an [`Arc`] in order to call [`Pool::get`].
-//! This is intended so that users can leverage [`Arc::downgrade`] for running background
-//! maintenance tasks (e.g., [`Pool::retain`]).
+//! [`Pool::new`] returns an [`Arc`], allowing background maintenance code to hold a [`Weak`] and
+//! terminate naturally when application owners drop the pool. Scheduling that maintenance remains
+//! the caller's responsibility.
 //!
 //! Bounded pools are useful for pooling database connections.
 //!
 //! ## Examples
-//!
-//! Read the following simple demo or more complex examples in the examples directory.
 //!
 //! ```
 //! use asyncband::pool::ManageObject;
@@ -58,8 +56,8 @@
 //!
 //!     async fn is_recyclable(
 //!         &self,
-//!         o: &mut Self::Object,
-//!         status: &ObjectStatus,
+//!         _object: &mut Self::Object,
+//!         _status: &ObjectStatus,
 //!     ) -> Result<(), Self::Error> {
 //!         Ok(())
 //!     }
@@ -73,21 +71,19 @@
 //! # }
 //! ```
 
-use std::collections::VecDeque;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 
+use crate::internal::mutex::Mutex;
 use crate::pool::ManageObject;
 use crate::pool::ObjectStatus;
 use crate::pool::QueueStrategy;
 use crate::pool::RecycleCancelledStrategy;
 use crate::pool::RetainResult;
-use crate::pool::mutex::Mutex;
-use crate::pool::retain_spec;
+use crate::pool::state::ObjectState;
+use crate::pool::state::PoolState;
 use crate::semaphore::OwnedSemaphorePermit;
 use crate::semaphore::Semaphore;
 
@@ -103,7 +99,7 @@ pub struct PoolConfig {
     /// Determines the order of objects being queued and dequeued.
     pub queue_strategy: QueueStrategy,
 
-    /// Strategy when recycling object has been cancelled.
+    /// Strategy to apply when object recycling is cancelled.
     pub recycle_cancelled_strategy: RecycleCancelledStrategy,
 }
 
@@ -142,14 +138,11 @@ pub struct PoolStatus {
     /// The maximum size of the pool.
     pub max_size: usize,
 
-    /// The current size of the pool.
+    /// The number of successfully created objects that have not been detached.
     pub current_size: usize,
 
-    /// The number of idle objects in the pool.
+    /// The number of objects currently available for checkout.
     pub idle_count: usize,
-
-    /// The number of futures waiting for an object.
-    pub wait_count: usize,
 }
 
 /// Generic runtime-agnostic object pool with a maximum size.
@@ -159,48 +152,10 @@ pub struct Pool<M: ManageObject> {
     config: PoolConfig,
     manager: M,
 
-    /// A counter that tracks the sum of waiters + obtained objects.
-    users: AtomicUsize,
-    /// A semaphore that limits the maximum of users of the pool.
+    /// A semaphore that reserves capacity for checkouts and object creation.
     permits: Arc<Semaphore>,
-    /// A deque that holds the objects.
-    slots: Mutex<PoolDeque<ObjectState<M::Object>>>,
-}
-
-/// Restores the pool's user count when a `get` attempt fails or is cancelled.
-///
-/// A successful `get` transfers responsibility for decrementing the count to the returned
-/// [`Object`].
-// TODO: Replace this pool-specific guard with the standard library's `DropGuard` once
-// https://github.com/rust-lang/rust/issues/144426 stabilizes.
-struct UserCountGuard<'a> {
-    users: Option<&'a AtomicUsize>,
-}
-
-impl<'a> UserCountGuard<'a> {
-    fn new(users: &'a AtomicUsize) -> Self {
-        users.fetch_add(1, Ordering::Relaxed);
-        Self { users: Some(users) }
-    }
-
-    fn commit(mut self) {
-        self.users = None;
-    }
-}
-
-impl Drop for UserCountGuard<'_> {
-    fn drop(&mut self) {
-        if let Some(users) = self.users {
-            users.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
-}
-
-#[derive(Debug)]
-struct PoolDeque<T> {
-    deque: VecDeque<T>,
-    current_size: usize,
-    max_size: usize,
+    /// The objects tracked by the pool.
+    slots: Mutex<PoolState<M::Object>>,
 }
 
 impl<M> std::fmt::Debug for Pool<M>
@@ -212,7 +167,6 @@ where
         f.debug_struct("Pool")
             .field("slots", &self.slots)
             .field("config", &self.config)
-            .field("users", &self.users)
             .field("permits", &self.permits)
             .finish()
     }
@@ -221,121 +175,65 @@ where
 impl<M: ManageObject> Pool<M> {
     /// Creates a new [`Pool`].
     pub fn new(config: PoolConfig, manager: M) -> Arc<Self> {
-        let users = AtomicUsize::new(0);
         let permits = Arc::new(Semaphore::new(config.max_size));
-        let slots = Mutex::new(PoolDeque {
-            deque: VecDeque::with_capacity(config.max_size),
-            current_size: 0,
-            max_size: config.max_size,
-        });
+        let slots = Mutex::new(PoolState::new());
 
         Arc::new(Self {
             config,
             manager,
-            users,
             permits,
             slots,
         })
     }
 
-    /// Replenishes the pool with at most `most` number of new objects:
+    /// Creates objects until the pool approaches `target_idle` idle objects.
     ///
-    /// 1. If the pool has fewer slots to fill than `most`, narrow `most` to the number of slots.
-    /// 2. If there is already any idle object in the pool, decrease `most` by the number of idle
-    ///    objects.
-    /// 3. If [`ManageObject::create`] returns `Err`, reduces `most` by 1 and continues to the next.
+    /// The pool reserves only capacity that is immediately available and never waits for
+    /// checked-out objects. Existing idle objects count toward the target, and the pool's
+    /// maximum size is never exceeded. Concurrent calls and checkouts can change the observed
+    /// idle count while this method is running, so the target is best effort rather than a
+    /// postcondition.
     ///
-    /// Returns the number of objects that are actually replenished to the pool. This method is
-    /// suitable to implement functionalities like minimal idle connections in a connection
-    /// pool.
-    pub async fn replenish(&self, most: usize) -> usize {
-        let mut permit = {
-            let mut n = most;
-            loop {
-                match self.permits.try_acquire(n) {
-                    Some(permit) => break permit,
-                    None => {
-                        n = n.min(self.permits.available_permits());
-                        continue;
-                    }
-                }
-            }
+    /// Returns the number of objects created. If [`ManageObject::create`] fails, objects created by
+    /// this call before the failure remain in the pool and the error is returned.
+    pub async fn replenish_to(&self, target_idle: usize) -> Result<usize, M::Error> {
+        let Some(mut permit) = self.permits.clone().try_acquire_up_to_owned(target_idle) else {
+            return Ok(0);
         };
 
-        if permit.permits() == 0 {
-            return 0;
-        }
-
-        let gap = {
-            let idles = self.slots.lock().deque.len();
-            if idles >= permit.permits() {
-                return 0;
-            }
-
-            match permit.split(idles) {
-                None => unreachable!(
-                    "idles ({}) should be less than permits ({})",
-                    idles,
-                    permit.permits()
-                ),
-                Some(p) => {
-                    // reduced by existing idle objects and release the corresponding permits
-                    drop(p);
-                }
-            }
-
-            permit.permits()
-        };
+        let idle_count = self.slots.lock().idle_count();
+        let to_create = target_idle.saturating_sub(idle_count).min(permit.permits());
+        permit.release(permit.permits() - to_create);
 
         let mut replenished = 0;
-        for _ in 0..gap {
-            if let Ok(o) = self.manager.create().await {
-                let status = ObjectStatus::default();
-                let state = ObjectState { o, status };
-
+        for _ in 0..to_create {
+            let object = self.manager.create().await?;
+            {
                 let mut slots = self.slots.lock();
-                slots.current_size += 1;
-                slots.deque.push_back(state);
-                drop(slots);
-
-                replenished += 1;
+                slots.add_idle(ObjectState::new(object));
             }
-
-            match permit.split(1) {
-                None => unreachable!("permit must be greater than 0 at this point"),
-                Some(p) => {
-                    // always release one permit to unblock other waiters
-                    drop(p);
-                }
-            }
+            replenished += 1;
+            permit.release(1);
         }
 
-        replenished
+        Ok(replenished)
     }
 
     /// Retrieves an [`Object`] from this [`Pool`].
     ///
-    /// This method should be called with a pool wrapped in an [`Arc`]. If the pool reaches the
-    /// maximum size, this method waits until an object is returned to the pool or detached from it.
+    /// If the pool has reached its maximum size and has no idle object, this method waits until an
+    /// object is returned to or detached from the pool.
     pub async fn get(self: &Arc<Self>) -> Result<Object<M>, M::Error> {
-        let user_count_guard = UserCountGuard::new(&self.users);
-
         let permit = self.permits.clone().acquire_owned(1).await;
 
         let object = loop {
-            let existing = match self.config.queue_strategy {
-                QueueStrategy::Fifo => self.slots.lock().deque.pop_front(),
-                QueueStrategy::Lifo => self.slots.lock().deque.pop_back(),
-            };
+            let existing = self.slots.lock().pop(self.config.queue_strategy);
 
             match existing {
                 None => {
                     let object = self.manager.create().await?;
-                    let state = ObjectState {
-                        o: object,
-                        status: ObjectStatus::default(),
-                    };
-                    self.slots.lock().current_size += 1;
+                    let state = ObjectState::new(object);
+                    self.slots.lock().add_active();
                     break Object {
                         state: Some(state),
                         permit,
@@ -357,8 +255,7 @@ impl<M: ManageObject> Pool<M> {
                         .await
                         .is_ok()
                     {
-                        state.status.recycle_count += 1;
-                        state.status.recycled = Some(std::time::Instant::now());
+                        state.status.mark_recycled();
                         break unready_object.ready(permit);
                     } else {
                         // We need to manually detach here as the drop implementation
@@ -369,13 +266,13 @@ impl<M: ManageObject> Pool<M> {
             };
         };
 
-        user_count_guard.commit();
         Ok(object)
     }
 
     /// Retains only the objects that pass the given predicate.
     ///
-    /// This function blocks the entire pool. Therefore, the given function should not block.
+    /// The predicate runs while the idle-object lock is held and therefore must not block or call
+    /// back into the pool. Detachment hooks for removed objects run after the lock is released.
     ///
     /// The following example starts a background task that runs every 30 seconds and removes
     /// objects from the pool that have not been used for more than one minute. The task will
@@ -401,77 +298,58 @@ impl<M: ManageObject> Pool<M> {
         &self,
         f: impl FnMut(&mut M::Object, ObjectStatus) -> bool,
     ) -> RetainResult<M::Object> {
-        let mut slots = self.slots.lock();
-        let result = retain_spec::do_vec_deque_retain(&mut slots.deque, f);
-        slots.current_size -= result.removed.len();
+        let mut result = {
+            let mut slots = self.slots.lock();
+            slots.retain(f)
+        };
+        for object in &mut result.removed {
+            self.manager.on_detached(object);
+        }
         result
     }
 
-    /// Returns the current status of the pool.
-    ///
-    /// The status returned by the pool is not guaranteed to be consistent.
-    ///
-    /// Although this status provides [eventual consistency], the numbers can be
-    /// temporarily inaccurate under heavy load. They are intended as an overall insight.
-    ///
-    /// [eventual consistency]: (https://en.wikipedia.org/wiki/Eventual_consistency)
+    /// Returns a consistent snapshot of the objects currently tracked by the pool.
     pub fn status(&self) -> PoolStatus {
         let slots = self.slots.lock();
-        let (current_size, max_size) = (slots.current_size, slots.max_size);
-        drop(slots);
-
-        let users = self.users.load(Ordering::Relaxed);
-        let (idle_count, wait_count) = if users < current_size {
-            (current_size - users, 0)
-        } else {
-            (0, users - current_size)
-        };
 
         PoolStatus {
-            max_size,
-            current_size,
-            idle_count,
-            wait_count,
+            max_size: self.config.max_size,
+            current_size: slots.current_size(),
+            idle_count: slots.idle_count(),
         }
     }
 
-    fn push_back(&self, o: ObjectState<M::Object>) {
-        self.return_to_pool(o);
-        self.users.fetch_sub(1, Ordering::Relaxed);
+    fn return_object(&self, mut state: ObjectState<M::Object>) {
+        state.status.mark_returned();
+        self.restore_idle(state);
     }
 
-    fn return_to_pool(&self, o: ObjectState<M::Object>) {
+    fn restore_idle(&self, state: ObjectState<M::Object>) {
         let mut slots = self.slots.lock();
 
         assert!(
-            slots.current_size <= slots.max_size,
+            slots.current_size() <= self.config.max_size,
             "invariant broken: current_size <= max_size (actual: {} <= {})",
-            slots.current_size,
-            slots.max_size,
+            slots.current_size(),
+            self.config.max_size,
         );
 
-        slots.deque.push_back(o);
+        slots.return_idle(state);
     }
 
-    fn detach_object(&self, o: &mut M::Object, ready: bool) {
+    fn detach_object(&self, o: &mut M::Object) {
         let mut slots = self.slots.lock();
 
         assert!(
-            slots.current_size <= slots.max_size,
+            slots.current_size() <= self.config.max_size,
             "invariant broken: current_size <= max_size (actual: {} <= {})",
-            slots.current_size,
-            slots.max_size,
+            slots.current_size(),
+            self.config.max_size,
         );
 
-        slots.current_size -= 1;
+        slots.detach();
         drop(slots);
 
-        if ready {
-            self.users.fetch_sub(1, Ordering::Relaxed);
-        } else {
-            // if the object is not ready, users count decrement is handled in the caller side,
-            // that is, on exiting the `Pool::get` method.
-        }
         self.manager.on_detached(o);
     }
 }
@@ -506,7 +384,7 @@ impl<M: ManageObject> Drop for Object<M> {
     fn drop(&mut self) {
         if let Some(state) = self.state.take() {
             if let Some(pool) = self.pool.upgrade() {
-                pool.push_back(state);
+                pool.return_object(state);
             }
         }
     }
@@ -547,7 +425,7 @@ impl<M: ManageObject> Object<M> {
         // SAFETY: `state` is always `Some` when `Object` is owned.
         let mut o = self.state.take().unwrap().o;
         if let Some(pool) = self.pool.upgrade() {
-            pool.detach_object(&mut o, true);
+            pool.detach_object(&mut o);
         }
         o
     }
@@ -577,10 +455,10 @@ impl<M: ManageObject> Drop for UnreadyObject<M> {
             if let Some(pool) = self.pool.upgrade() {
                 match self.recycle_cancelled_strategy {
                     RecycleCancelledStrategy::Detach => {
-                        pool.detach_object(&mut state.o, false);
+                        pool.detach_object(&mut state.o);
                     }
                     RecycleCancelledStrategy::ReturnToPool => {
-                        pool.return_to_pool(state);
+                        pool.restore_idle(state);
                     }
                 }
             }
@@ -603,7 +481,7 @@ impl<M: ManageObject> UnreadyObject<M> {
     fn detach(&mut self) {
         if let Some(mut state) = self.state.take() {
             if let Some(pool) = self.pool.upgrade() {
-                pool.detach_object(&mut state.o, false);
+                pool.detach_object(&mut state.o);
             }
         }
     }
@@ -611,27 +489,5 @@ impl<M: ManageObject> UnreadyObject<M> {
     fn state(&mut self) -> &mut ObjectState<M::Object> {
         // SAFETY: `state` is always `Some` when `UnreadyObject` is owned.
         self.state.as_mut().unwrap()
-    }
-}
-
-#[derive(Debug)]
-struct ObjectState<T> {
-    o: T,
-    status: ObjectStatus,
-}
-
-impl<T> retain_spec::SealedState for ObjectState<T> {
-    type Object = T;
-
-    fn status(&self) -> ObjectStatus {
-        self.status
-    }
-
-    fn mut_object(&mut self) -> &mut Self::Object {
-        &mut self.o
-    }
-
-    fn take_object(self) -> Self::Object {
-        self.o
     }
 }

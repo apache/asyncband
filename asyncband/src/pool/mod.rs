@@ -17,17 +17,21 @@
 
 //! Runtime-agnostic object pools for async Rust.
 //!
-//! This module provides two implementations: [bounded pool](bounded::Pool) and
-//! [unbounded pool](unbounded::Pool).
+//! This module provides a manager-created [bounded pool](bounded::Pool) and an
+//! [unbounded pool](unbounded::Pool) that can also accept objects supplied by callers.
+//!
+//! Both implementations provide resource reuse without taking ownership of runtime policy. They do
+//! not start maintenance tasks or install timers. Callers decide how to schedule maintenance and
+//! can wrap operations such as [`bounded::Pool::get`] in the deadline mechanism of their runtime.
 //!
 //! # Bounded pool
 //!
-//! A bounded pool creates and recycles objects with full management. You _cannot_ put an object to
-//! the pool manually.
+//! A bounded pool uses a [`ManageObject`] implementation to create, validate, and detach objects.
+//! Objects cannot be inserted manually.
 //!
 //! The pool is bounded by the `max_size` config option of [`PoolConfig`](bounded::PoolConfig). If
-//! the pool reaches the maximum size, it will block all the [`Pool::get`](bounded::Pool::get) calls
-//! until an object is returned to the pool or an object is detached from the pool.
+//! the pool reaches the maximum size, additional [`Pool::get`](bounded::Pool::get) calls wait until
+//! an object is returned to or detached from the pool.
 //!
 //! Bounded pools are useful for pooling database connections.
 //!
@@ -76,8 +80,8 @@
 //!
 //! # Unbounded pool
 //!
-//! An unbounded pool, on the other hand, allows you to put objects to the pool manually. You can
-//! use it like Go's [`sync.Pool`](https://pkg.go.dev/sync#Pool).
+//! An unbounded pool accepts manually supplied objects and can be used like Go's
+//! [`sync.Pool`](https://pkg.go.dev/sync#Pool).
 //!
 //! To configure a factory for creating objects when the pool is empty, like `sync.Pool`'s `New`,
 //! you can create the unbounded pool via [`Pool::new`](unbounded::Pool::new) with an
@@ -91,38 +95,23 @@
 //! use asyncband::pool::unbounded::Pool;
 //! use asyncband::pool::unbounded::PoolConfig;
 //!
-//! # #[tokio::main]
-//! # async fn main() {
 //! let pool = Pool::<Vec<u8>>::never_manage(PoolConfig::default());
 //!
-//! let result = pool.get().await;
-//! assert_eq!(result.unwrap_err().to_string(), "unbounded pool is empty");
+//! assert!(pool.try_get().is_none());
 //!
 //! pool.extend_one(Vec::with_capacity(1024));
-//! let o = pool.get().await.unwrap();
+//! let o = pool.try_get().unwrap();
 //! assert_eq!(o.capacity(), 1024);
-//! # }
 //! ```
 //!
 //! # FAQ
 //!
-//! ## Why is timeout configuration outside the pool?
+//! ## Why does the caller control timeouts?
 //!
-//! Many async object pool implementations allow multiple timeout settings, such as wait, create,
-//! and recycle timeouts.
-//!
-//! This introduces two major problems:
-//!
-//! First, implementing timeouts inside the pool requires a timer implementation such as
-//! `tokio::time`. This would prevent the pool from being runtime-agnostic. The pool could depend on
-//! a timer trait, but the Rust ecosystem does not yet have a standard one.
-//!
-//! Second, timeout options add configuration complexity without necessarily expressing the caller's
-//! actual deadline. For example, end users often care about the total time used to obtain an
-//! object. This is not solely a wait, create, or recycle timeout, but a conditional composition of
-//! all internal operations.
-//!
-//! Thus, we propose a caller-side timeout solution:
+//! A timer inside the pool would couple it to a runtime or require one adapter per timer ecosystem.
+//! Separate wait, create, and recycle timeouts also do not necessarily express the caller's actual
+//! deadline for the complete checkout operation. Asyncband therefore returns an ordinary future so
+//! the caller can apply one end-to-end deadline with its chosen timer:
 //!
 //! ```rust,ignore
 //! use std::sync::Arc;
@@ -140,7 +129,7 @@
 //!     pub async fn acquire(&self) -> Result<Object<ManageConnection>, Error> {
 //!         const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 //!
-//!         // note that users can choose any timer implementation here
+//!         // Callers can use the timer implementation of their runtime.
 //!         let result = tokio::time::timeout(ACQUIRE_TIMEOUT, self.pool.get()).await;
 //!
 //!         // ... processing the result
@@ -148,17 +137,13 @@
 //! }
 //! ```
 //!
-//! ## Why are before/after hooks outside the pool?
+//! ## Why are general before/after hooks outside the pool?
 //!
-//! Similar to the second point above, before/after hooks are hard to configure generally. Small
-//! operations are easy to write in place, while passing larger blocks as closures can introduce
-//! lifetime and ownership constraints. Error handling also depends on the surrounding application.
+//! Before/after behavior is application policy. Small operations are clearer at the call site,
+//! while larger behavior can live in the manager or an application wrapper without forcing a
+//! general closure and error model into the pool.
 //!
-//! The module provides an ordinary object-pool interface, so callers can add before/after logic in
-//! the manager implementation or a wrapper.
-//!
-//! For example, all the "post-create", "pre-recycle", and "post-recycle" hooks can be implemented
-//! as:
+//! For example, create and recycle behavior can be expressed directly by [`ManageObject`]:
 //!
 //! ```
 //! use asyncband::pool::ManageObject;
@@ -177,12 +162,10 @@
 //!
 //!     async fn is_recyclable(
 //!         &self,
-//!         _o: &mut Self::Object,
-//!         _status: &ObjectStatus,
+//!         object: &mut Self::Object,
+//!         status: &ObjectStatus,
 //!     ) -> Result<(), Self::Error> {
-//!         // any pre-recycle hooks
-//!         // determine whether the object is recyclable
-//!         // any post-recycle hooks
+//!         // Validate or refresh `object`, using `status` when useful.
 //!         Ok(())
 //!     }
 //! }
@@ -192,11 +175,10 @@ pub use common::ManageObject;
 pub use common::ObjectStatus;
 pub use common::QueueStrategy;
 pub use common::RecycleCancelledStrategy;
-pub use retain_spec::RetainResult;
+pub use common::RetainResult;
 
 mod common;
-mod mutex;
-mod retain_spec;
+mod state;
 
 pub mod bounded;
 pub mod unbounded;
