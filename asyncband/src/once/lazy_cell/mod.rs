@@ -250,7 +250,7 @@ impl<T, F> LazyCell<T, F> {
 
         let mut start = Some(start);
 
-        // Initialize the value if no other task has started an attempt.
+        // Start an attempt when none is active.
         if state.attempt.is_none() {
             let initializer = state
                 .initializer
@@ -276,7 +276,7 @@ impl<T, F> LazyCell<T, F> {
             "LazyCell force method does not match the active attempt"
         );
 
-        // Avoid unrelated panics from the initializer poisoning the cell for all future callers.
+        // Scope poisoning to initializer polls so cancellation does not poison.
         let output = std::future::poll_fn(|cx| {
             let _poison = PoisonOnPanic(&self.poisoned);
             attempt.as_mut().poll(cx)
@@ -286,6 +286,7 @@ impl<T, F> LazyCell<T, F> {
         let AttemptOutput::Value(value) = output else {
             unreachable!("infallible LazyCell attempt returned an error")
         };
+        // SAFETY: The state mutex serializes initialization.
         unsafe { self.value.set_value_unchecked(value) }
     }
 
@@ -310,7 +311,7 @@ impl<T, F> LazyCell<T, F> {
         let kind = AttemptKind::Fallible(TypeId::of::<E>());
         let mut start = Some(start);
 
-        // Initialize the value if no other task has started an attempt.
+        // Start an attempt when none is active.
         if state.attempt.is_none() {
             let initializer = state
                 .initializer
@@ -341,7 +342,7 @@ impl<T, F> LazyCell<T, F> {
             "LazyCell force method does not match the active attempt"
         );
 
-        // Avoid unrelated panics from the initializer poisoning the cell for all future callers.
+        // Scope poisoning to initializer polls so cancellation does not poison.
         let output = std::future::poll_fn(|cx| {
             let _poison = PoisonOnPanic(&self.poisoned);
             attempt.as_mut().poll(cx)
@@ -351,6 +352,7 @@ impl<T, F> LazyCell<T, F> {
         match output {
             AttemptOutput::Value(value) => {
                 state.initializer = None;
+                // SAFETY: The state mutex serializes initialization.
                 Ok(unsafe { self.value.set_value_unchecked(value) })
             }
             AttemptOutput::Error(error) => {
