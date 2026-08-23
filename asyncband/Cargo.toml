@@ -20,9 +20,15 @@ name = "asyncband"
 version = "0.6.7"
 
 categories = ["asynchronous", "concurrency"]
-description = "A runtime-agnostic library providing essential synchronization primitives for asynchronous Rust programming."
+description = "Composable, runtime-agnostic concurrency building blocks for async Rust."
 documentation = "https://docs.rs/asyncband"
-keywords = ["async", "concurrency", "synchronization", "waitgroup", "mutex"]
+keywords = [
+  "async",
+  "concurrency",
+  "synchronization",
+  "coordination",
+  "runtime-agnostic",
+]
 
 edition.workspace = true
 homepage.workspace = true
@@ -40,7 +46,6 @@ default = []
 
 barrier = []
 blocking = []
-broadcast = []
 condvar = ["mutex"]
 latch = []
 lazy-cell = ["mutex", "once-cell"]
@@ -50,6 +55,7 @@ once = ["semaphore"]
 once-cell = ["semaphore"]
 once-map = ["dep:hashbrown", "once-cell"]
 oneshot = []
+pool = ["semaphore"]
 rwlock = []
 semaphore = []
 shutdown = ["latch", "waitgroup"]

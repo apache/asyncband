@@ -26,18 +26,44 @@
 
 ## Overview
 
-Asyncband is a runtime-agnostic library providing essential synchronization primitives for asynchronous Rust programming. The library offers a collection of well-tested, efficient synchronization tools that work with any async runtime.
+Asyncband is a focused collection of composable, runtime-agnostic concurrency building blocks for async Rust. It provides synchronization, initialization, task coordination, channels, resource reuse, and workload control without choosing an executor for the application.
 
-## Available primitives
+Asyncband's async APIs are built on standard futures and wakers. The library does not spawn tasks, own worker threads, install timers, or require a reactor or I/O driver. Applications can poll its futures with Tokio, async-std, smol, a custom executor, or any other standards-based runtime, and compose runtime services such as deadlines around them.
 
-The crate enables no primitives by default. Categories describe each primitive's primary purpose and do not add another module level, so public paths remain concise, such as `asyncband::mutex` and `asyncband::once::OnceCell`.
+### Project scope
 
-| Category                | Primitive                                                                            | Feature        | Purpose                                                                 |
+The project is not limited to small or stateless synchronization primitives. Stateful utilities such as a singleflight group or an object pool fit when they provide a generally reusable coordination mechanism and remain independent of executor policy.
+
+The boundary is mechanism versus policy. Task placement, timers, deadlines, retries, periodic maintenance, and application lifecycle orchestration stay with the caller and its runtime. Potential future-concurrency or scheduling APIs are evaluated against the same boundary: they must remain executor-independent and compose with caller-owned execution and timing.
+
+## Getting started
+
+The crate enables no APIs by default. Enable only the features your application uses:
+
+```shell
+cargo add asyncband --features mutex,oneshot
+```
+
+```rust
+use asyncband::mutex::Mutex;
+
+async fn increment() {
+    let counter = Mutex::new(0);
+    *counter.lock().await += 1;
+    assert_eq!(*counter.lock().await, 1);
+}
+```
+
+Public paths stay direct—such as `asyncband::mutex`, `asyncband::pool`, and `asyncband::once::OnceCell`—while Cargo features keep unused implementations out of the build.
+
+## API map
+
+| Area                    | API                                                                                  | Feature        | Use                                                                     |
 | ----------------------- | ------------------------------------------------------------------------------------ | -------------- | ----------------------------------------------------------------------- |
 | Shared state            | [`Mutex`](https://docs.rs/asyncband/*/asyncband/mutex/struct.Mutex.html)             | `mutex`        | Protect shared data with asynchronous mutual exclusion.                 |
 |                         | [`RwLock`](https://docs.rs/asyncband/*/asyncband/rwlock/struct.RwLock.html)          | `rwlock`       | Allow multiple readers or one writer.                                   |
 |                         | [`Condvar`](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html)       | `condvar`      | Wait for notifications while releasing a mutex.                         |
-| One-time initialization | [`Once`](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html)                | `once`         | Run asynchronous initialization exactly once.                           |
+| Initialization          | [`Once`](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html)                | `once`         | Run asynchronous initialization exactly once.                           |
 |                         | [`OnceCell`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html)        | `once-cell`    | Initialize and store one asynchronous value.                            |
 |                         | [`LazyCell`](https://docs.rs/asyncband/*/asyncband/once/struct.LazyCell.html)        | `lazy-cell`    | Lazily initialize a value with a stored asynchronous function.          |
 |                         | [`OnceMap`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceMap.html)          | `once-map`     | Initialize and store one value per key.                                 |
@@ -48,23 +74,15 @@ The crate enables no primitives by default. Categories describe each primitive's
 | Channels                | [`oneshot::channel`](https://docs.rs/asyncband/*/asyncband/oneshot/fn.channel.html)  | `oneshot`      | Send one value between two tasks.                                       |
 |                         | [`mpsc::bounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.bounded.html)        | `mpsc`         | Send values from multiple producers through a bounded channel.          |
 |                         | [`mpsc::unbounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.unbounded.html)    | `mpsc`         | Send values from multiple producers through an unbounded channel.       |
-|                         | [`broadcast::overflow`](https://docs.rs/asyncband/*/asyncband/broadcast/overflow/)   | `broadcast`    | Broadcast values and report when slow receivers miss overwritten items. |
-| Workload control        | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore`    | Control concurrent access with permits.                                 |
+| Resource reuse          | [`pool::bounded`](https://docs.rs/asyncband/*/asyncband/pool/bounded/)               | `pool`         | Reuse managed objects up to a configured capacity.                      |
+|                         | [`pool::unbounded`](https://docs.rs/asyncband/*/asyncband/pool/unbounded/)           | `pool`         | Reuse manually supplied or manager-created objects.                     |
+| Workload coordination   | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore`    | Control concurrent access with permits.                                 |
 |                         | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)      | `singleflight` | Coalesce concurrent calls for the same key.                             |
-
-## Installation
-
-Add the dependency to your `Cargo.toml` via:
-
-```shell
-cargo add asyncband --features mutex,oneshot
-```
-
-List every primitive your application uses in `features`; a bare `cargo add asyncband` intentionally exposes no primitive modules.
+| Synchronous interop     | [`FutureExt`](https://docs.rs/asyncband/*/asyncband/blocking/trait.FutureExt.html)   | `blocking`     | Drive one runtime-agnostic future from a blocking thread.               |
 
 ## Synchronous interoperability
 
-The optional `blocking` module bridges synchronous Rust code to runtime-agnostic futures. It is an interoperability utility rather than another async primitive, so it is documented separately from the table above.
+The optional `blocking` module is a boundary adapter for synchronous callers. It parks the calling thread while driving one future; it is not a general-purpose executor.
 
 ```shell
 cargo add asyncband --features blocking
@@ -82,25 +100,19 @@ let value = async { 42 }.wait_timeout(Duration::ZERO);
 assert_eq!(value, Some(42));
 ```
 
-`asyncband::blocking::FutureExt::block_on(future)` is the equivalent UFCS spelling when function syntax is preferred; it calls the same trait method rather than a separate free function.
-
 ### Async first, blocking by adaptation
 
-Async and synchronous synchronization primitives have different optimization constraints. Once an async primitive is runtime-agnostic, synchronous code can usually drive its future with a `block_on` adapter. Asyncband's `blocking` feature provides this adapter with a lightweight, thread-parking single-future executor: pending work parks the calling thread and its waker resumes it, providing practical blocking interoperability without busy-waiting or a full async runtime.
+Async and synchronous synchronization primitives have different optimization constraints. Once an async operation is exposed as a runtime-agnostic future, synchronous code can usually drive that future through a `block_on` adapter. Asyncband therefore designs its primitives for async use and provides blocking interoperability at the boundary instead of duplicating synchronous methods across every type.
 
-A sync-first implementation can still exploit OS- or platform-specific facilities for better performance. Asyncband therefore optimizes its primitives for async code and keeps blocking as a boundary adapter instead of duplicating sync and async methods across every type. This keeps the public API focused while leaving sync-oriented optimizations to dedicated libraries.
+A sync-first implementation can exploit OS- or platform-specific facilities that an async implementation cannot assume. Libraries focused on synchronous code can therefore make different and sometimes better tradeoffs. Asyncband leaves those optimizations to dedicated libraries rather than treating blocking adaptation as a second family of primitives.
 
 ### Execution constraints
 
-This is a minimal single-future executor, not a general-purpose async runtime. A timed-out `wait_timeout` drops the future. The implementation uses a private parker, so it does not consume wake-ups belonging to other parking operations on the same thread; recursive calls use a separate parker. Futures depending on a runtime-specific timer or I/O driver may not make progress, and blocking an executor thread can cause starvation or deadlocks. See [`asyncband::blocking`](https://docs.rs/asyncband/*/asyncband/blocking/index.html) for details.
+The `blocking` module is a lightweight, thread-parking single-future executor, not a general-purpose async runtime. `wait_timeout` drops the future on timeout. Futures that depend on a runtime-specific timer or I/O driver still need that runtime's driver to make progress, and blocking an executor thread can cause starvation or deadlocks. See the [`blocking` module documentation](https://docs.rs/asyncband/*/asyncband/blocking/) for the full contract.
 
-## Runtime Agnostic
+## Thread safety
 
-All synchronization primitives in this library are runtime-agnostic, meaning they can be used with any async runtime like Tokio, async-std, or others. This makes the library highly versatile and portable.
-
-## Thread Safety
-
-Asyncband primitives and guards implement `Send` and `Sync` only when the protected or transferred value satisfies the necessary bounds. In particular, owned read guards that may move destruction to another thread require the protected value to be `Send` as well as `Sync`. See each type's documentation for its exact bounds.
+Asyncband types implement `Send` and `Sync` only when the protected, transferred, or managed value satisfies the necessary bounds. See each API's documentation for its exact contract.
 
 ## Minimum Supported Rust Version (MSRV)
 
@@ -116,4 +128,4 @@ Apache Asyncband, Asyncband, and Apache are either registered trademarks or trad
 
 ## History
 
-See [HISTORY.md](HISTORY.md) for the external implementations that informed Asyncband's primitives.
+See [HISTORY.md](HISTORY.md) for the external implementations that informed Asyncband's APIs.

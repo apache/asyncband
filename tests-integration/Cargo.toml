@@ -29,7 +29,6 @@ tokio = { workspace = true, features = ["full"] }
 asyncband = { workspace = true, features = [
   "barrier",
   "blocking",
-  "broadcast",
   "condvar",
   "latch",
   "lazy-cell",
@@ -39,6 +38,7 @@ asyncband = { workspace = true, features = [
   "once-cell",
   "once-map",
   "oneshot",
+  "pool",
   "rwlock",
   "semaphore",
   "shutdown",

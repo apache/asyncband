@@ -15,38 +15,22 @@
 # specific language governing permissions and limitations
 # under the License.
 
-[package]
-name = "benchmarks"
-publish = false
-
-edition.workspace = true
-rust-version.workspace = true
-
-[dev-dependencies]
-asyncband = { workspace = true, features = [
-  "barrier",
-  "blocking",
-  "condvar",
-  "latch",
-  "mpsc",
-  "mutex",
-  "once",
-  "once-cell",
-  "once-map",
-  "oneshot",
-  "pool",
-  "rwlock",
-  "semaphore",
-  "shutdown",
-  "singleflight",
-  "waitgroup",
-] }
-divan = { workspace = true }
-
-[[bench]]
-harness = false
-name = "benchmarks"
-path = "main.rs"
-
-[lints]
-workspace = true
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    # Give ASF Infrastructure time to approve new action releases first.
+    cooldown:
+      default-days: 4
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+      github-actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"

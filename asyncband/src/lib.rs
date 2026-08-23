@@ -18,11 +18,11 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 
-//! Runtime-agnostic synchronization primitives for asynchronous Rust.
+//! Composable, runtime-agnostic concurrency building blocks for async Rust.
 //!
-//! `asyncband` provides locks, initialization tools, task coordination, channels, and workload
-//! controls without tying an application to a particular async runtime. The primitives use standard
-//! futures and wakers, so they can run on Tokio, async-std, smol, or a custom executor.
+//! `asyncband` provides synchronization, initialization, task coordination, channels, resource
+//! reuse, and workload control without choosing an executor for the application. Its async APIs use
+//! standard futures and wakers, so they can run on Tokio, async-std, smol, or a custom executor.
 //!
 //! # Getting started
 //!
@@ -33,7 +33,7 @@
 //! asyncband = { version = "0.7", features = ["mutex", "oneshot"] }
 //! ```
 //!
-//! Then use the selected primitives directly:
+//! Then use the selected APIs directly:
 //!
 //! ```
 //! # #[tokio::main]
@@ -56,25 +56,38 @@
 //! | Protect shared state       | [`mutex::Mutex`], [`rwlock::RwLock`], [`condvar::Condvar`]                            | `mutex`, `rwlock`, `condvar`                |
 //! | Initialize values once     | [`once::Once`], [`once::OnceCell`], [`once::LazyCell`], [`once::OnceMap`]             | `once`, `once-cell`, `lazy-cell`, `once-map` |
 //! | Coordinate tasks           | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`]        | `barrier`, `latch`, `waitgroup`, `shutdown` |
-//! | Send values                | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`], [`broadcast::overflow`] | `oneshot`, `mpsc`, `broadcast`              |
-//! | Control workloads          | [`semaphore::Semaphore`], [`singleflight::Group`]                                     | `semaphore`, `singleflight`                 |
+//! | Send values                | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`]                          | `oneshot`, `mpsc`                           |
+//! | Reuse objects              | [`pool::bounded`], [`pool::unbounded`]                                                | `pool`                                      |
+//! | Coordinate workloads       | [`semaphore::Semaphore`], [`singleflight::Group`]                                     | `semaphore`, `singleflight`                 |
 //! | Wait from synchronous code | [`blocking::FutureExt`]                                                               | `blocking`                                  |
 //!
-//! # Runtime and blocking model
+//! # Scope and runtime model
 //!
-//! The async primitives do not start threads, spawn tasks, or require a runtime-specific reactor.
-//! Await them inside any executor that polls standard Rust futures.
+//! The project is not limited to small or stateless primitives. Stateful tools such as
+//! [`singleflight::Group`] and the [`pool`] module fit when they provide reusable coordination and
+//! remain independent of executor policy.
 //!
-//! Async APIs are the primary interface. The optional [`blocking`] module is a boundary adapter for
-//! synchronous callers: its single-future executor parks the calling thread and resumes it through
-//! the future's waker. It is not a general-purpose async runtime, and futures that depend on a
+//! The async APIs do not start threads, spawn tasks, install timers, or require a runtime-specific
+//! reactor. Task placement, deadlines, retries, periodic maintenance, and lifecycle orchestration
+//! remain with the caller. Await Asyncband futures inside any executor that polls standard Rust
+//! futures, and compose those runtime services around them.
+//!
+//! # Async first, blocking by adaptation
+//!
+//! Async and synchronous primitives have different optimization constraints. Asyncband designs its
+//! primitives for async use and provides the optional [`blocking`] module as a boundary adapter
+//! instead of duplicating synchronous methods across every type. Sync-first implementations can
+//! exploit OS- or platform-specific facilities and remain the domain of dedicated libraries.
+//!
+//! The adapter's single-future executor parks the calling thread and resumes it through the
+//! future's waker. It is not a general-purpose async runtime, and futures that depend on a
 //! runtime-specific timer or I/O driver may not make progress. See the module documentation for the
 //! full execution constraints.
 //!
 //! # Thread safety
 //!
-//! Primitives and guards implement `Send` and `Sync` only when their protected or transferred
-//! values satisfy the required bounds. Consult each type's documentation for its exact contract.
+//! Asyncband types implement `Send` and `Sync` only when their protected, transferred, or managed
+//! values satisfy the required bounds. Consult each API's documentation for its exact contract.
 //!
 //! # Disclaimer
 //!
@@ -93,8 +106,6 @@ mod internal;
 pub mod barrier;
 #[cfg(feature = "blocking")]
 pub mod blocking;
-#[cfg(feature = "broadcast")]
-pub mod broadcast;
 #[cfg(feature = "condvar")]
 pub mod condvar;
 #[cfg(feature = "latch")]
@@ -112,6 +123,8 @@ pub mod mutex;
 pub mod once;
 #[cfg(feature = "oneshot")]
 pub mod oneshot;
+#[cfg(feature = "pool")]
+pub mod pool;
 #[cfg(feature = "rwlock")]
 pub mod rwlock;
 #[cfg(feature = "semaphore")]

@@ -20,7 +20,6 @@ pub(crate) mod atomic_option_box;
 
 #[cfg(any(
     feature = "barrier",
-    feature = "broadcast",
     feature = "latch",
     feature = "mpsc",
     feature = "mutex",
@@ -45,7 +44,6 @@ pub(crate) mod once_table;
 
 #[cfg(any(
     feature = "barrier",
-    feature = "broadcast",
     feature = "latch",
     feature = "mpsc",
     feature = "mutex",
@@ -54,9 +52,6 @@ pub(crate) mod once_table;
     feature = "waitgroup",
 ))]
 pub(crate) mod mutex;
-
-#[cfg(feature = "broadcast")]
-pub(crate) mod rwlock;
 
 #[cfg(any(
     feature = "mpsc",
@@ -80,12 +75,11 @@ pub(crate) mod waitlist;
 
 #[cfg(any(
     feature = "barrier",
-    feature = "broadcast",
     feature = "latch",
     feature = "once",
     feature = "waitgroup",
 ))]
-// `barrier` constructs a wait set with `with_capacity`, while broadcast and countdown-based
-// primitives use `new`. One constructor is therefore unused in every single-primitive build.
+// `barrier` constructs a wait set with `with_capacity`, while countdown-based primitives use
+// `new`. One constructor is therefore unused in every single-primitive build.
 #[allow(dead_code)]
 pub(crate) mod waitset;

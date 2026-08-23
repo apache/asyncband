@@ -310,6 +310,15 @@ impl Semaphore {
         }
     }
 
+    #[cfg(feature = "pool")]
+    pub(crate) fn try_acquire_up_to_owned(
+        self: Arc<Self>,
+        up_to: usize,
+    ) -> Option<OwnedSemaphorePermit> {
+        let permits = self.s.drain_permits(up_to);
+        (permits != 0).then_some(OwnedSemaphorePermit { sem: self, permits })
+    }
+
     /// Acquires `n` permits from the semaphore.
     ///
     /// The semaphore must be wrapped in an [`Arc`] to call this method.
@@ -509,6 +518,16 @@ pub struct OwnedSemaphorePermit {
 }
 
 impl OwnedSemaphorePermit {
+    #[cfg(feature = "pool")]
+    pub(crate) fn release(&mut self, permits: usize) {
+        assert!(
+            permits <= self.permits,
+            "cannot release more permits than this permit holds"
+        );
+        self.permits -= permits;
+        self.sem.release(permits);
+    }
+
     /// Forgets the permit **without** releasing it back to the semaphore.
     ///
     /// This can be used to permanently reduce the number of permits available

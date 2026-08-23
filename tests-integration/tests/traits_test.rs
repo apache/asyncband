@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::Cell;
+
 use asyncband::barrier::Barrier;
-use asyncband::broadcast;
 use asyncband::condvar::Condvar;
 use asyncband::latch::Latch;
 use asyncband::mpsc;
@@ -27,6 +28,9 @@ use asyncband::once::Once;
 use asyncband::once::OnceCell;
 use asyncband::once::OnceMap;
 use asyncband::oneshot;
+use asyncband::pool;
+use asyncband::pool::ManageObject;
+use asyncband::pool::ObjectStatus;
 use asyncband::rwlock::OwnedRwLockReadGuard;
 use asyncband::rwlock::RwLock;
 use asyncband::rwlock::RwLockReadGuard;
@@ -38,6 +42,25 @@ use asyncband::shutdown::ShutdownWatch;
 use asyncband::singleflight;
 use asyncband::waitgroup::Wait;
 use asyncband::waitgroup::WaitGroup;
+
+struct PoolManager;
+
+impl ManageObject for PoolManager {
+    type Object = i64;
+    type Error = std::convert::Infallible;
+
+    async fn create(&self) -> Result<Self::Object, Self::Error> {
+        Ok(0)
+    }
+
+    async fn is_recyclable(
+        &self,
+        _object: &mut Self::Object,
+        _status: &ObjectStatus,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
 
 #[test]
 fn public_types_are_send_and_sync() {
@@ -62,12 +85,13 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<OwnedRwLockReadGuard<i64>>();
     assert_send_and_sync::<RwLockReadGuard<'_, i64>>();
     assert_send_and_sync::<RwLockWriteGuard<'_, i64>>();
-    assert_send_and_sync::<broadcast::overflow::Sender<i64>>();
-    assert_send_and_sync::<broadcast::overflow::Receiver<i64>>();
-    assert_send_and_sync::<broadcast::overflow::RecvError>();
-    assert_send_and_sync::<broadcast::overflow::TryRecvError>();
     assert_send_and_sync::<oneshot::SendError<i64>>();
     assert_send_and_sync::<oneshot::Sender<i64>>();
+    assert_send_and_sync::<pool::bounded::Pool<PoolManager>>();
+    assert_send_and_sync::<pool::bounded::Object<PoolManager>>();
+    assert_send_and_sync::<pool::unbounded::Pool<i64>>();
+    assert_send_and_sync::<pool::unbounded::Object<i64>>();
+    assert_send_and_sync::<pool::unbounded::Pool<Cell<u8>>>();
     assert_send_and_sync::<mpsc::SendError<i64>>();
     assert_send_and_sync::<mpsc::UnboundedSender<i64>>();
     assert_send_and_sync::<mpsc::UnboundedReceiver<i64>>();
@@ -82,6 +106,7 @@ fn movable_public_types_are_send() {
     assert_send::<RwLockReadGuard<'_, std::sync::MutexGuard<'static, ()>>>();
     assert_send::<oneshot::Receiver<i64>>();
     assert_send::<oneshot::Recv<i64>>();
+    assert_send::<pool::unbounded::Object<Cell<u8>>>();
 }
 
 #[test]
@@ -107,17 +132,26 @@ fn public_types_are_unpin() {
     assert_unpin::<RwLock<i64>>();
     assert_unpin::<RwLockReadGuard<'_, i64>>();
     assert_unpin::<RwLockWriteGuard<'_, i64>>();
-    assert_unpin::<broadcast::overflow::Sender<i64>>();
-    assert_unpin::<broadcast::overflow::Receiver<i64>>();
-    assert_unpin::<broadcast::overflow::RecvError>();
-    assert_unpin::<broadcast::overflow::TryRecvError>();
     assert_unpin::<oneshot::Sender<i64>>();
     assert_unpin::<oneshot::SendError<i64>>();
     assert_unpin::<oneshot::Receiver<i64>>();
     assert_unpin::<oneshot::Recv<i64>>();
+    assert_unpin::<pool::bounded::Pool<PoolManager>>();
+    assert_unpin::<pool::bounded::Object<PoolManager>>();
+    assert_unpin::<pool::unbounded::Pool<i64>>();
+    assert_unpin::<pool::unbounded::Object<i64>>();
     assert_unpin::<mpsc::SendError<i64>>();
     assert_unpin::<mpsc::UnboundedSender<i64>>();
     assert_unpin::<mpsc::UnboundedReceiver<i64>>();
     assert_unpin::<mpsc::BoundedSender<i64>>();
     assert_unpin::<mpsc::BoundedReceiver<i64>>();
+}
+
+#[test]
+fn unbounded_manual_manager_traits_do_not_depend_on_the_object() {
+    fn assert_copy<T: Copy>() {}
+    fn assert_debug<T: std::fmt::Debug>() {}
+
+    assert_copy::<pool::unbounded::NeverManageObject<String>>();
+    assert_debug::<pool::unbounded::NeverManageObject<String>>();
 }

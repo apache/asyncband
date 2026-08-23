@@ -47,7 +47,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: nightly
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install nightly toolchain
         run: >-
           rustup toolchain install nightly
@@ -56,8 +56,8 @@ jobs:
           --component clippy
           --allow-downgrade
           --no-self-update
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@6cd13508893c0e7eab5f273c2575d3859bd7229a # v2.86.6
         with:
           tool: typos-cli,taplo-cli,hawkeye
       - run: cargo x lint
@@ -76,13 +76,13 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.rust-version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust ${{ matrix.rust-version }}
         run: >-
           rustup toolchain install ${{ matrix.rust-version }}
           --profile minimal
           --no-self-update
-      - uses: Swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Run unit tests
         run: cargo x test --no-capture
         shell: bash
@@ -94,13 +94,13 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install stable toolchain
         run: >-
           rustup toolchain install stable
           --profile minimal
           --no-self-update
-      - uses: Swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo x bench
 
   required:
