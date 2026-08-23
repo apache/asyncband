@@ -16,7 +16,7 @@
 // under the License.
 
 #[cfg(feature = "mpsc")]
-pub(crate) mod atomic_option_box;
+pub(crate) mod atomic_waker;
 
 #[cfg(any(
     feature = "barrier",
