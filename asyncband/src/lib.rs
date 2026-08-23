@@ -54,7 +54,7 @@
 //! | Use case                   | APIs                                                                                  | Cargo features                              |
 //! | -------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------- |
 //! | Protect shared state       | [`mutex::Mutex`], [`rwlock::RwLock`], [`condvar::Condvar`]                            | `mutex`, `rwlock`, `condvar`                |
-//! | Initialize values once     | [`once::Once`], [`once::OnceCell`], [`once::LazyLock`], [`once::OnceMap`]             | `once`, `once-cell`, `lazy-lock`, `once-map` |
+//! | Initialize values once     | [`once::Once`], [`once::OnceCell`], [`once::LazyCell`], [`once::OnceMap`]             | `once`, `once-cell`, `lazy-cell`, `once-map` |
 //! | Coordinate tasks           | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`]        | `barrier`, `latch`, `waitgroup`, `shutdown` |
 //! | Send values                | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`], [`broadcast::overflow`] | `oneshot`, `mpsc`, `broadcast`              |
 //! | Control workloads          | [`semaphore::Semaphore`], [`singleflight::Group`]                                     | `semaphore`, `singleflight`                 |
@@ -104,7 +104,7 @@ pub mod mpsc;
 #[cfg(feature = "mutex")]
 pub mod mutex;
 #[cfg(any(
-    feature = "lazy-lock",
+    feature = "lazy-cell",
     feature = "once",
     feature = "once-cell",
     feature = "once-map"
