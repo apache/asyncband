@@ -84,6 +84,40 @@ async fn cancellation_resumes_initialization() {
 }
 
 #[tokio::test]
+/// Ensure unrelated task unwinding does not poison a pending attempt.
+async fn unrelated_unwind_does_not_poison_cell() {
+    let started = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    let lazy = Arc::new(LazyCell::<u32, _>::new({
+        let started = started.clone();
+        let resume = resume.clone();
+        async move || {
+            started.notify_one();
+            resume.notified().await;
+            42
+        }
+    }));
+
+    let task = {
+        let lazy = lazy.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = LazyCell::force(&lazy) => {}
+                _ = async {
+                    started.notified().await;
+                    panic!("unrelated panic");
+                } => {}
+            }
+        })
+    };
+    assert!(task.await.unwrap_err().is_panic());
+
+    resume.notify_one();
+    assert_eq!(LazyCell::force(&lazy).await, &42);
+}
+
+#[tokio::test]
 /// Ensure that dropping the cell drops a suspended initialization future.
 async fn dropping_cell_drops_suspended_attempt() {
     let held = Arc::new(());
@@ -214,6 +248,63 @@ async fn cancellation_preserves_active_arguments() {
         Ok(&41)
     );
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+struct NotifyOnDrop(Option<Arc<Notify>>);
+
+impl Drop for NotifyOnDrop {
+    fn drop(&mut self) {
+        if let Some(notify) = self.0.take() {
+            notify.notify_one();
+        }
+    }
+}
+
+#[tokio::test]
+/// Ensure unused caller arguments are dropped before an attempt resumes.
+async fn unused_arguments_are_dropped_before_resume() {
+    let started = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    let dropped = Arc::new(Notify::new());
+    let lazy = Arc::new(LazyCell::<u32, _>::new({
+        let started = started.clone();
+        let resume = resume.clone();
+        move |(value, _): (u32, NotifyOnDrop)| {
+            let started = started.clone();
+            let resume = resume.clone();
+            async move {
+                started.notify_one();
+                resume.notified().await;
+                Ok::<_, ()>(value)
+            }
+        }
+    }));
+
+    let first = {
+        let lazy = lazy.clone();
+        tokio::spawn(async move {
+            LazyCell::try_force_with(&lazy, (41, NotifyOnDrop(None)))
+                .await
+                .copied()
+        })
+    };
+    started.notified().await;
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+
+    let second = {
+        let lazy = lazy.clone();
+        let dropped = dropped.clone();
+        tokio::spawn(async move {
+            LazyCell::try_force_with(&lazy, (99, NotifyOnDrop(Some(dropped))))
+                .await
+                .copied()
+        })
+    };
+
+    dropped.notified().await;
+    resume.notify_one();
+    assert_eq!(second.await.unwrap(), Ok(41));
 }
 
 #[tokio::test]

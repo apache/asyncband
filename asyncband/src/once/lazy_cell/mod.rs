@@ -45,8 +45,11 @@ pub type LazyCellFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 /// future does not retain them.
 ///
 /// Infallible initializers are called once and may move captured values directly
-/// into their future. Fallible initializers must remain callable after an error.
-/// A captured value can be cloned into each owned attempt:
+/// into their future. Fallible initializers are `FnMut` factories that must
+/// remain callable after an error and return an owned future. Lending
+/// `AsyncFnMut` closures that borrow captured state into the returned future are
+/// not supported. State can instead be updated before creating the future or
+/// cloned into each owned attempt:
 ///
 /// ```
 /// # #[tokio::main]
@@ -245,17 +248,24 @@ impl<T, F> LazyCell<T, F> {
         }
         self.assert_unpoisoned();
 
-        let _poison = PoisonOnPanic(&self.poisoned);
+        let mut start = Some(start);
 
+        // Initialize the value if no other task has started an attempt.
         if state.attempt.is_none() {
             let initializer = state
                 .initializer
                 .take()
                 .expect("LazyCell initializer missing while uninitialized");
-            let future = start(initializer);
+            let future = {
+                let _poison = PoisonOnPanic(&self.poisoned);
+                start.take().expect("LazyCell initializer start missing")(initializer)
+            };
             let attempt = Box::pin(async move { AttemptOutput::Value(future.await) });
             state.attempt = Some((AttemptKind::Infallible, attempt));
         }
+        // Drop unused caller arguments before resuming the active attempt. Retaining a
+        // guard could deadlock the attempt on a resource it needs.
+        drop(start);
 
         let (kind, attempt) = state
             .attempt
@@ -266,7 +276,12 @@ impl<T, F> LazyCell<T, F> {
             "LazyCell force method does not match the active attempt"
         );
 
-        let output = attempt.as_mut().await;
+        // Avoid unrelated panics from the initializer poisoning the cell for all future callers.
+        let output = std::future::poll_fn(|cx| {
+            let _poison = PoisonOnPanic(&self.poisoned);
+            attempt.as_mut().poll(cx)
+        })
+        .await;
         state.attempt = None;
         let AttemptOutput::Value(value) = output else {
             unreachable!("infallible LazyCell attempt returned an error")
@@ -292,15 +307,19 @@ impl<T, F> LazyCell<T, F> {
         }
         self.assert_unpoisoned();
 
-        let _poison = PoisonOnPanic(&self.poisoned);
         let kind = AttemptKind::Fallible(TypeId::of::<E>());
+        let mut start = Some(start);
 
+        // Initialize the value if no other task has started an attempt.
         if state.attempt.is_none() {
-            let future = state
+            let initializer = state
                 .initializer
                 .as_mut()
-                .map(start)
                 .expect("LazyCell initializer missing while uninitialized");
+            let future = {
+                let _poison = PoisonOnPanic(&self.poisoned);
+                start.take().expect("LazyCell initializer start missing")(initializer)
+            };
             let attempt = Box::pin(async move {
                 match future.await {
                     Ok(value) => AttemptOutput::Value(value),
@@ -309,6 +328,9 @@ impl<T, F> LazyCell<T, F> {
             });
             state.attempt = Some((kind, attempt));
         }
+        // Drop unused caller arguments before resuming the active attempt. Retaining a
+        // guard could deadlock the attempt on a resource it needs.
+        drop(start);
 
         let (active_kind, attempt) = state
             .attempt
@@ -319,7 +341,12 @@ impl<T, F> LazyCell<T, F> {
             "LazyCell force method does not match the active attempt"
         );
 
-        let output = attempt.as_mut().await;
+        // Avoid unrelated panics from the initializer poisoning the cell for all future callers.
+        let output = std::future::poll_fn(|cx| {
+            let _poison = PoisonOnPanic(&self.poisoned);
+            attempt.as_mut().poll(cx)
+        })
+        .await;
         state.attempt = None;
         match output {
             AttemptOutput::Value(value) => {
