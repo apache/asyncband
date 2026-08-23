@@ -18,11 +18,11 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 
-//! Runtime-agnostic synchronization primitives for asynchronous Rust.
+//! Runtime-agnostic synchronization and coordination tools for asynchronous Rust.
 //!
-//! `asyncband` provides locks, initialization tools, task coordination, channels, and workload
-//! controls without tying an application to a particular async runtime. The primitives use standard
-//! futures and wakers, so they can run on Tokio, async-std, smol, or a custom executor.
+//! `asyncband` provides locks, initialization tools, task coordination, channels, object pools, and
+//! workload controls without tying an application to a particular async runtime. The APIs use
+//! standard futures and wakers, so they can run on Tokio, async-std, smol, or a custom executor.
 //!
 //! # Getting started
 //!
@@ -57,6 +57,7 @@
 //! | Initialize values once     | [`once::Once`], [`once::OnceCell`], [`once::OnceMap`]                                 | `once`, `once-cell`, `once-map`             |
 //! | Coordinate tasks           | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`]        | `barrier`, `latch`, `waitgroup`, `shutdown` |
 //! | Send values                | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`], [`broadcast::overflow`] | `oneshot`, `mpsc`, `broadcast`              |
+//! | Reuse managed objects      | [`pool::bounded`], [`pool::unbounded`]                                                | `pool`                                      |
 //! | Control workloads          | [`semaphore::Semaphore`], [`singleflight::Group`]                                     | `semaphore`, `singleflight`                 |
 //! | Wait from synchronous code | [`blocking::FutureExt`]                                                               | `blocking`                                  |
 //!
@@ -107,6 +108,8 @@ pub mod mutex;
 pub mod once;
 #[cfg(feature = "oneshot")]
 pub mod oneshot;
+#[cfg(feature = "pool")]
+pub mod pool;
 #[cfg(feature = "rwlock")]
 pub mod rwlock;
 #[cfg(feature = "semaphore")]

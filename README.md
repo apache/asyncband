@@ -26,11 +26,11 @@
 
 ## Overview
 
-Asyncband is a runtime-agnostic library providing essential synchronization primitives for asynchronous Rust programming. The library offers a collection of well-tested, efficient synchronization tools that work with any async runtime.
+Asyncband is a runtime-agnostic library providing synchronization and coordination tools for asynchronous Rust programming. Its APIs work with any async runtime.
 
-## Available primitives
+## Available APIs
 
-The crate enables no primitives by default. Categories describe each primitive's primary purpose and do not add another module level, so public paths remain concise, such as `asyncband::mutex` and `asyncband::once::OnceCell`.
+The crate enables no APIs by default. Categories describe each API's primary purpose and do not add another module level, so public paths remain concise, such as `asyncband::mutex`, `asyncband::pool`, and `asyncband::once::OnceCell`.
 
 | Category                | Primitive                                                                            | Feature        | Purpose                                                                 |
 | ----------------------- | ------------------------------------------------------------------------------------ | -------------- | ----------------------------------------------------------------------- |
@@ -48,6 +48,8 @@ The crate enables no primitives by default. Categories describe each primitive's
 |                         | [`mpsc::bounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.bounded.html)        | `mpsc`         | Send values from multiple producers through a bounded channel.          |
 |                         | [`mpsc::unbounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.unbounded.html)    | `mpsc`         | Send values from multiple producers through an unbounded channel.       |
 |                         | [`broadcast::overflow`](https://docs.rs/asyncband/*/asyncband/broadcast/overflow/)   | `broadcast`    | Broadcast values and report when slow receivers miss overwritten items. |
+| Resource reuse          | [`pool::bounded`](https://docs.rs/asyncband/*/asyncband/pool/bounded/)              | `pool`         | Reuse managed objects up to a configured capacity.                       |
+|                         | [`pool::unbounded`](https://docs.rs/asyncband/*/asyncband/pool/unbounded/)          | `pool`         | Reuse manually supplied or manager-created objects.                      |
 | Workload control        | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore`    | Control concurrent access with permits.                                 |
 |                         | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)      | `singleflight` | Coalesce concurrent calls for the same key.                             |
 
@@ -59,7 +61,7 @@ Add the dependency to your `Cargo.toml` via:
 cargo add asyncband --features mutex,oneshot
 ```
 
-List every primitive your application uses in `features`; a bare `cargo add asyncband` intentionally exposes no primitive modules.
+List every API your application uses in `features`; a bare `cargo add asyncband` intentionally exposes no optional modules.
 
 ## Synchronous interoperability
 
@@ -95,7 +97,7 @@ This is a minimal single-future executor, not a general-purpose async runtime. A
 
 ## Runtime Agnostic
 
-All synchronization primitives in this library are runtime-agnostic, meaning they can be used with any async runtime like Tokio, async-std, or others. This makes the library highly versatile and portable.
+All asynchronous APIs in this library are runtime-agnostic, meaning they can be used with any async runtime like Tokio, async-std, or others. This makes the library highly versatile and portable.
 
 ## Thread Safety
 

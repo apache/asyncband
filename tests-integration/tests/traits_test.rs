@@ -26,6 +26,9 @@ use asyncband::once::Once;
 use asyncband::once::OnceCell;
 use asyncband::once::OnceMap;
 use asyncband::oneshot;
+use asyncband::pool;
+use asyncband::pool::ManageObject;
+use asyncband::pool::ObjectStatus;
 use asyncband::rwlock::OwnedRwLockReadGuard;
 use asyncband::rwlock::RwLock;
 use asyncband::rwlock::RwLockReadGuard;
@@ -37,6 +40,25 @@ use asyncband::shutdown::ShutdownWatch;
 use asyncband::singleflight;
 use asyncband::waitgroup::Wait;
 use asyncband::waitgroup::WaitGroup;
+
+struct PoolManager;
+
+impl ManageObject for PoolManager {
+    type Object = i64;
+    type Error = std::convert::Infallible;
+
+    async fn create(&self) -> Result<Self::Object, Self::Error> {
+        Ok(0)
+    }
+
+    async fn is_recyclable(
+        &self,
+        _object: &mut Self::Object,
+        _status: &ObjectStatus,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
 
 #[test]
 fn public_types_are_send_and_sync() {
@@ -66,6 +88,10 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<broadcast::overflow::TryRecvError>();
     assert_send_and_sync::<oneshot::SendError<i64>>();
     assert_send_and_sync::<oneshot::Sender<i64>>();
+    assert_send_and_sync::<pool::bounded::Pool<PoolManager>>();
+    assert_send_and_sync::<pool::bounded::Object<PoolManager>>();
+    assert_send_and_sync::<pool::unbounded::Pool<i64>>();
+    assert_send_and_sync::<pool::unbounded::Object<i64>>();
     assert_send_and_sync::<mpsc::SendError<i64>>();
     assert_send_and_sync::<mpsc::UnboundedSender<i64>>();
     assert_send_and_sync::<mpsc::UnboundedReceiver<i64>>();
@@ -112,6 +138,10 @@ fn public_types_are_unpin() {
     assert_unpin::<oneshot::SendError<i64>>();
     assert_unpin::<oneshot::Receiver<i64>>();
     assert_unpin::<oneshot::Recv<i64>>();
+    assert_unpin::<pool::bounded::Pool<PoolManager>>();
+    assert_unpin::<pool::bounded::Object<PoolManager>>();
+    assert_unpin::<pool::unbounded::Pool<i64>>();
+    assert_unpin::<pool::unbounded::Object<i64>>();
     assert_unpin::<mpsc::SendError<i64>>();
     assert_unpin::<mpsc::UnboundedSender<i64>>();
     assert_unpin::<mpsc::UnboundedReceiver<i64>>();

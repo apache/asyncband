@@ -20,7 +20,7 @@ name = "asyncband"
 version = "0.6.7"
 
 categories = ["asynchronous", "concurrency"]
-description = "A runtime-agnostic library providing essential synchronization primitives for asynchronous Rust programming."
+description = "Runtime-agnostic synchronization and coordination tools for asynchronous Rust."
 documentation = "https://docs.rs/asyncband"
 keywords = ["async", "concurrency", "synchronization", "waitgroup", "mutex"]
 
@@ -49,6 +49,7 @@ once = ["semaphore"]
 once-cell = ["semaphore"]
 once-map = ["dep:hashbrown", "once-cell"]
 oneshot = []
+pool = ["dep:scopeguard", "semaphore"]
 rwlock = []
 semaphore = []
 shutdown = ["latch", "waitgroup"]
@@ -59,6 +60,7 @@ waitgroup = []
 hashbrown = { workspace = true, default-features = false, features = [
   "inline-more",
 ], optional = true }
+scopeguard = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
