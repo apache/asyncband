@@ -47,7 +47,6 @@ The crate enables no APIs by default. Categories describe each API's primary pur
 | Channels                | [`oneshot::channel`](https://docs.rs/asyncband/*/asyncband/oneshot/fn.channel.html)  | `oneshot`      | Send one value between two tasks.                                       |
 |                         | [`mpsc::bounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.bounded.html)        | `mpsc`         | Send values from multiple producers through a bounded channel.          |
 |                         | [`mpsc::unbounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.unbounded.html)    | `mpsc`         | Send values from multiple producers through an unbounded channel.       |
-|                         | [`broadcast::overflow`](https://docs.rs/asyncband/*/asyncband/broadcast/overflow/)   | `broadcast`    | Broadcast values and report when slow receivers miss overwritten items. |
 | Resource reuse          | [`pool::bounded`](https://docs.rs/asyncband/*/asyncband/pool/bounded/)              | `pool`         | Reuse managed objects up to a configured capacity.                       |
 |                         | [`pool::unbounded`](https://docs.rs/asyncband/*/asyncband/pool/unbounded/)          | `pool`         | Reuse manually supplied or manager-created objects.                      |
 | Workload control        | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore`    | Control concurrent access with permits.                                 |

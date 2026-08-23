@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 * Gate all exported primitives behind opt-in Cargo features and enable no features by default; downstream dependencies must explicitly enable the APIs they use.
 * Remove `admission::FairShare` and its `admission` Cargo feature from the feature set.
 * Remove the `asyncband::atomicbox` module and its `AtomicBox` and `AtomicOptionBox` types from the public API.
+* Remove the lossy `broadcast::overflow` channel and its `broadcast` Cargo feature; future broadcast APIs will use explicit bounded and unbounded lossless semantics.
 * Remove `Semaphore::try_acquire_and_forget`, `Semaphore::acquire_and_forget`, `Semaphore::try_acquire_owned_and_forget`, and `Semaphore::acquire_owned_and_forget`; acquire a permit and call its `forget` method instead.
 * Rename `oneshot::Sender::is_closed` and `oneshot::Receiver::is_closed` to `is_disconnected`.
 * Replace `Semaphore::forget` with `Semaphore::drain_permits` and `Semaphore::forget_exact` with `Semaphore::reduce_permits`; permit-level `forget` methods are unchanged.
@@ -24,7 +25,6 @@ All notable changes to this project will be documented in this file.
 ### Bug fixes
 
 * Release cancelled wait registrations promptly and reclaim fulfilled `Semaphore::reduce_permits` debt nodes.
-* Serialize broadcast publication so receivers cannot observe reserved slots or messages overwritten out of sequence.
 
 ### Improvements
 

@@ -6,7 +6,6 @@ Asyncband collects runtime-agnostic synchronization and coordination tools infor
 
 - `barrier::Barrier` is inspired by [`std::sync::Barrier`](https://doc.rust-lang.org/std/sync/struct.Barrier.html) and [`tokio::sync::Barrier`](https://docs.rs/tokio/latest/tokio/sync/struct.Barrier.html), with a different implementation based on the internal `WaitSet` primitive.
 - The single-future polling loop in `blocking` is adapted from [`pollster`](https://github.com/zesterer/pollster), its parker caching strategy follows [`futures-lite`](https://github.com/smol-rs/futures-lite), and its private parker state machine is adapted from [`parking`](https://github.com/smol-rs/parking) 2.2.1.
-- `broadcast::overflow::channel` is derived from [`tokio::sync::broadcast::channel`](https://docs.rs/tokio/latest/tokio/sync/broadcast/fn.channel.html), with a different implementation based on the internal `WaitSet` primitive.
 - `condvar::Condvar` is inspired by [`std::sync::Condvar`](https://doc.rust-lang.org/std/sync/struct.Condvar.html) and [`async_std::sync::Condvar`](https://docs.rs/async-std/latest/async_std/sync/struct.Condvar.html), with a fair FIFO waiter queue and standard non-buffered notification semantics.
 - `latch::Latch` is inspired by [`latches`](https://github.com/mirromutth/latches), with a different implementation based on the internal `CountdownState` primitive.
 - `mutex::Mutex` is derived from [`tokio::sync::Mutex`](https://docs.rs/tokio/latest/tokio/sync/struct.Mutex.html).

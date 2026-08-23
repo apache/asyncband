@@ -40,7 +40,6 @@ default = []
 
 barrier = []
 blocking = []
-broadcast = []
 condvar = ["mutex"]
 latch = []
 mpsc = []
