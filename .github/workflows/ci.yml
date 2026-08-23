@@ -56,7 +56,7 @@ jobs:
           --component clippy
           --allow-downgrade
           --no-self-update
-      - uses: Swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: typos-cli,taplo-cli,hawkeye
@@ -82,7 +82,7 @@ jobs:
           rustup toolchain install ${{ matrix.rust-version }}
           --profile minimal
           --no-self-update
-      - uses: Swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@v2
       - name: Run unit tests
         run: cargo x test --no-capture
         shell: bash
@@ -100,7 +100,7 @@ jobs:
           rustup toolchain install stable
           --profile minimal
           --no-self-update
-      - uses: Swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@v2
       - run: cargo x bench
 
   required:
