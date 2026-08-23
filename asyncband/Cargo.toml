@@ -20,9 +20,15 @@ name = "asyncband"
 version = "0.6.7"
 
 categories = ["asynchronous", "concurrency"]
-description = "Runtime-agnostic synchronization and coordination tools for asynchronous Rust."
+description = "Composable, runtime-agnostic concurrency building blocks for async Rust."
 documentation = "https://docs.rs/asyncband"
-keywords = ["async", "concurrency", "synchronization", "waitgroup", "mutex"]
+keywords = [
+  "async",
+  "concurrency",
+  "synchronization",
+  "coordination",
+  "runtime-agnostic",
+]
 
 edition.workspace = true
 homepage.workspace = true

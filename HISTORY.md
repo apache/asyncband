@@ -2,7 +2,7 @@
 
 > Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Please read the [DISCLAIMER](DISCLAIMER).
 
-Asyncband collects runtime-agnostic synchronization and coordination tools informed by several existing implementations. Only components that draw on external designs or code are listed here.
+Asyncband collects composable, runtime-agnostic concurrency building blocks informed by several existing implementations. Only components that draw on external designs or code are listed here.
 
 - `barrier::Barrier` is inspired by [`std::sync::Barrier`](https://doc.rust-lang.org/std/sync/struct.Barrier.html) and [`tokio::sync::Barrier`](https://docs.rs/tokio/latest/tokio/sync/struct.Barrier.html), with a different implementation based on the internal `WaitSet` primitive.
 - The single-future polling loop in `blocking` is adapted from [`pollster`](https://github.com/zesterer/pollster), its parker caching strategy follows [`futures-lite`](https://github.com/smol-rs/futures-lite), and its private parker state machine is adapted from [`parking`](https://github.com/smol-rs/parking) 2.2.1.
