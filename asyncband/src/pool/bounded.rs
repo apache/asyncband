@@ -191,19 +191,22 @@ impl<M: ManageObject> Pool<M> {
     /// The pool reserves only capacity that is immediately available and never waits for
     /// checked-out objects. Existing idle objects count toward the target, and the pool's
     /// maximum size is never exceeded. Concurrent calls and checkouts can change the observed
-    /// idle count while this method is running, so the target is the best effort rather than a
+    /// idle count while this method is running, so the target is best effort rather than a
     /// postcondition.
     ///
     /// Returns the number of objects created. If [`ManageObject::create`] fails, objects created by
     /// this call before the failure remain in the pool and the error is returned.
     pub async fn replenish_to(&self, target_idle: usize) -> Result<usize, M::Error> {
-        let Some(mut permit) = self.permits.clone().try_acquire_up_to_owned(target_idle) else {
+        let Some(mut reservation) = ReplenishReservation::reserve_up_to(&self.permits, target_idle)
+        else {
             return Ok(0);
         };
 
         let idle_count = self.slots.lock().idle_count();
-        let to_create = target_idle.saturating_sub(idle_count).min(permit.permits());
-        permit.release(permit.permits() - to_create);
+        let to_create = target_idle
+            .saturating_sub(idle_count)
+            .min(reservation.permits());
+        reservation.release(reservation.permits() - to_create);
 
         let mut replenished = 0;
         for _ in 0..to_create {
@@ -213,7 +216,7 @@ impl<M: ManageObject> Pool<M> {
                 slots.add_idle(ObjectState::new(object));
             }
             replenished += 1;
-            permit.release(1);
+            reservation.release(1);
         }
 
         Ok(replenished)
@@ -351,6 +354,40 @@ impl<M: ManageObject> Pool<M> {
         drop(slots);
 
         self.manager.on_detached(o);
+    }
+}
+
+// Temporarily removes capacity while `replenish_to` creates objects. Idle objects do not consume
+// semaphore permits, so successful insertions release their reservation. Dropping the guard
+// restores any unfinished capacity after an error or cancellation.
+struct ReplenishReservation<'a> {
+    semaphore: &'a Semaphore,
+    permits: usize,
+}
+
+impl<'a> ReplenishReservation<'a> {
+    fn reserve_up_to(semaphore: &'a Semaphore, up_to: usize) -> Option<Self> {
+        let permits = semaphore.drain_permits(up_to);
+        (permits != 0).then_some(Self { semaphore, permits })
+    }
+
+    fn permits(&self) -> usize {
+        self.permits
+    }
+
+    fn release(&mut self, permits: usize) {
+        assert!(
+            permits <= self.permits,
+            "cannot release more permits than this reservation holds"
+        );
+        self.permits -= permits;
+        self.semaphore.release(permits);
+    }
+}
+
+impl Drop for ReplenishReservation<'_> {
+    fn drop(&mut self) {
+        self.semaphore.release(self.permits);
     }
 }
 

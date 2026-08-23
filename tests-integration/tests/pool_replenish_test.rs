@@ -200,3 +200,52 @@ async fn concurrent_get_and_replenish_to_respect_capacity() {
     drop((first, second));
     assert_eq!(pool.status().idle_count, 2);
 }
+
+struct BlockingManager {
+    allow_create: Arc<AtomicBool>,
+}
+
+impl ManageObject for BlockingManager {
+    type Object = ();
+    type Error = Infallible;
+
+    async fn create(&self) -> Result<Self::Object, Self::Error> {
+        poll_fn(|_| {
+            if self.allow_create.load(Ordering::Acquire) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        Ok(())
+    }
+
+    async fn is_recyclable(
+        &self,
+        _object: &mut Self::Object,
+        _status: &ObjectStatus,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn cancelling_replenish_to_releases_reserved_capacity() {
+    let allow_create = Arc::new(AtomicBool::new(false));
+    let pool = Pool::new(
+        PoolConfig::new(1),
+        BlockingManager {
+            allow_create: allow_create.clone(),
+        },
+    );
+
+    let mut replenish = Box::pin(pool.replenish_to(1));
+    assert!(tests_integration::poll_once(replenish.as_mut()).is_pending());
+    drop(replenish);
+
+    allow_create.store(true, Ordering::Release);
+    let mut get = Box::pin(pool.get());
+    assert!(tests_integration::poll_once(get.as_mut()).is_ready());
+    assert_eq!(pool.status().idle_count, 1);
+}
