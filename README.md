@@ -113,11 +113,11 @@ The `blocking` module is a lightweight, thread-parking single-future executor, n
 
 Asyncband types implement `Send` and `Sync` only when the protected, transferred, or managed value satisfies the necessary bounds. See each API's documentation for its exact contract.
 
-## Minimum supported Rust version (MSRV)
+## Minimum Supported Rust Version (MSRV)
 
-The minimum supported Rust version is 1.86.0 and is checked in CI.
+This crate is built against the latest stable release, and its minimum supported rustc version is 1.86.0.
 
-The MSRV may increase in a minor release, but patch releases within the same minor line will not raise it.
+The policy is that the minimum Rust version required to use this crate can be increased in minor version updates. For example, if Asyncband 1.0 requires Rust 1.20.0, then Asyncband 1.0.z for all values of z will also require Rust 1.20.0 or newer. However, Asyncband 1.y for y > 0 may require a newer minimum version of Rust.
 
 ## License and Trademarks
 
