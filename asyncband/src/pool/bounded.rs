@@ -190,22 +190,38 @@ impl<M: ManageObject> Pool<M> {
     ///
     /// The pool reserves only capacity that is immediately available and never waits for
     /// checked-out objects. Existing idle objects count toward the target, and the pool's
-    /// maximum size is never exceeded. Concurrent calls and checkouts can change the observed
-    /// idle count while this method is running, so the target is best effort rather than a
-    /// postcondition.
+    /// maximum size is never exceeded. Targets above the maximum size are treated as the maximum.
+    /// Concurrent calls and checkouts can change the observed idle count while this method is
+    /// running, so the target is best effort rather than a postcondition.
     ///
     /// Returns the number of objects created. If [`ManageObject::create`] fails, objects created by
     /// this call before the failure remain in the pool and the error is returned.
     pub async fn replenish_to(&self, target_idle: usize) -> Result<usize, M::Error> {
+        let target_idle = target_idle.min(self.config.max_size);
         let Some(mut reservation) = ReplenishReservation::reserve_up_to(&self.permits, target_idle)
         else {
             return Ok(0);
         };
 
-        let idle_count = self.slots.lock().idle_count();
+        let (idle_count, available_slots) = {
+            let slots = self.slots.lock();
+            let idle_count = slots.idle_count();
+
+            // Idle objects occupy pool slots without holding permits. Available permits plus this
+            // reservation represent capacity not committed to other checkouts, creations, or
+            // replenishments; subtracting idle objects leaves the slots this call may create.
+            let uncommitted_capacity = self
+                .permits
+                .available_permits()
+                .checked_add(reservation.permits())
+                .expect("invariant broken: semaphore capacity must not overflow");
+            let available_slots = uncommitted_capacity.saturating_sub(idle_count);
+            (idle_count, available_slots)
+        };
         let to_create = target_idle
             .saturating_sub(idle_count)
-            .min(reservation.permits());
+            .min(reservation.permits())
+            .min(available_slots);
         reservation.release(reservation.permits() - to_create);
 
         let mut replenished = 0;

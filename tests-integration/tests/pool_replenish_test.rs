@@ -163,6 +163,39 @@ impl ManageObject for ControlledManager {
 }
 
 #[tokio::test]
+async fn concurrent_replenish_to_calls_respect_capacity() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let allow_create = Arc::new(AtomicBool::new(false));
+    let pool = Pool::new(
+        PoolConfig::new(2),
+        ControlledManager {
+            calls: calls.clone(),
+            allow_create: allow_create.clone(),
+        },
+    );
+
+    assert_eq!(pool.replenish_to(1).await, Ok(1));
+
+    let mut first = Box::pin(pool.replenish_to(2));
+    assert!(tests_integration::poll_once(first.as_mut()).is_pending());
+
+    let mut second = Box::pin(pool.replenish_to(2));
+    assert_eq!(
+        tests_integration::poll_once(second.as_mut()),
+        Poll::Ready(Ok(0))
+    );
+
+    allow_create.store(true, Ordering::Release);
+    assert_eq!(
+        tests_integration::poll_once(first.as_mut()),
+        Poll::Ready(Ok(1))
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    assert_eq!(pool.status().current_size, 2);
+    assert_eq!(pool.status().idle_count, 2);
+}
+
+#[tokio::test]
 async fn concurrent_get_and_replenish_to_respect_capacity() {
     let calls = Arc::new(AtomicUsize::new(0));
     let allow_create = Arc::new(AtomicBool::new(false));
@@ -228,6 +261,28 @@ impl ManageObject for BlockingManager {
     ) -> Result<(), Self::Error> {
         Ok(())
     }
+}
+
+#[tokio::test]
+async fn replenish_to_respects_max_size_with_active_and_idle_objects() {
+    let pool = Pool::new(
+        PoolConfig::new(2),
+        BlockingManager {
+            allow_create: Arc::new(AtomicBool::new(true)),
+        },
+    );
+
+    assert_eq!(pool.replenish_to(2).await, Ok(2));
+    let active = pool.get().await.unwrap();
+    assert_eq!(pool.status().current_size, 2);
+    assert_eq!(pool.status().idle_count, 1);
+
+    assert_eq!(pool.replenish_to(usize::MAX).await, Ok(0));
+    assert_eq!(pool.status().current_size, 2);
+    assert_eq!(pool.status().idle_count, 1);
+
+    drop(active);
+    assert_eq!(pool.status().idle_count, 2);
 }
 
 #[tokio::test]
