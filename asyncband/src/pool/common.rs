@@ -105,7 +105,7 @@ pub trait ManageObject: Send + Sync {
     fn on_detached(&self, _o: &mut Self::Object) {}
 }
 
-/// Queue strategy when dequeuing objects from the object pool.
+/// Strategy for dequeuing objects from the object pool.
 #[derive(Debug, Default, Clone, Copy)]
 pub enum QueueStrategy {
     /// First in first out.
