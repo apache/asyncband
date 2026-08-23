@@ -34,6 +34,7 @@ asyncband = { workspace = true, features = [
   "once-cell",
   "once-map",
   "oneshot",
+  "pool",
   "rwlock",
   "semaphore",
   "shutdown",
