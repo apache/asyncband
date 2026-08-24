@@ -23,9 +23,7 @@ use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::panic::resume_unwind;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::AcqRel;
-use std::sync::atomic::Ordering::Acquire;
-use std::sync::atomic::Ordering::Release;
+use std::sync::atomic::Ordering;
 use std::task::Waker;
 
 const WAITING: usize = 0;
@@ -33,7 +31,7 @@ const REGISTERING: usize = 0b01;
 const WAKING: usize = 0b10;
 
 /// A single-registerer, multi-notifier cell for task wake-up.
-pub(crate) struct AtomicWaker {
+pub struct AtomicWaker {
     state: AtomicUsize,
     waker: UnsafeCell<Option<Waker>>,
 }
@@ -44,7 +42,7 @@ unsafe impl Sync for AtomicWaker {}
 
 impl AtomicWaker {
     #[inline]
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             state: AtomicUsize::new(WAITING),
             waker: UnsafeCell::new(None),
@@ -56,10 +54,10 @@ impl AtomicWaker {
     /// Calls to this method must not overlap. It may run concurrently with any number of calls to
     /// [`wake`](Self::wake).
     #[inline]
-    pub(crate) fn register(&self, waker: &Waker) {
+    pub fn register(&self, waker: &Waker) {
         match self
             .state
-            .compare_exchange(WAITING, REGISTERING, Acquire, Acquire)
+            .compare_exchange(WAITING, REGISTERING, Ordering::Acquire, Ordering::Acquire)
             .unwrap_or_else(|state| state)
         {
             WAITING => {
@@ -108,21 +106,22 @@ impl AtomicWaker {
             None
         };
 
-        let concurrent_wake =
-            match self
-                .state
-                .compare_exchange(REGISTERING, WAITING, AcqRel, Acquire)
-            {
-                Ok(_) => None,
-                Err(state) => {
-                    debug_assert_eq!(state, REGISTERING | WAKING);
+        let concurrent_wake = match self.state.compare_exchange(
+            REGISTERING,
+            WAITING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => None,
+            Err(state) => {
+                debug_assert_eq!(state, REGISTERING | WAKING);
 
-                    // SAFETY: REGISTERING remains set, so this thread still owns the waker slot.
-                    let registered = unsafe { (*self.waker.get()).take() };
-                    self.state.swap(WAITING, AcqRel);
-                    registered
-                }
-            };
+                // SAFETY: REGISTERING remains set, so this thread still owns the waker slot.
+                let registered = unsafe { (*self.waker.get()).take() };
+                self.state.swap(WAITING, Ordering::AcqRel);
+                registered
+            }
+        };
 
         if let Some(payload) = clone_panic {
             // Preserve the original clone panic while still completing a wake that raced with it.
@@ -149,7 +148,7 @@ impl AtomicWaker {
 
     /// Wakes and removes the most recently registered waker, if any.
     #[inline]
-    pub(crate) fn wake(&self) {
+    pub fn wake(&self) {
         if let Some(waker) = self.take() {
             waker.wake();
         }
@@ -157,12 +156,12 @@ impl AtomicWaker {
 
     #[inline]
     fn take(&self) -> Option<Waker> {
-        match self.state.fetch_or(WAKING, AcqRel) {
+        match self.state.fetch_or(WAKING, Ordering::AcqRel) {
             WAITING => {
                 // SAFETY: changing WAITING to WAKING grants this thread exclusive access to the
                 // waker slot until the state is returned to WAITING.
                 let waker = unsafe { (*self.waker.get()).take() };
-                let old_state = self.state.swap(WAITING, Release);
+                let old_state = self.state.swap(WAITING, Ordering::Release);
                 debug_assert_eq!(old_state, WAKING);
                 waker
             }
@@ -306,7 +305,7 @@ mod tests {
         let atomic_waker = AtomicWaker::new();
 
         assert!(
-            panic::catch_unwind(AssertUnwindSafe(|| {
+            catch_unwind(AssertUnwindSafe(|| {
                 atomic_waker.register(&panicking);
             }))
             .is_err()
