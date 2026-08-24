@@ -17,9 +17,13 @@
 
 // This state machine is derived from the futures-rs `AtomicWaker`, licensed under
 // Apache-2.0 OR MIT: https://github.com/rust-lang/futures-rs/blob/0.3.34/futures-core/src/task/__internal/atomic_waker.rs.
+// Its panic recovery is informed by Tokio's `AtomicWaker`, licensed under MIT:
+// https://github.com/tokio-rs/tokio/blob/tokio-1.53.1/tokio/src/sync/task/atomic_waker.rs.
 
 use std::cell::UnsafeCell;
 use std::panic::AssertUnwindSafe;
+use std::panic::RefUnwindSafe;
+use std::panic::UnwindSafe;
 use std::panic::catch_unwind;
 use std::panic::resume_unwind;
 use std::sync::atomic::AtomicUsize;
@@ -31,6 +35,38 @@ const REGISTERING: usize = 0b01;
 const WAKING: usize = 0b10;
 
 /// A single-registerer, multi-notifier cell for task wake-up.
+///
+/// The atomic state both grants exclusive access to `waker` and records one coalesced wake request.
+/// The operation that moves the state out of `WAITING` remains the only slot owner until it returns
+/// the state to `WAITING`.
+///
+/// * `WAITING`: the slot is unlocked and may contain a registered waker.
+/// * `REGISTERING`: `register` exclusively owns the slot and no concurrent wake is pending.
+/// * `WAKING`: `wake` exclusively owns the slot. A racing `register` self-wakes without touching
+///   the slot.
+/// * `REGISTERING | WAKING`: `register` still owns the slot and must complete a concurrent wake
+///   before returning to `WAITING`.
+///
+/// Valid state transitions are:
+///
+/// ```text
+/// register: WAITING ----------------Acquire CAS---------------> REGISTERING
+///           REGISTERING ------------AcqRel CAS----------------> WAITING
+///
+/// wake:     WAITING ----------------AcqRel fetch_or-----------> WAKING
+///           WAKING -----------------Release swap--------------> WAITING
+///
+/// race:     REGISTERING ------------AcqRel fetch_or-----------> REGISTERING | WAKING
+///           REGISTERING | WAKING ---AcqRel swap---------------> WAITING
+/// ```
+///
+/// Additional calls to `wake` while `WAKING` is set are coalesced. A wake completed before a
+/// registration starts is not remembered, so callers must register before rechecking the condition
+/// that determines whether to return `Pending`.
+///
+/// Every transition that acquires slot ownership has an Acquire operation paired with the previous
+/// owner's Release transition to `WAITING`. The Release half of `wake` also publishes the caller's
+/// preceding condition update; a racing `register` acquires that publication before it returns.
 pub struct AtomicWaker {
     state: AtomicUsize,
     waker: UnsafeCell<Option<Waker>>,
@@ -39,6 +75,12 @@ pub struct AtomicWaker {
 // SAFETY: `state` grants exclusive access to `waker`, and losing concurrent registrations do not
 // touch the slot. `Waker` itself is `Send + Sync`.
 unsafe impl Sync for AtomicWaker {}
+
+// `Waker` callbacks may unwind, but no panic leaves a state bit owned by the unwinding operation. A
+// failed clone leaves the old slot intact and completes any raced wake, while wake and drop
+// callbacks run after that operation's critical section has been released.
+impl RefUnwindSafe for AtomicWaker {}
+impl UnwindSafe for AtomicWaker {}
 
 impl AtomicWaker {
     #[inline]
@@ -55,6 +97,10 @@ impl AtomicWaker {
     /// [`wake`](Self::wake).
     #[inline]
     pub fn register(&self, waker: &Waker) {
+        // ORDERING: On success, Acquire pairs with the Release operation that last returned the
+        // state to WAITING and transfers exclusive ownership of the waker slot to this thread. On
+        // failure, Acquire matters when this reads WAKING from a notifier's AcqRel fetch_or: it
+        // receives the condition update that preceded that wake before this method returns.
         match self
             .state
             .compare_exchange(WAITING, REGISTERING, Ordering::Acquire, Ordering::Acquire)
@@ -106,6 +152,10 @@ impl AtomicWaker {
             None
         };
 
+        // ORDERING: Release publishes a newly registered waker when the CAS succeeds. If it fails,
+        // Acquire receives the concurrent notifier's Release publication before the wake is
+        // completed below. AcqRel is the weakest success ordering that permits an Acquire failure
+        // ordering, although its Acquire half is not otherwise relied upon on the success path.
         let concurrent_wake = match self.state.compare_exchange(
             REGISTERING,
             WAITING,
@@ -118,6 +168,9 @@ impl AtomicWaker {
 
                 // SAFETY: REGISTERING remains set, so this thread still owns the waker slot.
                 let registered = unsafe { (*self.waker.get()).take() };
+
+                // ORDERING: Acquire receives all coalesced wake publications. Release publishes
+                // the empty slot and makes it available to the next register or wake operation.
                 self.state.swap(WAITING, Ordering::AcqRel);
                 registered
             }
@@ -156,11 +209,17 @@ impl AtomicWaker {
 
     #[inline]
     fn take(&self) -> Option<Waker> {
+        // ORDERING: When this reads WAITING, Acquire receives the registered waker published by the
+        // previous owner. Release publishes the condition update that the caller performed before
+        // calling wake, including when a registering thread already owns the slot.
         match self.state.fetch_or(WAKING, Ordering::AcqRel) {
             WAITING => {
                 // SAFETY: changing WAITING to WAKING grants this thread exclusive access to the
                 // waker slot until the state is returned to WAITING.
                 let waker = unsafe { (*self.waker.get()).take() };
+
+                // ORDERING: Release publishes the emptied slot before another operation acquires
+                // it. The fetch_or above already performed the required Acquire operation.
                 let old_state = self.state.swap(WAITING, Ordering::Release);
                 debug_assert_eq!(old_state, WAKING);
                 waker
@@ -179,7 +238,6 @@ impl AtomicWaker {
 
 #[cfg(test)]
 mod tests {
-    use std::panic;
     use std::ptr;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -305,14 +363,100 @@ mod tests {
         let atomic_waker = AtomicWaker::new();
 
         assert!(
-            catch_unwind(AssertUnwindSafe(|| {
+            catch_unwind(|| {
                 atomic_waker.register(&panicking);
-            }))
+            })
             .is_err()
         );
 
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
         atomic_waker.register(&Waker::from(counter.clone()));
+        atomic_waker.wake();
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[cfg(panic = "unwind")]
+    #[test]
+    fn clone_panic_completes_concurrent_wake() {
+        static PANICKING_VTABLE: RawWakerVTable = RawWakerVTable::new(
+            |_| panic!("clone failed"),
+            |_| unreachable!(),
+            |_| unreachable!(),
+            |_| {},
+        );
+
+        let panicking = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &PANICKING_VTABLE)) };
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let atomic_waker = AtomicWaker::new();
+        atomic_waker.register(&Waker::from(counter.clone()));
+
+        assert_eq!(
+            atomic_waker.state.compare_exchange(
+                WAITING,
+                REGISTERING,
+                Ordering::Acquire,
+                Ordering::Acquire,
+            ),
+            Ok(WAITING)
+        );
+        std::thread::scope(|scope| scope.spawn(|| atomic_waker.wake()).join().unwrap());
+
+        // SAFETY: this test acquired REGISTERING above and the waking thread has finished touching
+        // the state. Calling the helper completes the interrupted registration.
+        assert!(
+            catch_unwind(|| unsafe {
+                atomic_waker.register_locked(&panicking);
+            })
+            .is_err()
+        );
+
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+
+        let next_counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        atomic_waker.register(&Waker::from(next_counter.clone()));
+        atomic_waker.wake();
+        assert_eq!(next_counter.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[cfg(panic = "unwind")]
+    #[test]
+    fn drop_panic_does_not_poison_state() {
+        unsafe fn clone_drop_panicker(data: *const ()) -> RawWaker {
+            RawWaker::new(data, &DROP_PANICKING_VTABLE)
+        }
+
+        unsafe fn wake_drop_panicker(_: *const ()) {}
+
+        unsafe fn drop_drop_panicker(data: *const ()) {
+            // SAFETY: the test keeps the pointed-to AtomicBool alive until every derived waker has
+            // been dropped.
+            let should_panic = unsafe { &*data.cast::<AtomicBool>() };
+            if should_panic.swap(false, Ordering::Relaxed) {
+                panic!("drop failed");
+            }
+        }
+
+        static DROP_PANICKING_VTABLE: RawWakerVTable = RawWakerVTable::new(
+            clone_drop_panicker,
+            wake_drop_panicker,
+            wake_drop_panicker,
+            drop_drop_panicker,
+        );
+
+        let should_panic = AtomicBool::new(true);
+        let old_waker = unsafe {
+            Waker::from_raw(RawWaker::new(
+                ptr::from_ref(&should_panic).cast(),
+                &DROP_PANICKING_VTABLE,
+            ))
+        };
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let new_waker = Waker::from(counter.clone());
+        let atomic_waker = AtomicWaker::new();
+        atomic_waker.register(&old_waker);
+
+        assert!(catch_unwind(|| atomic_waker.register(&new_waker)).is_err());
+
         atomic_waker.wake();
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);
     }
