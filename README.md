@@ -61,7 +61,7 @@ Public paths stay direct—such as `asyncband::mutex`, `asyncband::pool`, and `a
 | Area                    | API                                                                                  | Feature        | Use                                                                     |
 | ----------------------- | ------------------------------------------------------------------------------------ | -------------- | ----------------------------------------------------------------------- |
 | Shared state            | [`Mutex`](https://docs.rs/asyncband/*/asyncband/mutex/struct.Mutex.html)             | `mutex`        | Protect shared data with asynchronous mutual exclusion.                 |
-|                         | [`RwLock`](https://docs.rs/asyncband/*/asyncband/rwlock/struct.RwLock.html)          | `rwlock`       | Allow multiple readers or one writer.                                   |
+|                         | [`RwLock`](https://docs.rs/asyncband/*/asyncband/rwlock/struct.RwLock.html)          | `rwlock`       | Allow readers, a writer, or one atomically upgradable reader.            |
 |                         | [`Condvar`](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html)       | `condvar`      | Wait for notifications while releasing a mutex.                         |
 | Initialization          | [`Once`](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html)                | `once`         | Run asynchronous initialization exactly once.                           |
 |                         | [`OnceCell`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html)        | `once-cell`    | Initialize and store one asynchronous value.                            |
@@ -112,6 +112,18 @@ The `blocking` module is a lightweight, thread-parking single-future executor, n
 ## Thread safety
 
 Asyncband types implement `Send` and `Sync` only when the protected, transferred, or managed value satisfies the necessary bounds. See each API's documentation for its exact contract.
+
+### Loom model checking
+
+Asyncband uses bounded [Loom](https://github.com/tokio-rs/loom) models for concurrency-critical internals. During model checking, participating components conditionally replace their synchronization primitives with Loom's instrumented atomics, mutexes, threads, cells, and future executor. This allows focused models to explore relevant execution orderings.
+
+Run all current and future models separately from the normal test suite:
+
+```shell
+RUSTFLAGS="--cfg loom" cargo test -p asyncband --lib --all-features loom_ --release -- --test-threads=1
+```
+
+Models remain small and bounded so they are practical in CI. Set `LOOM_MAX_PREEMPTIONS` or `LOOM_MAX_BRANCHES` to request a deeper local run. Tests intended for the shared CI job use the `loom_` name prefix so models for additional primitives are discovered automatically.
 
 ## Minimum Supported Rust Version (MSRV)
 

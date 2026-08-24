@@ -38,6 +38,7 @@ hashbrown = { version = "0.17.1", default-features = false }
 cargo_metadata = { version = "0.23.1" }
 clap = { version = "4.6.5" }
 divan = { version = "0.1.21" }
+loom = { version = "0.7.2", features = ["futures"] }
 pollster = { version = "1.0.1" }
 semver = { version = "1.0.28" }
 serde = { version = "1.0.229" }
@@ -47,6 +48,7 @@ ureq = { version = "3.3.0", default-features = false }
 which = { version = "8.0.5" }
 
 [workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
 unknown_lints = "deny"
 
 [workspace.lints.clippy]

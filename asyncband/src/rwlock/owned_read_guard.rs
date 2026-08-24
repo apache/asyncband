@@ -71,7 +71,7 @@ impl<T: ?Sized> RwLock<T> {
     /// # }
     /// ```
     pub async fn read_owned(self: Arc<Self>) -> OwnedRwLockReadGuard<T> {
-        self.s.acquire(1).await;
+        self.raw.read().await;
         OwnedRwLockReadGuard { lock: self }
     }
 
@@ -102,7 +102,7 @@ impl<T: ?Sized> RwLock<T> {
     /// assert!(lock.clone().try_read_owned().is_none());
     /// ```
     pub fn try_read_owned(self: Arc<Self>) -> Option<OwnedRwLockReadGuard<T>> {
-        if self.s.try_acquire(1) {
+        if self.raw.try_read() {
             Some(OwnedRwLockReadGuard { lock: self })
         } else {
             None
@@ -122,7 +122,7 @@ pub struct OwnedRwLockReadGuard<T: ?Sized> {
 
 impl<T: ?Sized> Drop for OwnedRwLockReadGuard<T> {
     fn drop(&mut self) {
-        self.lock.s.release(1);
+        self.lock.raw.unlock_read();
     }
 }
 

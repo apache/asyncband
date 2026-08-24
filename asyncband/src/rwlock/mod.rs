@@ -15,11 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A reader-writer lock that allows multiple readers or a single writer at a time.
+//! A reader-writer lock with atomically upgradable read access.
 //!
 //! This type of lock allows a number of readers or at most one writer at any point in time. The
 //! write portion of this lock typically allows modification of the underlying data (exclusive
 //! access) and the read portion of this lock typically allows for read-only access (shared access).
+//! One [`upgradable read`](RwLock::upgradable_read) may coexist with ordinary readers and can later
+//! be atomically promoted to exclusive write access.
 //!
 //! In comparison, a [`Mutex`] does not distinguish between readers or writers that acquire the
 //! lock, therefore causing any tasks waiting for the lock to become available to yield. An RwLock
@@ -31,6 +33,10 @@
 //! tasks awaiting the lock. If a writer reaches the head of the queue, readers will not acquire
 //! the lock until that writer has acquired and released it. In contrast, the priority policy of
 //! the Rust standard library's `std::sync::RwLock` depends on the operating system.
+//!
+//! An upgradable read reserves promotion priority over requests made after it acquires the lock.
+//! When promotion is explicitly requested, existing readers finish but later writers and readers
+//! cannot overtake the upgrade. This reservation makes promotion atomic and deadlock-free.
 //!
 //! The type parameter `T` represents the data that this lock protects. It is required that `T`
 //! satisfies [`Send`] to be shared across threads. The RAII guards returned from the locking
@@ -61,6 +67,16 @@
 //!     assert_eq!(*w, 6);
 //! } // write lock is dropped here
 //!
+//! // an upgradable reader can inspect before deciding whether to write
+//! {
+//!     let r = lock.upgradable_read().await;
+//!     if *r == 6 {
+//!         let mut w = r.upgrade().await;
+//!         *w += 1;
+//!     }
+//! }
+//! assert_eq!(*lock.read().await, 7);
+//!
 //! # }
 //! ```
 //!
@@ -72,8 +88,6 @@
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::num::NonZeroUsize;
-
-use crate::internal::semaphore::Semaphore;
 
 mod mapped_read_guard;
 pub use mapped_read_guard::MappedRwLockReadGuard;
@@ -87,21 +101,25 @@ mod owned_read_guard;
 pub use owned_read_guard::OwnedRwLockReadGuard;
 mod owned_write_guard;
 pub use owned_write_guard::OwnedRwLockWriteGuard;
+mod owned_upgradable_read_guard;
+pub use owned_upgradable_read_guard::OwnedRwLockUpgradableReadGuard;
 mod read_guard;
 pub use read_guard::RwLockReadGuard;
+mod upgradable_read_guard;
+pub use upgradable_read_guard::RwLockUpgradableReadGuard;
 mod write_guard;
 pub use write_guard::RwLockWriteGuard;
+mod raw;
+use raw::RawRwLock;
+#[cfg(all(test, loom))]
+mod loom_rwlock;
 
-/// A reader-writer lock that allows multiple readers or a single writer at a time.
+/// A reader-writer lock allowing readers, one writer, or one upgradable reader at a time.
 ///
 /// See the [module level documentation](self) for more.
 pub struct RwLock<T: ?Sized> {
-    /// Maximum number of concurrent readers.
-    ///
-    /// This is ensured to be non-zero.
-    max_readers: usize,
-    /// Semaphore to coordinate read and write access to T
-    s: Semaphore,
+    /// Mode-aware scheduler coordinating readers, writers, and upgrades.
+    raw: RawRwLock,
     /// The inner data.
     c: UnsafeCell<T>,
 }
@@ -142,8 +160,15 @@ impl<T> RwLock<T> {
     ///
     /// let rwlock = RwLock::new(5);
     /// ```
+    #[cfg(not(loom))]
     pub const fn new(t: T) -> RwLock<T> {
         // large enough while not touch the edge
+        RwLock::with_max_readers(t, NonZeroUsize::new(usize::MAX >> 1).unwrap())
+    }
+
+    #[cfg(loom)]
+    /// Creates a new reader-writer lock in an unlocked state for Loom model checking.
+    pub fn new(t: T) -> RwLock<T> {
         RwLock::with_max_readers(t, NonZeroUsize::new(usize::MAX >> 1).unwrap())
     }
 
@@ -162,11 +187,21 @@ impl<T> RwLock<T> {
     /// let max_readers = NonZeroUsize::new(1024).expect("max_readers must be non-zero");
     /// let rwlock = RwLock::with_max_readers(5, max_readers);
     /// ```
+    #[cfg(not(loom))]
     pub const fn with_max_readers(t: T, max_readers: NonZeroUsize) -> RwLock<T> {
         let max_readers = max_readers.get();
-        let s = Semaphore::new(max_readers);
+        let raw = RawRwLock::new(max_readers);
         let c = UnsafeCell::new(t);
-        RwLock { max_readers, c, s }
+        RwLock { raw, c }
+    }
+
+    #[cfg(loom)]
+    /// Creates an unlocked reader-writer lock with a reader limit for Loom model checking.
+    pub fn with_max_readers(t: T, max_readers: NonZeroUsize) -> RwLock<T> {
+        let max_readers = max_readers.get();
+        let raw = RawRwLock::new(max_readers);
+        let c = UnsafeCell::new(t);
+        RwLock { raw, c }
     }
 
     /// Consumes the lock, returning the underlying data.

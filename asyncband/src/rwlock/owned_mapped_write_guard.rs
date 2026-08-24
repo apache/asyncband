@@ -35,8 +35,8 @@ use crate::rwlock::RwLock;
 /// the `'static` lifetime.
 ///
 /// As long as you have this guard, you have exclusive write access to the underlying `T`. The guard
-/// internally keeps an `Arc` reference to the original rwlock and tracks the number of permits
-/// acquired, so the original lock is maintained until this guard is dropped.
+/// internally keeps an `Arc` reference to the original rwlock, so the original lock is maintained
+/// until this guard is dropped.
 ///
 /// `OwnedMappedRwLockWriteGuard` implements [`Send`] and [`Sync`]
 /// when the underlying data type supports these traits, allowing it to be used across task
@@ -109,7 +109,6 @@ use crate::rwlock::RwLock;
 pub struct OwnedMappedRwLockWriteGuard<T: ?Sized, U: ?Sized> {
     d: NonNull<U>,
     lock: Arc<RwLock<T>>,
-    permits_acquired: usize,
     // Mutable access requires invariance over U.
     variance: PhantomData<*mut U>,
 }
@@ -125,18 +124,17 @@ unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Sync> Sync for OwnedMappedRwLoc
 unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Send> Send for OwnedMappedRwLockWriteGuard<T, U> {}
 
 impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockWriteGuard<T, U> {
-    pub(crate) fn new(d: NonNull<U>, lock: Arc<RwLock<T>>, permits_acquired: usize) -> Self {
+    pub(crate) fn new(d: NonNull<U>, lock: Arc<RwLock<T>>) -> Self {
         Self {
             d,
             lock,
-            permits_acquired,
             variance: PhantomData,
         }
     }
 }
 impl<T: ?Sized, U: ?Sized> Drop for OwnedMappedRwLockWriteGuard<T, U> {
     fn drop(&mut self) {
-        self.lock.s.release(self.permits_acquired);
+        self.lock.raw.unlock_write();
     }
 }
 
@@ -232,13 +230,12 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockWriteGuard<T, U> {
         let d = NonNull::from(f(unsafe { orig.d.as_mut() }));
         let orig = ManuallyDrop::new(orig);
 
-        let permits_acquired = orig.permits_acquired;
         // SAFETY: The original guard is wrapped in `ManuallyDrop` and will not be dropped.
         // This allows us to safely move the `Arc` out of it and transfer ownership to the new
         // guard.
         let lock = unsafe { std::ptr::read(&orig.lock) };
 
-        OwnedMappedRwLockWriteGuard::new(d, lock, permits_acquired)
+        OwnedMappedRwLockWriteGuard::new(d, lock)
     }
 
     /// Attempts to make a new [`OwnedMappedRwLockWriteGuard`] for a component of the locked data.
@@ -324,13 +321,12 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockWriteGuard<T, U> {
                 let d = NonNull::from(d);
                 let orig = ManuallyDrop::new(orig);
 
-                let permits_acquired = orig.permits_acquired;
                 // SAFETY: The original guard is wrapped in `ManuallyDrop` and will not be dropped.
                 // This allows us to safely move the `Arc` out of it and transfer ownership to the
                 // new guard.
                 let lock = unsafe { std::ptr::read(&orig.lock) };
 
-                Ok(OwnedMappedRwLockWriteGuard::new(d, lock, permits_acquired))
+                Ok(OwnedMappedRwLockWriteGuard::new(d, lock))
             }
             None => Err(orig),
         }
@@ -381,12 +377,11 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockWriteGuard<T, U> {
     /// ```
     pub fn downgrade(self) -> OwnedMappedRwLockReadGuard<T, U> {
         // Prevent the original write guard from running its Drop implementation,
-        // which would release all permits. This must be done BEFORE any operation
+        // which would unlock the rwlock. This must be done BEFORE any operation
         // that might panic to ensure panic safety.
         let guard = ManuallyDrop::new(self);
 
-        // Release max_readers - 1 permits to convert the write lock to a read lock.
-        guard.lock.s.release(guard.permits_acquired - 1);
+        guard.lock.raw.downgrade_write_to_read();
 
         // SAFETY: The `guard` is wrapped in `ManuallyDrop`, so its destructor will not be run.
         // We can safely move the `Arc` out of the guard, as the guard is not used after this.

@@ -22,8 +22,8 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ptr::NonNull;
 
-use crate::internal::semaphore;
 use crate::rwlock::MappedRwLockReadGuard;
+use crate::rwlock::RawRwLock;
 
 /// RAII structure used to release the exclusive write access of a lock when dropped, for a mapped
 /// component of the locked data.
@@ -33,8 +33,8 @@ use crate::rwlock::MappedRwLockReadGuard;
 /// access control while maintaining the same locking semantics.
 ///
 /// As long as you have this guard, you have exclusive write access to the underlying `T`. The guard
-/// internally keeps a reference to the original rwlock's semaphore and tracks the number of permits
-/// acquired, so the original lock is maintained until this guard is dropped.
+/// internally keeps a reference to the original rwlock's scheduler, so the original lock is
+/// maintained until this guard is dropped.
 ///
 /// `MappedRwLockWriteGuard` implements [`Send`] when the underlying data type implements [`Send`],
 /// and implements [`Sync`] when the underlying data type implements both [`Send`] and [`Sync`],
@@ -103,8 +103,7 @@ use crate::rwlock::MappedRwLockReadGuard;
 #[must_use = "if unused the RwLock will immediately unlock"]
 pub struct MappedRwLockWriteGuard<'a, T: ?Sized> {
     d: NonNull<T>,
-    s: &'a semaphore::Semaphore,
-    permits_acquired: usize,
+    raw: &'a RawRwLock,
     // Mutable access requires invariance over T.
     variance: PhantomData<&'a mut T>,
 }
@@ -119,11 +118,10 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for MappedRwLockWriteGuard<'_, T> {}
 unsafe impl<T: ?Sized + Send> Send for MappedRwLockWriteGuard<'_, T> {}
 
 impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
-    pub(crate) fn new(d: NonNull<T>, s: &'a semaphore::Semaphore, permits_acquired: usize) -> Self {
+    pub(super) fn new(d: NonNull<T>, raw: &'a RawRwLock) -> Self {
         Self {
             d,
-            s,
-            permits_acquired,
+            raw,
             variance: PhantomData,
         }
     }
@@ -131,7 +129,7 @@ impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
 
 impl<T: ?Sized> Drop for MappedRwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
-        self.s.release(self.permits_acquired);
+        self.raw.unlock_write();
     }
 }
 
@@ -222,9 +220,8 @@ impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
         // when the original MappedRwLockWriteGuard was constructed. The guard guarantees exclusive
         // access to the data through the rwlock, so dereferencing is safe.
         let d = NonNull::from(f(unsafe { orig.d.as_mut() }));
-        let permits_acquired = orig.permits_acquired;
         let orig = ManuallyDrop::new(orig);
-        MappedRwLockWriteGuard::new(d, orig.s, permits_acquired)
+        MappedRwLockWriteGuard::new(d, orig.raw)
     }
 
     /// Attempts to make a new [`MappedRwLockWriteGuard`] for a component of the locked data. The
@@ -302,9 +299,8 @@ impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
         match f(unsafe { orig.d.as_mut() }) {
             Some(d) => {
                 let d = NonNull::from(d);
-                let permits_acquired = orig.permits_acquired;
                 let orig = ManuallyDrop::new(orig);
-                Ok(MappedRwLockWriteGuard::new(d, orig.s, permits_acquired))
+                Ok(MappedRwLockWriteGuard::new(d, orig.raw))
             }
             None => Err(orig),
         }
@@ -354,14 +350,13 @@ impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
     /// ```
     pub fn downgrade(self) -> MappedRwLockReadGuard<'a, T> {
         // Prevent the original write guard from running its Drop implementation,
-        // which would release all permits. This must be done BEFORE any operation
+        // which would unlock the rwlock. This must be done BEFORE any operation
         // that might panic to ensure panic safety.
         let guard = ManuallyDrop::new(self);
 
-        // Release max_readers - 1 permits to convert the write lock to a read lock.
-        guard.s.release(guard.permits_acquired - 1);
+        guard.raw.downgrade_write_to_read();
 
-        // Create the mapped read guard with 1 permit (standard for read locks)
-        MappedRwLockReadGuard::new(guard.d, guard.s)
+        // Create a mapped read guard retaining the new shared ownership.
+        MappedRwLockReadGuard::new(guard.d, guard.raw)
     }
 }

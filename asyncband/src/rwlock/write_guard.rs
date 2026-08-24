@@ -24,6 +24,7 @@ use std::ptr::NonNull;
 use crate::rwlock::MappedRwLockWriteGuard;
 use crate::rwlock::RwLock;
 use crate::rwlock::RwLockReadGuard;
+use crate::rwlock::RwLockUpgradableReadGuard;
 
 impl<T: ?Sized> RwLock<T> {
     /// Locks this `RwLock` with exclusive write access, causing the current task to yield until the
@@ -52,11 +53,8 @@ impl<T: ?Sized> RwLock<T> {
     /// # }
     /// ```
     pub async fn write(&self) -> RwLockWriteGuard<'_, T> {
-        self.s.acquire(self.max_readers).await;
-        RwLockWriteGuard {
-            permits_acquired: self.max_readers,
-            lock: self,
-        }
+        self.raw.write().await;
+        RwLockWriteGuard { lock: self }
     }
 
     /// Attempts to acquire this `RwLock` with exclusive write access.
@@ -81,11 +79,8 @@ impl<T: ?Sized> RwLock<T> {
     /// *v = 2;
     /// ```
     pub fn try_write(&self) -> Option<RwLockWriteGuard<'_, T>> {
-        if self.s.try_acquire(self.max_readers) {
-            Some(RwLockWriteGuard {
-                permits_acquired: self.max_readers,
-                lock: self,
-            })
+        if self.raw.try_write() {
+            Some(RwLockWriteGuard { lock: self })
         } else {
             None
         }
@@ -116,7 +111,6 @@ impl<T: ?Sized> RwLock<T> {
 /// ```
 #[must_use = "if unused the RwLock will immediately unlock"]
 pub struct RwLockWriteGuard<'a, T: ?Sized> {
-    pub(super) permits_acquired: usize,
     pub(super) lock: &'a RwLock<T>,
 }
 
@@ -125,7 +119,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for RwLockWriteGuard<'_, T> {}
 
 impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.s.release(self.permits_acquired);
+        self.lock.raw.unlock_write();
     }
 }
 
@@ -195,9 +189,8 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
         U: ?Sized,
     {
         let d = NonNull::from(f(unsafe { &mut *orig.lock.c.get() }));
-        let permits_acquired = orig.permits_acquired;
         let orig = ManuallyDrop::new(orig);
-        MappedRwLockWriteGuard::new(d, &orig.lock.s, permits_acquired)
+        MappedRwLockWriteGuard::new(d, &orig.lock.raw)
     }
 
     /// Attempts to make a new [`MappedRwLockWriteGuard`] for a component of the
@@ -250,13 +243,8 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
         match f(unsafe { &mut *orig.lock.c.get() }) {
             Some(d) => {
                 let d = NonNull::from(d);
-                let permits_acquired = orig.permits_acquired;
                 let orig = ManuallyDrop::new(orig);
-                Ok(MappedRwLockWriteGuard::new(
-                    d,
-                    &orig.lock.s,
-                    permits_acquired,
-                ))
+                Ok(MappedRwLockWriteGuard::new(d, &orig.lock.raw))
             }
             None => Err(orig),
         }
@@ -294,13 +282,37 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
     /// ```
     pub fn downgrade(self) -> RwLockReadGuard<'a, T> {
         // Prevent the original write guard from running its Drop implementation,
-        // which would release all permits. This must be done BEFORE any operation
+        // which would unlock the rwlock. This must be done BEFORE any operation
         // that might panic to ensure panic safety.
         let guard = ManuallyDrop::new(self);
 
-        // Release max_readers - 1 permits to convert the write lock to a read lock.
-        // The remaining 1 permit is kept for the read lock.
-        guard.lock.s.release(guard.permits_acquired - 1);
+        guard.lock.raw.downgrade_write_to_read();
         RwLockReadGuard { lock: guard.lock }
+    }
+
+    /// Atomically downgrades this write guard to an upgradable read guard.
+    ///
+    /// The returned guard retains shared access and reserves the ability to promote again.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use asyncband::rwlock::RwLock;
+    ///
+    /// let lock = RwLock::new(1);
+    /// let writer = lock.write().await;
+    /// let upgradable = writer.downgrade_to_upgradable();
+    ///
+    /// assert!(lock.try_read().is_some());
+    /// assert!(lock.try_upgradable_read().is_none());
+    /// assert_eq!(*upgradable, 1);
+    /// # }
+    /// ```
+    pub fn downgrade_to_upgradable(self) -> RwLockUpgradableReadGuard<'a, T> {
+        let guard = ManuallyDrop::new(self);
+        guard.lock.raw.downgrade_write_to_upgradable();
+        RwLockUpgradableReadGuard { lock: guard.lock }
     }
 }

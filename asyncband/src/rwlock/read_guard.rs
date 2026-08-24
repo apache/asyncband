@@ -67,7 +67,7 @@ impl<T: ?Sized> RwLock<T> {
     /// # }
     /// ```
     pub async fn read(&self) -> RwLockReadGuard<'_, T> {
-        self.s.acquire(1).await;
+        self.raw.read().await;
         RwLockReadGuard { lock: self }
     }
 
@@ -93,7 +93,7 @@ impl<T: ?Sized> RwLock<T> {
     /// assert!(lock.try_read().is_none());
     /// ```
     pub fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
-        if self.s.try_acquire(1) {
+        if self.raw.try_read() {
             Some(RwLockReadGuard { lock: self })
         } else {
             None
@@ -116,7 +116,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for RwLockReadGuard<'_, T> {}
 
 impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.s.release(1);
+        self.lock.raw.unlock_read();
     }
 }
 
@@ -174,7 +174,7 @@ impl<'a, T: ?Sized> RwLockReadGuard<'a, T> {
     {
         let d = NonNull::from(f(&*orig));
         let orig = ManuallyDrop::new(orig);
-        MappedRwLockReadGuard::new(d, &orig.lock.s)
+        MappedRwLockReadGuard::new(d, &orig.lock.raw)
     }
 
     /// Attempts to make a new [`MappedRwLockReadGuard`] for a component of the
@@ -216,7 +216,7 @@ impl<'a, T: ?Sized> RwLockReadGuard<'a, T> {
             Some(d) => {
                 let d = NonNull::from(d);
                 let orig = ManuallyDrop::new(orig);
-                Ok(MappedRwLockReadGuard::new(d, &orig.lock.s))
+                Ok(MappedRwLockReadGuard::new(d, &orig.lock.raw))
             }
             None => Err(orig),
         }

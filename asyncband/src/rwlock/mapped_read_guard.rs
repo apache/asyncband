@@ -20,7 +20,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
 
-use crate::internal::semaphore;
+use crate::rwlock::RawRwLock;
 
 /// RAII structure used to release the shared read access of a lock when dropped, for a mapped
 /// component of the locked data.
@@ -30,7 +30,7 @@ use crate::internal::semaphore;
 /// access control while maintaining the same locking semantics.
 ///
 /// As long as you have this guard, you have shared read access to the underlying `T`. The guard
-/// internally keeps a reference to the original rwlock's semaphore, so the original lock is
+/// internally keeps a reference to the original rwlock's scheduler, so the original lock is
 /// maintained until this guard is dropped.
 ///
 /// `MappedRwLockReadGuard` implements [`Send`] and [`Sync`] when `T: Sync`, allowing it to be
@@ -82,14 +82,14 @@ use crate::internal::semaphore;
 #[must_use = "if unused the RwLock will immediately unlock"]
 pub struct MappedRwLockReadGuard<'a, T: ?Sized> {
     d: NonNull<T>,
-    s: &'a semaphore::Semaphore,
+    raw: &'a RawRwLock,
     variance: PhantomData<fn() -> T>,
 }
 
 // SAFETY: MappedRwLockReadGuard is Send when T: Sync. We don't require T: Send because
 // the guard RwLockReadGuard doesn't transfer ownership of T - it only holds a shared reference.
 // When moved to another thread, the guard maintains the read lock and the new thread
-// can safely access &T (which is allowed since T: Sync). The semaphore reference
+// can safely access &T (which is allowed since T: Sync). The scheduler reference
 // and NonNull pointer are both safe to transfer between threads.
 unsafe impl<T: ?Sized + Sync> Send for MappedRwLockReadGuard<'_, T> {}
 
@@ -98,10 +98,10 @@ unsafe impl<T: ?Sized + Sync> Send for MappedRwLockReadGuard<'_, T> {}
 unsafe impl<T: ?Sized + Sync> Sync for MappedRwLockReadGuard<'_, T> {}
 
 impl<'a, T: ?Sized> MappedRwLockReadGuard<'a, T> {
-    pub(crate) fn new(d: NonNull<T>, s: &'a semaphore::Semaphore) -> Self {
+    pub(super) fn new(d: NonNull<T>, raw: &'a RawRwLock) -> Self {
         Self {
             d,
-            s,
+            raw,
             variance: PhantomData,
         }
     }
@@ -109,7 +109,7 @@ impl<'a, T: ?Sized> MappedRwLockReadGuard<'a, T> {
 
 impl<T: ?Sized> Drop for MappedRwLockReadGuard<'_, T> {
     fn drop(&mut self) {
-        self.s.release(1);
+        self.raw.unlock_read();
     }
 }
 
@@ -192,7 +192,7 @@ impl<'a, T: ?Sized> MappedRwLockReadGuard<'a, T> {
         // access to the data through the rwlock, so dereferencing is safe.
         let d = NonNull::from(f(unsafe { orig.d.as_ref() }));
         let orig = std::mem::ManuallyDrop::new(orig);
-        MappedRwLockReadGuard::new(d, orig.s)
+        MappedRwLockReadGuard::new(d, orig.raw)
     }
 
     /// Attempts to make a new [`MappedRwLockReadGuard`] for a component of the locked data. The
@@ -260,7 +260,7 @@ impl<'a, T: ?Sized> MappedRwLockReadGuard<'a, T> {
             Some(d) => {
                 let d = NonNull::from(d);
                 let orig = std::mem::ManuallyDrop::new(orig);
-                Ok(MappedRwLockReadGuard::new(d, orig.s))
+                Ok(MappedRwLockReadGuard::new(d, orig.raw))
             }
             None => Err(orig),
         }

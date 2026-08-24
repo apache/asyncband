@@ -69,5 +69,8 @@ hashbrown = { workspace = true, default-features = false, features = [
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 
+[target.'cfg(loom)'.dependencies]
+loom = { workspace = true }
+
 [lints]
 workspace = true

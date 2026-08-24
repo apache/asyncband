@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use crate::rwlock::OwnedMappedRwLockWriteGuard;
 use crate::rwlock::OwnedRwLockReadGuard;
+use crate::rwlock::OwnedRwLockUpgradableReadGuard;
 use crate::rwlock::RwLock;
 
 impl<T: ?Sized> RwLock<T> {
@@ -60,11 +61,8 @@ impl<T: ?Sized> RwLock<T> {
     /// # }
     /// ```
     pub async fn write_owned(self: Arc<Self>) -> OwnedRwLockWriteGuard<T> {
-        self.s.acquire(self.max_readers).await;
-        OwnedRwLockWriteGuard {
-            permits_acquired: self.max_readers,
-            lock: self,
-        }
+        self.raw.write().await;
+        OwnedRwLockWriteGuard { lock: self }
     }
 
     /// Attempts to acquire this `RwLock` with exclusive write access.
@@ -94,11 +92,8 @@ impl<T: ?Sized> RwLock<T> {
     /// *v = 2;
     /// ```
     pub fn try_write_owned(self: Arc<Self>) -> Option<OwnedRwLockWriteGuard<T>> {
-        if self.s.try_acquire(self.max_readers) {
-            Some(OwnedRwLockWriteGuard {
-                permits_acquired: self.max_readers,
-                lock: self,
-            })
+        if self.raw.try_write() {
+            Some(OwnedRwLockWriteGuard { lock: self })
         } else {
             None
         }
@@ -129,7 +124,6 @@ impl<T: ?Sized> RwLock<T> {
 /// ```
 #[must_use = "if unused the RwLock will immediately unlock"]
 pub struct OwnedRwLockWriteGuard<T: ?Sized> {
-    pub(super) permits_acquired: usize,
     pub(super) lock: Arc<RwLock<T>>,
 }
 
@@ -138,7 +132,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for OwnedRwLockWriteGuard<T> {}
 
 impl<T: ?Sized> Drop for OwnedRwLockWriteGuard<T> {
     fn drop(&mut self) {
-        self.lock.s.release(self.permits_acquired);
+        self.lock.raw.unlock_write();
     }
 }
 
@@ -216,13 +210,12 @@ impl<T: ?Sized> OwnedRwLockWriteGuard<T> {
         let d = NonNull::from(f(unsafe { &mut *orig.lock.c.get() }));
         let orig = ManuallyDrop::new(orig);
 
-        let permits_acquired = orig.permits_acquired;
         // SAFETY: The original guard is wrapped in `ManuallyDrop` and will not be dropped.
         // This allows us to safely move the `Arc` out of it and transfer ownership to the new
         // guard.
         let lock = unsafe { std::ptr::read(&orig.lock) };
 
-        OwnedMappedRwLockWriteGuard::new(d, lock, permits_acquired)
+        OwnedMappedRwLockWriteGuard::new(d, lock)
     }
 
     /// Attempts to make a new [`OwnedMappedRwLockWriteGuard`] for a component of the
@@ -285,13 +278,12 @@ impl<T: ?Sized> OwnedRwLockWriteGuard<T> {
 
         let orig = ManuallyDrop::new(orig);
 
-        let permits_acquired = orig.permits_acquired;
         // SAFETY: The original guard is wrapped in `ManuallyDrop` and will not be dropped.
         // This allows us to safely move the `Arc` out of it and transfer ownership to the new
         // guard.
         let lock = unsafe { std::ptr::read(&orig.lock) };
 
-        Ok(OwnedMappedRwLockWriteGuard::new(d, lock, permits_acquired))
+        Ok(OwnedMappedRwLockWriteGuard::new(d, lock))
     }
 
     /// Atomically downgrades the write lock to a read lock.
@@ -327,18 +319,46 @@ impl<T: ?Sized> OwnedRwLockWriteGuard<T> {
     /// ```
     pub fn downgrade(self) -> OwnedRwLockReadGuard<T> {
         // Prevent the original write guard from running its Drop implementation,
-        // which would release all permits. This must be done BEFORE any operation
+        // which would unlock the rwlock. This must be done BEFORE any operation
         // that might panic to ensure panic safety.
         let guard = ManuallyDrop::new(self);
 
-        // Release max_readers - 1 permits to convert the write lock to a read lock.
-        // The remaining 1 permit is kept for the read lock.
-        guard.lock.s.release(guard.permits_acquired - 1);
+        guard.lock.raw.downgrade_write_to_read();
 
         // SAFETY: The `guard` is wrapped in `ManuallyDrop`, so its destructor will not be run.
         // We can safely move the `Arc` out of the guard, as the guard is not used after this.
         // This is a standard way to transfer ownership from a `ManuallyDrop` wrapper.
         let lock = unsafe { std::ptr::read(&guard.lock) };
         OwnedRwLockReadGuard { lock }
+    }
+
+    /// Atomically downgrades this guard to an owned upgradable read guard.
+    ///
+    /// The returned guard keeps the lock alive and reserves the ability to promote again.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use std::sync::Arc;
+    ///
+    /// use asyncband::rwlock::RwLock;
+    ///
+    /// let lock = Arc::new(RwLock::new(1));
+    /// let writer = lock.clone().write_owned().await;
+    /// let upgradable = writer.downgrade_to_upgradable();
+    ///
+    /// assert!(lock.try_read().is_some());
+    /// assert!(lock.clone().try_upgradable_read_owned().is_none());
+    /// assert_eq!(*upgradable, 1);
+    /// # }
+    /// ```
+    pub fn downgrade_to_upgradable(self) -> OwnedRwLockUpgradableReadGuard<T> {
+        let guard = ManuallyDrop::new(self);
+        guard.lock.raw.downgrade_write_to_upgradable();
+        // SAFETY: the source guard will not drop and ownership moves to the upgradable guard.
+        let lock = unsafe { std::ptr::read(&guard.lock) };
+        OwnedRwLockUpgradableReadGuard { lock }
     }
 }

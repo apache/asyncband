@@ -103,6 +103,26 @@ jobs:
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo x bench
 
+  loom:
+    name: Loom concurrency check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      RUSTFLAGS: --cfg loom
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install stable toolchain
+        run: >-
+          rustup toolchain install stable
+          --profile minimal
+          --no-self-update
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Explore modeled interleavings
+        run: >-
+          cargo test -p asyncband --lib --all-features loom_ --release
+          -- --test-threads=1
+
   required:
     name: Required
     runs-on: ubuntu-24.04
@@ -110,6 +130,7 @@ jobs:
     needs:
       - benchmark
       - check
+      - loom
       - test
     steps:
       - name: Guardian
@@ -117,6 +138,7 @@ jobs:
           if [[ ! ( \
                  "${{ needs.benchmark.result }}" == "success" \
               && "${{ needs.check.result }}" == "success" \
+              && "${{ needs.loom.result }}" == "success" \
               && "${{ needs.test.result }}" == "success" \
               ) ]]; then
             echo "Required jobs haven't been completed successfully."

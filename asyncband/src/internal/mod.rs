@@ -53,14 +53,9 @@ pub(crate) mod once_table;
 ))]
 pub(crate) mod mutex;
 
-#[cfg(any(
-    feature = "mpsc",
-    feature = "mutex",
-    feature = "rwlock",
-    feature = "semaphore",
-))]
-// `mpsc` uses `poll_acquire`, `release_if_nonempty`, and `notify_all`; mutexes and rwlocks use
-// `acquire`, `try_acquire`, and `release`; the public semaphore also uses the accounting methods.
+#[cfg(any(feature = "mpsc", feature = "mutex", feature = "semaphore",))]
+// `mpsc` uses `poll_acquire`, `release_if_nonempty`, and `notify_all`; mutexes use `acquire`,
+// `try_acquire`, and `release`; the public semaphore also uses the accounting methods.
 // Each single-primitive build intentionally leaves the other groups unused.
 #[allow(dead_code)]
 pub(crate) mod semaphore;

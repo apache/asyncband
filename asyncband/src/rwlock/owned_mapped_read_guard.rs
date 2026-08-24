@@ -116,7 +116,7 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockReadGuard<T, U> {
 }
 impl<T: ?Sized, U: ?Sized> Drop for OwnedMappedRwLockReadGuard<T, U> {
     fn drop(&mut self) {
-        self.lock.s.release(1);
+        self.lock.raw.unlock_read();
     }
 }
 
