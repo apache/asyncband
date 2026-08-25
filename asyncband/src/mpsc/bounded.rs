@@ -27,9 +27,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
-use crate::internal::atomic_option_box::AtomicOptionBox;
+use crate::internal::atomic_waker::AtomicWaker;
 use crate::internal::semaphore::Acquire;
 use crate::internal::semaphore::Semaphore;
 use crate::mpsc::RecvError;
@@ -49,7 +48,7 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     let state = Arc::new(BoundedState {
         senders: AtomicUsize::new(1),
         tx_permits: Semaphore::new(0),
-        rx_task: AtomicOptionBox::none(),
+        rx_waker: AtomicWaker::new(),
     });
     let (sender, receiver) = std::sync::mpsc::sync_channel(buffer);
     let sender = BoundedSender {
@@ -66,7 +65,7 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
 struct BoundedState {
     senders: AtomicUsize,
     tx_permits: Semaphore,
-    rx_task: AtomicOptionBox<Waker>,
+    rx_waker: AtomicWaker,
 }
 
 /// Send values to the associated [`BoundedReceiver`].
@@ -102,9 +101,7 @@ impl<T> Drop for BoundedSender<T> {
             1 => {
                 // If this is the last sender, we need to wake up the receiver so it can
                 // observe the disconnected state.
-                if let Some(waker) = self.state.rx_task.take() {
-                    waker.wake();
-                }
+                self.state.rx_waker.wake();
             }
             _ => {
                 // there are still other senders left, do nothing
@@ -203,9 +200,7 @@ impl<T> BoundedSender<T> {
         let sender = self.sender.as_ref().unwrap();
         match sender.try_send(value) {
             Ok(()) => {
-                if let Some(waker) = self.state.rx_task.take() {
-                    waker.wake();
-                }
+                self.state.rx_waker.wake();
 
                 Ok(())
             }
@@ -347,8 +342,7 @@ impl<T> BoundedReceiver<T> {
             Ok(v) => Poll::Ready(Ok(v)),
             Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
             Err(TryRecvError::Empty) => {
-                let waker = Some(Box::new(cx.waker().clone()));
-                self.state.rx_task.store(waker);
+                self.state.rx_waker.register(cx.waker());
 
                 match self.try_recv() {
                     Ok(v) => Poll::Ready(Ok(v)),
