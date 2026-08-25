@@ -20,7 +20,7 @@
 github:
   description: >-
     This crate provides concurrency control and async coordination primitives that are runtime agnostic.
-  homepage: https://docs.rs/asyncband/
+  homepage: https://asyncband.apache.org
   labels:
     - asynchronous
     - futures
