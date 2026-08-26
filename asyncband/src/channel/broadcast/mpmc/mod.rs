@@ -15,6 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Broadcast channels grouped by producer topology.
+//! Multi-producer, multi-consumer broadcast channels.
 
-pub mod mpmc;
+mod unbounded;
+
+pub use self::unbounded::RecvError;
+pub use self::unbounded::TryRecvError;
+pub use self::unbounded::UnboundedReceiver;
+pub use self::unbounded::UnboundedSender;
+pub use self::unbounded::unbounded;

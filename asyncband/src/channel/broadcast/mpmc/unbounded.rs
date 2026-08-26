@@ -25,8 +25,8 @@
 //!
 //! This channel does not impose a capacity limit. A slow or stalled receiver can cause the
 //! buffer to grow without bound, because messages are retained until every active receiver has
-//! consumed them or the receiver is dropped. Use [`Sender::buffer_len`] to monitor the number of
-//! messages currently retained by the shared buffer.
+//! consumed them or the receiver is dropped. Use [`UnboundedSender::buffer_len`] to monitor the
+//! number of messages currently retained by the shared buffer.
 //!
 //! The buffer keeps the capacity a steady workload needs, so a channel that repeatedly fills and
 //! drains does not reallocate. Capacity grown for a one-off burst is released once a later cycle
@@ -34,10 +34,8 @@
 //!
 //! # Receivers
 //!
-//! Each receiver has an independent cursor. Use [`Sender::subscribe`] to create a receiver that
-//! starts at the current tail of the channel, [`Receiver::clone`] to create one that shares this
-//! receiver's unread backlog, or [`Receiver::resubscribe`] to skip this receiver's backlog and
-//! start a new receiver at the current tail.
+//! Each receiver has an independent cursor. Use [`UnboundedSender::subscribe`] or
+//! [`UnboundedReceiver::resubscribe`] to create a receiver that starts at the current tail.
 //!
 //! Messages are reclaimed once the slowest receiver moves past them, which scans one slot per
 //! receiver. Only the receive that advances the slowest cursor pays for that scan, and the channel
@@ -49,11 +47,11 @@
 //! Basic usage:
 //!
 //! ```
-//! use asyncband::broadcast::unbounded;
+//! use asyncband::broadcast::mpmc;
 //!
 //! # #[tokio::main]
 //! # async fn main() {
-//! let (tx, mut rx1) = unbounded::channel();
+//! let (tx, mut rx1) = mpmc::unbounded();
 //! let mut rx2 = tx.subscribe();
 //!
 //! tx.send(10);
@@ -69,11 +67,11 @@
 //! Slow receivers do not miss messages:
 //!
 //! ```
-//! use asyncband::broadcast::unbounded;
+//! use asyncband::broadcast::mpmc;
 //!
 //! # #[tokio::main]
 //! # async fn main() {
-//! let (tx, mut rx1) = unbounded::channel();
+//! let (tx, mut rx1) = mpmc::unbounded();
 //! let mut rx2 = tx.subscribe();
 //!
 //! tx.send(1);
@@ -104,26 +102,26 @@ use std::task::Poll;
 use crate::internal::arena::Arena;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::WaitRegistration;
 use crate::internal::waitset::WaitSet;
+use crate::internal::waitset::WakerToken;
 
 #[cfg(test)]
 mod tests;
 
 /// Creates a new broadcast channel with an unbounded buffer.
 ///
-/// See [module-level documentation](self) for broadcast channel semantics.
+/// Every accepted value is retained until all active receivers consume it or are dropped.
 ///
 /// # Examples
 ///
 /// ```
-/// use asyncband::broadcast::unbounded;
+/// use asyncband::broadcast::mpmc;
 ///
-/// let (tx, mut rx) = unbounded::channel();
+/// let (tx, mut rx) = mpmc::unbounded();
 /// tx.send(10);
 /// assert_eq!(rx.try_recv(), Ok(10));
 /// ```
-pub fn channel<T: Clone>() -> (Sender<T>, Receiver<T>) {
+pub fn unbounded<T: Clone>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     let mut receivers = Arena::new();
     let key = receivers.insert(0);
     let shared = Arc::new(Shared {
@@ -138,14 +136,14 @@ pub fn channel<T: Clone>() -> (Sender<T>, Receiver<T>) {
         }),
         senders: AtomicUsize::new(1),
     });
-    let sender = Sender {
+    let sender = UnboundedSender {
         shared: shared.clone(),
     };
-    let receiver = Receiver { shared, key };
+    let receiver = UnboundedReceiver { shared, key };
     (sender, receiver)
 }
 
-/// Error returned by [`Receiver::recv`].
+/// Error returned by [`UnboundedReceiver::recv`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecvError {
     /// The sender has become disconnected, and there will never be any more data received on it.
@@ -162,7 +160,7 @@ impl fmt::Display for RecvError {
 
 impl std::error::Error for RecvError {}
 
-/// Error returned by [`Receiver::try_recv`].
+/// Error returned by [`UnboundedReceiver::try_recv`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TryRecvError {
     /// This channel is currently empty, but the sender(s) have not yet disconnected, so data may
@@ -204,7 +202,7 @@ struct Inner<T> {
     receivers: Arena<u64>,
     /// The largest backlog retained since the buffer was last empty.
     peak_len: usize,
-    /// Receivers parked in [`Receiver::recv`].
+    /// Receivers parked in [`UnboundedReceiver::recv`].
     waiters: WaitSet,
 }
 
@@ -341,11 +339,11 @@ struct Shared<T> {
 ///
 /// The sender can be cloned to create multiple producers. When all senders are dropped,
 /// the channel is closed.
-pub struct Sender<T> {
+pub struct UnboundedSender<T> {
     shared: Arc<Shared<T>>,
 }
 
-impl<T> Clone for Sender<T> {
+impl<T> Clone for UnboundedSender<T> {
     fn clone(&self) -> Self {
         // Relaxed is enough because this count publishes nothing on its own: receivers read it
         // only to decide whether the channel is closed, and every message it could hide is
@@ -357,13 +355,13 @@ impl<T> Clone for Sender<T> {
     }
 }
 
-impl<T> fmt::Debug for Sender<T> {
+impl<T> fmt::Debug for UnboundedSender<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Sender").finish_non_exhaustive()
+        f.debug_struct("UnboundedSender").finish_non_exhaustive()
     }
 }
 
-impl<T> Drop for Sender<T> {
+impl<T> Drop for UnboundedSender<T> {
     fn drop(&mut self) {
         match self.shared.senders.fetch_sub(1, Ordering::AcqRel) {
             1 => {
@@ -381,7 +379,7 @@ impl<T> Drop for Sender<T> {
     }
 }
 
-impl<T> Sender<T> {
+impl<T> UnboundedSender<T> {
     /// Broadcasts a value to all active receivers.
     ///
     /// This operation does not wait for receiver capacity. If receivers fall behind, messages
@@ -398,9 +396,9 @@ impl<T> Sender<T> {
     /// # Examples
     ///
     /// ```
-    /// use asyncband::broadcast::unbounded;
+    /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = unbounded::channel();
+    /// let (tx, mut rx) = mpmc::unbounded();
     /// tx.send(10);
     /// assert_eq!(rx.try_recv(), Ok(10));
     /// ```
@@ -447,9 +445,9 @@ impl<T> Sender<T> {
     /// # Examples
     ///
     /// ```
-    /// use asyncband::broadcast::unbounded;
+    /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = unbounded::channel();
+    /// let (tx, mut rx) = mpmc::unbounded();
     /// tx.send(10);
     /// assert_eq!(tx.buffer_len(), 1);
     ///
@@ -465,9 +463,9 @@ impl<T> Sender<T> {
     /// # Examples
     ///
     /// ```
-    /// use asyncband::broadcast::unbounded;
+    /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, rx) = unbounded::channel::<i32>();
+    /// let (tx, rx) = mpmc::unbounded::<i32>();
     /// assert_eq!(tx.receiver_count(), 1);
     ///
     /// let rx2 = tx.subscribe();
@@ -486,12 +484,12 @@ impl<T> Sender<T> {
     /// # Examples
     ///
     /// ```
-    /// use asyncband::broadcast::unbounded;
-    /// use asyncband::broadcast::unbounded::TryRecvError;
+    /// use asyncband::broadcast::mpmc;
+    /// use asyncband::broadcast::mpmc::TryRecvError;
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let (tx, _) = unbounded::channel();
+    /// let (tx, _) = mpmc::unbounded();
     /// tx.send(10);
     ///
     /// let mut rx = tx.subscribe();
@@ -500,67 +498,30 @@ impl<T> Sender<T> {
     /// assert_eq!(rx.recv().await, Ok(20));
     /// # }
     /// ```
-    pub fn subscribe(&self) -> Receiver<T> {
+    pub fn subscribe(&self) -> UnboundedReceiver<T> {
         let mut inner = self.shared.inner.lock();
         let head = inner.tail;
         let key = inner.insert_receiver(head);
         let shared = self.shared.clone();
-        Receiver { shared, key }
+        UnboundedReceiver { shared, key }
     }
 }
 
 /// A receiver handle to the broadcast channel.
 ///
 /// Each receiver sees every message sent to the channel while the receiver is active.
-///
-/// Cloning a receiver creates one that shares this receiver's unread backlog, while
-/// [`Receiver::resubscribe`] creates one that starts at the current tail instead.
-pub struct Receiver<T> {
+pub struct UnboundedReceiver<T> {
     shared: Arc<Shared<T>>,
     key: SlotId,
 }
 
-impl<T> Clone for Receiver<T> {
-    /// Creates a receiver that starts from this receiver's current position.
-    ///
-    /// The clone reads this receiver's unread backlog and every later message. Use
-    /// [`Receiver::resubscribe`] instead to start at the current tail and skip the backlog.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use asyncband::broadcast::unbounded;
-    ///
-    /// let (tx, mut rx) = unbounded::channel();
-    /// tx.send(1);
-    ///
-    /// let mut clone = rx.clone();
-    /// assert_eq!(rx.try_recv(), Ok(1));
-    /// assert_eq!(clone.try_recv(), Ok(1));
-    /// ```
-    fn clone(&self) -> Self {
-        let key = {
-            let mut inner = self.shared.inner.lock();
-            let head = *inner
-                .receivers
-                .get(self.key)
-                .expect("active broadcast receiver must be registered");
-            inner.insert_receiver(head)
-        };
-        Self {
-            shared: self.shared.clone(),
-            key,
-        }
-    }
-}
-
-impl<T> fmt::Debug for Receiver<T> {
+impl<T> fmt::Debug for UnboundedReceiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Receiver").finish_non_exhaustive()
+        f.debug_struct("UnboundedReceiver").finish_non_exhaustive()
     }
 }
 
-impl<T> Drop for Receiver<T> {
+impl<T> Drop for UnboundedReceiver<T> {
     fn drop(&mut self) {
         let reclaimed = {
             let mut inner = self.shared.inner.lock();
@@ -570,7 +531,7 @@ impl<T> Drop for Receiver<T> {
     }
 }
 
-impl<T: Clone> Receiver<T> {
+impl<T: Clone> UnboundedReceiver<T> {
     /// Receives the next value for this receiver.
     ///
     /// # Returns
@@ -588,11 +549,11 @@ impl<T: Clone> Receiver<T> {
     /// # Examples
     ///
     /// ```
-    /// use asyncband::broadcast::unbounded;
+    /// use asyncband::broadcast::mpmc;
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let (tx, mut rx) = unbounded::channel();
+    /// let (tx, mut rx) = mpmc::unbounded();
     /// tx.send(10);
     /// assert_eq!(rx.recv().await, Ok(10));
     /// # }
@@ -617,9 +578,9 @@ impl<T: Clone> Receiver<T> {
     /// # Examples
     ///
     /// ```
-    /// use asyncband::broadcast::unbounded;
+    /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = unbounded::channel();
+    /// let (tx, mut rx) = mpmc::unbounded();
     /// tx.send(10);
     /// assert_eq!(rx.try_recv(), Ok(10));
     /// ```
@@ -654,7 +615,7 @@ fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Vec<Arc<T>>) -> T {
     }
 }
 
-impl<T> Receiver<T> {
+impl<T> UnboundedReceiver<T> {
     fn try_recv_shared(&mut self) -> Result<(Arc<T>, Vec<Arc<T>>), TryRecvError> {
         // Check this receiver's cursor while holding `inner` before observing `senders`. Senders
         // append messages under the same lock before they can be dropped, so an empty result here
@@ -681,9 +642,9 @@ impl<T> Receiver<T> {
     /// # Examples
     ///
     /// ```
-    /// use asyncband::broadcast::unbounded;
+    /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = unbounded::channel();
+    /// let (tx, mut rx) = mpmc::unbounded();
     /// tx.send(1);
     /// tx.send(2);
     ///
@@ -702,15 +663,15 @@ impl<T> Receiver<T> {
 
     /// Returns the number of messages this receiver can still read.
     ///
-    /// This count is specific to this receiver, unlike [`Sender::buffer_len`], which reports the
-    /// shared backlog retained by the slowest active receiver.
+    /// This count is specific to this receiver, unlike [`UnboundedSender::buffer_len`], which
+    /// reports the shared backlog retained by the slowest active receiver.
     ///
     /// # Examples
     ///
     /// ```
-    /// use asyncband::broadcast::unbounded;
+    /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = unbounded::channel();
+    /// let (tx, mut rx) = mpmc::unbounded();
     /// assert_eq!(rx.len(), 0);
     ///
     /// tx.send(10);
@@ -734,9 +695,9 @@ impl<T> Receiver<T> {
     /// # Examples
     ///
     /// ```
-    /// use asyncband::broadcast::unbounded;
+    /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, rx) = unbounded::channel();
+    /// let (tx, rx) = mpmc::unbounded();
     /// assert!(rx.is_empty());
     ///
     /// tx.send(10);
@@ -748,8 +709,8 @@ impl<T> Receiver<T> {
 }
 
 struct Recv<'a, T> {
-    receiver: &'a mut Receiver<T>,
-    registration: Option<WaitRegistration>,
+    receiver: &'a mut UnboundedReceiver<T>,
+    registration: Option<WakerToken>,
 }
 
 impl<T> Drop for Recv<'_, T> {

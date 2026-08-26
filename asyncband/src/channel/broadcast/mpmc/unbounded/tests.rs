@@ -21,14 +21,14 @@ use super::*;
 #[should_panic(expected = "broadcast channel version counter overflowed")]
 fn send_panics_on_version_overflow() {
     // The receiver is dropped right away: the doctored counter would make its own drop overflow.
-    let (tx, _) = channel();
+    let (tx, _) = unbounded();
     tx.shared.inner.lock().tail = u64::MAX;
     tx.send(());
 }
 
 #[test]
 fn one_off_burst_allocation_is_returned_once_it_is_behind_us() {
-    let (tx, mut rx) = channel();
+    let (tx, mut rx) = unbounded();
 
     let burst = MIN_RETAINED_CAPACITY * 16;
     for i in 0..burst {
@@ -52,7 +52,7 @@ fn one_off_burst_allocation_is_returned_once_it_is_behind_us() {
 
 #[test]
 fn repeated_bursts_keep_their_allocation() {
-    let (tx, mut rx) = channel();
+    let (tx, mut rx) = unbounded();
     let burst = MIN_RETAINED_CAPACITY * 4;
 
     for _ in 0..4 {

@@ -15,6 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Broadcast channels grouped by producer topology.
-
-pub mod mpmc;
+mod unbounded;

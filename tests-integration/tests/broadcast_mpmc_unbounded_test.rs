@@ -26,7 +26,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-use asyncband::broadcast::unbounded::*;
+use asyncband::broadcast::mpmc::*;
 
 struct TrackWake(AtomicUsize);
 
@@ -39,7 +39,7 @@ impl Wake for TrackWake {
 /// A payload whose destructor re-enters the channel it was sent through.
 struct Reentrant {
     value: u64,
-    channel: Option<Sender<Reentrant>>,
+    channel: Option<UnboundedSender<Reentrant>>,
 }
 
 impl Clone for Reentrant {
@@ -95,7 +95,7 @@ impl Rng {
 
 #[tokio::test]
 async fn test_broadcast_basic() {
-    let (tx, mut rx1) = channel();
+    let (tx, mut rx1) = unbounded();
     let mut rx2 = tx.subscribe();
 
     tx.send(10);
@@ -109,7 +109,7 @@ async fn test_broadcast_basic() {
 
 #[tokio::test]
 async fn test_subscribe() {
-    let (tx, _rx) = channel();
+    let (tx, _rx) = unbounded();
     let mut rx = tx.subscribe();
 
     tx.send(100);
@@ -118,7 +118,7 @@ async fn test_subscribe() {
 
 #[tokio::test]
 async fn test_resubscribe() {
-    let (tx, mut rx) = channel();
+    let (tx, mut rx) = unbounded();
 
     tx.send(1);
     tx.send(2);
@@ -137,7 +137,7 @@ async fn test_resubscribe() {
 
 #[test]
 fn test_try_recv() {
-    let (tx, mut rx) = channel();
+    let (tx, mut rx) = unbounded();
 
     // Empty
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
@@ -154,7 +154,7 @@ fn test_try_recv() {
 
 #[tokio::test]
 async fn test_slow_receiver_keeps_every_message() {
-    let (tx, mut rx1) = channel();
+    let (tx, mut rx1) = unbounded();
     let mut rx2 = tx.subscribe();
 
     for i in 0..1024 {
@@ -175,7 +175,7 @@ async fn test_slow_receiver_keeps_every_message() {
 
 #[tokio::test]
 async fn buffer_len_tracks_the_slowest_receiver() {
-    let (tx, mut rx1) = channel();
+    let (tx, mut rx1) = unbounded();
     let mut rx2 = tx.subscribe();
 
     tx.send(1);
@@ -196,7 +196,7 @@ async fn buffer_len_tracks_the_slowest_receiver() {
 
 #[tokio::test]
 async fn test_dropping_a_lagging_receiver_releases_its_backlog() {
-    let (tx, mut rx1) = channel();
+    let (tx, mut rx1) = unbounded();
     let rx2 = tx.subscribe();
 
     for i in 0..128 {
@@ -213,7 +213,7 @@ async fn test_dropping_a_lagging_receiver_releases_its_backlog() {
 
 #[tokio::test]
 async fn resubscribe_keeps_the_original_receivers_backlog() {
-    let (tx, mut rx) = channel();
+    let (tx, mut rx) = unbounded();
 
     tx.send(1);
     tx.send(2);
@@ -234,7 +234,7 @@ async fn resubscribe_keeps_the_original_receivers_backlog() {
 
 #[tokio::test]
 async fn send_without_receivers_does_not_buffer() {
-    let (tx, rx) = channel();
+    let (tx, rx) = unbounded();
     drop(rx);
 
     tx.send(1);
@@ -250,7 +250,7 @@ async fn send_without_receivers_does_not_buffer() {
 
 #[test]
 fn receiver_count_and_len_track_each_receiver() {
-    let (tx, mut rx1) = channel();
+    let (tx, mut rx1) = unbounded();
     assert_eq!(tx.receiver_count(), 1);
     assert_eq!(rx1.len(), 0);
     assert!(rx1.is_empty());
@@ -278,44 +278,6 @@ fn receiver_count_and_len_track_each_receiver() {
     assert_eq!(rx1.len(), 2);
 }
 
-#[tokio::test]
-async fn clone_shares_the_current_position() {
-    let (tx, mut rx) = channel();
-
-    tx.send(1);
-    tx.send(2);
-    assert_eq!(rx.recv().await, Ok(1));
-
-    // The clone inherits the unread backlog, unlike `resubscribe`.
-    let mut clone = rx.clone();
-    let mut fresh = rx.resubscribe();
-    assert_eq!(tx.receiver_count(), 3);
-
-    tx.send(3);
-
-    assert_eq!(clone.recv().await, Ok(2));
-    assert_eq!(clone.recv().await, Ok(3));
-    assert_eq!(rx.recv().await, Ok(2));
-    assert_eq!(rx.recv().await, Ok(3));
-    assert_eq!(fresh.recv().await, Ok(3));
-    assert_eq!(tx.buffer_len(), 0);
-}
-
-#[tokio::test]
-async fn clone_at_head_keeps_the_backlog_alive() {
-    let (tx, mut rx) = channel();
-
-    tx.send(1);
-    let clone = rx.clone();
-
-    assert_eq!(rx.recv().await, Ok(1));
-    // The clone still sits at `head`, so the message must not be reclaimed yet.
-    assert_eq!(tx.buffer_len(), 1);
-
-    drop(clone);
-    assert_eq!(tx.buffer_len(), 0);
-}
-
 #[test]
 fn sole_receiver_takes_messages_without_cloning() {
     static CLONES: AtomicUsize = AtomicUsize::new(0);
@@ -329,7 +291,7 @@ fn sole_receiver_takes_messages_without_cloning() {
         }
     }
 
-    let (tx, mut rx) = channel();
+    let (tx, mut rx) = unbounded();
     for i in 0..8 {
         tx.send(CountClone(i));
         assert_eq!(rx.try_recv().unwrap().0, i);
@@ -346,7 +308,7 @@ fn sole_receiver_takes_messages_without_cloning() {
 
 #[test]
 fn panicking_clone_leaves_the_channel_consistent() {
-    let (tx, mut rx1) = channel();
+    let (tx, mut rx1) = unbounded();
     let mut rx2 = tx.subscribe();
 
     tx.send(PanicOnClone {
@@ -379,7 +341,7 @@ fn message_destructors_run_outside_the_channel_lock() {
     let flag = finished.clone();
 
     let worker = thread::spawn(move || {
-        let (tx, mut rx1) = channel();
+        let (tx, mut rx1) = unbounded();
         let rx2 = tx.subscribe();
 
         for value in 0..4 {
@@ -419,7 +381,7 @@ fn message_destructors_run_outside_the_channel_lock() {
 
 #[tokio::test]
 async fn test_wait_mechanism() {
-    let (tx, mut rx) = channel();
+    let (tx, mut rx) = unbounded();
 
     let handle = tokio::spawn(async move { rx.recv().await });
 
@@ -431,7 +393,7 @@ async fn test_wait_mechanism() {
 
 #[test]
 fn send_wakes_a_parked_receiver_exactly_once() {
-    let (tx, mut rx) = channel();
+    let (tx, mut rx) = unbounded();
     let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
     let waker = Waker::from(tracker.clone());
     let mut context = Context::from_waker(&waker);
@@ -447,7 +409,7 @@ fn send_wakes_a_parked_receiver_exactly_once() {
 
 #[test]
 fn cancelled_recv_releases_its_waker() {
-    let (tx, mut rx) = channel::<()>();
+    let (tx, mut rx) = unbounded::<()>();
     let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
     let waker = Waker::from(tracker.clone());
     let baseline = Arc::strong_count(&tracker);
@@ -467,7 +429,7 @@ fn cancelled_recv_releases_its_waker() {
 
 #[test]
 fn dropping_a_woken_recv_keeps_another_receivers_waiter() {
-    let (tx, mut rx1) = channel::<i32>();
+    let (tx, mut rx1) = unbounded::<i32>();
     let mut rx2 = tx.subscribe();
     let first = Arc::new(TrackWake(AtomicUsize::new(0)));
     let waker = Waker::from(first.clone());
@@ -495,7 +457,7 @@ fn dropping_a_woken_recv_keeps_another_receivers_waiter() {
 
 #[test]
 fn parked_recv_wakes_when_the_last_sender_drops() {
-    let (tx, mut rx) = channel::<()>();
+    let (tx, mut rx) = unbounded::<()>();
     let extra = tx.clone();
     let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
     let waker = Waker::from(tracker.clone());
@@ -516,7 +478,7 @@ fn parked_recv_wakes_when_the_last_sender_drops() {
 
 #[test]
 fn parked_recv_prefers_buffered_messages_over_disconnect() {
-    let (tx, mut rx) = channel();
+    let (tx, mut rx) = unbounded();
     let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
     let waker = Waker::from(tracker);
     let mut context = Context::from_waker(&waker);
@@ -534,7 +496,7 @@ fn parked_recv_prefers_buffered_messages_over_disconnect() {
 
 #[tokio::test]
 async fn recv_drains_buffered_messages_before_reporting_disconnect() {
-    let (tx, mut rx) = channel();
+    let (tx, mut rx) = unbounded();
 
     tx.send(1);
     tx.send(2);
@@ -547,7 +509,7 @@ async fn recv_drains_buffered_messages_before_reporting_disconnect() {
 
 #[tokio::test]
 async fn recv_reports_disconnect_without_any_message() {
-    let (tx, mut rx) = channel::<()>();
+    let (tx, mut rx) = unbounded::<()>();
     drop(tx);
     assert_eq!(rx.recv().await, Err(RecvError::Disconnected));
 }
@@ -557,17 +519,10 @@ fn concurrent_senders_deliver_every_message_to_every_receiver() {
     const SENDERS: u64 = 4;
     const PER_SENDER: u64 = 512;
 
-    let (tx, rx) = channel();
-    let receivers = (0..4)
-        .map(|index| {
-            if index == 0 {
-                rx.clone()
-            } else {
-                tx.subscribe()
-            }
-        })
-        .collect::<Vec<_>>();
-    drop(rx);
+    let (tx, rx) = unbounded();
+    let mut receivers = Vec::with_capacity(4);
+    receivers.push(rx);
+    receivers.extend((1..4).map(|_| tx.subscribe()));
 
     let senders = (0..SENDERS)
         .map(|worker| {
@@ -610,7 +565,7 @@ fn concurrent_senders_deliver_every_message_to_every_receiver() {
 fn randomized_operations_track_the_reference_model() {
     for seed in 1..32u64 {
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-        let (tx, rx) = channel::<u64>();
+        let (tx, rx) = unbounded::<u64>();
         let mut tail = 0u64;
         let mut model = vec![(rx, 0u64)];
 

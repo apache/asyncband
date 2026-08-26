@@ -26,13 +26,13 @@ use std::sync::Barrier;
 use std::thread;
 use std::thread::JoinHandle;
 
-use asyncband::broadcast::unbounded;
+use asyncband::broadcast::mpmc;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::bench_context;
-use super::support::poll_pending;
-use super::support::poll_pinned_ready;
+use crate::support::bench_context;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
 
 const RECEIVER_COUNTS: &[usize] = &[1, 8, 32];
 const CONCURRENCY_COUNTS: &[usize] = &[1, 2, 4, 8];
@@ -70,7 +70,7 @@ const RECLAIM_FANOUTS: &[Fanout] = &[
 ];
 
 struct ConcurrentSend {
-    receiver: unbounded::Receiver<usize>,
+    receiver: mpmc::UnboundedReceiver<usize>,
     start: Arc<Barrier>,
     done: Arc<Barrier>,
     workers: Vec<JoinHandle<()>>,
@@ -78,7 +78,7 @@ struct ConcurrentSend {
 
 impl ConcurrentSend {
     fn new(sender_count: usize) -> Self {
-        let (sender, receiver) = unbounded::channel();
+        let (sender, receiver) = mpmc::unbounded();
         let ready = Arc::new(Barrier::new(sender_count + 1));
         let start = Arc::new(Barrier::new(sender_count + 1));
         let done = Arc::new(Barrier::new(sender_count + 1));
@@ -131,7 +131,7 @@ impl Drop for ConcurrentSend {
 }
 
 struct ConcurrentFanout {
-    sender: unbounded::Sender<usize>,
+    sender: mpmc::UnboundedSender<usize>,
     start: Arc<Barrier>,
     done: Arc<Barrier>,
     workers: Vec<JoinHandle<()>>,
@@ -139,7 +139,7 @@ struct ConcurrentFanout {
 
 impl ConcurrentFanout {
     fn new(receiver_count: usize) -> Self {
-        let (sender, receiver) = unbounded::channel();
+        let (sender, receiver) = mpmc::unbounded();
         let mut receivers = Vec::with_capacity(receiver_count);
         receivers.push(receiver);
         for _ in 1..receiver_count {
@@ -196,14 +196,14 @@ impl Drop for ConcurrentFanout {
 
 #[divan::bench]
 fn send_without_receivers(bencher: Bencher) {
-    let (sender, receiver) = unbounded::channel::<usize>();
+    let (sender, receiver) = mpmc::unbounded::<usize>();
     drop(receiver);
     bencher.bench_local(|| sender.send(black_box(1)));
 }
 
 #[divan::bench]
 fn try_recv_empty(bencher: Bencher) {
-    let (sender, mut receiver) = unbounded::channel::<usize>();
+    let (sender, mut receiver) = mpmc::unbounded::<usize>();
     bencher.bench_local(|| black_box(receiver.try_recv()));
     black_box(sender);
 }
@@ -211,7 +211,7 @@ fn try_recv_empty(bencher: Bencher) {
 // A sole receiver takes ownership of the payload, so this path never clones the message.
 #[divan::bench]
 fn send_and_try_recv(bencher: Bencher) {
-    let (sender, mut receiver) = unbounded::channel();
+    let (sender, mut receiver) = mpmc::unbounded();
     bencher.bench_local(|| {
         sender.send(black_box(1usize));
         black_box(receiver.try_recv().unwrap())
@@ -221,7 +221,7 @@ fn send_and_try_recv(bencher: Bencher) {
 // With the payload shared, each receive clones it and the second one reclaims the slot.
 #[divan::bench]
 fn send_and_try_recv_shared(bencher: Bencher) {
-    let (sender, mut first) = unbounded::channel();
+    let (sender, mut first) = mpmc::unbounded();
     let mut second = sender.subscribe();
     bencher.bench_local(|| {
         sender.send(black_box(1usize));
@@ -238,7 +238,7 @@ fn payload() -> String {
 
 #[divan::bench]
 fn send_and_try_recv_owned(bencher: Bencher) {
-    let (sender, mut receiver) = unbounded::channel();
+    let (sender, mut receiver) = mpmc::unbounded();
     bencher.bench_local(|| {
         sender.send(black_box(payload()));
         black_box(receiver.try_recv().unwrap())
@@ -247,7 +247,7 @@ fn send_and_try_recv_owned(bencher: Bencher) {
 
 #[divan::bench]
 fn send_and_try_recv_owned_shared(bencher: Bencher) {
-    let (sender, mut first) = unbounded::channel();
+    let (sender, mut first) = mpmc::unbounded();
     let mut second = sender.subscribe();
     bencher.bench_local(|| {
         sender.send(black_box(payload()));
@@ -260,7 +260,7 @@ fn send_and_try_recv_owned_shared(bencher: Bencher) {
 // the same peak drained down to fewer receivers shows what the slots left behind still cost.
 #[divan::bench(args = RECLAIM_FANOUTS)]
 fn drain_with_receivers(bencher: Bencher, fanout: Fanout) {
-    let (sender, receiver) = unbounded::channel();
+    let (sender, receiver) = mpmc::unbounded();
     drop(receiver);
     let mut receivers = (0..fanout.peak)
         .map(|_| sender.subscribe())
@@ -305,7 +305,7 @@ fn cancel_pending(bencher: Bencher) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let (sender, mut receiver) = unbounded::channel::<usize>();
+        let (sender, mut receiver) = mpmc::unbounded::<usize>();
         {
             let mut recv = pin!(receiver.recv());
             poll_pending(recv.as_mut(), &mut context);
@@ -319,7 +319,7 @@ fn deliver_to_waiter(bencher: Bencher) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let (sender, mut receiver) = unbounded::channel();
+        let (sender, mut receiver) = mpmc::unbounded();
         let mut recv = pin!(receiver.recv());
         poll_pending(recv.as_mut(), &mut context);
 
@@ -334,7 +334,7 @@ fn deliver_to_receiver_batch(bencher: Bencher, receiver_count: usize) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let (sender, receiver) = unbounded::channel();
+        let (sender, receiver) = mpmc::unbounded();
         drop(receiver);
         let mut receivers = (0..receiver_count)
             .map(|_| sender.subscribe())
