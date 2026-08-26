@@ -29,8 +29,6 @@ mod once_map;
 
 #[cfg(feature = "lazy-cell")]
 pub use self::lazy_cell::LazyCell;
-#[cfg(feature = "lazy-cell")]
-pub use self::lazy_cell::LazyCellFuture;
 #[cfg(feature = "once")]
 pub use self::once::Once;
 #[cfg(feature = "once-cell")]
