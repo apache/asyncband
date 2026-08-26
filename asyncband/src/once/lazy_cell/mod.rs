@@ -59,8 +59,7 @@ use crate::mutex::Mutex;
 /// # async fn main() {
 /// use asyncband::once::LazyCell;
 ///
-/// let lazy = LazyCell::new(async || "ready".to_owned());
-/// let lazy = std::pin::pin!(lazy);
+/// let lazy = Box::pin(LazyCell::new(|| async { "ready".to_owned() }));
 ///
 /// assert_eq!(LazyCell::get(&lazy), None);
 /// assert_eq!(LazyCell::force_pin(lazy.as_ref()).await, "ready");
@@ -159,6 +158,20 @@ where
     /// If another task is initializing the cell, this call waits for that attempt. If the task
     /// driving initialization is cancelled, a later caller resumes the same future.
     ///
+    /// # Examples
+    ///
+    /// Box the future when the cell itself must remain movable:
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use asyncband::once::LazyCell;
+    ///
+    /// let lazy = LazyCell::new(|| Box::pin(async { 92 }));
+    /// assert_eq!(*LazyCell::force(&lazy).await, 92);
+    /// # }
+    /// ```
+    ///
     /// # Panics
     ///
     /// Panics if the initializer panics or the cell was previously poisoned. Recursive
@@ -168,6 +181,19 @@ where
     }
 
     /// Initializes the value if needed and returns mutable access to it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use asyncband::once::LazyCell;
+    ///
+    /// let mut lazy = LazyCell::new(|| Box::pin(async { String::from("ready") }));
+    /// LazyCell::force_mut(&mut lazy).await.push_str("!");
+    /// assert_eq!(LazyCell::get(&lazy).map(String::as_str), Some("ready!"));
+    /// # }
+    /// ```
     ///
     /// # Panics
     ///
@@ -186,6 +212,22 @@ where
     ///
     /// Pinning the cell keeps an inline initialization future at a stable address. Cancellation
     /// leaves that future in the cell so a later caller can resume it.
+    ///
+    /// Use this method when the stored future is not [`Unpin`]. [`Box::pin`] is one way to pin the
+    /// whole cell; [`Pin::as_ref`] then supplies the `Pin<&Self>` required here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use asyncband::once::LazyCell;
+    ///
+    /// // This async block is stored inline, so pin the cell before polling it.
+    /// let lazy = Box::pin(LazyCell::new(|| async { 92 }));
+    /// assert_eq!(*LazyCell::force_pin(lazy.as_ref()).await, 92);
+    /// # }
+    /// ```
     ///
     /// # Panics
     ///
@@ -215,6 +257,23 @@ where
     }
 
     /// Initializes a pinned cell and returns mutable access to its value.
+    ///
+    /// Exclusive access lets this method initialize the cell directly. Calling [`Pin::as_mut`] on
+    /// a pinned box supplies the required `Pin<&mut Self>` without moving the cell.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use asyncband::once::LazyCell;
+    ///
+    /// let mut lazy = Box::pin(LazyCell::new(|| async { String::from("ready") }));
+    /// let value = LazyCell::force_pin_mut(lazy.as_mut()).await;
+    /// value.push_str("!");
+    /// assert_eq!(value, "ready!");
+    /// # }
+    /// ```
     ///
     /// # Panics
     ///
