@@ -51,3 +51,4 @@ unknown_lints = "deny"
 
 [workspace.lints.clippy]
 dbg_macro = "deny"
+module_inception = "allow"

@@ -18,7 +18,6 @@
 //! Asynchronous primitives for one-time coordination.
 
 #[cfg(feature = "once")]
-#[allow(clippy::module_inception)]
 mod once;
 #[cfg(feature = "once-cell")]
 mod once_cell;
