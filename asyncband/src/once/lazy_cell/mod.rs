@@ -34,8 +34,8 @@ use crate::mutex::Mutex;
 /// caller chooses whether that future lives inline in the cell or behind a pointer such as
 /// `Pin<Box<_>>`.
 ///
-/// An `Unpin` future can be initialized with [`force`](Self::force). Otherwise the cell itself must
-/// be pinned and initialized with [`force_pin`](Self::force_pin). If the forcing caller is
+/// An `Unpin` future can be initialized with [`force`](Self::force). Otherwise, the cell itself
+/// must be pinned and initialized with [`force_pin`](Self::force_pin). If the forcing caller is
 /// cancelled, the initialization future remains in the cell and the next caller resumes that same
 /// future instead of starting over.
 ///
