@@ -26,6 +26,8 @@ use std::sync::atomic::Ordering;
 use crate::internal::value_cell::ValueCell;
 use crate::mutex::Mutex;
 
+type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+
 /// A thread-safe value initialized by a stored asynchronous function on first access.
 ///
 /// Initialization starts when [`force`](Self::force) is polled. Concurrent callers wait without
@@ -60,7 +62,7 @@ use crate::mutex::Mutex;
 /// assert_eq!(LazyCell::get(&lazy).map(String::as_str), Some("ready"));
 /// # }
 /// ```
-pub struct LazyCell<T, F = fn() -> Pin<Box<dyn Future<Output = T> + Send + 'static>>> {
+pub struct LazyCell<T, F = fn() -> BoxFuture<T>> {
     value: ValueCell<T>,
     state: Mutex<State<T, F>>,
     poisoned: AtomicBool,
@@ -68,7 +70,7 @@ pub struct LazyCell<T, F = fn() -> Pin<Box<dyn Future<Output = T> + Send + 'stat
 
 struct State<T, F> {
     initializer: Option<F>,
-    attempt: Option<Pin<Box<dyn Future<Output = T> + Send + 'static>>>,
+    attempt: Option<BoxFuture<T>>,
 }
 
 impl<T, F> State<T, F> {
@@ -218,7 +220,7 @@ where
     T: Default,
 {
     fn default() -> Self {
-        fn initialize<T: Default>() -> Pin<Box<dyn Future<Output = T> + Send + 'static>> {
+        fn initialize<T: Default>() -> BoxFuture<T> {
             Box::pin(async { T::default() })
         }
 
