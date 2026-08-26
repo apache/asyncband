@@ -254,10 +254,13 @@ impl Drop for Acquire<'_> {
                 node.permits = 0;
                 true
             });
-            waiters.remove_unlinked_waiter(index);
+            let waiter = waiters.remove_unlinked_waiter(index);
             if acquired > 0 {
                 self.semaphore.insert_permits_with_lock(acquired, waiters);
+            } else {
+                drop(waiters);
             }
+            drop(waiter);
         }
     }
 }
@@ -275,6 +278,7 @@ impl Acquire<'_> {
             return Poll::Ready(());
         }
 
+        let mut old_waker = None;
         match index {
             Some(idx) => {
                 let mut waiters = semaphore.waiters.lock();
@@ -286,7 +290,7 @@ impl Acquire<'_> {
                             .as_ref()
                             .is_none_or(|current| !current.will_wake(waker));
                         if update_waker {
-                            node.waker = Some(waker.clone());
+                            old_waker = node.waker.replace(waker.clone());
                         }
                         false
                     } else {
@@ -311,6 +315,7 @@ impl Acquire<'_> {
             }
         };
 
+        drop(old_waker);
         Poll::Pending
     }
 }
