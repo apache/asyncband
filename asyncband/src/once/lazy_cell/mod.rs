@@ -73,9 +73,12 @@ pub struct LazyCell<T, Fut, F = fn() -> Fut> {
     poisoned: AtomicBool,
 }
 
-struct State<F, Fut> {
-    initializer: Option<F>,
-    attempt: Option<Fut>,
+// Keep mutually exclusive phases in an enum so an inline future shares storage with its
+// initializer instead of making the cell large enough to hold both at once.
+enum State<F, Fut> {
+    Initializer(Option<F>),
+    Attempt(Fut),
+    Complete,
 }
 
 impl<T, Fut, F> LazyCell<T, Fut, F> {
@@ -115,10 +118,7 @@ impl<T, Fut, F> LazyCell<T, Fut, F> {
     {
         Self {
             value: ValueCell::new(),
-            state: Mutex::new(State {
-                initializer: Some(initializer),
-                attempt: None,
-            }),
+            state: Mutex::new(State::Initializer(Some(initializer))),
             poisoned: AtomicBool::new(false),
         }
     }
@@ -248,42 +248,53 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = T>,
 {
-    if state.as_ref().get_ref().attempt.is_none() {
-        // SAFETY: The initializer is not structurally pinned and the attempt is still empty. The
-        // newly created future is written directly into its final pinned location.
-        let state = unsafe { state.as_mut().get_unchecked_mut() };
-        let initializer = state
-            .initializer
-            .take()
-            .expect("LazyCell initializer missing while uninitialized");
+    // SAFETY: The initializer is not structurally pinned. We only move it from the initializer
+    // variant, which cannot contain a pinned future.
+    let initializer = match unsafe { state.as_mut().get_unchecked_mut() } {
+        State::Initializer(initializer) => Some(
+            initializer
+                .take()
+                .expect("LazyCell initializer missing while uninitialized"),
+        ),
+        State::Attempt(_) => None,
+        State::Complete => panic!("LazyCell state complete while value is uninitialized"),
+    };
+
+    if let Some(initializer) = initializer {
         let future = {
             let _poison = PoisonOnPanic(poisoned);
             initializer()
         };
-        state.attempt = Some(future);
+
+        // SAFETY: The current variant contains no structurally pinned future, and its initializer
+        // slot is empty. The newly created future is written directly into its final pinned
+        // location before it is polled.
+        *unsafe { state.as_mut().get_unchecked_mut() } = State::Attempt(future);
     }
 
     let value = std::future::poll_fn(|cx| {
         let _poison = PoisonOnPanic(poisoned);
         // SAFETY: The state remains pinned while this future is polled, and the attempt is never
         // moved after it is installed.
-        let state = unsafe { state.as_mut().get_unchecked_mut() };
-        let attempt = state
-            .attempt
-            .as_mut()
-            .expect("LazyCell attempt missing while initializing");
+        let attempt = match unsafe { state.as_mut().get_unchecked_mut() } {
+            State::Attempt(attempt) => attempt,
+            State::Initializer(_) => panic!("LazyCell attempt missing while initializing"),
+            State::Complete => panic!("LazyCell state complete while value is uninitialized"),
+        };
         unsafe { Pin::new_unchecked(attempt) }.poll(cx)
     })
     .await;
 
-    // Assignment drops the completed future in place before clearing the slot. Treat a panic from
-    // that destructor as an initializer panic as well.
+    // Assignment drops the completed future in place before changing the phase. Treat a panic
+    // from that destructor as an initializer panic as well.
     let _poison = PoisonOnPanic(poisoned);
     // SAFETY: Dropping a pinned value in place is permitted, and no value is moved out.
-    unsafe { state.as_mut().get_unchecked_mut() }.attempt = None;
+    *unsafe { state.as_mut().get_unchecked_mut() } = State::Complete;
     value
 }
 
+// A default cell starts empty, so `Ready<T>` is a real attempt type: forcing the cell creates
+// `T::default()` at access time and polls that allocation-free future to completion.
 impl<T> Default for LazyCell<T, Ready<T>>
 where
     T: Default,
@@ -297,6 +308,8 @@ where
     }
 }
 
+// A future constructor starts in the attempt phase, so keep the caller's exact future type rather
+// than replacing it with a marker or erasing it behind a pointer.
 impl<T, Fut> LazyCell<T, Fut>
 where
     Fut: Future<Output = T>,
@@ -308,24 +321,20 @@ where
     pub fn from_future(future: Fut) -> Self {
         Self {
             value: ValueCell::new(),
-            state: Mutex::new(State {
-                initializer: None,
-                attempt: Some(future),
-            }),
+            state: Mutex::new(State::Attempt(future)),
             poisoned: AtomicBool::new(false),
         }
     }
 }
 
+// A value constructor never creates or polls an attempt. `Pending<T>` supplies the required
+// `Future<Output = T>` shape without reserving another `T` beside the initialized `ValueCell`.
 impl<T> LazyCell<T, Pending<T>> {
     /// Creates a new `LazyCell` that already contains `value`.
     pub const fn from_value(value: T) -> Self {
         Self {
             value: ValueCell::from_value(value),
-            state: Mutex::new(State {
-                initializer: None,
-                attempt: None,
-            }),
+            state: Mutex::new(State::Complete),
             poisoned: AtomicBool::new(false),
         }
     }

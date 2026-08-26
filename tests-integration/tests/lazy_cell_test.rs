@@ -25,6 +25,14 @@ use std::sync::atomic::Ordering;
 use asyncband::once::LazyCell;
 use tokio::sync::Notify;
 
+struct DropPanic;
+
+impl Drop for DropPanic {
+    fn drop(&mut self) {
+        panic!("future drop panic");
+    }
+}
+
 #[tokio::test]
 async fn initializer_starts_when_force_is_polled() {
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -270,6 +278,31 @@ async fn initializer_poll_panic_permanently_poisons_cell() {
         let _ = LazyCell::force_mut(&mut lazy).await;
     });
     assert!(third.await.unwrap_err().is_panic());
+}
+
+#[tokio::test]
+async fn completed_future_drop_panic_permanently_poisons_cell() {
+    let lazy = Arc::new(LazyCell::new(|| {
+        let guard = DropPanic;
+        std::future::poll_fn(move |_| {
+            let _ = &guard;
+            std::task::Poll::Ready(42)
+        })
+    }));
+
+    let first = {
+        let lazy = lazy.clone();
+        tokio::spawn(async move {
+            let _ = LazyCell::force(&lazy).await;
+        })
+    };
+    assert!(first.await.unwrap_err().is_panic());
+    assert_eq!(LazyCell::get(&lazy), None);
+
+    let second = tokio::spawn(async move {
+        let _ = LazyCell::force(&lazy).await;
+    });
+    assert!(second.await.unwrap_err().is_panic());
 }
 
 #[tokio::test]
