@@ -25,8 +25,7 @@ use asyncband::once::OnceCell;
 use tokio::sync::Notify;
 
 static ONCE_ENDPOINT: OnceCell<String> = OnceCell::new();
-static LAZY_ENDPOINT: LazyCell<String, fn() -> Ready<String>> =
-    LazyCell::new(load_default_endpoint);
+static LAZY_ENDPOINT: LazyCell<String, Ready<String>> = LazyCell::new(load_default_endpoint);
 
 fn load_default_endpoint() -> Ready<String> {
     std::future::ready("https://service.example".to_owned())
@@ -109,12 +108,12 @@ async fn lazy_cell_owns_a_local_fn_once() {
     // A caller could pass `initialize` to `OnceCell::get_or_init` once, but the call consumes it.
     // If that call is cancelled, a later caller cannot supply the same `FnOnce` again. `LazyCell`
     // owns the initializer and preserves its in-flight future across callers.
-    let client = Arc::new(LazyCell::<Client, _>::new(initialize));
+    let client = Arc::pin(LazyCell::new(initialize));
 
     let first_caller = tokio::spawn({
-        let client = Arc::clone(&client);
+        let client = client.clone();
         async move {
-            LazyCell::force(&client).await;
+            LazyCell::force_pin(client.as_ref()).await;
         }
     });
     started.notified().await;
@@ -124,6 +123,6 @@ async fn lazy_cell_owns_a_local_fn_once() {
     // Cancellation does not consume the captured credentials or restart the initializer. The next
     // caller resumes the same future.
     resume.notify_one();
-    assert_eq!(LazyCell::force(&client).await.token, "secret");
+    assert_eq!(LazyCell::force_pin(client.as_ref()).await.token, "secret");
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }

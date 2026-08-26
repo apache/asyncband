@@ -28,11 +28,11 @@ use tokio::sync::Notify;
 #[tokio::test]
 async fn initializer_starts_when_force_is_polled() {
     let attempts = Arc::new(AtomicUsize::new(0));
-    let lazy = LazyCell::<u32, _>::new({
+    let lazy = LazyCell::new({
         let attempts = attempts.clone();
         move || {
             attempts.fetch_add(1, Ordering::SeqCst);
-            async { 42 }
+            Box::pin(async { 42 })
         }
     });
 
@@ -48,12 +48,14 @@ async fn initializer_starts_when_force_is_polled() {
 #[tokio::test]
 async fn concurrent_force_runs_initializer_once() {
     let attempts = Arc::new(AtomicUsize::new(0));
-    let lazy = Arc::new(LazyCell::<u32, _>::new({
+    let lazy = Arc::new(LazyCell::new({
         let attempts = attempts.clone();
-        async move || {
-            attempts.fetch_add(1, Ordering::SeqCst);
-            tokio::task::yield_now().await;
-            42
+        move || {
+            Box::pin(async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                42
+            })
         }
     }));
 
@@ -74,15 +76,17 @@ async fn cancellation_preserves_initialization_future() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let started = Arc::new(Notify::new());
     let resume = Arc::new(Notify::new());
-    let lazy = Arc::new(LazyCell::<u32, _>::new({
+    let lazy = Arc::new(LazyCell::new({
         let attempts = attempts.clone();
         let started = started.clone();
         let resume = resume.clone();
-        async move || {
-            attempts.fetch_add(1, Ordering::SeqCst);
-            started.notify_one();
-            resume.notified().await;
-            42
+        move || {
+            Box::pin(async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                started.notify_one();
+                resume.notified().await;
+                42
+            })
         }
     }));
 
@@ -111,9 +115,10 @@ async fn from_future_does_not_poll_until_forced() {
             42
         }
     });
+    let lazy = std::pin::pin!(lazy);
 
     assert_eq!(polls.load(Ordering::SeqCst), 0);
-    assert_eq!(LazyCell::force(&lazy).await, &42);
+    assert_eq!(LazyCell::force_pin(lazy.as_ref()).await, &42);
     assert_eq!(polls.load(Ordering::SeqCst), 1);
 }
 
@@ -122,7 +127,7 @@ async fn from_future_cancellation_preserves_the_same_future() {
     let executions = Arc::new(AtomicUsize::new(0));
     let started = Arc::new(Notify::new());
     let resume = Arc::new(Notify::new());
-    let lazy = Arc::new(LazyCell::from_future({
+    let lazy = Arc::pin(LazyCell::from_future({
         let executions = executions.clone();
         let started = started.clone();
         let resume = resume.clone();
@@ -136,14 +141,14 @@ async fn from_future_cancellation_preserves_the_same_future() {
 
     let task = {
         let lazy = lazy.clone();
-        tokio::spawn(async move { *LazyCell::force(&lazy).await })
+        tokio::spawn(async move { *LazyCell::force_pin(lazy.as_ref()).await })
     };
     started.notified().await;
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
 
     resume.notify_one();
-    assert_eq!(*LazyCell::force(&lazy).await, 42);
+    assert_eq!(*LazyCell::force_pin(lazy.as_ref()).await, 42);
     assert_eq!(executions.load(Ordering::SeqCst), 1);
 }
 
@@ -151,13 +156,15 @@ async fn from_future_cancellation_preserves_the_same_future() {
 async fn unrelated_unwind_does_not_poison_pending_attempt() {
     let started = Arc::new(Notify::new());
     let resume = Arc::new(Notify::new());
-    let lazy = Arc::new(LazyCell::<u32, _>::new({
+    let lazy = Arc::new(LazyCell::new({
         let started = started.clone();
         let resume = resume.clone();
-        async move || {
-            started.notify_one();
-            resume.notified().await;
-            42
+        move || {
+            Box::pin(async move {
+                started.notify_one();
+                resume.notified().await;
+                42
+            })
         }
     }));
 
@@ -185,13 +192,15 @@ async fn dropping_cell_drops_suspended_attempt() {
     let held = Arc::new(());
     let weak = Arc::downgrade(&held);
     let started = Arc::new(Notify::new());
-    let lazy = Arc::new(LazyCell::<u32, _>::new({
+    let lazy = Arc::new(LazyCell::new({
         let started = started.clone();
-        async move || {
-            started.notify_one();
-            std::future::pending::<()>().await;
-            drop(held);
-            42
+        move || {
+            Box::pin(async move {
+                started.notify_one();
+                std::future::pending::<()>().await;
+                drop(held);
+                42
+            })
         }
     }));
 
@@ -210,11 +219,13 @@ async fn dropping_cell_drops_suspended_attempt() {
 #[tokio::test]
 async fn result_is_cached_as_the_value() {
     let attempts = Arc::new(AtomicUsize::new(0));
-    let lazy = LazyCell::<Result<u32, &'static str>, _>::new({
+    let lazy = LazyCell::new({
         let attempts = attempts.clone();
-        async move || {
-            attempts.fetch_add(1, Ordering::SeqCst);
-            Err("cached")
+        move || {
+            Box::pin(async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Err::<u32, _>("cached")
+            })
         }
     });
 
@@ -226,11 +237,13 @@ async fn result_is_cached_as_the_value() {
 #[tokio::test]
 async fn initializer_poll_panic_permanently_poisons_cell() {
     let attempts = Arc::new(AtomicUsize::new(0));
-    let lazy = Arc::new(LazyCell::<u32, _>::new({
+    let lazy = Arc::new(LazyCell::new({
         let attempts = attempts.clone();
-        async move || {
-            attempts.fetch_add(1, Ordering::SeqCst);
-            panic!("initializer panic");
+        move || {
+            Box::pin(async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                panic!("initializer panic");
+            })
         }
     }));
 
@@ -261,7 +274,7 @@ async fn initializer_poll_panic_permanently_poisons_cell() {
 
 #[tokio::test]
 async fn initializer_creation_panic_permanently_poisons_cell() {
-    let lazy = Arc::new(LazyCell::<u32, _>::new(|| -> std::future::Ready<u32> {
+    let lazy = Arc::new(LazyCell::new(|| -> std::future::Ready<u32> {
         panic!("initializer creation panic")
     }));
 
@@ -281,7 +294,7 @@ async fn initializer_creation_panic_permanently_poisons_cell() {
 
 #[tokio::test]
 async fn force_mut_updates_value() {
-    let mut lazy = LazyCell::<u32, _>::new(async || 41);
+    let mut lazy = LazyCell::new(|| std::future::ready(41));
     *LazyCell::force_mut(&mut lazy).await += 1;
     assert_eq!(LazyCell::get(&lazy), Some(&42));
 }
@@ -290,13 +303,15 @@ async fn force_mut_updates_value() {
 async fn force_mut_resumes_a_started_attempt() {
     let started = Arc::new(Notify::new());
     let resume = Arc::new(Notify::new());
-    let lazy = Arc::new(LazyCell::<u32, _>::new({
+    let lazy = Arc::new(LazyCell::new({
         let started = started.clone();
         let resume = resume.clone();
-        async move || {
-            started.notify_one();
-            resume.notified().await;
-            42
+        move || {
+            Box::pin(async move {
+                started.notify_one();
+                resume.notified().await;
+                42
+            })
         }
     }));
 
@@ -317,12 +332,12 @@ async fn force_mut_resumes_a_started_attempt() {
 
 #[tokio::test]
 async fn default_and_value_constructors_match_lazy_cell() {
-    let lazy = LazyCell::<u32>::default();
+    let lazy = LazyCell::<u32, Ready<u32>>::default();
     assert_eq!(format!("{lazy:?}"), "LazyCell(<uninit>)");
     assert_eq!(LazyCell::force(&lazy).await, &0);
     assert_eq!(format!("{lazy:?}"), "LazyCell(0)");
 
-    let local = LazyCell::<Rc<u32>>::default();
+    let local = LazyCell::<Rc<u32>, Ready<Rc<u32>>>::default();
     assert_eq!(**LazyCell::force(&local).await, 0);
 
     let lazy = const { LazyCell::from_value(42) };
@@ -334,9 +349,11 @@ async fn initializer_need_not_be_sync() {
     fn assert_sync<T: Sync>(_: &T) {}
 
     let count = Cell::new(0);
-    let lazy = LazyCell::<u32, _>::new(async move || {
-        count.set(count.get() + 1);
-        count.get()
+    let lazy = LazyCell::new(move || {
+        Box::pin(async move {
+            count.set(count.get() + 1);
+            count.get()
+        })
     });
 
     assert_sync(&lazy);
@@ -347,9 +364,57 @@ fn static_initializer() -> Ready<u32> {
     std::future::ready(42)
 }
 
-static STATIC_LAZY: LazyCell<u32, fn() -> Ready<u32>> = LazyCell::new(static_initializer);
+static STATIC_LAZY: LazyCell<u32, Ready<u32>> = LazyCell::new(static_initializer);
 
 #[tokio::test]
 async fn function_pointer_initializer_supports_statics() {
     assert_eq!(LazyCell::force(&STATIC_LAZY).await, &42);
+}
+
+#[tokio::test]
+async fn inline_future_supports_local_non_send_state() {
+    let local = Rc::new(41);
+    let lazy = LazyCell::new({
+        let local = Rc::clone(&local);
+        async move || {
+            tokio::task::yield_now().await;
+            *local + 1
+        }
+    });
+    let mut lazy = std::pin::pin!(lazy);
+
+    assert_eq!(*LazyCell::force_pin(lazy.as_ref()).await, 42);
+    assert_eq!(LazyCell::get(&lazy), Some(&42));
+
+    *LazyCell::force_pin_mut(lazy.as_mut()).await += 1;
+    assert_eq!(LazyCell::get(&lazy), Some(&43));
+}
+
+#[tokio::test]
+async fn cancellation_preserves_inline_initialization_future() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    let lazy = LazyCell::new({
+        let attempts = Arc::clone(&attempts);
+        let started = Arc::clone(&started);
+        let resume = Arc::clone(&resume);
+        async move || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            started.notify_one();
+            resume.notified().await;
+            42
+        }
+    });
+    let lazy = std::pin::pin!(lazy);
+
+    tokio::select! {
+        biased;
+        _ = LazyCell::force_pin(lazy.as_ref()) => panic!("initializer unexpectedly completed"),
+        _ = started.notified() => {}
+    }
+
+    resume.notify_one();
+    assert_eq!(*LazyCell::force_pin(lazy.as_ref()).await, 42);
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }

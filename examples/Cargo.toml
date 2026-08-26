@@ -35,3 +35,7 @@ workspace = true
 [[example]]
 name = "once_cell_vs_lazy_cell"
 path = "src/once_cell_vs_lazy_cell.rs"
+
+[[example]]
+name = "lazy_cell_boxed_vs_inline"
+path = "src/lazy_cell_boxed_vs_inline.rs"
