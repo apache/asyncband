@@ -75,9 +75,9 @@ Runnable examples live in the [`examples`](examples) workspace crate. They demon
 |                         | [`Latch`](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html)             | `latch`        | Wait until a one-way countdown completes.                               |
 |                         | [`WaitGroup`](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html) | `waitgroup`    | Wait for a dynamic group of tasks to finish.                            |
 |                         | [`shutdown`](https://docs.rs/asyncband/*/asyncband/shutdown/)                        | `shutdown`     | Coordinate shutdown signals and completion.                             |
-| Channels                | [`One-shot`](https://docs.rs/asyncband/*/asyncband/oneshot/fn.channel.html)          | `oneshot`      | Send one value between two tasks.                                       |
-|                         | [`MPSC`](https://docs.rs/asyncband/*/asyncband/mpsc/)                               | `mpsc`         | Send values from multiple producers through bounded or unbounded channels. |
-| Resource reuse          | [`Object pool`](https://docs.rs/asyncband/*/asyncband/pool/)                        | `pool`         | Reuse objects through bounded or unbounded pool variants.               |
+| Channels                | [`oneshot`](https://docs.rs/asyncband/*/asyncband/oneshot/)                         | `oneshot`      | Send one value between two tasks.                                       |
+|                         | [`mpsc`](https://docs.rs/asyncband/*/asyncband/mpsc/)                               | `mpsc`         | Send values from multiple producers through bounded or unbounded channels. |
+| Resource reuse          | [`pool`](https://docs.rs/asyncband/*/asyncband/pool/)                               | `pool`         | Reuse objects through bounded or unbounded pool variants.               |
 | Workload coordination   | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore`    | Control concurrent access with permits.                                 |
 |                         | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)      | `singleflight` | Coalesce concurrent calls for the same key.                             |
 | Synchronous interop     | [`FutureExt`](https://docs.rs/asyncband/*/asyncband/blocking/trait.FutureExt.html)   | `blocking`     | Drive one runtime-agnostic future from a blocking thread.               |
