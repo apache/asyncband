@@ -41,7 +41,7 @@ The boundary is mechanism versus policy. Task placement, timers, deadlines, retr
 The crate enables no APIs by default. Enable only the features your application uses:
 
 ```shell
-cargo add asyncband --features mutex,oneshot
+cargo add asyncband --features mutex
 ```
 
 ```rust
