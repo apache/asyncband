@@ -16,9 +16,6 @@
 // under the License.
 
 #[cfg(feature = "mpsc")]
-mod error;
-
-#[cfg(feature = "mpsc")]
 pub mod mpsc;
 #[cfg(feature = "oneshot")]
 pub mod oneshot;
