@@ -20,7 +20,6 @@
 #[cfg(feature = "lazy-cell")]
 mod lazy_cell;
 #[cfg(feature = "once")]
-#[allow(clippy::module_inception)]
 mod once;
 #[cfg(feature = "once-cell")]
 mod once_cell;
