@@ -18,16 +18,15 @@
 use std::mem;
 use std::num::NonZeroUsize;
 
-/// A reusable slot index that remains valid only while its slot is occupied.
+/// Identifies a reusable slot while that slot is occupied.
 ///
 /// The non-zero representation lets wrappers such as `WaiterId` retain a niche when stored in an
-/// `Option`. Keys deliberately carry no per-slot generation: each consumer supplies the cheaper
+/// `Option`. Slot IDs deliberately carry no generation: each consumer supplies the cheaper
 /// lifecycle rule that matches its waiter storage.
-#[repr(transparent)]
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub struct ArenaKey(NonZeroUsize);
+pub struct SlotId(NonZeroUsize);
 
-impl ArenaKey {
+impl SlotId {
     fn from_index(index: usize) -> Self {
         // `Slot<T>` is non-zero-sized, so a Vec of slots cannot reach `usize::MAX` elements.
         let encoded = index
@@ -41,9 +40,9 @@ impl ArenaKey {
     }
 }
 
-impl std::fmt::Debug for ArenaKey {
+impl std::fmt::Debug for SlotId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("ArenaKey").field(&self.index()).finish()
+        f.debug_tuple("SlotId").field(&self.index()).finish()
     }
 }
 
@@ -51,7 +50,7 @@ impl std::fmt::Debug for ArenaKey {
 ///
 /// The occupied length equals the number of `Occupied` slots. Every `Vacant` slot appears exactly
 /// once in the singly linked vacant list, which starts at `next_vacant` and terminates at
-/// `slots.len()`. Removing a value makes its key available for immediate reuse.
+/// `slots.len()`. Removing a value makes its slot ID available for immediate reuse.
 #[derive(Debug)]
 pub struct Arena<T> {
     slots: Vec<Slot<T>>,
@@ -103,53 +102,53 @@ impl<T> Arena<T> {
         }
     }
 
-    pub fn insert(&mut self, value: T) -> ArenaKey {
-        let key = self.next_vacant;
+    pub fn insert(&mut self, value: T) -> SlotId {
+        let index = self.next_vacant;
         self.len += 1;
 
-        if key == self.slots.len() {
+        if index == self.slots.len() {
             self.slots.push(Slot::Occupied(value));
-            self.next_vacant = key + 1;
+            self.next_vacant = index + 1;
         } else {
-            self.next_vacant = match self.slots.get(key) {
+            self.next_vacant = match self.slots.get(index) {
                 Some(Slot::Vacant { next }) => *next,
                 Some(Slot::Occupied(_)) | None => {
                     unreachable!("arena free list must point to a vacant slot")
                 }
             };
-            self.slots[key] = Slot::Occupied(value);
+            self.slots[index] = Slot::Occupied(value);
         }
 
-        ArenaKey::from_index(key)
+        SlotId::from_index(index)
     }
 
-    pub fn get(&self, key: ArenaKey) -> Option<&T> {
-        match self.slots.get(key.index()) {
+    pub fn get(&self, id: SlotId) -> Option<&T> {
+        match self.slots.get(id.index()) {
             Some(Slot::Occupied(value)) => Some(value),
             Some(Slot::Vacant { .. }) | None => None,
         }
     }
 
-    pub fn get_mut(&mut self, key: ArenaKey) -> Option<&mut T> {
-        match self.slots.get_mut(key.index()) {
+    pub fn get_mut(&mut self, id: SlotId) -> Option<&mut T> {
+        match self.slots.get_mut(id.index()) {
             Some(Slot::Occupied(value)) => Some(value),
             Some(Slot::Vacant { .. }) | None => None,
         }
     }
 
-    /// Removes the value stored at `key`.
+    /// Removes the value stored at `id`.
     ///
     /// # Panics
     ///
-    /// Panics if the key is out of bounds or its slot is already vacant. Either case is an internal
-    /// waiter-lifecycle violation rather than a recoverable lookup failure.
+    /// Panics if the slot ID is out of bounds or its slot is already vacant. Either case is an
+    /// internal waiter-lifecycle violation rather than a recoverable lookup failure.
     #[track_caller]
-    pub fn remove(&mut self, key: ArenaKey) -> T {
-        let index = key.index();
+    pub fn remove(&mut self, id: SlotId) -> T {
+        let index = id.index();
         let slot = self
             .slots
             .get_mut(index)
-            .expect("arena key must be in bounds");
+            .expect("arena slot ID must be in bounds");
         let value = match mem::replace(
             slot,
             Slot::Vacant {
@@ -159,7 +158,7 @@ impl<T> Arena<T> {
             Slot::Occupied(value) => value,
             vacant @ Slot::Vacant { .. } => {
                 *slot = vacant;
-                panic!("arena key must be occupied");
+                panic!("arena slot ID must be occupied");
             }
         };
         self.len -= 1;
@@ -169,8 +168,8 @@ impl<T> Arena<T> {
 
     /// Takes every occupied value in slot order while retaining the allocation for reuse.
     ///
-    /// Every previously issued key becomes invalid, including keys for slots that were already
-    /// vacant. Consumers that retain keys across this operation must supply their own epoch check.
+    /// Every previously issued slot ID becomes invalid, including IDs for slots that were already
+    /// vacant. Consumers that retain IDs across this operation must supply their own epoch check.
     #[inline]
     pub fn take_all(&mut self) -> impl Iterator<Item = T> + use<T> {
         let len = self.len;
@@ -207,11 +206,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_preserves_the_option_niche() {
-        assert_eq!(
-            std::mem::size_of::<ArenaKey>(),
-            std::mem::size_of::<Option<ArenaKey>>()
-        );
+    fn slot_id_preserves_the_option_niche() {
+        assert_eq!(size_of::<SlotId>(), size_of::<Option<SlotId>>());
     }
 
     #[test]
@@ -229,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn take_all_restarts_key_allocation() {
+    fn take_all_restarts_slot_id_allocation() {
         let mut arena = Arena::with_capacity(3);
         let first = arena.insert(1);
         let second = arena.insert(2);
@@ -241,7 +237,7 @@ mod tests {
         assert_eq!(arena.len(), 0);
         assert_eq!(arena.slots.capacity(), capacity);
 
-        let keys = [arena.insert(4), arena.insert(5), arena.insert(6)];
-        assert_eq!(keys, [first, second, third]);
+        let slot_ids = [arena.insert(4), arena.insert(5), arena.insert(6)];
+        assert_eq!(slot_ids, [first, second, third]);
     }
 }

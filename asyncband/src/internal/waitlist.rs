@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::internal::arena::Arena;
-use crate::internal::arena::ArenaKey;
+use crate::internal::arena::SlotId;
 
 /// A linked waiter queue whose detached nodes remain addressable until removal.
 #[derive(Debug)]
@@ -26,16 +26,15 @@ pub struct WaitList<T> {
     nodes: Arena<Node<T>>,
 }
 
-#[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct WaiterId(ArenaKey);
+pub struct WaiterId(SlotId);
 
 impl WaiterId {
-    fn new(key: ArenaKey) -> Self {
-        Self(key)
+    fn new(slot: SlotId) -> Self {
+        Self(slot)
     }
 
-    fn key(self) -> ArenaKey {
+    fn slot(self) -> SlotId {
         self.0
     }
 }
@@ -156,18 +155,18 @@ impl<T> WaitList<T> {
             self.node(id).links.is_none(),
             "waiter must be unlinked before removal"
         );
-        self.nodes.remove(id.key()).value
+        self.nodes.remove(id.slot()).value
     }
 
     fn node(&self, id: WaiterId) -> &Node<T> {
         self.nodes
-            .get(id.key())
+            .get(id.slot())
             .expect("waiter id must refer to an occupied node")
     }
 
     fn node_mut(&mut self, id: WaiterId) -> &mut Node<T> {
         self.nodes
-            .get_mut(id.key())
+            .get_mut(id.slot())
             .expect("waiter id must refer to an occupied node")
     }
 
@@ -190,10 +189,7 @@ mod tests {
 
     #[test]
     fn waiter_id_preserves_the_option_niche() {
-        assert_eq!(
-            std::mem::size_of::<WaiterId>(),
-            std::mem::size_of::<Option<WaiterId>>()
-        );
+        assert_eq!(size_of::<WaiterId>(), size_of::<Option<WaiterId>>());
     }
 
     #[test]

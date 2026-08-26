@@ -63,7 +63,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::countdown::CountdownState;
-use crate::internal::waitset::WaitRegistration;
+use crate::internal::waitset::WakerToken;
 
 /// A synchronization primitive that can be used to coordinate multiple tasks.
 ///
@@ -209,7 +209,7 @@ impl Latch {
     /// ```
     pub async fn wait(&self) {
         let fut = LatchWait {
-            registration: None,
+            token: None,
             latch: self,
         };
         fut.await
@@ -245,7 +245,7 @@ impl Latch {
     /// ```
     pub async fn wait_owned(self: Arc<Self>) {
         let fut = OwnedLatchWait {
-            registration: None,
+            token: None,
             latch: self,
         };
         fut.await
@@ -253,12 +253,8 @@ impl Latch {
 }
 
 impl Latch {
-    fn intern_poll(
-        &self,
-        registration: &mut Option<WaitRegistration>,
-        cx: &mut Context<'_>,
-    ) -> Poll<()> {
-        self.state.poll_wait(registration, cx)
+    fn intern_poll(&self, token: &mut Option<WakerToken>, cx: &mut Context<'_>) -> Poll<()> {
+        self.state.poll_wait(token, cx)
     }
 }
 
@@ -267,7 +263,7 @@ impl Latch {
 /// This future will complete when the latch count reaches zero.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct LatchWait<'a> {
-    registration: Option<WaitRegistration>,
+    token: Option<WakerToken>,
     latch: &'a Latch,
 }
 
@@ -281,18 +277,15 @@ impl Future for LatchWait<'_> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self {
-            registration,
-            latch,
-        } = self.get_mut();
-        latch.intern_poll(registration, cx)
+        let Self { token, latch } = self.get_mut();
+        latch.intern_poll(token, cx)
     }
 }
 
 impl Drop for LatchWait<'_> {
     fn drop(&mut self) {
-        if self.registration.is_some() {
-            self.latch.state.unregister_waker(&mut self.registration);
+        if self.token.is_some() {
+            self.latch.state.unregister_waker(&mut self.token);
         }
     }
 }
@@ -302,7 +295,7 @@ impl Drop for LatchWait<'_> {
 /// This future will complete when the latch count reaches zero.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct OwnedLatchWait {
-    registration: Option<WaitRegistration>,
+    token: Option<WakerToken>,
     latch: Arc<Latch>,
 }
 
@@ -316,18 +309,15 @@ impl Future for OwnedLatchWait {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self {
-            registration,
-            latch,
-        } = self.get_mut();
-        latch.intern_poll(registration, cx)
+        let Self { token, latch } = self.get_mut();
+        latch.intern_poll(token, cx)
     }
 }
 
 impl Drop for OwnedLatchWait {
     fn drop(&mut self) {
-        if self.registration.is_some() {
-            self.latch.state.unregister_waker(&mut self.registration);
+        if self.token.is_some() {
+            self.latch.state.unregister_waker(&mut self.token);
         }
     }
 }

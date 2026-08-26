@@ -21,8 +21,8 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::WaitRegistration;
 use crate::internal::waitset::WaitSet;
+use crate::internal::waitset::WakerToken;
 
 #[derive(Debug)]
 pub struct CountdownState {
@@ -72,15 +72,11 @@ impl CountdownState {
     }
 
     /// Polls for zero, registering the current waker if the countdown is still active.
-    pub fn poll_wait(
-        &self,
-        registration: &mut Option<WaitRegistration>,
-        cx: &mut Context<'_>,
-    ) -> Poll<()> {
+    pub fn poll_wait(&self, token: &mut Option<WakerToken>, cx: &mut Context<'_>) -> Poll<()> {
         if self.spin_wait(16).is_ok() {
             // The zero transition owns draining this wake epoch. Avoid taking the waiter lock
             // again when the completed future is dropped.
-            *registration = None;
+            *token = None;
             return Poll::Ready(());
         }
 
@@ -88,21 +84,21 @@ impl CountdownState {
             let mut waiters = self.waiters.lock();
             if self.state() == 0 {
                 // A concurrent zero transition will drain after this lock is released.
-                *registration = None;
+                *token = None;
                 return Poll::Ready(());
             }
-            waiters.register_waker(registration, cx)
+            waiters.register_waker(token, cx)
         };
         drop(replaced_waker);
         Poll::Pending
     }
 
     #[inline]
-    pub fn unregister_waker(&self, registration: &mut Option<WaitRegistration>) {
-        if registration.is_some() {
+    pub fn unregister_waker(&self, token: &mut Option<WakerToken>) {
+        if token.is_some() {
             let removed_waker = {
                 let mut waiters = self.waiters.lock();
-                waiters.unregister_waker(registration)
+                waiters.unregister_waker(token)
             };
             drop(removed_waker);
         }
