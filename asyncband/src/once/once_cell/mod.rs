@@ -24,6 +24,11 @@ use crate::semaphore::SemaphorePermit;
 
 /// A thread-safe cell which can nominally be written to only once.
 ///
+/// Callers provide an initializer when accessing an empty cell. An initializer that returns an
+/// error, panics, or is cancelled leaves the cell empty so a later caller can retry. Use
+/// `LazyCell` instead when the cell should own a one-shot initializer and preserve its in-flight
+/// future across caller cancellation.
+///
 /// # Examples
 ///
 /// ```

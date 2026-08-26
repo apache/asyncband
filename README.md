@@ -56,6 +56,14 @@ async fn increment() {
 
 Public paths stay direct—such as `asyncband::mutex`, `asyncband::pool`, and `asyncband::once::OnceCell`—while Cargo features keep unused implementations out of the build.
 
+## Examples
+
+Runnable examples live in the [`examples`](examples) workspace crate. For example, the [`OnceCell` versus `LazyCell` initialization guide](examples/src/once_cell_vs_lazy_cell.rs) demonstrates when a restartable fixed free function is sufficient, when initialization needs access-time context and retries, and when a lazy value needs to own and preserve a one-shot initializer.
+
+```shell
+cargo run -p examples --example once_cell_vs_lazy_cell
+```
+
 ## API map
 
 | Area                    | API                                                                                  | Feature        | Use                                                                     |

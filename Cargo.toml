@@ -16,7 +16,7 @@
 # under the License.
 
 [workspace]
-members = ["asyncband", "benchmarks", "tests-integration", "xtask"]
+members = ["asyncband", "benchmarks", "examples", "tests-integration", "xtask"]
 resolver = "3"
 
 [workspace.package]
