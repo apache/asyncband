@@ -9,7 +9,7 @@ Use `cargo x` as the source of truth for repository workflows.
 
 ## Code Style
 
-Follow the project-specific conventions in [STYLE.md](STYLE.md).
+- Express visibility at the module boundary. Inside a restricted module, use `pub` for its module API instead of repeating `pub(crate)`.
 
 ## Commits and Pull Requests
 
