@@ -62,7 +62,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::countdown::CountdownState;
-use crate::internal::waitset::WaitRegistration;
+use crate::internal::waitset::WakerToken;
 
 #[cfg(test)]
 mod tests;
@@ -138,10 +138,7 @@ impl IntoFuture for WaitGroup {
     fn into_future(self) -> Self::IntoFuture {
         let state = self.state.clone();
         drop(self);
-        Wait {
-            registration: None,
-            state,
-        }
+        Wait { token: None, state }
     }
 }
 
@@ -152,7 +149,7 @@ impl IntoFuture for WaitGroup {
 /// will complete when the WaitGroup counter reaches zero.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Wait {
-    registration: Option<WaitRegistration>,
+    token: Option<WakerToken>,
     state: Arc<CountdownState>,
 }
 
@@ -162,7 +159,7 @@ impl Clone for Wait {
     /// This does not increment the WaitGroup counter.
     fn clone(&self) -> Self {
         Wait {
-            registration: None,
+            token: None,
             state: self.state.clone(),
         }
     }
@@ -178,18 +175,15 @@ impl Future for Wait {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self {
-            registration,
-            state,
-        } = self.get_mut();
-        state.poll_wait(registration, cx)
+        let Self { token, state } = self.get_mut();
+        state.poll_wait(token, cx)
     }
 }
 
 impl Drop for Wait {
     fn drop(&mut self) {
-        if self.registration.is_some() {
-            self.state.unregister_waker(&mut self.registration);
+        if self.token.is_some() {
+            self.state.unregister_waker(&mut self.token);
         }
     }
 }

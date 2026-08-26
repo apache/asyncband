@@ -21,7 +21,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::countdown::CountdownState;
-use crate::internal::waitset::WaitRegistration;
+use crate::internal::waitset::WakerToken;
 use crate::semaphore::Semaphore;
 
 /// A synchronization primitive which can be used to run a one-time async initialization.
@@ -209,7 +209,7 @@ impl Once {
         }
 
         OnceWait {
-            registration: None,
+            token: None,
             once: self,
         }
         .await
@@ -217,7 +217,7 @@ impl Once {
 }
 
 struct OnceWait<'a> {
-    registration: Option<WaitRegistration>,
+    token: Option<WakerToken>,
     once: &'a Once,
 }
 
@@ -231,15 +231,15 @@ impl Future for OnceWait<'_> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self { registration, once } = self.get_mut();
-        once.done.poll_wait(registration, cx)
+        let Self { token, once } = self.get_mut();
+        once.done.poll_wait(token, cx)
     }
 }
 
 impl Drop for OnceWait<'_> {
     fn drop(&mut self) {
-        if self.registration.is_some() {
-            self.once.done.unregister_waker(&mut self.registration);
+        if self.token.is_some() {
+            self.once.done.unregister_waker(&mut self.token);
         }
     }
 }

@@ -77,8 +77,8 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::WaitRegistration;
 use crate::internal::waitset::WaitSet;
+use crate::internal::waitset::WakerToken;
 
 /// A synchronization primitive for multiple tasks that need to wait for each other.
 ///
@@ -255,7 +255,7 @@ impl Barrier {
         };
 
         let fut = BarrierWait {
-            registration: None,
+            token: None,
             generation,
             barrier: self,
         };
@@ -269,7 +269,7 @@ impl Barrier {
 /// This future will complete when all tasks have reached the barrier point.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 struct BarrierWait<'a> {
-    registration: Option<WaitRegistration>,
+    token: Option<WakerToken>,
     generation: usize,
     barrier: &'a Barrier,
 }
@@ -287,7 +287,7 @@ impl Future for BarrierWait<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self {
-            registration,
+            token,
             generation,
             barrier,
         } = self.get_mut();
@@ -296,10 +296,10 @@ impl Future for BarrierWait<'_> {
             let mut state = barrier.state.lock();
             if *generation < state.generation {
                 // Advancing the generation drains its registrations under this same lock.
-                *registration = None;
+                *token = None;
                 return Poll::Ready(());
             }
-            state.waiters.register_waker(registration, cx)
+            state.waiters.register_waker(token, cx)
         };
         drop(replaced_waker);
         Poll::Pending
@@ -308,10 +308,10 @@ impl Future for BarrierWait<'_> {
 
 impl Drop for BarrierWait<'_> {
     fn drop(&mut self) {
-        if self.registration.is_some() {
+        if self.token.is_some() {
             let removed_waker = {
                 let mut state = self.barrier.state.lock();
-                state.waiters.unregister_waker(&mut self.registration)
+                state.waiters.unregister_waker(&mut self.token)
             };
             drop(removed_waker);
         }

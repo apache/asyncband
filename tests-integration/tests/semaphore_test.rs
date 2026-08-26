@@ -20,6 +20,7 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
 use std::task::Waker;
 use std::vec::Vec;
 
@@ -184,6 +185,41 @@ fn wake_then_drop() {
         }
     }
     assert_eq!(s.available_permits(), 2);
+}
+
+#[test]
+fn cancellation_restores_permits_before_dropping_waker() {
+    struct AssertPermitsOnDrop {
+        semaphore: Arc<Semaphore>,
+    }
+
+    impl Wake for AssertPermitsOnDrop {
+        fn wake(self: Arc<Self>) {
+            panic!("cancellation must not wake the removed waiter");
+        }
+    }
+
+    impl Drop for AssertPermitsOnDrop {
+        fn drop(&mut self) {
+            assert_eq!(self.semaphore.available_permits(), 1);
+        }
+    }
+
+    let semaphore = Arc::new(Semaphore::new(1));
+    let waker = Waker::from(Arc::new(AssertPermitsOnDrop {
+        semaphore: semaphore.clone(),
+    }));
+    let mut acquire = Box::pin(semaphore.acquire(2));
+
+    assert!(
+        acquire
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(waker);
+    drop(acquire);
+    assert_eq!(Arc::strong_count(&semaphore), 1);
 }
 
 #[test]
