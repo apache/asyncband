@@ -179,7 +179,8 @@ impl<T, Fut, F> LazyCell<T, Fut, F> {
     }
 
     fn assert_unpoisoned(&self) {
-        if self.poisoned.load(Ordering::Acquire) {
+        // This flag does not publish any accompanying data, so it only needs atomicity.
+        if self.poisoned.load(Ordering::Relaxed) {
             panic_poisoned();
         }
     }
@@ -464,7 +465,7 @@ struct PoisonOnPanic<'a>(&'a AtomicBool);
 impl Drop for PoisonOnPanic<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            self.0.store(true, Ordering::Release);
+            self.0.store(true, Ordering::Relaxed);
         }
     }
 }
