@@ -100,6 +100,7 @@
 //!
 //! While incubation status is not necessarily a reflection of the completeness or stability of the
 //! code, it does indicate that the project has yet to be fully endorsed by the ASF.
+mod channel;
 mod internal;
 
 #[cfg(feature = "barrier")]
@@ -111,7 +112,7 @@ pub mod condvar;
 #[cfg(feature = "latch")]
 pub mod latch;
 #[cfg(feature = "mpsc")]
-pub mod mpsc;
+pub use self::channel::mpsc;
 #[cfg(feature = "mutex")]
 pub mod mutex;
 #[cfg(any(
@@ -122,7 +123,7 @@ pub mod mutex;
 ))]
 pub mod once;
 #[cfg(feature = "oneshot")]
-pub mod oneshot;
+pub use self::channel::oneshot;
 #[cfg(feature = "pool")]
 pub mod pool;
 #[cfg(feature = "rwlock")]

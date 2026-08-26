@@ -26,10 +26,10 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
+use super::RecvError;
+use super::SendError;
+use super::TryRecvError;
 use crate::internal::atomic_waker::AtomicWaker;
-use crate::mpsc::RecvError;
-use crate::mpsc::SendError;
-use crate::mpsc::TryRecvError;
 
 /// Creates an unbounded mpsc channel for communicating between asynchronous
 /// tasks without backpressure.
