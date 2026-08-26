@@ -87,25 +87,22 @@ Runnable examples live in the [`examples`](examples) workspace crate. They demon
 The optional `blocking` module is a boundary adapter for synchronous callers. It parks the calling thread while driving one future; it is not a general-purpose executor.
 
 ```shell
-cargo add asyncband --features blocking,latch
+cargo add asyncband --features blocking,oneshot
 ```
 
 ```rust
-use std::sync::Arc;
 use std::thread;
 
 use asyncband::blocking::FutureExt as _;
-use asyncband::latch::Latch;
+use asyncband::oneshot;
 
-let latch = Arc::new(Latch::new(1));
-let worker_latch = latch.clone();
-let worker = thread::spawn(move || {
-    // Perform synchronous work, then signal its completion.
-    worker_latch.count_down();
+let (sender, receiver) = oneshot::channel();
+thread::spawn(move || {
+    let result = 6 * 7;
+    sender.send(result).unwrap();
 });
 
-latch.wait().block_on();
-worker.join().unwrap();
+assert_eq!(receiver.block_on(), Ok(42));
 ```
 
 ### Async first, blocking by adaptation
