@@ -27,21 +27,10 @@ pub(crate) mod atomic_waker;
     feature = "semaphore",
     feature = "waitgroup",
 ))]
-// `WaitList` and `WaitSet` use different `Arena` operations. Only a build with `barrier` (the sole
-// `with_capacity` user) and a queue-backed primitive exercises the complete shared API.
-#[cfg_attr(
-    not(all(
-        feature = "barrier",
-        any(
-            feature = "mpsc",
-            feature = "mutex",
-            feature = "rwlock",
-            feature = "semaphore",
-        )
-    )),
-    allow(dead_code)
-)]
-mod arena;
+// `WaitList` and `WaitSet` use different `Arena` operations. A single-primitive build therefore
+// leaves part of this shared API unused, while the all-feature build uses it.
+#[allow(dead_code)]
+pub(crate) mod arena;
 
 #[cfg(any(feature = "latch", feature = "once", feature = "waitgroup"))]
 // `waitgroup` increments and decrements the countdown, while `latch` and `once` only decrement it.
