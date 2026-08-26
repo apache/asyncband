@@ -66,7 +66,7 @@ pub(super) struct Arena<T> {
 /// store additional values in a `Vec`, and support consuming iteration. Keeping that representation
 /// focused avoids a general unsafe collection implementation for a single internal operation.
 #[derive(Debug)]
-pub(super) struct ArenaValues<T> {
+struct ArenaValues<T> {
     first: Option<T>,
     rest: Vec<T>,
 }
@@ -172,7 +172,7 @@ impl<T> Arena<T> {
     /// Every previously issued key becomes invalid, including keys for slots that were already
     /// vacant. Consumers that retain keys across this operation must supply their own epoch check.
     #[inline]
-    pub(super) fn take_all(&mut self) -> ArenaValues<T> {
+    pub(super) fn take_all(&mut self) -> impl Iterator<Item = T> + use<T> {
         let len = self.len;
         let mut values = ArenaValues {
             first: None,
@@ -193,7 +193,7 @@ impl<T> Arena<T> {
 
         self.next_vacant = 0;
         self.len = 0;
-        values
+        values.into_iter()
     }
 
     #[cfg(test)]
@@ -237,7 +237,7 @@ mod tests {
         let capacity = arena.slots.capacity();
         arena.remove(second);
 
-        assert_eq!(arena.take_all().into_iter().collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(arena.take_all().collect::<Vec<_>>(), vec![1, 3]);
         assert_eq!(arena.len(), 0);
         assert_eq!(arena.slots.capacity(), capacity);
 

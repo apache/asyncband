@@ -30,7 +30,7 @@ pub(crate) mod atomic_waker;
 // `WaitList` and `WaitSet` use different `Arena` operations. A single-primitive build therefore
 // leaves part of this shared API unused, while the all-feature build uses it.
 #[allow(dead_code)]
-pub(crate) mod arena;
+mod arena;
 
 #[cfg(any(feature = "latch", feature = "once", feature = "waitgroup"))]
 // `waitgroup` increments and decrements the countdown, while `latch` and `once` only decrement it.

@@ -59,7 +59,7 @@ impl WaitSet {
     #[inline]
     pub fn take_wakers(&mut self) -> impl Iterator<Item = Waker> + 'static {
         self.epoch = self.epoch.checked_add(1).expect("wait set epoch overflow");
-        self.waiters.take_all().into_iter()
+        self.waiters.take_all()
     }
 
     /// Registers or updates a waker in the current wake epoch.
