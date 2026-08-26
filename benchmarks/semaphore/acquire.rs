@@ -22,10 +22,10 @@ use asyncband::semaphore::Semaphore;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::bench_context;
-use super::support::poll_pending;
-use super::support::poll_pinned_ready;
-use super::support::poll_ready;
+use crate::support::bench_context;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
+use crate::support::poll_ready;
 
 const QUEUE_DEPTHS: &[usize] = &[1, 8, 32];
 
@@ -58,30 +58,6 @@ fn handoff_permit(bencher: Bencher) {
 
         black_box(semaphore.available_permits())
     });
-}
-
-#[divan::bench]
-fn fulfill_debt_repeatedly(bencher: Bencher) {
-    const CYCLES: usize = 64;
-
-    bencher.bench_local(|| {
-        let semaphore = Semaphore::new(0);
-        for _ in 0..CYCLES {
-            semaphore.reduce_permits(black_box(1));
-            semaphore.release(black_box(1));
-        }
-        black_box(semaphore.available_permits())
-    });
-}
-
-#[divan::bench]
-fn release(bencher: Bencher) {
-    bencher
-        .with_inputs(|| Semaphore::new(0))
-        .bench_local_values(|semaphore| {
-            semaphore.release(black_box(1));
-            black_box(semaphore)
-        });
 }
 
 #[divan::bench]

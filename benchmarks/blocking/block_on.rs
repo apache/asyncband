@@ -20,7 +20,6 @@ use std::sync::mpsc;
 use std::task::Poll;
 use std::task::Waker;
 use std::thread;
-use std::time::Duration;
 
 use asyncband::blocking::FutureExt as _;
 use divan::Bencher;
@@ -29,15 +28,6 @@ use divan::black_box;
 #[divan::bench]
 fn ready(bencher: Bencher) {
     bencher.bench_local(|| async { black_box(42usize) }.block_on());
-}
-
-#[divan::bench]
-fn ready_with_timeout(bencher: Bencher) {
-    bencher.bench_local(|| {
-        async { black_box(42usize) }
-            .wait_timeout(Duration::ZERO)
-            .unwrap()
-    });
 }
 
 #[divan::bench]

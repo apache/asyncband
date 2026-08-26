@@ -15,42 +15,34 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use asyncband::shutdown;
+use std::sync::Arc;
+
+use asyncband::rwlock::RwLock;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::bench_context;
-use super::support::poll_pending;
-use super::support::poll_pinned_ready;
-use super::support::poll_ready;
+use crate::support::bench_context;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
+use crate::support::poll_ready;
 
-const RECEIVER_COUNTS: &[usize] = &[1, 8, 32];
+const READER_COUNTS: &[usize] = &[1, 8, 32];
 
-#[divan::bench(args = RECEIVER_COUNTS)]
-fn signal_and_join(bencher: Bencher, receiver_count: usize) {
+#[divan::bench(args = READER_COUNTS)]
+fn writer_handoff(bencher: Bencher, reader_count: usize) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let (shutdown, guard) = shutdown::new();
-        let guards = (0..receiver_count)
-            .map(|_| guard.clone())
+        let lock = Arc::new(RwLock::new(0usize));
+        let readers = (0..reader_count)
+            .map(|_| poll_ready(lock.clone().read_owned(), &mut context))
             .collect::<Vec<_>>();
-        drop(guard);
+        let mut writer = Box::pin(lock.clone().write_owned());
+        poll_pending(writer.as_mut(), &mut context);
 
-        let mut waits = guards
-            .iter()
-            .map(|guard| Box::pin(guard.shutdown_requested()))
-            .collect::<Vec<_>>();
-        for wait in &mut waits {
-            poll_pending(wait.as_mut(), &mut context);
-        }
-
-        shutdown.request_shutdown();
-        for mut wait in waits {
-            poll_pinned_ready(wait.as_mut(), &mut context);
-        }
-        drop(guards);
-        poll_ready(shutdown, &mut context);
-        black_box(())
+        drop(readers);
+        let mut guard = poll_pinned_ready(writer.as_mut(), &mut context);
+        *guard = guard.wrapping_add(1);
+        black_box(*guard)
     });
 }

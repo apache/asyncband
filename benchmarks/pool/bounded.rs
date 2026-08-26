@@ -21,14 +21,13 @@ use std::pin::pin;
 use asyncband::pool::ManageObject;
 use asyncband::pool::ObjectStatus;
 use asyncband::pool::bounded;
-use asyncband::pool::unbounded;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::bench_context;
-use super::support::poll_pending;
-use super::support::poll_pinned_ready;
-use super::support::poll_ready;
+use crate::support::bench_context;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
+use crate::support::poll_ready;
 
 const CAPACITIES: &[usize] = &[1, 32, 1024, usize::MAX];
 
@@ -69,18 +68,6 @@ fn bounded_warm_get_and_return(bencher: Bencher) {
 
     bencher.bench_local(|| {
         let object = poll_ready(pool.get(), &mut context).unwrap();
-        black_box(*object);
-        drop(object);
-    });
-}
-
-#[divan::bench]
-fn unbounded_warm_try_get_and_return(bencher: Bencher) {
-    let pool = unbounded::Pool::<usize>::never_manage(unbounded::PoolConfig::default());
-    pool.extend_one(0);
-
-    bencher.bench_local(|| {
-        let object = pool.try_get().unwrap();
         black_box(*object);
         drop(object);
     });

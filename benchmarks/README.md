@@ -21,6 +21,8 @@
 
 `benchmarks` measures Asyncband primitives in isolation. The `ecosystem` target compares channel operations with semantically similar Rust channels so a new implementation does not hide a large performance regression behind API differences.
 
+Source files use a primitive/operation layout such as `semaphore/acquire.rs` and `once_map/compute.rs`. Shared setup stays in the nearest `support.rs`. Ecosystem comparisons remain a separate target under `ecosystem/` and follow the same layout within each compared primitive.
+
 ## Running
 
 Run the repository benchmark workflow, including the ecosystem target:
@@ -33,7 +35,7 @@ For a shorter development loop, select the companion target and optionally a Div
 
 ```shell
 cargo bench -p benchmarks --bench ecosystem
-cargo bench -p benchmarks --bench ecosystem -- mpsc::bounded_concurrent
+cargo bench -p benchmarks --bench ecosystem -- mpsc::bounded::concurrent
 ```
 
 Use a release build on an otherwise idle machine, record the CPU and operating system, and compare implementations in the same invocation. Absolute results from different machines are not directly comparable.

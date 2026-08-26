@@ -16,70 +16,18 @@
 // under the License.
 
 use std::cell::Cell;
-use std::pin::pin;
 
-use asyncband::once::Once;
 use asyncband::once::OnceCell;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::bench_context;
-use super::support::poll_pending;
-use super::support::poll_pinned_ready;
-use super::support::poll_ready;
-use super::support::wait_until_open;
+use crate::support::bench_context;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
+use crate::support::poll_ready;
+use crate::support::wait_until_open;
 
 const WAITER_COUNTS: &[usize] = &[1, 8, 32];
-
-#[divan::bench]
-fn cancel_pending_wait(bencher: Bencher) {
-    let mut context = bench_context();
-
-    bencher.bench_local(|| {
-        let once = Once::new();
-        {
-            let mut wait = pin!(once.wait());
-            poll_pending(wait.as_mut(), &mut context);
-        }
-        black_box(once)
-    });
-}
-
-#[divan::bench]
-fn complete_waiter(bencher: Bencher) {
-    let mut context = bench_context();
-
-    bencher.bench_local(|| {
-        let once = Once::new();
-        let mut wait = pin!(once.wait());
-        poll_pending(wait.as_mut(), &mut context);
-
-        poll_ready(once.call_once(async || {}), &mut context);
-        poll_pinned_ready(wait.as_mut(), &mut context);
-        black_box(once.is_completed())
-    });
-}
-
-#[divan::bench(args = WAITER_COUNTS)]
-fn complete_waiter_batch(bencher: Bencher, waiter_count: usize) {
-    let mut context = bench_context();
-
-    bencher.bench_local(|| {
-        let once = Once::new();
-        let mut waiters = (0..waiter_count)
-            .map(|_| Box::pin(once.wait()))
-            .collect::<Vec<_>>();
-        for waiter in &mut waiters {
-            poll_pending(waiter.as_mut(), &mut context);
-        }
-
-        poll_ready(once.call_once(async || {}), &mut context);
-        for mut waiter in waiters {
-            poll_pinned_ready(waiter.as_mut(), &mut context);
-        }
-        black_box(once.is_completed())
-    });
-}
 
 #[divan::bench]
 fn initialize_cell(bencher: Bencher) {

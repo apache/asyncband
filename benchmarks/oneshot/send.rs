@@ -22,7 +22,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-use asyncband::oneshot;
+use asyncband::oneshot::channel;
 use divan::Bencher;
 use divan::black_box;
 
@@ -31,7 +31,7 @@ fn send_before_poll(bencher: Bencher) {
     let mut context = Context::from_waker(Waker::noop());
 
     bencher.bench_local(|| {
-        let (sender, receiver) = black_box(oneshot::channel());
+        let (sender, receiver) = black_box(channel());
         let mut receiver = receiver.into_future();
 
         sender.send(black_box(1usize)).unwrap();
@@ -48,7 +48,7 @@ fn poll_before_send(bencher: Bencher) {
     let mut context = Context::from_waker(Waker::noop());
 
     bencher.bench_local(|| {
-        let (sender, receiver) = black_box(oneshot::channel());
+        let (sender, receiver) = black_box(channel());
         let mut receiver = receiver.into_future();
 
         assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Pending);

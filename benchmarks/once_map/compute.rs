@@ -21,20 +21,21 @@ use asyncband::once::OnceMap;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::bench_context;
-use super::support::defer_input_drop;
-use super::support::poll_pending;
-use super::support::poll_pinned_ready;
-use super::support::poll_ready;
-use super::support::spin_poll_ready;
-use super::support::thread_slot_ticket;
-use super::support::wait_until_open;
-use super::support::yield_polls;
+use super::support::CONTENDED_ENTRY_COUNTS;
+use super::support::THREAD_COUNTS;
+use super::support::preloaded_map;
+use crate::support::bench_context;
+use crate::support::defer_input_drop;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
+use crate::support::poll_ready;
+use crate::support::spin_poll_ready;
+use crate::support::thread_slot_ticket;
+use crate::support::wait_until_open;
+use crate::support::yield_polls;
 
 const CACHED_ENTRY_COUNTS: &[usize] = &[0, 64, 1024];
 const WAITER_COUNTS: &[usize] = &[1, 8, 32];
-const CONTENDED_ENTRY_COUNTS: &[usize] = &[64, 1024];
-const THREAD_COUNTS: &[usize] = &[1, 2, 8, 32];
 const MISS_KEY_SPAN: usize = 1 << 16;
 const COALESCED_LEADER_POLLS: usize = 32;
 
@@ -110,31 +111,6 @@ fn coalesced_compute_batch(bencher: Bencher, waiter_count: usize) {
         for mut waiter in waiters {
             black_box(poll_pinned_ready(waiter.as_mut(), &mut context));
         }
-    });
-}
-
-fn preloaded_map(cached_entries: usize) -> OnceMap<usize, usize> {
-    (0..cached_entries).map(|key| (key, key)).collect()
-}
-
-// The contended benches share one map across OS threads and spread keys with thread_slot_ticket,
-// so "disjoint" means threads mostly touch different keys at any moment rather than strict
-// per-thread key ownership.
-#[divan::bench(threads = THREAD_COUNTS)]
-fn contended_get_hit_same_key(bencher: Bencher) {
-    let map = [(0, 1)].into_iter().collect::<OnceMap<_, _>>();
-
-    bencher.bench(|| black_box(map.get(black_box(&0))));
-}
-
-#[divan::bench(threads = THREAD_COUNTS, args = CONTENDED_ENTRY_COUNTS)]
-fn contended_get_hit_disjoint(bencher: Bencher, cached_entries: usize) {
-    let map = preloaded_map(cached_entries);
-
-    bencher.bench(|| {
-        let (slot, ticket) = thread_slot_ticket();
-        let key = (slot + ticket) % cached_entries;
-        black_box(map.get(black_box(&key)))
     });
 }
 

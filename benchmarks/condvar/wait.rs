@@ -22,10 +22,10 @@ use asyncband::mutex::Mutex;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::bench_context;
-use super::support::poll_pending;
-use super::support::poll_pinned_ready;
-use super::support::poll_ready;
+use crate::support::bench_context;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
+use crate::support::poll_ready;
 
 const WAITER_COUNTS: &[usize] = &[1, 8, 32];
 

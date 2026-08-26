@@ -21,15 +21,15 @@ use asyncband::singleflight::Group;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::bench_context;
-use super::support::defer_input_drop;
-use super::support::poll_pending;
-use super::support::poll_pinned_ready;
-use super::support::poll_ready;
-use super::support::spin_poll_ready;
-use super::support::thread_slot_ticket;
-use super::support::wait_until_open;
-use super::support::yield_polls;
+use crate::support::bench_context;
+use crate::support::defer_input_drop;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
+use crate::support::poll_ready;
+use crate::support::spin_poll_ready;
+use crate::support::thread_slot_ticket;
+use crate::support::wait_until_open;
+use crate::support::yield_polls;
 
 const WAITER_COUNTS: &[usize] = &[1, 8, 32];
 const THREAD_COUNTS: &[usize] = &[1, 2, 8, 32];

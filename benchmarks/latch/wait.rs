@@ -21,9 +21,9 @@ use asyncband::latch::Latch;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::bench_context;
-use super::support::poll_pending;
-use super::support::poll_pinned_ready;
+use crate::support::bench_context;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
 
 const WORKER_COUNTS: &[usize] = &[1, 8, 32];
 

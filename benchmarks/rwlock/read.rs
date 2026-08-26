@@ -15,18 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
-
 use asyncband::rwlock::RwLock;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::bench_context;
-use super::support::poll_pending;
-use super::support::poll_pinned_ready;
-use super::support::poll_ready;
-
-const READER_COUNTS: &[usize] = &[1, 8, 32];
+use crate::support::bench_context;
+use crate::support::poll_ready;
 
 #[divan::bench]
 fn read_heavy_reuse(bencher: Bencher) {
@@ -42,25 +36,6 @@ fn read_heavy_reuse(bencher: Bencher) {
         }
         let mut guard = poll_ready(lock.write(), &mut context);
         *guard = black_box(guard.wrapping_add(1));
-        black_box(*guard)
-    });
-}
-
-#[divan::bench(args = READER_COUNTS)]
-fn writer_handoff(bencher: Bencher, reader_count: usize) {
-    let mut context = bench_context();
-
-    bencher.bench_local(|| {
-        let lock = Arc::new(RwLock::new(0usize));
-        let readers = (0..reader_count)
-            .map(|_| poll_ready(lock.clone().read_owned(), &mut context))
-            .collect::<Vec<_>>();
-        let mut writer = Box::pin(lock.clone().write_owned());
-        poll_pending(writer.as_mut(), &mut context);
-
-        drop(readers);
-        let mut guard = poll_pinned_ready(writer.as_mut(), &mut context);
-        *guard = guard.wrapping_add(1);
         black_box(*guard)
     });
 }

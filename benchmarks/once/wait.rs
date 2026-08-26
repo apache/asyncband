@@ -15,32 +15,30 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::IntoFuture;
 use std::pin::pin;
 
-use asyncband::waitgroup::WaitGroup;
+use asyncband::once::Once;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::bench_context;
-use super::support::poll_pending;
-use super::support::poll_pinned_ready;
+use crate::support::bench_context;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
+use crate::support::poll_ready;
 
-const WORKER_COUNTS: &[usize] = &[1, 8, 32];
+const WAITER_COUNTS: &[usize] = &[1, 8, 32];
 
 #[divan::bench]
-fn cancel_pending(bencher: Bencher) {
+fn cancel_pending_wait(bencher: Bencher) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let root = WaitGroup::new();
-        let worker = root.clone();
+        let once = Once::new();
         {
-            let mut wait = pin!(root.into_future());
+            let mut wait = pin!(once.wait());
             poll_pending(wait.as_mut(), &mut context);
         }
-        drop(worker);
-        black_box(())
+        black_box(once)
     });
 }
 
@@ -49,52 +47,33 @@ fn complete_waiter(bencher: Bencher) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let root = WaitGroup::new();
-        let worker = root.clone();
-        let mut wait = pin!(root.into_future());
+        let once = Once::new();
+        let mut wait = pin!(once.wait());
         poll_pending(wait.as_mut(), &mut context);
 
-        drop(worker);
+        poll_ready(once.call_once(async || {}), &mut context);
         poll_pinned_ready(wait.as_mut(), &mut context);
-        black_box(())
+        black_box(once.is_completed())
     });
 }
 
-#[divan::bench(args = WORKER_COUNTS)]
-fn complete_worker_batch(bencher: Bencher, worker_count: usize) {
-    let mut context = bench_context();
-
-    bencher.bench_local(|| {
-        let root = WaitGroup::new();
-        let workers = (0..worker_count).map(|_| root.clone()).collect::<Vec<_>>();
-        let mut wait = pin!(root.into_future());
-        poll_pending(wait.as_mut(), &mut context);
-
-        drop(workers);
-        poll_pinned_ready(wait.as_mut(), &mut context);
-        black_box(())
-    });
-}
-
-#[divan::bench(args = WORKER_COUNTS)]
+#[divan::bench(args = WAITER_COUNTS)]
 fn complete_waiter_batch(bencher: Bencher, waiter_count: usize) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let root = WaitGroup::new();
-        let worker = root.clone();
-        let wait = root.into_future();
+        let once = Once::new();
         let mut waiters = (0..waiter_count)
-            .map(|_| Box::pin(wait.clone()))
+            .map(|_| Box::pin(once.wait()))
             .collect::<Vec<_>>();
         for waiter in &mut waiters {
             poll_pending(waiter.as_mut(), &mut context);
         }
 
-        drop(worker);
+        poll_ready(once.call_once(async || {}), &mut context);
         for mut waiter in waiters {
             poll_pinned_ready(waiter.as_mut(), &mut context);
         }
-        black_box(())
+        black_box(once.is_completed())
     });
 }

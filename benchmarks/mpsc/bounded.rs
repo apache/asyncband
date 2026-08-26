@@ -19,34 +19,11 @@ use asyncband::mpsc;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::bench_context;
-use super::support::poll_pending;
-use super::support::poll_pinned_ready;
+use crate::support::bench_context;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
 
 const SENDER_COUNTS: &[usize] = &[1, 8, 32];
-
-#[divan::bench]
-fn reregister_pending_receiver(bencher: Bencher) {
-    let mut context = bench_context();
-    let (_sender, mut receiver) = mpsc::unbounded::<usize>();
-    let mut recv = Box::pin(receiver.recv());
-    poll_pending(recv.as_mut(), &mut context);
-
-    bencher.bench_local(|| poll_pending(recv.as_mut(), &mut context));
-}
-
-#[divan::bench]
-fn wake_pending_receiver(bencher: Bencher) {
-    let mut context = bench_context();
-    let (sender, mut receiver) = mpsc::unbounded();
-
-    bencher.bench_local(|| {
-        let mut recv = Box::pin(receiver.recv());
-        poll_pending(recv.as_mut(), &mut context);
-        sender.send(black_box(usize::MAX)).unwrap();
-        black_box(poll_pinned_ready(recv.as_mut(), &mut context).unwrap())
-    });
-}
 
 #[divan::bench(args = SENDER_COUNTS)]
 fn cancel_backpressured_senders(bencher: Bencher, sender_count: usize) {

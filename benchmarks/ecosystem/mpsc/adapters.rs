@@ -15,30 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::Barrier;
 use std::task::Context;
-use std::thread;
-use std::thread::JoinHandle;
 
-use divan::Bencher;
-use divan::black_box;
-use divan::counter::ItemsCount;
+use crate::support::poll_ready;
 
-use super::support::bench_context;
-use super::support::poll_ready;
+pub struct Asyncband;
+pub struct Tokio;
+pub struct AsyncChannel;
+pub struct Flume;
 
-const BOUNDED_CAPACITY: usize = 64;
-const BATCH_MESSAGES: usize = 16_384;
-const PRODUCER_COUNTS: &[usize] = &[1, 2, 4, 8];
-
-struct Asyncband;
-struct Tokio;
-struct AsyncChannel;
-struct Flume;
-
-trait BoundedMpsc: Send + Sync + 'static {
+pub trait BoundedMpsc: Send + Sync + 'static {
     type Sender: Clone + Send + 'static;
     type Receiver: Send + 'static;
 
@@ -51,7 +37,7 @@ trait BoundedMpsc: Send + Sync + 'static {
     fn recv_blocking(receiver: &mut Self::Receiver) -> usize;
 }
 
-trait UnboundedMpsc: Send + Sync + 'static {
+pub trait UnboundedMpsc: Send + Sync + 'static {
     type Sender: Clone + Send + 'static;
     type Receiver: Send + 'static;
 
@@ -292,176 +278,4 @@ impl UnboundedMpsc for Flume {
     fn recv_blocking(receiver: &mut Self::Receiver) -> usize {
         pollster::block_on(receiver.recv_async()).unwrap()
     }
-}
-
-trait ConcurrentMpsc: Send + Sync + 'static {
-    type Sender: Clone + Send + 'static;
-    type Receiver: Send + 'static;
-
-    fn channel() -> (Self::Sender, Self::Receiver);
-    fn send(sender: &Self::Sender, value: usize);
-    fn recv(receiver: &mut Self::Receiver) -> usize;
-}
-
-struct Bounded<C>(PhantomData<C>);
-
-impl<C: BoundedMpsc> ConcurrentMpsc for Bounded<C> {
-    type Receiver = C::Receiver;
-    type Sender = C::Sender;
-
-    fn channel() -> (Self::Sender, Self::Receiver) {
-        C::channel(BOUNDED_CAPACITY)
-    }
-
-    fn send(sender: &Self::Sender, value: usize) {
-        C::send_blocking(sender, value);
-    }
-
-    fn recv(receiver: &mut Self::Receiver) -> usize {
-        C::recv_blocking(receiver)
-    }
-}
-
-struct Unbounded<C>(PhantomData<C>);
-
-impl<C: UnboundedMpsc> ConcurrentMpsc for Unbounded<C> {
-    type Receiver = C::Receiver;
-    type Sender = C::Sender;
-
-    fn channel() -> (Self::Sender, Self::Receiver) {
-        C::channel()
-    }
-
-    fn send(sender: &Self::Sender, value: usize) {
-        C::send(sender, value);
-    }
-
-    fn recv(receiver: &mut Self::Receiver) -> usize {
-        C::recv_blocking(receiver)
-    }
-}
-
-struct ConcurrentBatch<C: ConcurrentMpsc> {
-    receiver: C::Receiver,
-    start: Arc<Barrier>,
-    workers: Vec<JoinHandle<()>>,
-}
-
-impl<C: ConcurrentMpsc> ConcurrentBatch<C> {
-    fn new(producer_count: usize) -> Self {
-        assert_eq!(BATCH_MESSAGES % producer_count, 0);
-
-        let (sender, receiver) = C::channel();
-        let start = Arc::new(Barrier::new(producer_count + 1));
-        let messages_per_producer = BATCH_MESSAGES / producer_count;
-        let workers = (0..producer_count)
-            .map(|producer| {
-                let sender = sender.clone();
-                let start = start.clone();
-                thread::spawn(move || {
-                    start.wait();
-                    let first = producer * messages_per_producer;
-                    for offset in 0..messages_per_producer {
-                        C::send(&sender, black_box(first + offset));
-                    }
-                })
-            })
-            .collect();
-        drop(sender);
-
-        Self {
-            receiver,
-            start,
-            workers,
-        }
-    }
-
-    fn run(&mut self) -> usize {
-        self.start.wait();
-        let mut checksum = 0usize;
-        for _ in 0..BATCH_MESSAGES {
-            checksum = checksum.wrapping_add(C::recv(&mut self.receiver));
-        }
-        black_box(checksum)
-    }
-}
-
-impl<C: ConcurrentMpsc> Drop for ConcurrentBatch<C> {
-    fn drop(&mut self) {
-        let panicking = thread::panicking();
-        for worker in self.workers.drain(..) {
-            let result = worker.join();
-            if !panicking {
-                result.expect("benchmark producer panicked");
-            }
-        }
-    }
-}
-
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
-fn bounded_try_round_trip<C: BoundedMpsc>(bencher: Bencher) {
-    let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
-
-    bencher.bench_local(|| {
-        C::try_send(&sender, black_box(usize::MAX));
-        black_box(C::try_recv(&mut receiver))
-    });
-}
-
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
-fn bounded_ready_round_trip<C: BoundedMpsc>(bencher: Bencher) {
-    let mut context = bench_context();
-    let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
-
-    bencher.bench_local(|| {
-        C::send_ready(&sender, black_box(usize::MAX), &mut context);
-        black_box(C::recv_ready(&mut receiver, &mut context))
-    });
-}
-
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
-fn unbounded_ready_round_trip<C: UnboundedMpsc>(bencher: Bencher) {
-    let mut context = bench_context();
-    let (sender, mut receiver) = C::channel();
-
-    bencher.bench_local(|| {
-        C::send(&sender, black_box(usize::MAX));
-        black_box(C::recv_ready(&mut receiver, &mut context))
-    });
-}
-
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
-fn unbounded_try_round_trip<C: UnboundedMpsc>(bencher: Bencher) {
-    let (sender, mut receiver) = C::channel();
-
-    bencher.bench_local(|| {
-        C::send(&sender, black_box(usize::MAX));
-        black_box(C::try_recv(&mut receiver))
-    });
-}
-
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = PRODUCER_COUNTS,
-    sample_count = 20,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
-fn bounded_concurrent<C: BoundedMpsc>(bencher: Bencher, producer_count: usize) {
-    bencher
-        .with_inputs(|| ConcurrentBatch::<Bounded<C>>::new(producer_count))
-        .bench_local_refs(|batch| batch.run());
-}
-
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = PRODUCER_COUNTS,
-    sample_count = 20,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
-fn unbounded_concurrent<C: UnboundedMpsc>(bencher: Bencher, producer_count: usize) {
-    bencher
-        .with_inputs(|| ConcurrentBatch::<Unbounded<C>>::new(producer_count))
-        .bench_local_refs(|batch| batch.run());
 }
