@@ -54,16 +54,56 @@ use crate::mutex::Mutex;
 ///
 /// # Examples
 ///
+/// Pinning the future behind a box keeps the future in place while allowing its pointer to move.
+/// The cell therefore remains movable and can be initialized with [`force`](Self::force):
+///
 /// ```
 /// # #[tokio::main]
 /// # async fn main() {
 /// use asyncband::once::LazyCell;
 ///
-/// let lazy = Box::pin(LazyCell::new(|| async { "ready".to_owned() }));
+/// let lazy = LazyCell::new(|| Box::pin(async { "ready".to_owned() }));
 ///
 /// assert_eq!(LazyCell::get(&lazy), None);
-/// assert_eq!(LazyCell::force_pin(lazy.as_ref()).await, "ready");
+/// assert_eq!(LazyCell::force(&lazy).await, "ready");
 /// assert_eq!(LazyCell::get(&lazy).map(String::as_str), Some("ready"));
+/// # }
+/// ```
+///
+/// To store an `async` future inline, pin the cell itself and use
+/// [`force_pin`](Self::force_pin). The cell cannot move once polling starts because its stored
+/// future is not [`Unpin`]:
+///
+/// ```
+/// # #[tokio::main]
+/// # async fn main() {
+/// use asyncband::once::LazyCell;
+///
+/// let lazy = LazyCell::new(|| async { "ready".to_owned() });
+/// let lazy = Box::pin(lazy);
+///
+/// assert_eq!(LazyCell::force_pin(lazy.as_ref()).await, "ready");
+/// # }
+/// ```
+///
+/// [`Arc::pin`](std::sync::Arc::pin) provides shared ownership while keeping an inline future at a
+/// stable address:
+///
+/// ```
+/// # #[tokio::main]
+/// # async fn main() {
+/// use std::sync::Arc;
+///
+/// use asyncband::once::LazyCell;
+///
+/// let lazy = Arc::pin(LazyCell::new(|| async { 92 }));
+/// let other = lazy.clone();
+///
+/// let (first, second) = tokio::join!(
+///     LazyCell::force_pin(lazy.as_ref()),
+///     LazyCell::force_pin(other.as_ref()),
+/// );
+/// assert_eq!((*first, *second), (92, 92));
 /// # }
 /// ```
 pub struct LazyCell<T, Fut, F = fn() -> Fut> {
@@ -223,7 +263,7 @@ where
     /// # async fn main() {
     /// use asyncband::once::LazyCell;
     ///
-    /// // This async block is stored inline, so pin the cell before polling it.
+    /// // This async block produces a `!Unpin` future. Pin the cell that stores it inline.
     /// let lazy = Box::pin(LazyCell::new(|| async { 92 }));
     /// assert_eq!(*LazyCell::force_pin(lazy.as_ref()).await, 92);
     /// # }
