@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::num::NonZeroUsize;
-
 use crate::internal::arena::Arena;
 use crate::internal::arena::ArenaKey;
 
@@ -28,16 +26,17 @@ pub struct WaitList<T> {
     nodes: Arena<Node<T>>,
 }
 
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct WaiterId(NonZeroUsize);
+pub struct WaiterId(ArenaKey);
 
 impl WaiterId {
     fn new(key: ArenaKey) -> Self {
-        Self(key.encode())
+        Self(key)
     }
 
     fn key(self) -> ArenaKey {
-        ArenaKey::decode(self.0)
+        self.0
     }
 }
 
@@ -190,6 +189,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn waiter_id_preserves_the_option_niche() {
+        assert_eq!(
+            std::mem::size_of::<WaiterId>(),
+            std::mem::size_of::<Option<WaiterId>>()
+        );
+    }
+
+    #[test]
     fn detached_nodes_remain_available_until_removed() {
         let mut waiters = WaitList::new();
         let first = waiters.push_back(1);
@@ -199,7 +206,17 @@ mod tests {
         assert_eq!(*waiters.waiter_mut(first), 1);
         assert_eq!(waiters.occupied_len(), 2);
 
-        assert_eq!(waiters.remove_unlinked_waiter(first), 1);
+        assert_eq!(
+            *waiters
+                .unlink_waiter(first, |value| {
+                    *value += 10;
+                    true
+                })
+                .unwrap(),
+            11
+        );
+
+        assert_eq!(waiters.remove_unlinked_waiter(first), 11);
         assert_eq!(waiters.unlink_first_waiter(|_| true).unwrap().0, second);
         assert!(waiters.is_empty());
         assert_eq!(waiters.remove_unlinked_waiter(second), 2);
@@ -214,6 +231,26 @@ mod tests {
         let last = waiters.push_back(3);
 
         for expected in [(first, 1), (middle, 2), (last, 3)] {
+            let (id, value) = waiters.unlink_first_waiter(|_| true).unwrap();
+            assert_eq!((id, *value), expected);
+            waiters.remove_unlinked_waiter(id);
+        }
+        assert!(waiters.is_empty());
+    }
+
+    #[test]
+    fn unlinking_a_middle_waiter_preserves_the_queue() {
+        let mut waiters = WaitList::new();
+        let first = waiters.push_back(1);
+        let middle = waiters.push_back(2);
+        let last = waiters.push_back(3);
+
+        assert!(waiters.unlink_waiter(middle, |_| false).is_none());
+        assert_eq!(*waiters.unlink_waiter(middle, |_| true).unwrap(), 2);
+        assert_eq!(waiters.remove_unlinked_waiter(middle), 2);
+
+        let replacement = waiters.push_back(4);
+        for expected in [(first, 1), (last, 3), (replacement, 4)] {
             let (id, value) = waiters.unlink_first_waiter(|_| true).unwrap();
             assert_eq!((id, *value), expected);
             waiters.remove_unlinked_waiter(id);

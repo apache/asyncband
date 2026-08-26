@@ -16,13 +16,11 @@
 // under the License.
 
 use std::mem;
-use std::num::NonZeroUsize;
 use std::task::Context;
 use std::task::Waker;
 
 use crate::internal::arena::Arena;
 use crate::internal::arena::ArenaKey;
-use crate::internal::arena::ArenaValues;
 
 /// A single-owner handle to a registered waiter.
 ///
@@ -31,7 +29,7 @@ use crate::internal::arena::ArenaValues;
 #[derive(Debug)]
 pub struct WaitRegistration {
     epoch: u64,
-    key: NonZeroUsize,
+    key: ArenaKey,
 }
 
 #[derive(Debug)]
@@ -57,11 +55,11 @@ impl WaitSet {
         }
     }
 
-    /// Takes all registered wakers without waking them.
+    /// Takes all registered wakers as an owning iterator without waking them.
     #[inline]
-    pub fn take_wakers(&mut self) -> ArenaValues<Waker> {
+    pub fn take_wakers(&mut self) -> impl Iterator<Item = Waker> + 'static {
         self.epoch = self.epoch.checked_add(1).expect("wait set epoch overflow");
-        self.waiters.take_all()
+        self.waiters.take_all().into_iter()
     }
 
     /// Registers or updates a waker in the current wake epoch.
@@ -78,7 +76,7 @@ impl WaitSet {
             if current.epoch == self.epoch {
                 let waker = self
                     .waiters
-                    .get_mut(ArenaKey::decode(current.key))
+                    .get_mut(current.key)
                     .expect("current wait registration must be occupied");
                 if !waker.will_wake(cx.waker()) {
                     return Some(mem::replace(waker, cx.waker().clone()));
@@ -89,7 +87,7 @@ impl WaitSet {
 
         *registration = Some(WaitRegistration {
             epoch: self.epoch,
-            key: self.waiters.insert(cx.waker().clone()).encode(),
+            key: self.waiters.insert(cx.waker().clone()),
         });
         None
     }
@@ -104,7 +102,7 @@ impl WaitSet {
     ) -> Option<Waker> {
         let registration = registration.take()?;
         if registration.epoch == self.epoch {
-            return Some(self.waiters.remove(ArenaKey::decode(registration.key)));
+            return Some(self.waiters.remove(registration.key));
         }
         None
     }
@@ -124,6 +122,14 @@ mod tests {
     use std::task::Wake;
 
     use super::*;
+
+    #[test]
+    fn registration_preserves_the_option_niche() {
+        assert_eq!(
+            std::mem::size_of::<WaitRegistration>(),
+            std::mem::size_of::<Option<WaitRegistration>>()
+        );
+    }
 
     struct TrackWake(AtomicUsize);
 
@@ -176,12 +182,12 @@ mod tests {
         let mut second = None;
 
         register(&mut waiters, &mut first, &first_waker);
-        assert_eq!(waiters.take_wakers().into_iter().count(), 1);
+        assert_eq!(waiters.take_wakers().count(), 1);
 
         register(&mut waiters, &mut second, &second_waker);
         register(&mut waiters, &mut first, &first_waker);
 
-        let registered = waiters.take_wakers().into_iter().collect::<Vec<_>>();
+        let registered = waiters.take_wakers().collect::<Vec<_>>();
         assert_eq!(registered.len(), 2);
         assert!(registered.iter().any(|waker| waker.will_wake(&first_waker)));
         assert!(
