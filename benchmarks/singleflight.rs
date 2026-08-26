@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::Cell;
+
 use asyncband::singleflight::Group;
 use divan::Bencher;
 use divan::black_box;
@@ -24,9 +26,15 @@ use super::support::defer_input_drop;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 use super::support::poll_ready;
+use super::support::spin_poll_ready;
+use super::support::thread_slot_ticket;
 use super::support::wait_until_open;
+use super::support::yield_polls;
 
 const WAITER_COUNTS: &[usize] = &[1, 8, 32];
+const THREAD_COUNTS: &[usize] = &[1, 2, 8, 32];
+const DISJOINT_KEY_SPAN: usize = 1 << 16;
+const COALESCED_LEADER_POLLS: usize = 32;
 
 #[divan::bench]
 fn work_ready(bencher: Bencher) {
@@ -84,4 +92,49 @@ fn coalesced_work_batch(bencher: Bencher, waiter_count: usize) {
         }
     });
 }
-use std::cell::Cell;
+
+#[divan::bench(threads = THREAD_COUNTS)]
+fn contended_work_same_key(bencher: Bencher) {
+    let group = Group::<usize, usize>::new();
+
+    bencher.bench(|| {
+        let mut context = bench_context();
+        black_box(spin_poll_ready(
+            group.work(black_box(0), || async { black_box(1) }),
+            &mut context,
+        ))
+    });
+}
+
+// The leader stays in flight for several polls so calls on other threads coalesce as duplicate
+// waiters instead of leading their own cycles.
+#[divan::bench(threads = THREAD_COUNTS)]
+fn contended_work_coalesced(bencher: Bencher) {
+    let group = Group::<usize, usize>::new();
+
+    bencher.bench(|| {
+        let mut context = bench_context();
+        black_box(spin_poll_ready(
+            group.work(black_box(0), || async {
+                yield_polls(COALESCED_LEADER_POLLS).await;
+                black_box(1)
+            }),
+            &mut context,
+        ))
+    });
+}
+
+#[divan::bench(threads = THREAD_COUNTS)]
+fn contended_work_disjoint_churn(bencher: Bencher) {
+    let group = Group::<usize, usize>::new();
+
+    bencher.bench(|| {
+        let mut context = bench_context();
+        let (slot, ticket) = thread_slot_ticket();
+        let key = slot * DISJOINT_KEY_SPAN + ticket % DISJOINT_KEY_SPAN;
+        black_box(spin_poll_ready(
+            group.work(black_box(key), || async move { key }),
+            &mut context,
+        ))
+    });
+}

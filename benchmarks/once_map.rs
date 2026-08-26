@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::Cell;
+
 use asyncband::once::OnceMap;
 use divan::Bencher;
 use divan::black_box;
@@ -24,10 +26,17 @@ use super::support::defer_input_drop;
 use super::support::poll_pending;
 use super::support::poll_pinned_ready;
 use super::support::poll_ready;
+use super::support::spin_poll_ready;
+use super::support::thread_slot_ticket;
 use super::support::wait_until_open;
+use super::support::yield_polls;
 
 const CACHED_ENTRY_COUNTS: &[usize] = &[0, 64, 1024];
 const WAITER_COUNTS: &[usize] = &[1, 8, 32];
+const CONTENDED_ENTRY_COUNTS: &[usize] = &[64, 1024];
+const THREAD_COUNTS: &[usize] = &[1, 2, 8, 32];
+const MISS_KEY_SPAN: usize = 1 << 16;
+const COALESCED_LEADER_POLLS: usize = 32;
 
 #[divan::bench]
 fn compute_vacant(bencher: Bencher) {
@@ -103,4 +112,118 @@ fn coalesced_compute_batch(bencher: Bencher, waiter_count: usize) {
         }
     });
 }
-use std::cell::Cell;
+
+fn preloaded_map(cached_entries: usize) -> OnceMap<usize, usize> {
+    (0..cached_entries).map(|key| (key, key)).collect()
+}
+
+// The contended benches share one map across OS threads and spread keys with thread_slot_ticket,
+// so "disjoint" means threads mostly touch different keys at any moment rather than strict
+// per-thread key ownership.
+#[divan::bench(threads = THREAD_COUNTS)]
+fn contended_get_hit_same_key(bencher: Bencher) {
+    let map = [(0, 1)].into_iter().collect::<OnceMap<_, _>>();
+
+    bencher.bench(|| black_box(map.get(black_box(&0))));
+}
+
+#[divan::bench(threads = THREAD_COUNTS, args = CONTENDED_ENTRY_COUNTS)]
+fn contended_get_hit_disjoint(bencher: Bencher, cached_entries: usize) {
+    let map = preloaded_map(cached_entries);
+
+    bencher.bench(|| {
+        let (slot, ticket) = thread_slot_ticket();
+        let key = (slot + ticket) % cached_entries;
+        black_box(map.get(black_box(&key)))
+    });
+}
+
+#[divan::bench(threads = THREAD_COUNTS)]
+fn contended_compute_hit_same_key(bencher: Bencher) {
+    let map = [(0, 1)].into_iter().collect::<OnceMap<_, _>>();
+
+    bencher.bench(|| {
+        let mut context = bench_context();
+        black_box(spin_poll_ready(
+            map.compute(black_box(0), || async { unreachable!() }),
+            &mut context,
+        ))
+    });
+}
+
+#[divan::bench(threads = THREAD_COUNTS, args = CONTENDED_ENTRY_COUNTS)]
+fn contended_compute_hit_disjoint(bencher: Bencher, cached_entries: usize) {
+    let map = preloaded_map(cached_entries);
+
+    bencher.bench(|| {
+        let mut context = bench_context();
+        let (slot, ticket) = thread_slot_ticket();
+        let key = (slot + ticket) % cached_entries;
+        black_box(spin_poll_ready(
+            map.compute(black_box(key), || async { unreachable!() }),
+            &mut context,
+        ))
+    });
+}
+
+#[divan::bench(threads = THREAD_COUNTS, args = CONTENDED_ENTRY_COUNTS)]
+fn contended_compute_miss_churn(bencher: Bencher, cached_entries: usize) {
+    let map = preloaded_map(cached_entries);
+
+    bencher.bench(|| {
+        let mut context = bench_context();
+        let (slot, ticket) = thread_slot_ticket();
+        let key = cached_entries + slot * MISS_KEY_SPAN + ticket % MISS_KEY_SPAN;
+        let value = spin_poll_ready(
+            map.compute(black_box(key), || async move { key }),
+            &mut context,
+        );
+        map.discard(&key);
+        black_box(value)
+    });
+}
+
+#[divan::bench(threads = THREAD_COUNTS, args = CONTENDED_ENTRY_COUNTS)]
+fn contended_compute_mixed(bencher: Bencher, cached_entries: usize) {
+    let map = preloaded_map(cached_entries);
+
+    bencher.bench(|| {
+        let mut context = bench_context();
+        let (slot, ticket) = thread_slot_ticket();
+        if ticket % 2 == 0 {
+            let key = (slot + ticket / 2) % cached_entries;
+            black_box(spin_poll_ready(
+                map.compute(black_box(key), || async { unreachable!() }),
+                &mut context,
+            ))
+        } else {
+            let key = cached_entries + slot * MISS_KEY_SPAN + (ticket / 2) % MISS_KEY_SPAN;
+            let value = spin_poll_ready(
+                map.compute(black_box(key), || async move { key }),
+                &mut context,
+            );
+            map.discard(&key);
+            black_box(value)
+        }
+    });
+}
+
+// The leader stays in flight for several polls so calls on other threads coalesce as duplicate
+// waiters, and discards the key while in flight so every cycle re-runs the vacant-leader path
+// instead of settling into steady-state hits.
+#[divan::bench(threads = THREAD_COUNTS)]
+fn contended_compute_coalesced(bencher: Bencher) {
+    let map = OnceMap::<usize, usize>::new();
+
+    bencher.bench(|| {
+        let mut context = bench_context();
+        black_box(spin_poll_ready(
+            map.compute(black_box(0), || async {
+                yield_polls(COALESCED_LEADER_POLLS).await;
+                map.discard(&0);
+                black_box(1)
+            }),
+            &mut context,
+        ))
+    });
+}
