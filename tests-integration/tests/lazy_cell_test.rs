@@ -102,6 +102,52 @@ async fn cancellation_preserves_initialization_future() {
 }
 
 #[tokio::test]
+async fn from_future_does_not_poll_until_forced() {
+    let polls = Arc::new(AtomicUsize::new(0));
+    let lazy = LazyCell::from_future({
+        let polls = polls.clone();
+        async move {
+            polls.fetch_add(1, Ordering::SeqCst);
+            42
+        }
+    });
+
+    assert_eq!(polls.load(Ordering::SeqCst), 0);
+    assert_eq!(LazyCell::force(&lazy).await, &42);
+    assert_eq!(polls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn from_future_cancellation_preserves_the_same_future() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    let lazy = Arc::new(LazyCell::from_future({
+        let executions = executions.clone();
+        let started = started.clone();
+        let resume = resume.clone();
+        async move {
+            executions.fetch_add(1, Ordering::SeqCst);
+            started.notify_one();
+            resume.notified().await;
+            42
+        }
+    }));
+
+    let task = {
+        let lazy = lazy.clone();
+        tokio::spawn(async move { *LazyCell::force(&lazy).await })
+    };
+    started.notified().await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    resume.notify_one();
+    assert_eq!(*LazyCell::force(&lazy).await, 42);
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn unrelated_unwind_does_not_poison_pending_attempt() {
     let started = Arc::new(Notify::new());
     let resume = Arc::new(Notify::new());
@@ -270,7 +316,7 @@ async fn force_mut_resumes_a_started_attempt() {
 }
 
 #[tokio::test]
-async fn default_from_and_debug_match_lazy_cell() {
+async fn default_and_value_constructors_match_lazy_cell() {
     let lazy = LazyCell::<u32>::default();
     assert_eq!(format!("{lazy:?}"), "LazyCell(<uninit>)");
     assert_eq!(LazyCell::force(&lazy).await, &0);
@@ -279,7 +325,7 @@ async fn default_from_and_debug_match_lazy_cell() {
     let local = LazyCell::<Rc<u32>>::default();
     assert_eq!(**LazyCell::force(&local).await, 0);
 
-    let lazy: LazyCell<u32> = LazyCell::from(42);
+    let lazy = const { LazyCell::from_value(42) };
     assert_eq!(LazyCell::get(&lazy), Some(&42));
 }
 

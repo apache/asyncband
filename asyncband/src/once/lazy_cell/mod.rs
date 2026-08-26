@@ -215,6 +215,38 @@ impl<T, F> LazyCell<T, F> {
     }
 }
 
+impl<T> LazyCell<T> {
+    /// Creates a new `LazyCell` from an already-created asynchronous future.
+    ///
+    /// The future is stored without being polled. Calling [`force`](Self::force) starts polling
+    /// it, and cancellation preserves the in-flight future for a later caller.
+    pub fn from_future<Fut>(future: Fut) -> Self
+    where
+        Fut: Future<Output = T> + Send + 'static,
+    {
+        Self {
+            value: ValueCell::new(),
+            state: Mutex::new(State {
+                initializer: None,
+                attempt: Some(Box::pin(future)),
+            }),
+            poisoned: AtomicBool::new(false),
+        }
+    }
+
+    /// Creates a new `LazyCell` that already contains `value`.
+    pub const fn from_value(value: T) -> Self {
+        Self {
+            value: ValueCell::from_value(value),
+            state: Mutex::new(State {
+                initializer: None,
+                attempt: None,
+            }),
+            poisoned: AtomicBool::new(false),
+        }
+    }
+}
+
 impl<T> Default for LazyCell<T>
 where
     T: Default,
@@ -225,19 +257,6 @@ where
         }
 
         Self::new(initialize::<T>)
-    }
-}
-
-impl<T, F> From<T> for LazyCell<T, F> {
-    fn from(value: T) -> Self {
-        Self {
-            value: ValueCell::from_value(value),
-            state: Mutex::new(State {
-                initializer: None,
-                attempt: None,
-            }),
-            poisoned: AtomicBool::new(false),
-        }
     }
 }
 
