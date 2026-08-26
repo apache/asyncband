@@ -29,7 +29,7 @@ async fn failed_compute_removes_empty_entry() {
     let result: Result<i32, &str> = map.try_compute("key", async || Err("fail")).await;
 
     assert_eq!(result, Err("fail"));
-    assert!(map.map.lock().is_empty());
+    assert!(map.map.is_empty());
 }
 
 #[tokio::test]
@@ -46,7 +46,7 @@ async fn panicked_compute_removes_empty_entry() {
     });
 
     assert!(task.await.unwrap_err().is_panic());
-    assert!(map.map.lock().is_empty());
+    assert!(map.map.is_empty());
 }
 
 #[tokio::test]
@@ -65,11 +65,11 @@ async fn cancelled_compute_removes_empty_entry() {
     });
 
     started_rx.await.unwrap();
-    assert_eq!(map.map.lock().len(), 1);
+    assert_eq!(map.map.len(), 1);
 
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
-    assert!(map.map.lock().is_empty());
+    assert!(map.map.is_empty());
 }
 
 #[tokio::test]
@@ -91,7 +91,7 @@ async fn failed_compute_preserves_entry_for_waiter_retry() {
     release_tx.send(()).unwrap();
     assert_eq!(first.await, Err("fail"));
 
-    assert_eq!(map.map.lock().len(), 1);
+    assert_eq!(map.map.len(), 1);
     assert_eq!(retry.await, Ok(1));
     assert_eq!(map.get("key"), Some(1));
 }
