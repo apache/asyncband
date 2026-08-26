@@ -25,7 +25,7 @@ use std::num::NonZeroUsize;
 /// lifecycle rule that matches its waiter storage.
 #[repr(transparent)]
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) struct ArenaKey(NonZeroUsize);
+pub struct ArenaKey(NonZeroUsize);
 
 impl ArenaKey {
     fn from_index(index: usize) -> Self {
@@ -53,7 +53,7 @@ impl std::fmt::Debug for ArenaKey {
 /// once in the singly linked vacant list, which starts at `next_vacant` and terminates at
 /// `slots.len()`. Removing a value makes its key available for immediate reuse.
 #[derive(Debug)]
-pub(super) struct Arena<T> {
+pub struct Arena<T> {
     slots: Vec<Slot<T>>,
     /// The next reusable slot, or `slots.len()` when every slot is occupied.
     next_vacant: usize,
@@ -87,7 +87,7 @@ enum Slot<T> {
 }
 
 impl<T> Arena<T> {
-    pub(super) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             slots: Vec::new(),
             next_vacant: 0,
@@ -95,7 +95,7 @@ impl<T> Arena<T> {
         }
     }
 
-    pub(super) fn with_capacity(capacity: usize) -> Self {
+    pub fn with_capacity(capacity: usize) -> Self {
         Self {
             slots: Vec::with_capacity(capacity),
             next_vacant: 0,
@@ -103,7 +103,7 @@ impl<T> Arena<T> {
         }
     }
 
-    pub(super) fn insert(&mut self, value: T) -> ArenaKey {
+    pub fn insert(&mut self, value: T) -> ArenaKey {
         let key = self.next_vacant;
         self.len += 1;
 
@@ -123,14 +123,14 @@ impl<T> Arena<T> {
         ArenaKey::from_index(key)
     }
 
-    pub(super) fn get(&self, key: ArenaKey) -> Option<&T> {
+    pub fn get(&self, key: ArenaKey) -> Option<&T> {
         match self.slots.get(key.index()) {
             Some(Slot::Occupied(value)) => Some(value),
             Some(Slot::Vacant { .. }) | None => None,
         }
     }
 
-    pub(super) fn get_mut(&mut self, key: ArenaKey) -> Option<&mut T> {
+    pub fn get_mut(&mut self, key: ArenaKey) -> Option<&mut T> {
         match self.slots.get_mut(key.index()) {
             Some(Slot::Occupied(value)) => Some(value),
             Some(Slot::Vacant { .. }) | None => None,
@@ -144,7 +144,7 @@ impl<T> Arena<T> {
     /// Panics if the key is out of bounds or its slot is already vacant. Either case is an internal
     /// waiter-lifecycle violation rather than a recoverable lookup failure.
     #[track_caller]
-    pub(super) fn remove(&mut self, key: ArenaKey) -> T {
+    pub fn remove(&mut self, key: ArenaKey) -> T {
         let index = key.index();
         let slot = self
             .slots
@@ -172,7 +172,7 @@ impl<T> Arena<T> {
     /// Every previously issued key becomes invalid, including keys for slots that were already
     /// vacant. Consumers that retain keys across this operation must supply their own epoch check.
     #[inline]
-    pub(super) fn take_all(&mut self) -> impl Iterator<Item = T> + use<T> {
+    pub fn take_all(&mut self) -> impl Iterator<Item = T> + use<T> {
         let len = self.len;
         let mut values = ArenaValues {
             first: None,
@@ -197,7 +197,7 @@ impl<T> Arena<T> {
     }
 
     #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.len
     }
 }
