@@ -58,11 +58,7 @@ Public paths stay direct—such as `asyncband::mutex`, `asyncband::pool`, and `a
 
 ## Examples
 
-Runnable examples live in the [`examples`](examples) workspace crate. For example, the [`OnceCell` versus `LazyCell` initialization guide](examples/src/once_cell_vs_lazy_cell.rs) demonstrates when a restartable fixed free function is sufficient, when initialization needs access-time context and retries, and when a lazy value needs to own and preserve a one-shot initializer.
-
-```shell
-cargo run -p examples --example once_cell_vs_lazy_cell
-```
+Runnable examples live in the [`examples`](examples) workspace crate. They demonstrate how to choose and compose Asyncband primitives in complete programs.
 
 ## API map
 
@@ -79,11 +75,9 @@ cargo run -p examples --example once_cell_vs_lazy_cell
 |                         | [`Latch`](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html)             | `latch`        | Wait until a one-way countdown completes.                               |
 |                         | [`WaitGroup`](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html) | `waitgroup`    | Wait for a dynamic group of tasks to finish.                            |
 |                         | [`shutdown`](https://docs.rs/asyncband/*/asyncband/shutdown/)                        | `shutdown`     | Coordinate shutdown signals and completion.                             |
-| Channels                | [`oneshot::channel`](https://docs.rs/asyncband/*/asyncband/oneshot/fn.channel.html)  | `oneshot`      | Send one value between two tasks.                                       |
-|                         | [`mpsc::bounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.bounded.html)        | `mpsc`         | Send values from multiple producers through a bounded channel.          |
-|                         | [`mpsc::unbounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.unbounded.html)    | `mpsc`         | Send values from multiple producers through an unbounded channel.       |
-| Resource reuse          | [`pool::bounded`](https://docs.rs/asyncband/*/asyncband/pool/bounded/)               | `pool`         | Reuse managed objects up to a configured capacity.                      |
-|                         | [`pool::unbounded`](https://docs.rs/asyncband/*/asyncband/pool/unbounded/)           | `pool`         | Reuse manually supplied or manager-created objects.                     |
+| Channels                | [`One-shot`](https://docs.rs/asyncband/*/asyncband/oneshot/fn.channel.html)          | `oneshot`      | Send one value between two tasks.                                       |
+|                         | [`MPSC`](https://docs.rs/asyncband/*/asyncband/mpsc/)                               | `mpsc`         | Send values from multiple producers through bounded or unbounded channels. |
+| Resource reuse          | [`Object pool`](https://docs.rs/asyncband/*/asyncband/pool/)                        | `pool`         | Reuse objects through bounded or unbounded pool variants.               |
 | Workload coordination   | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore`    | Control concurrent access with permits.                                 |
 |                         | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)      | `singleflight` | Coalesce concurrent calls for the same key.                             |
 | Synchronous interop     | [`FutureExt`](https://docs.rs/asyncband/*/asyncband/blocking/trait.FutureExt.html)   | `blocking`     | Drive one runtime-agnostic future from a blocking thread.               |
@@ -93,19 +87,25 @@ cargo run -p examples --example once_cell_vs_lazy_cell
 The optional `blocking` module is a boundary adapter for synchronous callers. It parks the calling thread while driving one future; it is not a general-purpose executor.
 
 ```shell
-cargo add asyncband --features blocking
+cargo add asyncband --features blocking,latch
 ```
 
 ```rust
-use std::time::Duration;
+use std::sync::Arc;
+use std::thread;
 
 use asyncband::blocking::FutureExt as _;
+use asyncband::latch::Latch;
 
-let value = async { 42 }.block_on();
-assert_eq!(value, 42);
+let latch = Arc::new(Latch::new(1));
+let worker_latch = latch.clone();
+let worker = thread::spawn(move || {
+    // Perform synchronous work, then signal its completion.
+    worker_latch.count_down();
+});
 
-let value = async { 42 }.wait_timeout(Duration::ZERO);
-assert_eq!(value, Some(42));
+latch.wait().block_on();
+worker.join().unwrap();
 ```
 
 ### Async first, blocking by adaptation
