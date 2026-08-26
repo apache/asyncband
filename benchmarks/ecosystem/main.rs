@@ -18,7 +18,7 @@
 mod mpsc;
 
 #[allow(dead_code)]
-#[path = "../support.rs"]
+#[path = "../asyncband/support.rs"]
 mod support;
 
 fn main() {

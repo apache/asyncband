@@ -50,7 +50,7 @@ tokio = { workspace = true, features = ["sync"] }
 [[bench]]
 harness = false
 name = "benchmarks"
-path = "main.rs"
+path = "asyncband/main.rs"
 
 [[bench]]
 harness = false
