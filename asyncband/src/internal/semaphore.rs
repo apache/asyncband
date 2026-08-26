@@ -16,7 +16,9 @@
 // under the License.
 
 use std::future::Future;
+use std::mem::MaybeUninit;
 use std::pin::Pin;
+use std::ptr;
 use std::sync::MutexGuard;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -42,6 +44,59 @@ struct WaitNode {
     /// A linked node without a waker is permit debt owned by the queue. An acquire node only loses
     /// its waker while being detached, after which its future still owns the node.
     waker: Option<Waker>,
+}
+
+const WAKE_BATCH_SIZE: usize = 32;
+
+/// The initialized entries in `wakers` are exactly `start..end`.
+struct WakeBatch {
+    wakers: [MaybeUninit<Waker>; WAKE_BATCH_SIZE],
+    start: usize,
+    end: usize,
+}
+
+impl WakeBatch {
+    fn new() -> Self {
+        const UNINIT: MaybeUninit<Waker> = MaybeUninit::uninit();
+        Self {
+            wakers: [UNINIT; WAKE_BATCH_SIZE],
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn push(&mut self, waker: Waker) {
+        debug_assert_eq!(self.start, 0);
+        debug_assert!(self.end < WAKE_BATCH_SIZE);
+        self.wakers[self.end].write(waker);
+        self.end += 1;
+    }
+
+    fn is_full(&self) -> bool {
+        self.end == WAKE_BATCH_SIZE
+    }
+
+    fn wake_all(&mut self) {
+        while self.start < self.end {
+            let index = self.start;
+            self.start += 1;
+            // SAFETY: `index` was within the initialized range before advancing `start`.
+            unsafe { self.wakers[index].assume_init_read() }.wake();
+        }
+        self.start = 0;
+        self.end = 0;
+    }
+}
+
+impl Drop for WakeBatch {
+    fn drop(&mut self) {
+        let start = self.wakers[self.start..self.end]
+            .as_mut_ptr()
+            .cast::<Waker>();
+        let remaining = ptr::slice_from_raw_parts_mut(start, self.end - self.start);
+        // SAFETY: The initialized entries are exactly `start..end`.
+        unsafe { ptr::drop_in_place(remaining) };
+    }
 }
 
 impl Semaphore {
@@ -176,13 +231,12 @@ impl Semaphore {
         mut rem: usize,
         waiters: MutexGuard<'_, WaitList<WaitNode>>,
     ) {
-        const NUM_WAKER: usize = 32;
-        let mut wakers = Vec::new();
+        let mut wakers = WakeBatch::new();
 
         let mut lock = Some(waiters);
         while rem > 0 {
             let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
-            while wakers.len() < NUM_WAKER {
+            while !wakers.is_full() {
                 match waiters.unlink_first_waiter(|node| {
                     if node.permits <= rem {
                         rem -= node.permits;
@@ -198,10 +252,6 @@ impl Semaphore {
                     Some((id, waiter)) => {
                         let remove_now = waiter.waker.is_none();
                         if let Some(waker) = waiter.waker.take() {
-                            // Only allocate when we have an actual waker to store.
-                            if wakers.is_empty() {
-                                wakers.reserve(NUM_WAKER);
-                            }
                             wakers.push(waker);
                         }
                         if remove_now {
@@ -224,9 +274,7 @@ impl Semaphore {
             }
 
             drop(waiters);
-            for w in wakers.drain(..) {
-                w.wake();
-            }
+            wakers.wake_all();
         }
     }
 
