@@ -23,6 +23,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dev-dependencies]
+async-channel = { workspace = true }
 asyncband = { workspace = true, features = [
   "barrier",
   "blocking",
@@ -42,11 +43,19 @@ asyncband = { workspace = true, features = [
   "waitgroup",
 ] }
 divan = { workspace = true }
+flume = { workspace = true, features = ["async"] }
+pollster = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [[bench]]
 harness = false
 name = "benchmarks"
 path = "main.rs"
+
+[[bench]]
+harness = false
+name = "ecosystem"
+path = "ecosystem/main.rs"
 
 [lints]
 workspace = true
