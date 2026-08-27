@@ -23,6 +23,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dev-dependencies]
+async-broadcast = { workspace = true }
 async-channel = { workspace = true }
 asyncband = { workspace = true, features = [
   "barrier",
