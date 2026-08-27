@@ -15,14 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::BuildHasherDefault;
+
 use asyncband::once::OnceMap;
 
 pub const CONTENDED_ENTRY_COUNTS: &[usize] = &[64, 1024];
+pub const CONTENDED_THREAD_SLOTS: usize = 32;
 pub const THREAD_COUNTS: &[usize] = &[1, 2, 8, 32];
 
-// The contended get and compute benches share one map across OS threads and spread keys with
-// thread_slot_ticket, so "disjoint" means threads mostly touch different keys at any moment rather
-// than strict per-thread key ownership.
-pub fn preloaded_map(cached_entries: usize) -> OnceMap<usize, usize> {
+type BenchHasher = BuildHasherDefault<DefaultHasher>;
+
+pub type BenchMap = OnceMap<usize, usize, BenchHasher>;
+
+pub fn preloaded_map(cached_entries: usize) -> BenchMap {
     (0..cached_entries).map(|key| (key, key)).collect()
 }

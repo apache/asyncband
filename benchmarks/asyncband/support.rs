@@ -95,21 +95,6 @@ pub(super) fn thread_slot_ticket() -> (usize, usize) {
     (slot, ticket)
 }
 
-// Stays pending for the given number of polls without registering a waker, so it must only be
-// polled through spin_poll_ready. Keeps a leader in flight long enough for calls on other threads
-// to join as waiters.
-pub(super) async fn yield_polls(mut polls: usize) {
-    poll_fn(move |_| {
-        if polls == 0 {
-            Poll::Ready(())
-        } else {
-            polls -= 1;
-            Poll::Pending
-        }
-    })
-    .await
-}
-
 // Move the input into the benchmark output so Divan drops it outside the timed section.
 #[inline]
 pub(super) fn defer_input_drop<I, O>(input: I, output: O) -> (I, O) {

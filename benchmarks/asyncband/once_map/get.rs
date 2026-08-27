@@ -15,18 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use asyncband::once::OnceMap;
 use divan::Bencher;
 use divan::black_box;
 
+use super::support::BenchMap;
 use super::support::CONTENDED_ENTRY_COUNTS;
+use super::support::CONTENDED_THREAD_SLOTS;
 use super::support::THREAD_COUNTS;
 use super::support::preloaded_map;
 use crate::support::thread_slot_ticket;
 
 #[divan::bench(threads = THREAD_COUNTS)]
 fn contended_get_hit_same_key(bencher: Bencher) {
-    let map = [(0, 1)].into_iter().collect::<OnceMap<_, _>>();
+    let map = [(0, 1)].into_iter().collect::<BenchMap>();
 
     bencher.bench(|| black_box(map.get(black_box(&0))));
 }
@@ -35,9 +36,10 @@ fn contended_get_hit_same_key(bencher: Bencher) {
 fn contended_get_hit_disjoint(bencher: Bencher, cached_entries: usize) {
     let map = preloaded_map(cached_entries);
 
-    bencher.bench(|| {
-        let (slot, ticket) = thread_slot_ticket();
-        let key = (slot + ticket) % cached_entries;
-        black_box(map.get(black_box(&key)))
-    });
+    bencher
+        .with_inputs(|| {
+            let (slot, ticket) = thread_slot_ticket();
+            (slot + ticket * CONTENDED_THREAD_SLOTS) % cached_entries
+        })
+        .bench_values(|key| black_box(map.get(black_box(&key))));
 }
