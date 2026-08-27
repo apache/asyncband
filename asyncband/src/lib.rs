@@ -50,9 +50,11 @@
 //! ```
 //!
 //! Channel features describe delivery semantics rather than endpoint topology or capacity.
-//! `dispatch` enables channels in which each accepted value is delivered to exactly one receiver;
-//! it currently exposes [`mpsc`]. `broadcast` enables channels in which every active subscription
-//! observes each accepted value. One-shot transfer remains independently gated by `oneshot`.
+//! `queue` enables channels with shared receive progress, in which each accepted value is delivered
+//! to exactly one receiver; it currently exposes [`mpsc`]. The name describes the delivery family,
+//! not a public queue namespace or a thread-blocking API. `broadcast` enables channels in which
+//! every active subscription observes each accepted value. One-shot transfer remains independently
+//! gated by `oneshot`.
 //!
 //! # API guide
 //!
@@ -62,7 +64,7 @@
 //! | Initialize values once           | [`once::Once`], [`once::OnceCell`], [`once::LazyCell`], [`once::OnceMap`] | `once`, `once-cell`, `lazy-cell`, `once-map` |
 //! | Coordinate tasks                 | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`] | `barrier`, `latch`, `waitgroup`, `shutdown` |
 //! | Transfer one value               | [`oneshot::channel`]                                                      | `oneshot`                                   |
-//! | Dispatch each value once         | [`mpsc::bounded`], [`mpsc::unbounded`]                                    | `dispatch`                                  |
+//! | Queue each value for one receiver | [`mpsc::bounded`], [`mpsc::unbounded`]                                   | `queue`                                     |
 //! | Broadcast each value to everyone | [`broadcast::mpmc::unbounded`]                                            | `broadcast`                                 |
 //! | Reuse objects                    | [`pool::bounded`], [`pool::unbounded`]                                    | `pool`                                      |
 //! | Coordinate workloads             | [`semaphore::Semaphore`], [`singleflight::Group`]                         | `semaphore`, `singleflight`                 |
@@ -120,7 +122,7 @@ pub use self::channel::broadcast;
 pub mod condvar;
 #[cfg(feature = "latch")]
 pub mod latch;
-#[cfg(feature = "dispatch")]
+#[cfg(feature = "queue")]
 pub use self::channel::mpsc;
 #[cfg(feature = "mutex")]
 pub mod mutex;

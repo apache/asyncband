@@ -15,14 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[cfg(feature = "dispatch")]
+#[cfg(feature = "queue")]
 pub(crate) mod atomic_waker;
 
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
     feature = "latch",
-    feature = "dispatch",
+    feature = "queue",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
@@ -55,7 +55,7 @@ pub(crate) mod value_cell;
     feature = "barrier",
     feature = "broadcast",
     feature = "latch",
-    feature = "dispatch",
+    feature = "queue",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
@@ -64,7 +64,7 @@ pub(crate) mod value_cell;
 pub(crate) mod mutex;
 
 #[cfg(any(
-    feature = "dispatch",
+    feature = "queue",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
@@ -76,7 +76,7 @@ pub(crate) mod mutex;
 pub(crate) mod semaphore;
 
 #[cfg(any(
-    feature = "dispatch",
+    feature = "queue",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
