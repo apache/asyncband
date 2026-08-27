@@ -206,6 +206,37 @@ struct Inner<T> {
     waiters: WaitSet,
 }
 
+/// Messages removed from the shared buffer and waiting to be dropped after it is unlocked.
+///
+/// Keeping the first message out of the `Vec` avoids a heap allocation on the common path where
+/// one receive reclaims exactly one message.
+struct Reclaimed<T> {
+    first: Option<Arc<T>>,
+    rest: Vec<Arc<T>>,
+}
+
+impl<T> Reclaimed<T> {
+    fn empty() -> Self {
+        Self {
+            first: None,
+            rest: Vec::new(),
+        }
+    }
+
+    fn first(&self) -> Option<&Arc<T>> {
+        self.first.as_ref()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.first.is_none()
+    }
+
+    fn drop_messages(self) {
+        let Self { first, rest } = self;
+        drop((first, rest));
+    }
+}
+
 impl<T> Inner<T> {
     fn insert_receiver(&mut self, head: u64) -> SlotId {
         if head == self.head {
@@ -215,69 +246,60 @@ impl<T> Inner<T> {
         self.receivers.insert(head)
     }
 
-    fn remove_receiver(&mut self, key: SlotId) -> Vec<Arc<T>> {
+    fn remove_receiver(&mut self, key: SlotId) -> Reclaimed<T> {
         let head = self.receivers.remove(key);
 
         if head == self.head {
             self.release_head_receiver()
         } else {
-            Vec::new()
+            Reclaimed::empty()
         }
     }
 
-    fn advance_receiver(&mut self, key: SlotId, next_head: u64) -> Vec<Arc<T>> {
-        let head = *self
-            .receivers
-            .get(key)
-            .expect("active broadcast receiver must be registered");
-        *self
-            .receivers
-            .get_mut(key)
-            .expect("active broadcast receiver must be registered") = next_head;
-
-        if head == self.head {
-            self.release_head_receiver()
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn release_head_receiver(&mut self) -> Vec<Arc<T>> {
+    fn release_head_receiver(&mut self) -> Reclaimed<T> {
         self.head_receivers -= 1;
 
         if self.head_receivers == 0 {
             self.reclaim_consumed()
         } else {
-            Vec::new()
+            Reclaimed::empty()
         }
     }
 
-    fn receive(&mut self, key: SlotId) -> Option<(Arc<T>, Vec<Arc<T>>)> {
-        let head = *self
-            .receivers
-            .get(key)
-            .expect("active broadcast receiver must be registered");
+    fn receive(&mut self, key: SlotId) -> Option<(Arc<T>, Reclaimed<T>)> {
+        let head = {
+            let cursor = self
+                .receivers
+                .get_mut(key)
+                .expect("active broadcast receiver must be registered");
+            if *cursor >= self.tail {
+                return None;
+            }
+            let head = *cursor;
+            *cursor += 1;
+            head
+        };
 
-        if head < self.tail {
-            debug_assert!(head >= self.head);
-            let offset = (head - self.head) as usize;
-            let msg = self.buffer[offset].clone();
-            let reclaimed = self.advance_receiver(key, head + 1);
-            // A reclaim triggered by this receive always begins with this receiver's own message:
-            // the reclaim path runs only for a cursor sitting at `head`, so the first slot drained
-            // is `msg`. `take_msg` relies on this to recognize that it owns the payload.
-            debug_assert!(
-                reclaimed
-                    .first()
-                    .is_none_or(|first| Arc::ptr_eq(first, &msg))
-            );
-            Some((msg, reclaimed))
+        debug_assert!(head >= self.head);
+        let offset = (head - self.head) as usize;
+        let msg = self.buffer[offset].clone();
+        let reclaimed = if head == self.head {
+            self.release_head_receiver()
         } else {
-            None
-        }
+            Reclaimed::empty()
+        };
+        // A reclaim triggered by this receive always begins with this receiver's own message: the
+        // reclaim path runs only for a cursor sitting at `head`, so the first slot drained is
+        // `msg`. `take_msg` relies on this to recognize that it owns the payload.
+        debug_assert!(
+            reclaimed
+                .first()
+                .is_none_or(|first| Arc::ptr_eq(first, &msg))
+        );
+        Some((msg, reclaimed))
     }
 
-    fn reclaim_consumed(&mut self) -> Vec<Arc<T>> {
+    fn reclaim_consumed(&mut self) -> Reclaimed<T> {
         let mut next_head = self.tail;
         let mut head_receivers = 0;
 
@@ -293,8 +315,15 @@ impl<T> Inner<T> {
         debug_assert!(next_head >= self.head);
         let consumed = usize::try_from(next_head - self.head)
             .expect("retained broadcast message count exceeds usize");
-        // Move reclaimed messages out so their Drop impls run after `inner` is unlocked.
-        let reclaimed = self.buffer.drain(..consumed).collect();
+        // Move reclaimed messages out so their Drop impls run after `inner` is unlocked. Keep the
+        // first one separate so the usual one-message reclaim does not allocate another buffer.
+        let first = if consumed == 0 {
+            None
+        } else {
+            self.buffer.pop_front()
+        };
+        let rest = self.buffer.drain(..consumed.saturating_sub(1)).collect();
+        let reclaimed = Reclaimed { first, rest };
 
         self.head = next_head;
         self.head_receivers = head_receivers;
@@ -599,9 +628,9 @@ impl<T: Clone> UnboundedReceiver<T> {
 /// Ownership is decided from that bookkeeping rather than by probing the reference count. An
 /// [`Arc::try_unwrap`] on every receive would fail under fan-out, and its failed compare-exchange
 /// writes to a cache line that every receiver draining the message shares.
-fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Vec<Arc<T>>) -> T {
+fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Reclaimed<T>) -> T {
     let sole_owner = !reclaimed.is_empty();
-    drop(reclaimed);
+    reclaimed.drop_messages();
 
     if !sole_owner {
         return (*msg).clone();
@@ -613,7 +642,7 @@ fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Vec<Arc<T>>) -> T {
 }
 
 impl<T> UnboundedReceiver<T> {
-    fn try_recv_shared(&mut self) -> Result<(Arc<T>, Vec<Arc<T>>), TryRecvError> {
+    fn try_recv_shared(&mut self) -> Result<(Arc<T>, Reclaimed<T>), TryRecvError> {
         // Check this receiver's cursor while holding `inner` before observing `senders`. Senders
         // append messages under the same lock before they can be dropped, so an empty result here
         // means this receiver has no unread buffered message.
