@@ -55,9 +55,6 @@ async fn increment() {
 ```
 
 Public paths stay direct—such as `asyncband::mutex`, `asyncband::pool`, and `asyncband::once::OnceCell`—while Cargo features keep unused implementations out of the build.
-
-Channel features currently match public API modules rather than speculative aggregate families: `oneshot`, `mpsc`, and `broadcast`. Nested variants such as `broadcast::mpmc::unbounded` express topology and capacity in module paths and constructor names without additional Cargo features.
-
 ## Examples
 
 Runnable examples live in the [`examples`](examples) workspace crate. They demonstrate how to choose and compose Asyncband primitives in complete programs.
