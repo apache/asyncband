@@ -56,7 +56,7 @@ async fn increment() {
 
 Public paths stay direct—such as `asyncband::mutex`, `asyncband::pool`, and `asyncband::once::OnceCell`—while Cargo features keep unused implementations out of the build.
 
-Channel features follow delivery semantics. `queue` enables channels with shared receive progress, in which each accepted value is delivered to exactly one receiver; it currently exposes the root `asyncband::mpsc` module. The name describes the delivery family, not a public queue namespace or a thread-blocking API. `broadcast` enables channels in which every active subscription observes each accepted value. Producer topology and boundedness remain choices in the public module and constructor names rather than separate Cargo features, while one-shot transfer remains independently gated by `oneshot`.
+Channel features currently match public API modules rather than speculative aggregate families: `oneshot`, `mpsc`, and `broadcast`. Nested variants such as `broadcast::mpmc::unbounded` express topology and capacity in module paths and constructor names without additional Cargo features.
 
 ## Examples
 
@@ -78,7 +78,7 @@ Runnable examples live in the [`examples`](examples) workspace crate. They demon
 |                         | [`WaitGroup`](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html) | `waitgroup`    | Wait for a dynamic group of tasks to finish.                            |
 |                         | [`shutdown`](https://docs.rs/asyncband/*/asyncband/shutdown/)                        | `shutdown`     | Coordinate shutdown signals and completion.                             |
 | Channels                | [`oneshot`](https://docs.rs/asyncband/*/asyncband/oneshot/)                         | `oneshot`      | Send one value between two tasks.                                       |
-|                         | [`mpsc`](https://docs.rs/asyncband/*/asyncband/mpsc/)                               | `queue`        | Queue each value for delivery to one receiver.                              |
+|                         | [`mpsc`](https://docs.rs/asyncband/*/asyncband/mpsc/)                               | `mpsc`         | Send each value from multiple producers to one receiver.                    |
 |                         | [`broadcast::mpmc::unbounded`](https://docs.rs/asyncband/*/asyncband/broadcast/mpmc/fn.unbounded.html) | `broadcast`    | Broadcast values from multiple producers and retain them until every active receiver consumes them. |
 | Resource reuse          | [`pool`](https://docs.rs/asyncband/*/asyncband/pool/)                               | `pool`         | Reuse objects through bounded or unbounded pool variants.               |
 | Workload coordination   | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore`    | Control concurrent access with permits.                                 |

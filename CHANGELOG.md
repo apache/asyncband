@@ -16,7 +16,6 @@ All notable changes to this project will be documented in this file.
 ### Breaking changes
 
 * Gate all exported primitives behind opt-in Cargo features and enable no features by default; downstream dependencies must explicitly enable the APIs they use.
-* Rename the `mpsc` Cargo feature to `queue`; the public `asyncband::mpsc` path is unchanged, while the feature now names the shared-progress channel family rather than one endpoint topology.
 * Remove `admission::FairShare` and its `admission` Cargo feature from the feature set.
 * Remove the `asyncband::atomicbox` module and its `AtomicBox` and `AtomicOptionBox` types from the public API.
 * Remove the lossy `broadcast::overflow` channel; replacement broadcast APIs use explicit bounded and unbounded lossless semantics under the retained `broadcast` Cargo feature.

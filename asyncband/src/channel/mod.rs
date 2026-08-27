@@ -17,7 +17,7 @@
 
 #[cfg(feature = "broadcast")]
 pub mod broadcast;
-#[cfg(feature = "queue")]
+#[cfg(feature = "mpsc")]
 pub mod mpsc;
 #[cfg(feature = "oneshot")]
 pub mod oneshot;
