@@ -38,9 +38,9 @@
 //! [`UnboundedReceiver::resubscribe`] to create a receiver that starts at the current tail.
 //!
 //! Messages are reclaimed once the slowest receiver moves past them, which scans one slot per
-//! receiver. Only the receive that advances the slowest cursor pays for that scan, and the channel
-//! keeps a slot for every receiver it hands out, so the cost follows the largest number of
-//! receivers that were ever active at once rather than the number active now.
+//! receiver. Only the receiver that advances the slowest cursor pays for that scan, and the
+//! channel keeps a slot for every receiver it hands out, so the cost follows the largest number
+//! of receivers that were ever active at once rather than the number active now.
 //!
 //! # Examples
 //!
@@ -265,7 +265,7 @@ impl<T> Inner<T> {
             let reclaimed = self.advance_receiver(key, head + 1);
             // A reclaim triggered by this receive always begins with this receiver's own message:
             // the reclaim path runs only for a cursor sitting at `head`, so the first slot drained
-            // is `msg`. `take_msg` relies on this to recognise that it owns the payload.
+            // is `msg`. `take_msg` relies on this to recognize that it owns the payload.
             debug_assert!(
                 reclaimed
                     .first()
@@ -609,10 +609,7 @@ fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Vec<Arc<T>>) -> T {
 
     // Another receiver can still hold an in-flight reference to the same message, so the clone
     // remains the fallback.
-    match Arc::try_unwrap(msg) {
-        Ok(msg) => msg,
-        Err(msg) => (*msg).clone(),
-    }
+    Arc::try_unwrap(msg).unwrap_or_else(|msg| (*msg).clone())
 }
 
 impl<T> UnboundedReceiver<T> {
