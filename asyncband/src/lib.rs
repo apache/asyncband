@@ -49,11 +49,6 @@
 //! # }
 //! ```
 //!
-//! Channel features currently match public API modules rather than speculative aggregate families:
-//! `oneshot`, `mpsc`, and `broadcast`. Nested variants such as [`broadcast::mpmc::unbounded`]
-//! express topology and capacity in module paths and constructor names without additional Cargo
-//! features.
-//!
 //! # API guide
 //!
 //! | Use case                         | APIs                                                                      | Cargo features                              |
