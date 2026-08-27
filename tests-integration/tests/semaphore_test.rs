@@ -25,6 +25,7 @@ use std::task::Waker;
 use std::vec::Vec;
 
 use asyncband::semaphore::Semaphore;
+use tests_integration::runtime_test;
 
 #[test]
 fn no_permits() {
@@ -45,23 +46,23 @@ fn try_acquire() {
     assert!(p3.is_some());
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn acquire() {
     let sem = Arc::new(Semaphore::new(1));
     let p1 = sem.try_acquire(1).unwrap();
     let sem_clone = sem.clone();
-    let j = tokio::spawn(async move {
+    let j = runtime::spawn(async move {
         let _p2 = sem_clone.acquire(1).await;
     });
     drop(p1);
     j.await.unwrap();
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn add_permits() {
     let sem = Arc::new(Semaphore::new(0));
     let sem_clone = sem.clone();
-    let j = tokio::spawn(async move {
+    let j = runtime::spawn(async move {
         let _p2 = sem_clone.acquire(1).await;
     });
     sem.release(1);
@@ -81,15 +82,17 @@ fn forget() {
     assert!(sem.try_acquire(1).is_none());
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn stress_test() {
     let sem = Arc::new(Semaphore::new(5));
     let mut join_handles = Vec::new();
     for i in 0..100 {
         let sem_clone = sem.clone();
-        join_handles.push(tokio::spawn(async move {
+        join_handles.push(runtime::spawn(async move {
             let _p = sem_clone.acquire(1).await;
-            tokio::time::sleep(std::time::Duration::from_millis(100 - i)).await;
+            for _ in i..100 {
+                runtime::yield_once().await;
+            }
         }));
     }
     for j in join_handles {
@@ -220,6 +223,32 @@ fn cancellation_restores_permits_before_dropping_waker() {
     drop(waker);
     drop(acquire);
     assert_eq!(Arc::strong_count(&semaphore), 1);
+}
+
+#[allow(unused_mut)]
+#[runtime_test]
+async fn acquire_then_reduce_permits_exact() {
+    let s = Arc::new(Semaphore::new(5));
+    s.reduce_permits(3);
+    assert_eq!(s.available_permits(), 2);
+
+    let (acquired_tx, mut acquired_rx) = asyncband::oneshot::channel();
+
+    let s_clone = s.clone();
+    runtime::spawn_detached(async move {
+        let permit = s_clone.acquire(3).await;
+        drop(permit);
+        acquired_tx.send(()).unwrap();
+    });
+    assert!(acquired_rx.try_recv().is_err());
+
+    s.reduce_permits(2);
+    s.release(2);
+    assert!(acquired_rx.try_recv().is_err());
+
+    s.release(1);
+    acquired_rx.await.unwrap();
+    assert_eq!(s.available_permits(), 3);
 }
 
 #[test]

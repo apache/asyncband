@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use asyncband::mutex::*;
+use tests_integration::runtime_test;
 
 #[test]
 fn test_try_lock_never_blocks() {
@@ -46,7 +47,7 @@ fn test_get_mut_provides_exclusive_access() {
     assert_eq!(inner, 100);
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_guard_map_preserves_lock() {
     let data = (99i32, vec![1, 2, 3]);
     let mutex = Mutex::new(data);
@@ -64,7 +65,7 @@ async fn test_guard_map_preserves_lock() {
     assert_eq!(guard.0, 100);
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_mapped_guard_holds_lock() {
     // Test that MappedMutexGuard properly holds the lock even after the original guard is moved
     let mutex = Arc::new(Mutex::new((10, 20)));
@@ -87,7 +88,7 @@ async fn test_mapped_guard_holds_lock() {
     );
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_owned_mapped_guard_holds_lock() {
     // Test that mapped owned guard properly holds the lock
     let mutex = Arc::new(Mutex::new((30, 40)));
@@ -111,7 +112,7 @@ async fn test_owned_mapped_guard_holds_lock() {
     );
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_guard_filter_map_failure() {
     let data: Vec<i32> = vec![];
     let mutex = Mutex::new(data);
@@ -128,7 +129,7 @@ async fn test_guard_filter_map_failure() {
     }
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_owned_guard_filter_map_failure() {
     let data: Vec<i32> = vec![];
     let mutex = Arc::new(Mutex::new(data));
@@ -145,7 +146,7 @@ async fn test_owned_guard_filter_map_failure() {
     }
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_multiple_map_operations() {
     // Test multiple consecutive map operations
     let data = vec![vec![1, 2], vec![3, 4]];
@@ -164,7 +165,7 @@ async fn test_multiple_map_operations() {
     assert_eq!(guard[1][0], 3);
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_stress() {
     let mutex = Arc::new(Mutex::new(0));
     let mut handles = Vec::new();
@@ -172,11 +173,11 @@ async fn test_stress() {
     // Create many concurrent tasks
     for i in 0..1000 {
         let mutex = mutex.clone();
-        handles.push(tokio::spawn(async move {
+        handles.push(runtime::spawn(async move {
             let mut guard = mutex.lock().await;
             *guard += 1;
             if i % 10 == 0 {
-                tokio::task::yield_now().await;
+                runtime::yield_once().await;
             }
         }));
     }
@@ -189,7 +190,7 @@ async fn test_stress() {
     assert_eq!(final_value, 1000);
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_guard_prevents_concurrent_access() {
     // Test that holding a guard prevents other tasks from acquiring the lock
     let mutex = Arc::new(Mutex::new(0));
@@ -202,12 +203,12 @@ async fn test_guard_prevents_concurrent_access() {
         "Lock should be held by the first guard"
     );
 
-    let handle = tokio::spawn(async move {
+    let handle = runtime::spawn(async move {
         let _guard2 = mutex_clone.lock().await;
         123
     });
 
-    tokio::task::yield_now().await;
+    runtime::yield_once().await;
 
     assert!(
         mutex.try_lock().is_none(),
@@ -242,13 +243,13 @@ fn test_lock_panic_safety() {
     assert!(mutex.try_lock().is_some());
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_async_lock_panic_safety() {
     // Test panic safety with async locks
     let mutex = Arc::new(Mutex::new(0));
     let mutex_clone = mutex.clone();
 
-    let handle = tokio::spawn(async move {
+    let handle = runtime::spawn(async move {
         let _guard = mutex_clone.lock().await;
         panic!("async test panic");
     });
@@ -260,12 +261,12 @@ async fn test_async_lock_panic_safety() {
     assert!(guard.is_some());
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_owned_guard_panic_safety() {
     let mutex = Arc::new(Mutex::new(0));
     let mutex_clone = mutex.clone();
 
-    let handle = tokio::spawn(async move {
+    let handle = runtime::spawn(async move {
         let _guard = mutex_clone.clone().lock_owned().await;
         panic!("owned guard panic");
     });
@@ -277,13 +278,13 @@ async fn test_owned_guard_panic_safety() {
     assert!(guard.is_some());
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_mapped_guard_panic_safety() {
     // Test panic safety with mapped guards
     let mutex = Arc::new(Mutex::new((66, vec![1, 2, 3])));
     let mutex_clone = mutex.clone();
 
-    let handle = tokio::spawn(async move {
+    let handle = runtime::spawn(async move {
         let guard = mutex_clone.lock().await;
         let _mapped = MutexGuard::map(guard, |data| &mut data.0);
         panic!("mapped guard panic");
@@ -295,7 +296,7 @@ async fn test_mapped_guard_panic_safety() {
     assert!(guard.is_some());
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_memory_ordering_correctness() {
     // Test that mutex provides proper memory ordering guarantees
     // When one task modifies data under mutex protection,
@@ -303,7 +304,7 @@ async fn test_memory_ordering_correctness() {
     let mutex = Arc::new(Mutex::new(vec![1, 2, 3]));
     let mutex_clone = mutex.clone();
 
-    let handle = tokio::spawn(async move {
+    let handle = runtime::spawn(async move {
         let mut guard = mutex_clone.lock().await;
         guard.push(4);
         guard[0] = 100;
@@ -319,13 +320,13 @@ async fn test_memory_ordering_correctness() {
     // to subsequent lock acquisitions
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_mutex_zst() {
     // Test that Mutex works correctly with Zero-Sized Types
     let mutex = Arc::new(Mutex::new(()));
 
     let mutex_clone = mutex.clone();
-    let handle = tokio::spawn(async move {
+    let handle = runtime::spawn(async move {
         let guard = mutex_clone.lock().await;
         *guard;
     });
@@ -341,7 +342,7 @@ async fn test_mutex_zst() {
     *guard;
 }
 
-#[tokio::test]
+#[runtime_test]
 async fn test_mapped_mutex_guard_send() {
     // Test that MappedMutexGuard can be sent across await points
     #[derive(Debug)]
@@ -356,11 +357,11 @@ async fn test_mapped_mutex_guard_send() {
     }));
 
     let mutex_clone = mutex.clone();
-    let handle = tokio::spawn(async move {
+    let handle = runtime::spawn(async move {
         let guard = mutex_clone.lock().await;
         let mapped_guard = MutexGuard::map(guard, |data| &mut data.field1);
 
-        tokio::task::yield_now().await;
+        runtime::yield_once().await;
         *mapped_guard
     });
 
