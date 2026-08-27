@@ -21,9 +21,11 @@ use std::hash::Hash;
 use std::hash::RandomState;
 use std::sync::Arc;
 
-use crate::internal::once_table::OnceTable;
-use crate::internal::once_table::OnceTableEntry;
+use table::Entry;
+use table::Lookup;
+use table::Table;
 
+mod table;
 #[cfg(test)]
 mod tests;
 
@@ -33,7 +35,7 @@ mod tests;
 /// to wrap the `V` in an `Arc<V>` to make cloning cheap.
 #[derive(Debug)]
 pub struct OnceMap<K, V, S = RandomState> {
-    map: OnceTable<K, V, S>,
+    map: Table<K, V, S>,
 }
 
 // Holds one call's entry so Drop can clean it up if the computation is abandoned.
@@ -43,7 +45,7 @@ where
     S: BuildHasher,
 {
     once_map: &'a OnceMap<K, V, S>,
-    entry: Option<Arc<OnceTableEntry<K, V>>>,
+    entry: Option<Arc<Entry<K, V>>>,
 }
 
 impl<'a, K, V, S> ComputeCleanupGuard<'a, K, V, S>
@@ -51,14 +53,14 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    fn new(once_map: &'a OnceMap<K, V, S>, entry: Arc<OnceTableEntry<K, V>>) -> Self {
+    fn new(once_map: &'a OnceMap<K, V, S>, entry: Arc<Entry<K, V>>) -> Self {
         Self {
             once_map,
             entry: Some(entry),
         }
     }
 
-    fn entry(&self) -> &Arc<OnceTableEntry<K, V>> {
+    fn entry(&self) -> &Arc<Entry<K, V>> {
         self.entry.as_ref().unwrap()
     }
 
@@ -100,14 +102,14 @@ where
     /// Creates a new OnceMap with the default hasher.
     pub fn new() -> Self {
         Self {
-            map: OnceTable::with_hasher(RandomState::new()),
+            map: Table::with_hasher(RandomState::new()),
         }
     }
 
     /// Creates a new OnceMap with the default hasher and the specified capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            map: OnceTable::with_capacity_and_hasher(capacity, RandomState::new()),
+            map: Table::with_capacity_and_hasher(capacity, RandomState::new()),
         }
     }
 }
@@ -121,14 +123,14 @@ where
     /// Creates a new OnceMap with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
         Self {
-            map: OnceTable::with_hasher(hasher),
+            map: Table::with_hasher(hasher),
         }
     }
 
     /// Create a OnceMap with the specified capacity and hasher.
     pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
         Self {
-            map: OnceTable::with_capacity_and_hasher(capacity, hasher),
+            map: Table::with_capacity_and_hasher(capacity, hasher),
         }
     }
 
@@ -143,10 +145,10 @@ where
     where
         F: AsyncFnOnce() -> V,
     {
-        let entry = self.map.get_or_insert(key);
-        if let Some(value) = entry.get() {
-            return value.clone();
-        }
+        let entry = match self.map.get_or_insert(key) {
+            Lookup::Ready(value) => return value,
+            Lookup::Entry(entry) => entry,
+        };
 
         let guard = ComputeCleanupGuard::new(self, entry);
         let result = guard.entry().get_or_init(func).await.clone();
@@ -165,10 +167,10 @@ where
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        let entry = self.map.get_or_insert(key);
-        if let Some(value) = entry.get() {
-            return Ok(value.clone());
-        }
+        let entry = match self.map.get_or_insert(key) {
+            Lookup::Ready(value) => return Ok(value),
+            Lookup::Entry(entry) => entry,
+        };
 
         let guard = ComputeCleanupGuard::new(self, entry);
         let result = guard.entry().get_or_try_init(func).await?.clone();
@@ -182,8 +184,7 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let entry = self.map.get(key)?;
-        entry.get().cloned()
+        self.map.get(key)
     }
 
     /// Remove the given key from the map.
@@ -222,11 +223,8 @@ where
     S: Default + BuildHasher,
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
-        let map = OnceTable::with_hasher(S::default());
-        for (key, value) in iter {
-            map.insert(key, value);
+        Self {
+            map: iter.into_iter().collect(),
         }
-
-        Self { map }
     }
 }

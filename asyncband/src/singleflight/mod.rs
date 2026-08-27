@@ -23,9 +23,10 @@ use std::hash::Hash;
 use std::hash::RandomState;
 use std::sync::Arc;
 
-use crate::internal::once_table::OnceTable;
-use crate::internal::once_table::OnceTableEntry;
+use table::Entry;
+use table::Table;
 
+mod table;
 #[cfg(test)]
 mod tests;
 
@@ -33,7 +34,7 @@ mod tests;
 /// units of work can be executed with duplicate suppression.
 #[derive(Debug)]
 pub struct Group<K, V, S = RandomState> {
-    map: OnceTable<K, V, S>,
+    map: Table<K, V, S>,
 }
 
 // Holds one call's entry so Drop can clean it up if the work is abandoned.
@@ -43,7 +44,7 @@ where
     S: BuildHasher,
 {
     group: &'a Group<K, V, S>,
-    entry: Option<Arc<OnceTableEntry<K, V>>>,
+    entry: Option<Arc<Entry<K, V>>>,
 }
 
 impl<'a, K, V, S> WorkCleanupGuard<'a, K, V, S>
@@ -60,7 +61,7 @@ where
         }
     }
 
-    fn entry(&self) -> &Arc<OnceTableEntry<K, V>> {
+    fn entry(&self) -> &Arc<Entry<K, V>> {
         self.entry.as_ref().unwrap()
     }
 
@@ -102,7 +103,7 @@ where
     /// Creates a new Group with the default hasher.
     pub fn new() -> Self {
         Self {
-            map: OnceTable::with_hasher(RandomState::new()),
+            map: Table::with_hasher(RandomState::new()),
         }
     }
 }
@@ -116,7 +117,7 @@ where
     /// Creates a new Group with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
         Self {
-            map: OnceTable::with_hasher(hasher),
+            map: Table::with_hasher(hasher),
         }
     }
 
@@ -181,7 +182,7 @@ where
         let result = entry
             .get_or_init(async || {
                 let result = func().await;
-                self.map.remove_entry(entry);
+                self.map.remove_if_current(entry);
                 result
             })
             .await
@@ -245,7 +246,7 @@ where
         let result = entry
             .get_or_try_init(async || {
                 let result = func().await?;
-                self.map.remove_entry(entry);
+                self.map.remove_if_current(entry);
                 Ok(result)
             })
             .await?

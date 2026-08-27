@@ -33,6 +33,7 @@ asyncband = { path = "asyncband" }
 
 # Optional runtime dependencies
 hashbrown = { version = "0.17.1", default-features = false }
+scc = "3.8.6"
 
 # Dev dependencies
 async-channel = { version = "2.5.0" }
