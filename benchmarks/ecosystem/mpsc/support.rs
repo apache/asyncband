@@ -28,7 +28,7 @@ use super::adapters::UnboundedMpsc;
 
 pub const BOUNDED_CAPACITY: usize = 64;
 pub const BATCH_MESSAGES: usize = 16_384;
-pub const PRODUCER_COUNTS: &[usize] = &[1, 2, 4, 8];
+pub const PRODUCER_COUNTS: &[usize] = &[1, 2, 4, 8, 16, 32];
 
 pub trait ConcurrentMpsc: Send + Sync + 'static {
     type Sender: Clone + Send + 'static;

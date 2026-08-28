@@ -44,10 +44,11 @@ asyncband = { workspace = true, features = [
   "singleflight",
   "waitgroup",
 ] }
+crossbeam-channel = { workspace = true }
 divan = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 pollster = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 
 [[bench]]
 harness = false
