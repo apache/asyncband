@@ -53,7 +53,7 @@ mpsc = []
 mutex = []
 once = ["semaphore"]
 once-cell = ["semaphore"]
-once-map = ["dep:hashbrown", "dep:scc", "once-cell"]
+once-map = ["dep:hashbrown", "once-cell"]
 oneshot = []
 pool = ["semaphore"]
 rwlock = []
@@ -66,7 +66,6 @@ waitgroup = []
 hashbrown = { workspace = true, default-features = false, features = [
   "inline-more",
 ], optional = true }
-scc = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

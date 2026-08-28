@@ -18,9 +18,7 @@
 use std::borrow::Borrow;
 use std::fmt;
 use std::hash::BuildHasher;
-use std::hash::BuildHasherDefault;
 use std::hash::Hash;
-use std::hash::Hasher;
 use std::panic::UnwindSafe;
 use std::sync::Arc;
 use std::sync::MutexGuard;
@@ -28,14 +26,15 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 use hashbrown::HashTable;
-use scc::Equivalent;
-use scc::HashIndex;
-use scc::hash_index::Entry as IndexEntry;
 
 use crate::internal::default_shard_count;
 use crate::internal::mutex::CachePaddedMutex;
 use crate::internal::mutex::Mutex;
 use crate::once::OnceCell;
+
+mod ready_index;
+
+use ready_index::ReadyIndex;
 
 type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
 
@@ -75,54 +74,13 @@ impl<K, V> Entry<K, V> {
     }
 }
 
-struct ReadyEntry<K, V>(Arc<Entry<K, V>>);
-
-impl<K: Eq, V> PartialEq for ReadyEntry<K, V> {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.hash == other.0.hash && self.0.key == other.0.key
-    }
-}
-
-impl<K: Eq, V> Eq for ReadyEntry<K, V> {}
-
-impl<K, V> Hash for ReadyEntry<K, V> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.0.hash);
-    }
-}
-
-type BuildIdentityHasher = BuildHasherDefault<IdentityHasher>;
-
-#[derive(Default)]
-struct IdentityHasher(u64);
-
-impl Hasher for IdentityHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 = self.0.rotate_left(8) ^ u64::from(*byte);
-        }
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        self.0 = value;
-    }
-}
-
 pub struct Table<K, V, S> {
     shards: Box<[CachePaddedMutex<Entries<K, V>>]>,
-    index: HashIndex<ReadyEntry<K, V>, (), BuildIdentityHasher>,
+    index: ReadyIndex<K, V>,
     hasher: S,
 }
 
-/// `HashIndex` prevents `Table` from being automatically `UnwindSafe` unless `K` and `V` are
-/// `UnwindSafe`.
-/// Table operations are unwind-safe regardless, but since it was refactored from a
-/// mutex-backed implementation, implement `UnwindSafe` manually to retain the same auto-trait
-/// semantics.
+/// Table operations recover poisoned ready-index locks before accessing their contents.
 impl<K, V, S: UnwindSafe> UnwindSafe for Table<K, V, S> {}
 
 impl<K, V, S> fmt::Debug for Table<K, V, S>
@@ -170,7 +128,7 @@ impl<K, V, S> Table<K, V, S> {
 
         Self {
             shards,
-            index: HashIndex::with_capacity_and_hasher(capacity, BuildIdentityHasher::default()),
+            index: ReadyIndex::with_capacity_and_shard_amount(capacity, shard_amount),
             hasher,
         }
     }
@@ -197,38 +155,13 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    fn lockup_index<Q>(&self, hash: u64, key: &Q) -> Option<V>
+    fn lookup_index<Q>(&self, hash: u64, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
         V: Clone,
     {
-        // I think we need to add a function-based peek_with to scc instead of using new type here.
-        // Alternatively, we could write our own HashIndex.
-        struct LookupKey<'a, Q: ?Sized> {
-            hash: u64,
-            key: &'a Q,
-        }
-
-        impl<Q: ?Sized> Hash for LookupKey<'_, Q> {
-            fn hash<H: Hasher>(&self, state: &mut H) {
-                state.write_u64(self.hash);
-            }
-        }
-
-        impl<K, V, Q> Equivalent<ReadyEntry<K, V>> for LookupKey<'_, Q>
-        where
-            K: Borrow<Q>,
-            Q: Eq + ?Sized,
-        {
-            fn equivalent(&self, entry: &ReadyEntry<K, V>) -> bool {
-                entry.0.key.borrow() == self.key
-            }
-        }
-
-        self.index
-            .peek_with(&LookupKey { hash, key }, |entry, ()| entry.0.get().cloned())
-            .flatten()
+        self.index.get(hash, key)
     }
 
     pub fn get_or_insert(&self, key: K) -> Lookup<K, V>
@@ -236,7 +169,7 @@ where
         V: Clone,
     {
         let hash = self.hasher.hash_one(&key);
-        if let Some(value) = self.lockup_index(hash, &key) {
+        if let Some(value) = self.lookup_index(hash, &key) {
             return Lookup::Ready(value);
         }
 
@@ -270,7 +203,7 @@ where
     {
         let hash = self.hasher.hash_one(key);
 
-        if let Some(value) = self.lockup_index(hash, key) {
+        if let Some(value) = self.lookup_index(hash, key) {
             Some(value)
         } else {
             let entry = self
@@ -354,41 +287,13 @@ where
     }
 
     fn index(&self, entry: &Arc<Entry<K, V>>) {
-        loop {
-            match self.index.entry_sync(ReadyEntry(Arc::clone(entry))) {
-                IndexEntry::Occupied(occupied) => {
-                    if Arc::ptr_eq(&occupied.key().0, entry) {
-                        break;
-                    }
-                    occupied.remove_entry();
-                }
-                IndexEntry::Vacant(vacant) => {
-                    vacant.insert_entry(());
-                    break;
-                }
-            }
-        }
-
+        self.index.insert(entry);
         entry.was_indexed.store(true, Ordering::Relaxed);
     }
 
     fn remove_from_index(&self, entry: &Arc<Entry<K, V>>) {
-        struct EntryIdentity<'a, K, V>(&'a Arc<Entry<K, V>>);
-
-        impl<K, V> Hash for EntryIdentity<'_, K, V> {
-            fn hash<H: Hasher>(&self, state: &mut H) {
-                state.write_u64(self.0.hash);
-            }
-        }
-
-        impl<K, V> Equivalent<ReadyEntry<K, V>> for EntryIdentity<'_, K, V> {
-            fn equivalent(&self, entry: &ReadyEntry<K, V>) -> bool {
-                Arc::ptr_eq(&entry.0, self.0)
-            }
-        }
-
         if entry.was_indexed.load(Ordering::Relaxed) {
-            self.index.remove_if_sync(&EntryIdentity(entry), |()| true);
+            self.index.remove(entry);
         }
     }
 }

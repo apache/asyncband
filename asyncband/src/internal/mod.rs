@@ -55,6 +55,9 @@ pub(crate) mod value_cell;
 ))]
 pub(crate) mod mutex;
 
+#[cfg(feature = "once-map")]
+pub(crate) mod rwlock;
+
 #[cfg(any(
     feature = "mpsc",
     feature = "mutex",
