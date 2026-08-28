@@ -106,6 +106,17 @@ where
             map: Table::with_hasher(RandomState::new()),
         }
     }
+
+    /// Creates a new Group with the default hasher and the specified shard amount.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `shard_amount` is zero or is not a power of two.
+    pub fn with_shard_amount(shard_amount: usize) -> Self {
+        Self {
+            map: Table::with_hasher_and_shard_amount(RandomState::new(), shard_amount),
+        }
+    }
 }
 
 impl<K, V, S> Group<K, V, S>
@@ -118,6 +129,17 @@ where
     pub fn with_hasher(hasher: S) -> Self {
         Self {
             map: Table::with_hasher(hasher),
+        }
+    }
+
+    /// Creates a new Group with the given hasher and the specified shard amount.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `shard_amount` is zero or is not a power of two.
+    pub fn with_hasher_and_shard_amount(hasher: S, shard_amount: usize) -> Self {
+        Self {
+            map: Table::with_hasher_and_shard_amount(hasher, shard_amount),
         }
     }
 

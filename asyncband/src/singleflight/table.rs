@@ -80,7 +80,16 @@ where
 
 impl<K, V, S> Table<K, V, S> {
     pub fn with_hasher(hasher: S) -> Self {
-        let shards = (0..default_shard_count())
+        Self::with_hasher_and_shard_amount(hasher, default_shard_count())
+    }
+
+    pub fn with_hasher_and_shard_amount(hasher: S, shard_amount: usize) -> Self {
+        assert!(
+            shard_amount.is_power_of_two(),
+            "shard amount must be greater than zero and a power of two"
+        );
+
+        let shards = (0..shard_amount)
             .map(|_| CachePaddedMutex(Mutex::new(HashTable::new())))
             .collect();
         Self { shards, hasher }

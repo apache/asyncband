@@ -112,6 +112,33 @@ where
             map: Table::with_capacity_and_hasher(capacity, RandomState::new()),
         }
     }
+
+    /// Creates a new OnceMap with the default hasher and the specified shard amount.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `shard_amount` is zero or is not a power of two.
+    pub fn with_shard_amount(shard_amount: usize) -> Self {
+        Self {
+            map: Table::with_hasher_and_shard_amount(RandomState::new(), shard_amount),
+        }
+    }
+
+    /// Creates a new OnceMap with the default hasher, the specified capacity, and the specified
+    /// shard amount.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `shard_amount` is zero or is not a power of two.
+    pub fn with_capacity_and_shard_amount(capacity: usize, shard_amount: usize) -> Self {
+        Self {
+            map: Table::with_capacity_and_hasher_and_shard_amount(
+                capacity,
+                RandomState::new(),
+                shard_amount,
+            ),
+        }
+    }
 }
 
 impl<K, V, S> OnceMap<K, V, S>
@@ -131,6 +158,32 @@ where
     pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
         Self {
             map: Table::with_capacity_and_hasher(capacity, hasher),
+        }
+    }
+
+    /// Creates a new OnceMap with the given hasher and the specified shard amount.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `shard_amount` is zero or is not a power of two.
+    pub fn with_hasher_and_shard_amount(hasher: S, shard_amount: usize) -> Self {
+        Self {
+            map: Table::with_hasher_and_shard_amount(hasher, shard_amount),
+        }
+    }
+
+    /// Creates a new OnceMap with the specified capacity, hasher, and shard amount.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `shard_amount` is zero or is not a power of two.
+    pub fn with_capacity_and_hasher_and_shard_amount(
+        capacity: usize,
+        hasher: S,
+        shard_amount: usize,
+    ) -> Self {
+        Self {
+            map: Table::with_capacity_and_hasher_and_shard_amount(capacity, hasher, shard_amount),
         }
     }
 

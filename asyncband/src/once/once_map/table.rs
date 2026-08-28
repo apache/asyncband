@@ -146,9 +146,25 @@ impl<K, V, S> Table<K, V, S> {
     }
 
     pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
-        let shard_count = default_shard_count();
-        let shard_capacity = capacity.div_ceil(shard_count);
-        let shards = (0..shard_count)
+        Self::with_capacity_and_hasher_and_shard_amount(capacity, hasher, default_shard_count())
+    }
+
+    pub fn with_hasher_and_shard_amount(hasher: S, shard_amount: usize) -> Self {
+        Self::with_capacity_and_hasher_and_shard_amount(0, hasher, shard_amount)
+    }
+
+    pub fn with_capacity_and_hasher_and_shard_amount(
+        capacity: usize,
+        hasher: S,
+        shard_amount: usize,
+    ) -> Self {
+        assert!(
+            shard_amount.is_power_of_two(),
+            "shard amount must be greater than zero and a power of two"
+        );
+
+        let shard_capacity = capacity.div_ceil(shard_amount);
+        let shards = (0..shard_amount)
             .map(|_| CachePaddedMutex(Mutex::new(HashTable::with_capacity(shard_capacity))))
             .collect();
 
