@@ -67,6 +67,7 @@
 //! | Channels              | [`oneshot`]                         | `oneshot`      | Send one value between two tasks.                                                                      |
 //! |                       | [`mpsc`]                            | `mpsc`         | Send each value from multiple producers to one receiver.                                               |
 //! |                       | [`broadcast`]                       | `broadcast`    | Broadcast values from one or more producers and retain them until every active receiver consumes them. |
+//! |                       | [`watch`]                           | `watch`        | Retain the latest state and coalesce intermediate updates.                                             |
 //! | Resource reuse        | [`pool`]                            | `pool`         | Reuse objects through bounded or unbounded pool variants.                                              |
 //! | Workload coordination | [`Semaphore`](semaphore::Semaphore) | `semaphore`    | Control concurrent access with permits.                                                                |
 //! |                       | [`Group`](singleflight::Group)      | `singleflight` | Coalesce concurrent calls for the same key.                                                            |
@@ -149,6 +150,8 @@ pub mod shutdown;
 pub mod singleflight;
 #[cfg(feature = "waitgroup")]
 pub mod waitgroup;
+#[cfg(feature = "watch")]
+pub use self::channel::watch;
 
 #[cfg(all(test, any(feature = "once-map", feature = "singleflight")))]
 mod test_support;

@@ -27,6 +27,7 @@ pub(crate) mod atomic_waker;
     feature = "rwlock",
     feature = "semaphore",
     feature = "waitgroup",
+    feature = "watch",
 ))]
 // `WaitList` and `WaitSet` use different `Arena` operations. A single-primitive build therefore
 // leaves part of this shared API unused, while the all-feature build uses it.
@@ -60,6 +61,7 @@ pub(crate) mod value_cell;
     feature = "rwlock",
     feature = "semaphore",
     feature = "waitgroup",
+    feature = "watch",
 ))]
 pub(crate) mod mutex;
 
@@ -89,6 +91,7 @@ pub(crate) mod waitlist;
     feature = "latch",
     feature = "once",
     feature = "waitgroup",
+    feature = "watch",
 ))]
 // `barrier` constructs a wait set with `with_capacity`, while countdown-based primitives use
 // `new`. One constructor is therefore unused in every single-primitive build.

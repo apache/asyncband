@@ -15,14 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod broadcast;
-mod mpsc;
-mod watch;
-
-#[allow(dead_code)]
-#[path = "../asyncband/support.rs"]
-mod support;
-
-fn main() {
-    divan::main();
-}
+mod adapters;
+mod paths;

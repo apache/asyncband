@@ -62,6 +62,7 @@ semaphore = []
 shutdown = ["latch", "waitgroup"]
 singleflight = ["dep:hashbrown", "once-cell"]
 waitgroup = []
+watch = []
 
 [dependencies]
 hashbrown = { workspace = true, default-features = false, features = [

@@ -32,6 +32,7 @@ mod shutdown;
 mod singleflight;
 mod support;
 mod waitgroup;
+mod watch;
 
 fn main() {
     divan::main();

@@ -21,3 +21,5 @@ pub mod broadcast;
 pub mod mpsc;
 #[cfg(feature = "oneshot")]
 pub mod oneshot;
+#[cfg(feature = "watch")]
+pub mod watch;

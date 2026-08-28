@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 * Add an opt-in `asyncband::blocking::FutureExt` bridge with `block_on` and `wait_timeout` methods for waiting on runtime-agnostic futures from synchronous code.
 * Add opt-in bounded and unbounded runtime-agnostic object pools under `asyncband::pool`.
 * Add opt-in `asyncband::once::LazyCell` for values that own one asynchronous initializer and preserve its in-flight future across caller cancellation.
+* Add an opt-in latest-state channel under `asyncband::watch`.
 
 ### Breaking changes
 

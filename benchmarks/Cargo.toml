@@ -43,6 +43,7 @@ asyncband = { workspace = true, features = [
   "shutdown",
   "singleflight",
   "waitgroup",
+  "watch",
 ] }
 divan = { workspace = true }
 flume = { workspace = true, features = ["async"] }
