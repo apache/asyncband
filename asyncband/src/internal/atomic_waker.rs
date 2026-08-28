@@ -207,15 +207,6 @@ impl AtomicWaker {
         }
     }
 
-    /// Removes the most recently registered waker without waking it.
-    ///
-    /// This method must not overlap with [`register`](Self::register). It may run concurrently with
-    /// [`wake`](Self::wake).
-    #[inline]
-    pub fn clear(&self) {
-        drop(self.take());
-    }
-
     #[inline]
     fn take(&self) -> Option<Waker> {
         // ORDERING: When this reads WAITING, Acquire receives the registered waker published by the
@@ -277,19 +268,6 @@ mod tests {
         atomic_waker.wake();
 
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn clear_removes_registered_waker() {
-        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-        let waker = Waker::from(counter.clone());
-        let atomic_waker = AtomicWaker::new();
-
-        atomic_waker.register(&waker);
-        atomic_waker.clear();
-        atomic_waker.wake();
-
-        assert_eq!(counter.0.load(Ordering::Relaxed), 0);
     }
 
     #[test]

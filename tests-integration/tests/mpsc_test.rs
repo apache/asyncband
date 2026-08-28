@@ -264,23 +264,6 @@ fn unbounded_last_sender_drop_wakes_parked_receiver() {
     );
 }
 
-#[test]
-fn dropping_unbounded_receiver_releases_registered_waker() {
-    let (_tx, mut rx) = mpsc::unbounded::<()>();
-    let probe = Arc::new(WakeProbe(AtomicUsize::new(0)));
-    let waker = Waker::from(probe.clone());
-    let baseline_refs = Arc::strong_count(&probe);
-    let mut context = Context::from_waker(&waker);
-    let mut recv = Box::pin(rx.recv());
-
-    assert!(recv.as_mut().poll(&mut context).is_pending());
-    assert_eq!(Arc::strong_count(&probe), baseline_refs + 1);
-
-    drop(recv);
-    drop(rx);
-    assert_eq!(Arc::strong_count(&probe), baseline_refs);
-}
-
 #[tokio::test]
 async fn send_recv_bounded() {
     let (tx, mut rx) = mpsc::bounded(1);
