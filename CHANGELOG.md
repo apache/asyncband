@@ -32,3 +32,4 @@ All notable changes to this project will be documented in this file.
 ### Improvements
 
 * Remove the `slab` dependency in favor of a focused internal waiter arena.
+* Replace the unbounded MPSC standard-library backend with a segmented single-consumer queue.
