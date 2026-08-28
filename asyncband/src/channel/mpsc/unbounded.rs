@@ -18,13 +18,20 @@
 //! An unbounded multi-producer, single-consumer queue for sending values between asynchronous
 //! tasks.
 
+mod queue;
+
 use std::fmt;
 use std::future::poll_fn;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+
+use queue::Consumer;
+use queue::Pop;
+use queue::Queue;
 
 use super::RecvError;
 use super::SendError;
@@ -41,33 +48,47 @@ use crate::internal::atomic_waker::AtomicWaker;
 /// the channel. Using an `unbounded` channel has the ability of causing the
 /// process to run out of memory. In this case, the process will be aborted.
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
+    let (queue, consumer) = Queue::new();
     let state = Arc::new(UnboundedState {
         senders: AtomicUsize::new(1),
+        rx_waiting: AtomicBool::new(false),
         rx_waker: AtomicWaker::new(),
+        queue,
     });
-    let (sender, receiver) = std::sync::mpsc::channel();
     let sender = UnboundedSender {
         state: state.clone(),
-        sender: Some(sender),
     };
-    let receiver = UnboundedReceiver {
-        state: state.clone(),
-        receiver,
-    };
+    let receiver = UnboundedReceiver { state, consumer };
     (sender, receiver)
 }
 
-struct UnboundedState {
+struct UnboundedState<T> {
     senders: AtomicUsize,
+    rx_waiting: AtomicBool,
     rx_waker: AtomicWaker,
+    queue: Queue<T>,
+}
+
+impl<T> UnboundedState<T> {
+    fn wake_receiver(&self) {
+        // Keep the common active-receiver path read-only. If the receiver is parked, exactly one
+        // producer claims this registration and performs the wake.
+        if self.rx_waiting.load(Ordering::SeqCst)
+            && self
+                .rx_waiting
+                .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            self.rx_waker.wake();
+        }
+    }
 }
 
 /// Send values to the associated [`UnboundedReceiver`].
 ///
 /// Instances are created by the [`unbounded`] function.
 pub struct UnboundedSender<T> {
-    state: Arc<UnboundedState>,
-    sender: Option<std::sync::mpsc::Sender<T>>,
+    state: Arc<UnboundedState<T>>,
 }
 
 impl<T> Clone for UnboundedSender<T> {
@@ -75,7 +96,6 @@ impl<T> Clone for UnboundedSender<T> {
         self.state.senders.fetch_add(1, Ordering::Release);
         UnboundedSender {
             state: self.state.clone(),
-            sender: self.sender.clone(),
         }
     }
 }
@@ -88,14 +108,11 @@ impl<T> fmt::Debug for UnboundedSender<T> {
 
 impl<T> Drop for UnboundedSender<T> {
     fn drop(&mut self) {
-        // drop the sender; this closes the channel if it is the last sender
-        drop(self.sender.take());
-
         match self.state.senders.fetch_sub(1, Ordering::AcqRel) {
             1 => {
                 // If this is the last sender, we need to wake up the receiver so it can
                 // observe the disconnected state.
-                self.state.rx_waker.wake();
+                self.state.wake_receiver();
             }
             _ => {
                 // there are still other senders left, do nothing
@@ -114,11 +131,9 @@ impl<T> UnboundedSender<T> {
     /// If the receiver has been dropped, this function returns an error. The error includes
     /// the value passed to `send`.
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
-        // SAFETY: The sender is guaranteed to be non-null before dropped.
-        let sender = self.sender.as_ref().unwrap();
-        sender.send(value).map_err(|err| SendError::new(err.0))?;
+        self.state.queue.push(value).map_err(SendError::new)?;
 
-        self.state.rx_waker.wake();
+        self.state.wake_receiver();
 
         Ok(())
     }
@@ -128,13 +143,16 @@ impl<T> UnboundedSender<T> {
 ///
 /// Instances are created by the [`unbounded`] function.
 pub struct UnboundedReceiver<T> {
-    state: Arc<UnboundedState>,
-    receiver: std::sync::mpsc::Receiver<T>,
+    state: Arc<UnboundedState<T>>,
+    consumer: Consumer<T>,
 }
 
-/// The only `!Sync` field `receiver` is protected by `&mut self` in `recv` and `try_recv`.
-/// That is, `UnboundedReceiver` can only be accessed by one thread at a time.
-unsafe impl<T: Send> Sync for UnboundedReceiver<T> {}
+impl<T> Drop for UnboundedReceiver<T> {
+    fn drop(&mut self) {
+        self.state.rx_waiting.store(false, Ordering::SeqCst);
+        self.state.queue.close(&mut self.consumer);
+    }
+}
 
 impl<T> fmt::Debug for UnboundedReceiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -177,10 +195,21 @@ impl<T> UnboundedReceiver<T> {
     /// # }
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        match self.receiver.try_recv() {
-            Ok(v) => Ok(v),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(TryRecvError::Disconnected),
-            Err(std::sync::mpsc::TryRecvError::Empty) => Err(TryRecvError::Empty),
+        match self.consumer.pop(&self.state.queue) {
+            Pop::Value(value) => return Ok(value),
+            Pop::Empty | Pop::Pending => {}
+        }
+
+        if self.state.senders.load(Ordering::Acquire) == 0 {
+            // The last sender publishes its queue write before decrementing this count. Rechecking
+            // after acquiring zero drains that final value before reporting disconnection.
+            match self.consumer.pop(&self.state.queue) {
+                Pop::Value(value) => Ok(value),
+                Pop::Empty => Err(TryRecvError::Disconnected),
+                Pop::Pending => unreachable!("the final sender cannot leave a pending queue slot"),
+            }
+        } else {
+            Err(TryRecvError::Empty)
         }
     }
 
@@ -243,9 +272,20 @@ impl<T> UnboundedReceiver<T> {
             Err(TryRecvError::Empty) => {
                 self.state.rx_waker.register(cx.waker());
 
+                // The queue reservation, slot publication, and notification gate are sequentially
+                // consistent: either this recheck observes a completed send, or that sender sees
+                // the armed gate and wakes this task after publishing its slot.
+                self.state.rx_waiting.store(true, Ordering::SeqCst);
+
                 match self.try_recv() {
-                    Ok(v) => Poll::Ready(Ok(v)),
-                    Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
+                    Ok(v) => {
+                        self.state.rx_waiting.store(false, Ordering::SeqCst);
+                        Poll::Ready(Ok(v))
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        self.state.rx_waiting.store(false, Ordering::SeqCst);
+                        Poll::Ready(Err(RecvError::Disconnected))
+                    }
                     Err(TryRecvError::Empty) => Poll::Pending,
                 }
             }
