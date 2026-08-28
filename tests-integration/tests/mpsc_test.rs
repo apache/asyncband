@@ -15,7 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
 use std::time::Instant;
 
 use asyncband::mpsc;
@@ -30,6 +37,14 @@ fn expect_ready<T>(poll: Poll<T>) -> T {
     match poll {
         Poll::Ready(value) => value,
         Poll::Pending => panic!("future should be ready"),
+    }
+}
+
+struct WakeProbe(AtomicUsize);
+
+impl Wake for WakeProbe {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -207,6 +222,63 @@ fn try_recv_close_while_empty_unbounded() {
     assert_eq!(Err(TryRecvError::Empty), rx.try_recv());
     drop(tx);
     assert_eq!(Err(TryRecvError::Disconnected), rx.try_recv());
+}
+
+#[test]
+fn unbounded_burst_wakes_parked_receiver_once() {
+    let (tx, mut rx) = mpsc::unbounded();
+    let probe = Arc::new(WakeProbe(AtomicUsize::new(0)));
+    let waker = Waker::from(probe.clone());
+    let mut context = Context::from_waker(&waker);
+    let mut recv = Box::pin(rx.recv());
+
+    assert!(recv.as_mut().poll(&mut context).is_pending());
+    for value in 0..100 {
+        tx.send(value).unwrap();
+    }
+
+    assert_eq!(probe.0.load(Ordering::Relaxed), 1);
+    assert_eq!(expect_ready(recv.as_mut().poll(&mut context)), Ok(0));
+    drop(recv);
+
+    for value in 1..100 {
+        assert_eq!(rx.try_recv(), Ok(value));
+    }
+}
+
+#[test]
+fn unbounded_last_sender_drop_wakes_parked_receiver() {
+    let (tx, mut rx) = mpsc::unbounded::<()>();
+    let probe = Arc::new(WakeProbe(AtomicUsize::new(0)));
+    let waker = Waker::from(probe.clone());
+    let mut context = Context::from_waker(&waker);
+    let mut recv = Box::pin(rx.recv());
+
+    assert!(recv.as_mut().poll(&mut context).is_pending());
+    drop(tx);
+
+    assert_eq!(probe.0.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        expect_ready(recv.as_mut().poll(&mut context)),
+        Err(RecvError::Disconnected)
+    );
+}
+
+#[test]
+fn dropping_unbounded_receiver_releases_registered_waker() {
+    let (_tx, mut rx) = mpsc::unbounded::<()>();
+    let probe = Arc::new(WakeProbe(AtomicUsize::new(0)));
+    let waker = Waker::from(probe.clone());
+    let baseline_refs = Arc::strong_count(&probe);
+    let mut context = Context::from_waker(&waker);
+    let mut recv = Box::pin(rx.recv());
+
+    assert!(recv.as_mut().poll(&mut context).is_pending());
+    assert_eq!(Arc::strong_count(&probe), baseline_refs + 1);
+
+    drop(recv);
+    drop(rx);
+    assert_eq!(Arc::strong_count(&probe), baseline_refs);
 }
 
 #[tokio::test]

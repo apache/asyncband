@@ -32,3 +32,4 @@ All notable changes to this project will be documented in this file.
 ### Improvements
 
 * Remove the `slab` dependency in favor of a focused internal waiter arena.
+* Reduce unbounded MPSC contention by avoiding receiver wake operations while no receive call is parked.

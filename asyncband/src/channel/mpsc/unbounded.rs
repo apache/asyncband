@@ -21,10 +21,12 @@
 use std::fmt;
 use std::future::poll_fn;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use super::RecvError;
 use super::SendError;
@@ -43,7 +45,7 @@ use crate::internal::atomic_waker::AtomicWaker;
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     let state = Arc::new(UnboundedState {
         senders: AtomicUsize::new(1),
-        rx_waker: AtomicWaker::new(),
+        rx_wake: ReceiverWake::new(),
     });
     let (sender, receiver) = std::sync::mpsc::channel();
     let sender = UnboundedSender {
@@ -59,7 +61,54 @@ pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
 
 struct UnboundedState {
     senders: AtomicUsize,
-    rx_waker: AtomicWaker,
+    rx_wake: ReceiverWake,
+}
+
+/// Coalesces receiver wake-ups while keeping the queue as the source of truth.
+///
+/// The receiver follows `register -> arm -> recheck`; each sender follows `enqueue -> claim arm`.
+/// If a sender checks before the arm is published, the recheck observes its message. Otherwise,
+/// one sender changes `armed` from true to false and owns the wake. A false value after arming
+/// means another sender already owns the wake or the receiver has observed readiness and disarmed.
+struct ReceiverWake {
+    armed: AtomicBool,
+    waker: AtomicWaker,
+}
+
+impl ReceiverWake {
+    const fn new() -> Self {
+        Self {
+            armed: AtomicBool::new(false),
+            waker: AtomicWaker::new(),
+        }
+    }
+
+    fn arm(&self, waker: &Waker) {
+        self.waker.register(waker);
+
+        // Together with the sender's SeqCst check, this orders arming before the receiver's queue
+        // recheck and enqueueing before the sender's arm check. Both sides therefore cannot miss
+        // each other: either the receiver observes the message or the sender observes the arm.
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    fn disarm(&self) {
+        self.armed.store(false, Ordering::SeqCst);
+        self.waker.clear();
+    }
+
+    fn wake(&self) {
+        // The load keeps the common active-receiver path read-only. The compare-exchange lets one
+        // sender claim each arm while concurrent senders coalesce behind it.
+        if self.armed.load(Ordering::SeqCst)
+            && self
+                .armed
+                .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            self.waker.wake();
+        }
+    }
 }
 
 /// Send values to the associated [`UnboundedReceiver`].
@@ -95,7 +144,7 @@ impl<T> Drop for UnboundedSender<T> {
             1 => {
                 // If this is the last sender, we need to wake up the receiver so it can
                 // observe the disconnected state.
-                self.state.rx_waker.wake();
+                self.state.rx_wake.wake();
             }
             _ => {
                 // there are still other senders left, do nothing
@@ -118,7 +167,7 @@ impl<T> UnboundedSender<T> {
         let sender = self.sender.as_ref().unwrap();
         sender.send(value).map_err(|err| SendError::new(err.0))?;
 
-        self.state.rx_waker.wake();
+        self.state.rx_wake.wake();
 
         Ok(())
     }
@@ -135,6 +184,12 @@ pub struct UnboundedReceiver<T> {
 /// The only `!Sync` field `receiver` is protected by `&mut self` in `recv` and `try_recv`.
 /// That is, `UnboundedReceiver` can only be accessed by one thread at a time.
 unsafe impl<T: Send> Sync for UnboundedReceiver<T> {}
+
+impl<T> Drop for UnboundedReceiver<T> {
+    fn drop(&mut self) {
+        self.state.rx_wake.disarm();
+    }
+}
 
 impl<T> fmt::Debug for UnboundedReceiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -241,11 +296,17 @@ impl<T> UnboundedReceiver<T> {
             Ok(v) => Poll::Ready(Ok(v)),
             Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
             Err(TryRecvError::Empty) => {
-                self.state.rx_waker.register(cx.waker());
+                self.state.rx_wake.arm(cx.waker());
 
                 match self.try_recv() {
-                    Ok(v) => Poll::Ready(Ok(v)),
-                    Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
+                    Ok(v) => {
+                        self.state.rx_wake.disarm();
+                        Poll::Ready(Ok(v))
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        self.state.rx_wake.disarm();
+                        Poll::Ready(Err(RecvError::Disconnected))
+                    }
                     Err(TryRecvError::Empty) => Poll::Pending,
                 }
             }
