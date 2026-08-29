@@ -76,21 +76,22 @@ use std::num::NonZeroUsize;
 use crate::internal::semaphore::Semaphore;
 
 mod mapped_read_guard;
-pub use mapped_read_guard::MappedRwLockReadGuard;
 mod mapped_write_guard;
-pub use mapped_write_guard::MappedRwLockWriteGuard;
 mod owned_mapped_read_guard;
-pub use owned_mapped_read_guard::OwnedMappedRwLockReadGuard;
 mod owned_mapped_write_guard;
-pub use owned_mapped_write_guard::OwnedMappedRwLockWriteGuard;
 mod owned_read_guard;
-pub use owned_read_guard::OwnedRwLockReadGuard;
 mod owned_write_guard;
-pub use owned_write_guard::OwnedRwLockWriteGuard;
 mod read_guard;
-pub use read_guard::RwLockReadGuard;
 mod write_guard;
-pub use write_guard::RwLockWriteGuard;
+
+pub use self::mapped_read_guard::MappedRwLockReadGuard;
+pub use self::mapped_write_guard::MappedRwLockWriteGuard;
+pub use self::owned_mapped_read_guard::OwnedMappedRwLockReadGuard;
+pub use self::owned_mapped_write_guard::OwnedMappedRwLockWriteGuard;
+pub use self::owned_read_guard::OwnedRwLockReadGuard;
+pub use self::owned_write_guard::OwnedRwLockWriteGuard;
+pub use self::read_guard::RwLockReadGuard;
+pub use self::write_guard::RwLockWriteGuard;
 
 /// A reader-writer lock that allows multiple readers or a single writer at a time.
 ///
