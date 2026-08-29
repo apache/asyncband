@@ -41,7 +41,7 @@ fn one_off_burst_allocation_is_returned_once_it_is_behind_us() {
     }
 
     // Draining evaluates the cycle that just peaked, so the burst allocation is still held.
-    assert_eq!(tx.buffer_len(), 0);
+    assert_eq!(tx.retained_message_count(), 0);
     assert!(tx.shared.inner.lock().buffer.capacity() >= burst);
 
     // The next cycle stays small, which is what releases the memory.

@@ -54,10 +54,10 @@ impl<T> fmt::Debug for SendError<T> {
 
 impl<T> std::error::Error for SendError<T> {}
 
-/// An error returned after all sender handles have been dropped and no unseen value remains.
+/// An error returned after all senders have been dropped and no unseen value remains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecvError {
-    /// All sender handles have been dropped, so the current value will never change again.
+    /// All senders have been dropped, so the current value will never change again.
     Disconnected,
 }
 

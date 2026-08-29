@@ -106,7 +106,8 @@ impl<T> Sender<T> {
             // Moreover, since we just placed the message in the channel, the channel contains a
             // valid message.
             DISCONNECTED => {
-                // ORDERING: The RMW read DISCONNECTED from the receiver's Release endpoint drop.
+                // ORDERING: The RMW read DISCONNECTED from the receiver's Release-ordered drop
+                // transition.
                 // This Acquire completes the ownership handoff before SendError accesses the
                 // allocation.
                 fence(Ordering::Acquire);
@@ -118,7 +119,7 @@ impl<T> Sender<T> {
 
     /// Returns `true` if the channel is disconnected.
     ///
-    /// This occurs when the associated receiving endpoint is dropped.
+    /// This occurs when the receiver is dropped.
     ///
     /// If `true` is returned, a future call to [`send`](Sender::send) is guaranteed to return an
     /// error.
@@ -184,7 +185,8 @@ impl<T> Drop for Sender<T> {
             }
             // The receiver was already dropped. We are responsible for freeing the channel.
             DISCONNECTED => {
-                // ORDERING: The RMW read DISCONNECTED from the receiver's Release endpoint drop.
+                // ORDERING: The RMW read DISCONNECTED from the receiver's Release-ordered drop
+                // transition.
                 // Acquire makes all preceding receiver accesses happen before deallocation.
                 fence(Ordering::Acquire);
                 // SAFETY: when the receiver switches the state to DISCONNECTED they have received

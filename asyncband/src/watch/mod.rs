@@ -28,7 +28,7 @@
 //! version observed. Because snapshots do not retain the channel's internal lock, they may be kept
 //! or moved independently while senders continue publishing newer values.
 //!
-//! If all sender handles are dropped after publishing a final unseen value, each receiver can still
+//! If all senders are dropped after publishing a final unseen value, each receiver can still
 //! observe that value once before [`RecvError::Disconnected`] is reported.
 //!
 //! # Examples
@@ -108,7 +108,7 @@ struct State<T> {
     waiters: WaitSet,
 }
 
-/// A sending endpoint of a watch channel.
+/// The sending side of a watch channel.
 pub struct Sender<T> {
     shared: Arc<Shared<T>>,
 }
@@ -192,7 +192,7 @@ impl<T> Sender<T> {
     }
 }
 
-/// A receiving endpoint of a watch channel.
+/// A receiver for a watch channel.
 ///
 /// Each receiver independently tracks the latest version it has observed.
 pub struct Receiver<T> {
@@ -243,8 +243,8 @@ impl<T> Receiver<T> {
 
     /// Returns whether a version newer than the last observed version exists.
     ///
-    /// An unseen final version is reported before disconnection, even if all sender handles have
-    /// been dropped.
+    /// An unseen final version is reported before disconnection, even if all senders have been
+    /// dropped.
     pub fn has_changed(&self) -> Result<bool, RecvError> {
         let state = self.shared.state.lock();
         if state.version != self.seen {
@@ -268,7 +268,7 @@ impl<T> Receiver<T> {
         .await
     }
 
-    /// Returns whether all sender handles have been dropped.
+    /// Returns whether all senders have been dropped.
     ///
     /// This does not mark the current version observed, so it may return `true` while a final
     /// unseen value is still available through [`Receiver::changed`].

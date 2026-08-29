@@ -70,7 +70,7 @@ impl<T> std::error::Error for SendError<T> {}
 pub enum TrySendError<T> {
     /// The channel is full, so the message cannot be sent without waiting for capacity.
     Full(T),
-    /// The receiving endpoint has been dropped, so the message can never be received.
+    /// The receiver has been dropped, so the message can never be received.
     Disconnected(T),
 }
 
@@ -114,7 +114,7 @@ impl<T> std::error::Error for TrySendError<T> {}
 /// Error returned by `recv`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecvError {
-    /// All sender handles have been dropped, and no buffered messages remain.
+    /// All senders have been dropped, and no buffered messages remain.
     Disconnected,
 }
 
@@ -129,9 +129,9 @@ impl std::error::Error for RecvError {}
 /// Error returned by `try_recv`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TryRecvError {
-    /// No message is currently available, but at least one sender handle remains.
+    /// No message is currently available, but at least one sender remains.
     Empty,
-    /// All sender handles have been dropped, and no buffered messages remain.
+    /// All senders have been dropped, and no buffered messages remain.
     Disconnected,
 }
 

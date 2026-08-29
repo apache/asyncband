@@ -384,7 +384,7 @@ impl<T> Drop for Recv<T> {
 /// Error returned by [`Receiver::try_recv`].
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TryRecvError {
-    /// No message is currently available, but the sender handle remains and may still send one.
+    /// No message is currently available, but the sender remains and may still send one.
     Empty,
     /// No message can become available because the sender was dropped without sending or the
     /// message has already been received.

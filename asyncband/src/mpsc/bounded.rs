@@ -171,7 +171,7 @@ impl<T> BoundedSender<T> {
     ///
     /// This method returns the [`Full`] error if the buffer of the channel is full.
     ///
-    /// This method returns the [`Disconnected`] error if the receiving endpoint has been dropped.
+    /// This method returns the [`Disconnected`] error if the receiver has been dropped.
     ///
     /// [`Full`]: TrySendError::Full
     /// [`Disconnected`]: TrySendError::Disconnected
@@ -284,9 +284,9 @@ impl<T> BoundedReceiver<T> {
 
     /// Receives the next value for this receiver and frees up a space in the buffer if successful.
     ///
-    /// This method returns `Err(RecvError::Disconnected)` after all sender handles have been
-    /// dropped and no buffered messages remain. At that point, this `Receiver` can never
-    /// receive another value.
+    /// This method returns `Err(RecvError::Disconnected)` after all senders have been dropped and
+    /// no buffered messages remain. At that point, this `Receiver` can never receive another
+    /// value.
     ///
     /// If the buffer is empty while a sender remains, this method sleeps until a message is sent or
     /// the final sender is dropped.
