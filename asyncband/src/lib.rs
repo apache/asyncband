@@ -49,17 +49,29 @@
 //! # }
 //! ```
 //!
-//! # API guide
+//! # API map
 //!
-//! | Use case                   | APIs                                                                                  | Cargo features                              |
-//! | -------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------- |
-//! | Protect shared state       | [`mutex::Mutex`], [`rwlock::RwLock`], [`condvar::Condvar`]                            | `mutex`, `rwlock`, `condvar`                |
-//! | Initialize values once     | [`once::Once`], [`once::OnceCell`], [`once::LazyCell`], [`once::OnceMap`]             | `once`, `once-cell`, `lazy-cell`, `once-map` |
-//! | Coordinate tasks           | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`]        | `barrier`, `latch`, `waitgroup`, `shutdown` |
-//! | Send values                | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`]                          | `oneshot`, `mpsc`                           |
-//! | Reuse objects              | [`pool::bounded`], [`pool::unbounded`]                                                | `pool`                                      |
-//! | Coordinate workloads       | [`semaphore::Semaphore`], [`singleflight::Group`]                                     | `semaphore`, `singleflight`                 |
-//! | Wait from synchronous code | [`blocking::FutureExt`]                                                               | `blocking`                                  |
+//! | Area                  | API                                 | Feature        | Use                                                                                                    |
+//! |-----------------------|-------------------------------------|----------------|--------------------------------------------------------------------------------------------------------|
+//! | Shared state          | [`Mutex`](mutex::Mutex)             | `mutex`        | Protect shared data with asynchronous mutual exclusion.                                                |
+//! |                       | [`RwLock`](rwlock::RwLock)          | `rwlock`       | Allow multiple readers or one writer.                                                                  |
+//! |                       | [`Condvar`](condvar::Condvar)       | `condvar`      | Wait for notifications while releasing a mutex.                                                        |
+//! | Initialization        | [`Once`](once::Once)                | `once`         | Run asynchronous initialization exactly once.                                                          |
+//! |                       | [`OnceCell`](once::OnceCell)        | `once-cell`    | Initialize and store one asynchronous value.                                                           |
+//! |                       | [`LazyCell`](once::LazyCell)        | `lazy-cell`    | Lazily initialize a value with a stored asynchronous function.                                         |
+//! |                       | [`OnceMap`](once::OnceMap)          | `once-map`     | Initialize and store one value per key.                                                                |
+//! | Task coordination     | [`Barrier`](barrier::Barrier)       | `barrier`      | Wait until all participants reach a synchronization point.                                             |
+//! |                       | [`Latch`](latch::Latch)             | `latch`        | Wait until a one-way countdown completes.                                                              |
+//! |                       | [`WaitGroup`](waitgroup::WaitGroup) | `waitgroup`    | Wait for a dynamic group of tasks to finish.                                                           |
+//! |                       | [`Shutdown`](shutdown::Shutdown)    | `shutdown`     | Coordinate shutdown signals and completion.                                                            |
+//! | Channels              | [`oneshot`]                         | `oneshot`      | Send one value from one sender to one receiver.                                                         |
+//! |                       | [`mpsc`]                            | `mpsc`         | Send each value from multiple producers to one receiver through a bounded or unbounded queue.           |
+//! |                       | [`broadcast`]                       | `broadcast`    | Broadcast values from one or more producers and retain them until every active receiver consumes them. |
+//! |                       | [`watch`]                           | `watch`        | Publish the latest state to independently tracked receivers and coalesce intermediate updates.          |
+//! | Resource reuse        | [`pool`]                            | `pool`         | Reuse objects through bounded or unbounded pool variants.                                              |
+//! | Workload coordination | [`Semaphore`](semaphore::Semaphore) | `semaphore`    | Control concurrent access with permits.                                                                |
+//! |                       | [`Group`](singleflight::Group)      | `singleflight` | Coalesce concurrent calls for the same key.                                                            |
+//! | Sync interop          | [`FutureExt`](blocking::FutureExt)  | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                              |
 //!
 //! # Scope and runtime model
 //!
@@ -100,19 +112,20 @@
 //!
 //! While incubation status is not necessarily a reflection of the completeness or stability of the
 //! code, it does indicate that the project has yet to be fully endorsed by the ASF.
-mod channel;
 mod internal;
 
 #[cfg(feature = "barrier")]
 pub mod barrier;
 #[cfg(feature = "blocking")]
 pub mod blocking;
+#[cfg(feature = "broadcast")]
+pub mod broadcast;
 #[cfg(feature = "condvar")]
 pub mod condvar;
 #[cfg(feature = "latch")]
 pub mod latch;
 #[cfg(feature = "mpsc")]
-pub use self::channel::mpsc;
+pub mod mpsc;
 #[cfg(feature = "mutex")]
 pub mod mutex;
 #[cfg(any(
@@ -123,7 +136,7 @@ pub mod mutex;
 ))]
 pub mod once;
 #[cfg(feature = "oneshot")]
-pub use self::channel::oneshot;
+pub mod oneshot;
 #[cfg(feature = "pool")]
 pub mod pool;
 #[cfg(feature = "rwlock")]
@@ -136,6 +149,8 @@ pub mod shutdown;
 pub mod singleflight;
 #[cfg(feature = "waitgroup")]
 pub mod waitgroup;
+#[cfg(feature = "watch")]
+pub mod watch;
 
 #[cfg(all(test, any(feature = "once-map", feature = "singleflight")))]
 mod test_support;

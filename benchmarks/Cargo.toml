@@ -23,10 +23,12 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dev-dependencies]
+async-broadcast = { workspace = true }
 async-channel = { workspace = true }
 asyncband = { workspace = true, features = [
   "barrier",
   "blocking",
+  "broadcast",
   "condvar",
   "latch",
   "mpsc",
@@ -41,6 +43,7 @@ asyncband = { workspace = true, features = [
   "shutdown",
   "singleflight",
   "waitgroup",
+  "watch",
 ] }
 divan = { workspace = true }
 flume = { workspace = true, features = ["async"] }

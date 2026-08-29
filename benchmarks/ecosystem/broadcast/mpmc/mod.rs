@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[cfg(feature = "mpsc")]
-pub mod mpsc;
-#[cfg(feature = "oneshot")]
-pub mod oneshot;
+mod adapters;
+mod support;
+mod unbounded;

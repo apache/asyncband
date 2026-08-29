@@ -16,11 +16,41 @@
 // under the License.
 
 use std::mem;
+use std::panic;
+use std::panic::AssertUnwindSafe;
 use std::task::Context;
 use std::task::Waker;
 
 use crate::internal::arena::Arena;
 use crate::internal::arena::SlotId;
+
+/// Wakes every waker while preserving the first panic.
+///
+/// If a wake callback panics, the remaining callbacks are still attempted during unwinding. Any
+/// later panic is suppressed so the first panic can continue to the caller.
+#[inline]
+pub fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
+    struct WakeRemaining<'a, I: Iterator<Item = Waker>> {
+        wakers: &'a mut I,
+    }
+
+    impl<I: Iterator<Item = Waker>> Drop for WakeRemaining<'_, I> {
+        fn drop(&mut self) {
+            // This iterator is empty after normal completion. During unwinding, attempt every
+            // callback left after the one that panicked without replacing the original panic.
+            for waker in self.wakers.by_ref() {
+                let _ = panic::catch_unwind(AssertUnwindSafe(|| waker.wake()));
+            }
+        }
+    }
+
+    let remaining = WakeRemaining {
+        wakers: &mut wakers,
+    };
+    for waker in remaining.wakers.by_ref() {
+        waker.wake();
+    }
+}
 
 /// A single-owner token for a waker registered in a [`WaitSet`].
 ///
@@ -53,6 +83,12 @@ impl WaitSet {
             epoch: 0,
             waiters: Arena::with_capacity(capacity),
         }
+    }
+
+    /// Returns whether no wakers are currently registered.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.waiters.is_empty()
     }
 
     /// Takes all registered wakers as an owning iterator without waking them.
@@ -136,6 +172,14 @@ mod tests {
         }
     }
 
+    struct PanicWake;
+
+    impl Wake for PanicWake {
+        fn wake(self: Arc<Self>) {
+            panic!("wake failed");
+        }
+    }
+
     struct DropWake {
         dropped: Arc<AtomicBool>,
         wake_count: AtomicUsize,
@@ -192,6 +236,27 @@ mod tests {
                 .iter()
                 .any(|waker| waker.will_wake(&second_waker))
         );
+    }
+
+    #[test]
+    fn wake_all_notifies_remaining_waiters_after_a_panic() {
+        let mut waiters = WaitSet::new();
+        let panicking = Waker::from(Arc::new(PanicWake));
+        let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+        let tracked = Waker::from(tracker.clone());
+        let mut first = None;
+        let mut second = None;
+        let mut third = None;
+
+        register(&mut waiters, &mut first, &panicking);
+        register(&mut waiters, &mut second, &panicking);
+        register(&mut waiters, &mut third, &tracked);
+
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            wake_all(waiters.take_wakers());
+        }));
+        assert!(result.is_err());
+        assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
     }
 
     #[test]

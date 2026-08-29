@@ -20,17 +20,19 @@ pub(crate) mod atomic_waker;
 
 #[cfg(any(
     feature = "barrier",
+    feature = "broadcast",
     feature = "latch",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
     feature = "waitgroup",
+    feature = "watch",
 ))]
 // `WaitList` and `WaitSet` use different `Arena` operations. A single-primitive build therefore
 // leaves part of this shared API unused, while the all-feature build uses it.
 #[allow(dead_code)]
-mod arena;
+pub(crate) mod arena;
 
 #[cfg(any(feature = "latch", feature = "once", feature = "waitgroup"))]
 // `waitgroup` increments and decrements the countdown, while `latch` and `once` only decrement it.
@@ -46,12 +48,14 @@ pub(crate) mod value_cell;
 
 #[cfg(any(
     feature = "barrier",
+    feature = "broadcast",
     feature = "latch",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
     feature = "waitgroup",
+    feature = "watch",
 ))]
 pub(crate) mod mutex;
 
@@ -80,9 +84,11 @@ pub(crate) mod waitlist;
 
 #[cfg(any(
     feature = "barrier",
+    feature = "broadcast",
     feature = "latch",
     feature = "once",
     feature = "waitgroup",
+    feature = "watch",
 ))]
 // `barrier` constructs a wait set with `with_capacity`, while countdown-based primitives use
 // `new`. One constructor is therefore unused in every single-primitive build.

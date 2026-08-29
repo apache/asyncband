@@ -15,14 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod broadcast;
-mod mpsc;
-mod watch;
+//! Multi-producer, multi-consumer broadcast channels.
 
-#[allow(dead_code)]
-#[path = "../asyncband/support.rs"]
-mod support;
+mod unbounded;
 
-fn main() {
-    divan::main();
-}
+pub use self::unbounded::RecvError;
+pub use self::unbounded::TryRecvError;
+pub use self::unbounded::UnboundedReceiver;
+pub use self::unbounded::UnboundedSender;
+pub use self::unbounded::unbounded;

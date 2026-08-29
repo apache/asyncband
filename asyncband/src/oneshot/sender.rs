@@ -55,8 +55,8 @@ impl<T> Sender<T> {
         let channel_ptr = sender.channel_ptr;
 
         // SAFETY: The channel exists on the heap for the entire duration of this method, and we
-        // only ever acquire shared references to it. Note that if the receiver disconnects it
-        // does not free the channel.
+        // only ever acquire shared references to it. Dropping the receiver does not immediately
+        // free the channel.
         let channel = unsafe { channel_ptr.as_ref() };
 
         // Write the message into the channel on the heap.
@@ -106,7 +106,8 @@ impl<T> Sender<T> {
             // Moreover, since we just placed the message in the channel, the channel contains a
             // valid message.
             DISCONNECTED => {
-                // ORDERING: The RMW read DISCONNECTED from the receiver's Release endpoint drop.
+                // ORDERING: The RMW read DISCONNECTED from the receiver's Release-ordered drop
+                // transition.
                 // This Acquire completes the ownership handoff before SendError accesses the
                 // allocation.
                 fence(Ordering::Acquire);
@@ -118,21 +119,21 @@ impl<T> Sender<T> {
 
     /// Returns `true` if the channel is disconnected.
     ///
-    /// This occurs when the associated receiving endpoint is dropped.
+    /// This occurs when the receiver is dropped.
     ///
     /// If `true` is returned, a future call to [`send`](Sender::send) is guaranteed to return an
     /// error.
     pub fn is_disconnected(&self) -> bool {
         // SAFETY: The channel exists on the heap for the entire duration of this method, and we
-        // only ever acquire shared references to it. Note that if the receiver disconnects it
-        // does not free the channel.
+        // only ever acquire shared references to it. Dropping the receiver does not immediately
+        // free the channel.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
         // ORDERING: Relaxed is sufficient for the method's contract: if this returns true, a
         // future call to send is guaranteed to return an error.
         //
-        // Once true has been observed, it will remain true. However, if false is observed,
-        // the receiver might have just disconnected but this thread has not observed it yet.
+        // Once true has been observed, it will remain true. However, if false is observed, the
+        // receiver might just have been dropped without this thread observing it yet.
         matches!(channel.state.load(Ordering::Relaxed), DISCONNECTED)
     }
 
@@ -153,14 +154,14 @@ impl<T> Drop for Sender<T> {
         //   alive, and thus didn't free the channel.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
-        // Disconnect directly, or begin awakening a receiving task:
+        // Publish the channel's disconnected state directly, or begin awakening a receiving task:
         //
         // * EMPTY ^ 001 = DISCONNECTED
         // * RECEIVING ^ 001 = AWAKING
         // * DISCONNECTED ^ 001 = EMPTY (invalid), but this state is never observed
         //
-        // ORDERING: Release publishes a direct disconnect and orders it before the waiting path's
-        // final publication. The RMW's load half is Relaxed, so branches that consume
+        // ORDERING: Release publishes the disconnected state and orders it before the waiting
+        // path's final publication. The RMW's load half is Relaxed, so branches that consume
         // receiver-published resources use an Acquire fence.
         match channel.state.fetch_xor(0b001, Ordering::Release) {
             // The receiver is not waiting, nor is it dropped. The receiver is responsible for
@@ -184,7 +185,8 @@ impl<T> Drop for Sender<T> {
             }
             // The receiver was already dropped. We are responsible for freeing the channel.
             DISCONNECTED => {
-                // ORDERING: The RMW read DISCONNECTED from the receiver's Release endpoint drop.
+                // ORDERING: The RMW read DISCONNECTED from the receiver's Release-ordered drop
+                // transition.
                 // Acquire makes all preceding receiver accesses happen before deallocation.
                 fence(Ordering::Acquire);
                 // SAFETY: when the receiver switches the state to DISCONNECTED they have received
@@ -199,7 +201,7 @@ impl<T> Drop for Sender<T> {
     }
 }
 
-/// An error returned when trying to send on a closed channel. Returned from
+/// An error returned when trying to send on a disconnected channel. Returned from
 /// [`Sender::send`] if the corresponding [`Receiver`] has already been dropped.
 ///
 /// The message that could not be sent can be retrieved again with [`SendError::into_inner`].
@@ -254,7 +256,7 @@ impl<T> Drop for SendError<T> {
 
 impl<T> fmt::Display for SendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("sending on a closed channel")
+        f.write_str("sending on a disconnected channel")
     }
 }
 

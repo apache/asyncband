@@ -94,13 +94,12 @@ impl<T> fmt::Debug for BoundedSender<T> {
 
 impl<T> Drop for BoundedSender<T> {
     fn drop(&mut self) {
-        // drop the sender; this closes the channel if it is the last sender
+        // Dropping the final underlying sender disconnects the channel.
         drop(self.sender.take());
 
         match self.state.senders.fetch_sub(1, Ordering::AcqRel) {
             1 => {
-                // If this is the last sender, we need to wake up the receiver so it can
-                // observe the disconnected state.
+                // Wake the receiver so it can observe the channel's disconnected state.
                 self.state.rx_waker.wake();
             }
             _ => {
@@ -172,12 +171,10 @@ impl<T> BoundedSender<T> {
     ///
     /// This method returns the [`Full`] error if the buffer of the channel is full.
     ///
-    /// This method returns the [`Disconnected`] error if the channel is currently empty, and there
-    /// are no outstanding [receivers].
+    /// This method returns the [`Disconnected`] error if the receiver has been dropped.
     ///
     /// [`Full`]: TrySendError::Full
     /// [`Disconnected`]: TrySendError::Disconnected
-    /// [receivers]: BoundedReceiver
     ///
     /// # Examples
     ///
@@ -287,13 +284,12 @@ impl<T> BoundedReceiver<T> {
 
     /// Receives the next value for this receiver and frees up a space in the buffer if successful.
     ///
-    /// This method returns `Err(RecvError::Disconnected)` if the channel has been closed and there
-    /// are no remaining messages in the channel's buffer. This indicates that no further values
-    /// can ever be received from this `Receiver`. The channel is closed when all senders have been
-    /// dropped.
+    /// This method returns `Err(RecvError::Disconnected)` after all senders have been dropped and
+    /// no buffered messages remain. At that point, this `Receiver` can never receive another
+    /// value.
     ///
-    /// If there are no messages in the channel's buffer, but the channel has not yet been closed,
-    /// this method will sleep until a message is sent or the channel is closed.
+    /// If the buffer is empty while a sender remains, this method sleeps until a message is sent or
+    /// the final sender is dropped.
     ///
     /// # Cancel safety
     ///

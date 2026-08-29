@@ -23,6 +23,7 @@ use std::task::Poll;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitset::WaitSet;
 use crate::internal::waitset::WakerToken;
+use crate::internal::waitset::wake_all;
 
 #[derive(Debug)]
 pub struct CountdownState {
@@ -66,9 +67,7 @@ impl CountdownState {
             waiters.take_wakers()
         };
 
-        for waker in wakers {
-            waker.wake();
-        }
+        wake_all(wakers);
     }
 
     /// Polls for zero, registering the current waker if the countdown is still active.

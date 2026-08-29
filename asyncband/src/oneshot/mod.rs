@@ -133,8 +133,9 @@ const DISCONNECTED: u8 = 0b010;
 ///   returning to `EMPTY`, or the sender may move to `AWAKING` and take ownership of it. The sender
 ///   retains ownership of any message that it has not yet published.
 /// * `AWAKING`: the sender exclusively owns the published waker and any unpublished message while
-///   it publishes either a message or a disconnect. The receiver must not access either slot;
-///   cancellation may only transfer allocation cleanup to the sender by moving to `DISCONNECTED`.
+///   it publishes either a message or the channel's disconnected state. The receiver must not
+///   access either slot; cancellation may only transfer allocation cleanup to the sender by moving
+///   to `DISCONNECTED`.
 /// * `MESSAGE`: the sender has published an initialized message and no longer accesses the channel.
 ///   The receiver owns the message and the allocation.
 /// * `DISCONNECTED`: no message can subsequently be received. The transition that reaches or
@@ -322,9 +323,9 @@ impl<T> Channel<T> {
         // the initialized waker to the sender.
         let waker = unsafe { self.take_waker() };
 
-        // ORDERING: Release publishes the message or disconnect when this replaces AWAKING. The
-        // RMW's load half is Relaxed; if it reads a receiver-written DISCONNECTED, the conditional
-        // Acquire below completes the reverse allocation-ownership handoff.
+        // ORDERING: Release publishes the message or disconnected state when this replaces
+        // AWAKING. The RMW's load half is Relaxed; if it reads a receiver-written DISCONNECTED, the
+        // conditional Acquire below completes the reverse allocation-ownership handoff.
         let previous_state = self.state.swap(final_state, Ordering::Release);
         if matches!(previous_state, AWAKING) {
             (waker, true)

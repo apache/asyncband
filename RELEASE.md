@@ -61,7 +61,7 @@ After one successful Trusted Publishing release, remove any legacy `CARGO_REGIST
 Start from current `main` and choose `VERSION` according to the changes since the latest crates.io release.
 
 1. Change `version` in `asyncband/Cargo.toml` and refresh `Cargo.lock` with Cargo.
-2. Move the entries under `Unreleased` in `CHANGELOG.md` into a dated `VERSION` section, then restore an empty `Unreleased` section.
+2. Move the entries under `Unreleased` in `CHANGELOG.md` into a dated `VERSION` section, then restore an empty `Unreleased` section. Keep user-impacting sections ordered as breaking changes, new features, bug fixes, and improvements.
 3. Confirm that `LICENSE`, `NOTICE`, and `DISCLAIMER` are correct and that all source files have the required license headers.
 4. Run the normal validation and the semver check:
 

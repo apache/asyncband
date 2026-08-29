@@ -29,6 +29,7 @@ tokio = { workspace = true, features = ["full"] }
 asyncband = { workspace = true, features = [
   "barrier",
   "blocking",
+  "broadcast",
   "condvar",
   "latch",
   "lazy-cell",
@@ -44,6 +45,7 @@ asyncband = { workspace = true, features = [
   "shutdown",
   "singleflight",
   "waitgroup",
+  "watch",
 ] }
 pollster = { workspace = true, features = ["macro"] }
 tokio-test = { workspace = true }

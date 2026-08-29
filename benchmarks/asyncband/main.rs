@@ -17,6 +17,7 @@
 
 mod barrier;
 mod blocking;
+mod broadcast;
 mod condvar;
 mod latch;
 mod mpsc;
@@ -31,6 +32,7 @@ mod shutdown;
 mod singleflight;
 mod support;
 mod waitgroup;
+mod watch;
 
 fn main() {
     divan::main();
