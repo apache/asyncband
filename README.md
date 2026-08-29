@@ -54,7 +54,7 @@ async fn increment() {
 }
 ```
 
-Public modules stay at direct crate-root paths. Related variants are grouped beneath their semantic family—for example, initialization cells under `asyncband::once` and MPMC broadcast under `asyncband::broadcast::mpmc`. Cargo features select compiled APIs; topology and bounded or unbounded policies remain module or constructor choices rather than separate features.
+Public paths stay direct—such as `asyncband::mutex`, `asyncband::pool`, and `asyncband::once::OnceCell`—while Cargo features keep unused implementations out of the build.
 
 ## Examples
 
@@ -77,7 +77,7 @@ Runnable examples live in the [`examples`](examples) workspace crate. They demon
 |                       | [`Shutdown`](https://docs.rs/asyncband/*/asyncband/shutdown/struct.Shutdown.html)    | `shutdown`     | Coordinate shutdown signals and completion.                                                            |
 | Channels              | [`oneshot`](https://docs.rs/asyncband/*/asyncband/oneshot/)                          | `oneshot`      | Send one value from one sender to one receiver.                                                         |
 |                       | [`mpsc`](https://docs.rs/asyncband/*/asyncband/mpsc/)                                | `mpsc`         | Send each value from multiple producers to one receiver through a bounded or unbounded queue.           |
-|                       | [`broadcast::mpmc`](https://docs.rs/asyncband/*/asyncband/broadcast/mpmc/)            | `broadcast`    | Broadcast every value from multiple producers to every active receiver with unbounded retention.        |
+|                       | [`broadcast`](https://docs.rs/asyncband/*/asyncband/broadcast/)                      | `broadcast`    | Broadcast values from one or more producers and retain them until every active receiver consumes them. |
 |                       | [`watch`](https://docs.rs/asyncband/*/asyncband/watch/)                              | `watch`        | Publish the latest state to independently tracked receivers and coalesce intermediate updates.          |
 | Resource reuse        | [`pool`](https://docs.rs/asyncband/*/asyncband/pool/)                                | `pool`         | Reuse objects through bounded or unbounded pool variants.                                              |
 | Workload coordination | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore`    | Control concurrent access with permits.                                                                |
@@ -123,9 +123,9 @@ Asyncband types implement `Send` and `Sync` only when the protected, transferred
 
 ## Minimum Supported Rust Version (MSRV)
 
-Asyncband supports rustc 1.86.0 and newer. CI tests both 1.86.0 and the latest stable Rust release.
+This crate is built against the latest stable release, and its minimum supported rustc version is 1.86.0.
 
-The minimum supported Rust version may increase in a minor release. Each increase is recorded as a breaking change in the changelog.
+The policy is that the minimum Rust version required to use this crate can be increased in minor version updates. For example, if Asyncband 1.0 requires Rust 1.20.0, then Asyncband 1.0.z for all values of z will also require Rust 1.20.0 or newer. However, Asyncband 1.y for y > 0 may require a newer minimum version of Rust.
 
 ## License and Trademarks
 

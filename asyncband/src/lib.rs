@@ -66,7 +66,7 @@
 //! |                       | [`Shutdown`](shutdown::Shutdown)    | `shutdown`     | Coordinate shutdown signals and completion.                                                            |
 //! | Channels              | [`oneshot`]                         | `oneshot`      | Send one value from one sender to one receiver.                                                         |
 //! |                       | [`mpsc`]                            | `mpsc`         | Send each value from multiple producers to one receiver through a bounded or unbounded queue.           |
-//! |                       | [`broadcast::mpmc`]                 | `broadcast`    | Broadcast every value from multiple producers to every active receiver with unbounded retention.        |
+//! |                       | [`broadcast`]                       | `broadcast`    | Broadcast values from one or more producers and retain them until every active receiver consumes them. |
 //! |                       | [`watch`]                           | `watch`        | Publish the latest state to independently tracked receivers and coalesce intermediate updates.          |
 //! | Resource reuse        | [`pool`]                            | `pool`         | Reuse objects through bounded or unbounded pool variants.                                              |
 //! | Workload coordination | [`Semaphore`](semaphore::Semaphore) | `semaphore`    | Control concurrent access with permits.                                                                |
