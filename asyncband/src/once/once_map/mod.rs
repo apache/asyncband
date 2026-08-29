@@ -146,7 +146,7 @@ impl<K, V> TrieNode<K, V> {
     ) -> Option<R> {
         self.slot(hash, shift).state.read(|state| {
             let state = state?;
-            match &*state {
+            match state {
                 TrieState::Leaf(leaf) if leaf.hash == hash => leaf
                     .entries
                     .iter()
@@ -202,7 +202,7 @@ impl<K, V> TrieNode<K, V> {
                 retired.defer(reclaimer);
                 // Older growth snapshots can also hold the removed entry. Prompt replacement must
                 // pay that retirement debt before returning so user key/value drops stay prompt.
-                reclaimer.reclaim_all();
+                reclaimer.flush();
             } else {
                 // No older snapshot was deferred, so the replacement can reclaim directly.
                 drop(retired);

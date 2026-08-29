@@ -34,7 +34,6 @@
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -223,10 +222,10 @@ fn protected_pointers() -> Vec<*mut ()> {
 /// An optional immutable snapshot that readers can borrow while writers replace it.
 ///
 /// `read` protects the published allocation with a thread-local hazard record and limits the
-/// borrow to the callback. `load_owned` converts that short protected borrow into an owned `Arc`.
-/// `replace` publishes a new snapshot immediately and returns ownership of the previous one. The
-/// returned [`ReplacedSnapshot`] either waits for its readers when dropped or can be handed to a
-/// [`SnapshotReclaimer`] for batched, deferred reclamation.
+/// `&T` borrow to the callback. `load_owned` converts that short protected borrow into an owned
+/// `Arc`. `replace` publishes a new snapshot immediately and returns ownership of the previous one.
+/// The returned [`ReplacedSnapshot`] either waits for its readers when dropped or can be handed to
+/// a [`SnapshotReclaimer`] for batched, deferred reclamation.
 ///
 /// Registry publication, hazard publication, pointer verification, replacement, and hazard scans
 /// are sequentially consistent. A newly registered reader therefore either appears in a later
@@ -238,26 +237,23 @@ pub struct AtomicSnapshot<T> {
     ownership: PhantomData<Arc<T>>,
 }
 
-/// A snapshot borrow kept alive by a hazard record for the duration of `read`.
-pub struct SnapshotRef<'a, T> {
-    value: &'a T,
+// Keeps the original `Arc` pointer provenance while limiting access to the protected callback.
+struct ProtectedSnapshot<'a, T> {
     pointer: *mut T,
+    lifetime: PhantomData<&'a T>,
 }
 
-impl<T> SnapshotRef<'_, T> {
-    fn to_owned(&self) -> Arc<T> {
-        // SAFETY: `read` keeps this pointer protected during the increment.
+impl<'a, T> ProtectedSnapshot<'a, T> {
+    fn into_ref(self) -> &'a T {
+        // SAFETY: The higher-ranked callback cannot let the reference outlive hazard protection.
+        unsafe { &*self.pointer }
+    }
+
+    fn into_owned(self) -> Arc<T> {
+        // SAFETY: The hazard protection remains active during this increment.
         unsafe { Arc::increment_strong_count(self.pointer) };
         // SAFETY: The increment above created exactly one owned reference.
         unsafe { Arc::from_raw(self.pointer) }
-    }
-}
-
-impl<T> Deref for SnapshotRef<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.value
     }
 }
 
@@ -301,7 +297,7 @@ impl<T> Drop for ReplacedSnapshot<T> {
 ///
 /// Retired snapshots are reclaimed in batches once the queue reaches a threshold proportional to
 /// the hazard registry. This amortizes scans, but makes destruction nondeterministic: a partial
-/// batch can remain alive until a later replacement, an explicit `reclaim`, or reclaimer drop.
+/// batch can remain alive until a later replacement, an explicit `flush`, or reclaimer drop.
 /// Each owner should therefore keep its own typed reclaimer. Besides avoiding cross-owner
 /// contention, that permits borrowed values without imposing a `T: 'static` bound.
 pub struct SnapshotReclaimer<T> {
@@ -326,38 +322,28 @@ impl<T> SnapshotReclaimer<T> {
         }
     }
 
-    /// Reclaims every currently unprotected retired snapshot and returns the number reclaimed.
-    pub fn reclaim(&self) -> usize {
-        let candidates = {
+    fn reclaim(&self) {
+        let mut candidates = {
             let mut retired = self.retired.lock();
             std::mem::take(&mut *retired)
         };
         if candidates.is_empty() {
-            return 0;
+            return;
         }
 
         let protected = protected_pointers();
-        let mut pending = Vec::new();
-        let mut reclaimable = Vec::new();
-        for snapshot in candidates {
-            let pointer = Arc::as_ptr(&snapshot).cast_mut().cast();
-            if protected.binary_search(&pointer).is_ok() {
-                pending.push(snapshot);
-            } else {
-                reclaimable.push(snapshot);
-            }
-        }
+        candidates.retain(|snapshot| {
+            let pointer = Arc::as_ptr(snapshot).cast_mut().cast();
+            protected.binary_search(&pointer).is_ok()
+        });
 
-        if !pending.is_empty() {
-            self.retired.lock().append(&mut pending);
+        if !candidates.is_empty() {
+            self.retired.lock().append(&mut candidates);
         }
-        let reclaimed = reclaimable.len();
-        drop(reclaimable);
-        reclaimed
     }
 
     /// Waits until every snapshot currently owned by this reclaimer is safe to destroy.
-    pub fn reclaim_all(&self) {
+    pub fn flush(&self) {
         loop {
             self.reclaim();
             if self.retired.lock().is_empty() {
@@ -370,7 +356,7 @@ impl<T> SnapshotReclaimer<T> {
 
 impl<T> Drop for SnapshotReclaimer<T> {
     fn drop(&mut self) {
-        self.reclaim_all();
+        self.flush();
     }
 }
 
@@ -386,7 +372,10 @@ impl<T> AtomicSnapshot<T> {
         }
     }
 
-    pub fn read<R>(&self, f: impl for<'a> FnOnce(Option<SnapshotRef<'a, T>>) -> R) -> R {
+    fn with_protected<R>(
+        &self,
+        f: impl for<'a> FnOnce(Option<ProtectedSnapshot<'a, T>>) -> R,
+    ) -> R {
         with_thread_hazard(|hazard| {
             loop {
                 let pointer = self.pointer.load(Ordering::Relaxed);
@@ -404,13 +393,10 @@ impl<T> AtomicSnapshot<T> {
                 // Use the verified pointer rather than the first load. If an allocation is
                 // reclaimed and its address reused between the two loads, this carries the
                 // currently published allocation's provenance. `protection` prevents that
-                // allocation from being reclaimed for the duration of the callback, and the
-                // higher-ranked callback cannot return the borrowed reference in its result.
-                let result = f(Some(SnapshotRef {
-                    // SAFETY: `verified` came from `Arc::into_raw` and remains protected until the
-                    // higher-ranked callback returns.
-                    value: unsafe { &*verified },
+                // allocation from being reclaimed for the duration of the callback.
+                let result = f(Some(ProtectedSnapshot {
                     pointer: verified,
+                    lifetime: PhantomData,
                 }));
                 drop(protection);
                 return result;
@@ -418,8 +404,12 @@ impl<T> AtomicSnapshot<T> {
         })
     }
 
+    pub fn read<R>(&self, f: impl for<'a> FnOnce(Option<&'a T>) -> R) -> R {
+        self.with_protected(|snapshot| f(snapshot.map(ProtectedSnapshot::into_ref)))
+    }
+
     pub fn load_owned(&self) -> Option<Arc<T>> {
-        self.read(|snapshot| snapshot.map(|snapshot| snapshot.to_owned()))
+        self.with_protected(|snapshot| snapshot.map(ProtectedSnapshot::into_owned))
     }
 
     /// Publishes the first snapshot and panics if a value was already present.
@@ -480,7 +470,7 @@ mod tests {
         let atomic = AtomicSnapshot::empty();
 
         atomic.initialize(Arc::clone(&first));
-        assert_eq!(atomic.read(|value| value.map(|value| *value)), Some(1));
+        assert_eq!(atomic.read(|value| value.copied()), Some(1));
         assert_eq!(*atomic.load_owned().unwrap(), 1);
         assert_eq!(Arc::strong_count(&first), 2);
 
@@ -527,11 +517,12 @@ mod tests {
         entered.wait();
         atomic.replace(None).unwrap().defer(&reclaimer);
         assert_eq!(drops.load(Ordering::Relaxed), 0);
-        assert_eq!(reclaimer.reclaim(), 0);
+        reclaimer.reclaim();
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
 
         release.wait();
         reader.join().unwrap();
-        assert_eq!(reclaimer.reclaim(), 1);
+        reclaimer.reclaim();
         assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 
@@ -544,7 +535,7 @@ mod tests {
         atomic.initialize(Arc::new(&value));
         atomic.replace(None).unwrap().defer(&reclaimer);
 
-        assert_eq!(reclaimer.reclaim(), 1);
+        reclaimer.reclaim();
     }
 
     #[test]
