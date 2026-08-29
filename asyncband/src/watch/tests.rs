@@ -26,30 +26,6 @@ fn send_panics_on_version_overflow() {
 }
 
 #[test]
-#[should_panic(expected = "watch sender count overflowed")]
-fn sender_clone_panics_on_count_overflow() {
-    let (tx, _rx) = channel(0);
-    tx.shared.state.lock().senders = usize::MAX;
-    let _ = tx.clone();
-}
-
-#[test]
-#[should_panic(expected = "watch receiver count overflowed")]
-fn receiver_clone_panics_on_count_overflow() {
-    let (tx, rx) = channel(0);
-    tx.shared.state.lock().receivers = usize::MAX;
-    let _ = rx.clone();
-}
-
-#[test]
-#[should_panic(expected = "watch receiver count overflowed")]
-fn subscribe_panics_on_count_overflow() {
-    let (tx, _rx) = channel(0);
-    tx.shared.state.lock().receivers = usize::MAX;
-    let _ = tx.subscribe();
-}
-
-#[test]
 fn concurrent_senders_commit_every_version() {
     const SENDERS: usize = 4;
     const SENDS_PER_THREAD: usize = 1_000;

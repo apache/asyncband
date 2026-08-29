@@ -199,7 +199,7 @@ impl<T> Drop for Sender<T> {
     }
 }
 
-/// An error returned when trying to send on a closed channel. Returned from
+/// An error returned when trying to send on a disconnected channel. Returned from
 /// [`Sender::send`] if the corresponding [`Receiver`] has already been dropped.
 ///
 /// The message that could not be sent can be retrieved again with [`SendError::into_inner`].
@@ -254,7 +254,7 @@ impl<T> Drop for SendError<T> {
 
 impl<T> fmt::Display for SendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("sending on a closed channel")
+        f.write_str("sending on a disconnected channel")
     }
 }
 

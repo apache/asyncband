@@ -105,44 +105,44 @@ async fn select_streams() {
 
     let mut rem = true;
     let mut msgs = vec![];
-    let mut rx1_closed = false;
-    let mut rx2_closed = false;
-    let mut rx3_closed = false;
-    let mut rx4_closed = false;
+    let mut rx1_disconnected = false;
+    let mut rx2_disconnected = false;
+    let mut rx3_disconnected = false;
+    let mut rx4_disconnected = false;
 
     while rem {
-        rem = !(rx1_closed && rx2_closed && rx3_closed && rx4_closed);
+        rem = !(rx1_disconnected && rx2_disconnected && rx3_disconnected && rx4_disconnected);
 
         tokio::select! {
-            result = rx1.recv(), if !rx1_closed => {
+            result = rx1.recv(), if !rx1_disconnected => {
                 match result {
                     Ok(x) => msgs.push(x),
-                    Err(RecvError::Disconnected) => rx1_closed = true,
+                    Err(RecvError::Disconnected) => rx1_disconnected = true,
                 }
             }
-            result = rx2.recv(), if !rx2_closed => {
+            result = rx2.recv(), if !rx2_disconnected => {
                 match result {
                     Ok(y) => msgs.push(y),
-                    Err(RecvError::Disconnected) => rx2_closed = true,
+                    Err(RecvError::Disconnected) => rx2_disconnected = true,
                 }
             }
-            result = rx3.recv(), if !rx3_closed => {
+            result = rx3.recv(), if !rx3_disconnected => {
                 match result {
                     Ok(z) => msgs.push(z),
-                    Err(RecvError::Disconnected) => rx3_closed = true,
+                    Err(RecvError::Disconnected) => rx3_disconnected = true,
                 }
             }
-            result = rx4.recv(), if !rx4_closed => {
+            result = rx4.recv(), if !rx4_disconnected => {
                 match result {
                     Ok(w) => msgs.push(w),
-                    Err(RecvError::Disconnected) => rx4_closed = true,
+                    Err(RecvError::Disconnected) => rx4_disconnected = true,
                 }
             }
             else => {
-                rx1_closed = true;
-                rx2_closed = true;
-                rx3_closed = true;
-                rx4_closed = true;
+                rx1_disconnected = true;
+                rx2_disconnected = true;
+                rx3_disconnected = true;
+                rx4_disconnected = true;
             }
         }
     }
@@ -201,7 +201,7 @@ fn try_recv_unbounded() {
 }
 
 #[test]
-fn try_recv_close_while_empty_unbounded() {
+fn try_recv_disconnect_while_empty_unbounded() {
     let (tx, mut rx) = mpsc::unbounded::<()>();
 
     assert_eq!(Err(TryRecvError::Empty), rx.try_recv());
@@ -257,7 +257,7 @@ fn try_send_recv_bounded() {
 }
 
 #[tokio::test]
-async fn try_send_after_close_bounded() {
+async fn try_send_after_disconnect_bounded() {
     let (tx, rx) = mpsc::bounded(1);
 
     tx.try_send(1).unwrap();
@@ -267,7 +267,7 @@ async fn try_send_after_close_bounded() {
 }
 
 #[tokio::test]
-async fn send_after_close_bounded() {
+async fn send_after_disconnect_bounded() {
     let (tx, mut rx) = mpsc::bounded(1);
 
     tx.send(1).await.unwrap();

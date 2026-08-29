@@ -395,7 +395,7 @@ impl fmt::Display for TryRecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             TryRecvError::Empty => "receiving on an empty channel",
-            TryRecvError::Disconnected => "receiving on a closed channel",
+            TryRecvError::Disconnected => "receiving on a disconnected channel",
         })
     }
 }
@@ -415,7 +415,7 @@ pub enum RecvError {
 
 impl fmt::Display for RecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("receiving on a closed channel")
+        f.write_str("receiving on a disconnected channel")
     }
 }
 

@@ -79,6 +79,7 @@ use std::task::Poll;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitset::WaitSet;
 use crate::internal::waitset::WakerToken;
+use crate::internal::waitset::wake_all;
 
 /// A synchronization primitive for multiple tasks that need to wait for each other.
 ///
@@ -245,9 +246,7 @@ impl Barrier {
                 state.generation += 1;
                 let wakers = state.waiters.take_wakers();
                 drop(state);
-                for waker in wakers {
-                    waker.wake();
-                }
+                wake_all(wakers);
                 return BarrierWaitResult(true);
             }
 

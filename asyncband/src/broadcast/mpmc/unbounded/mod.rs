@@ -104,6 +104,7 @@ use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitset::WaitSet;
 use crate::internal::waitset::WakerToken;
+use crate::internal::waitset::wake_all;
 
 #[cfg(test)]
 mod tests;
@@ -153,7 +154,7 @@ pub enum RecvError {
 impl fmt::Display for RecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RecvError::Disconnected => write!(f, "receiving on a closed channel"),
+            RecvError::Disconnected => write!(f, "receiving on a disconnected channel"),
         }
     }
 }
@@ -174,7 +175,7 @@ impl fmt::Display for TryRecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TryRecvError::Empty => write!(f, "receiving on an empty channel"),
-            TryRecvError::Disconnected => write!(f, "receiving on a closed channel"),
+            TryRecvError::Disconnected => write!(f, "receiving on a disconnected channel"),
         }
     }
 }
@@ -366,8 +367,8 @@ struct Shared<T> {
 
 /// A sender handle to the broadcast channel.
 ///
-/// The sender can be cloned to create multiple producers. When all senders are dropped,
-/// the channel is closed.
+/// The sender can be cloned to create multiple producers. Dropping every sender disconnects each
+/// receiver after it drains its buffered messages.
 pub struct UnboundedSender<T> {
     shared: Arc<Shared<T>>,
 }
@@ -375,8 +376,8 @@ pub struct UnboundedSender<T> {
 impl<T> Clone for UnboundedSender<T> {
     fn clone(&self) -> Self {
         // Relaxed is enough because this count publishes nothing on its own: receivers read it
-        // only to decide whether the channel is closed, and every message it could hide is
-        // published under `inner`, which a receiver holds before it observes the count.
+        // only to decide whether any sender remains, and every message it could hide is published
+        // under `inner`, which a receiver holds before it observes the count.
         self.shared.senders.fetch_add(1, Ordering::Relaxed);
         Self {
             shared: self.shared.clone(),
@@ -397,9 +398,7 @@ impl<T> Drop for UnboundedSender<T> {
                 // If this is the last sender, we need to wake up the receiver so it can
                 // observe the disconnected state.
                 let wakers = self.shared.inner.lock().waiters.take_wakers();
-                for waker in wakers {
-                    waker.wake();
-                }
+                wake_all(wakers);
             }
             _ => {
                 // there are still other senders left, do nothing
@@ -461,9 +460,7 @@ impl<T> UnboundedSender<T> {
 
         // Notify all waiting receivers. An unsent message is dropped here too, once the lock is
         // released.
-        for waker in wakers {
-            waker.wake();
-        }
+        wake_all(wakers);
     }
 
     /// Returns the number of messages currently retained by the shared buffer.
@@ -765,7 +762,7 @@ impl<T: Clone> Future for Recv<'_, T> {
 
         // One critical section decides between all three outcomes. Senders append messages and
         // drain the wait set under this same lock, so registering here cannot miss a wake-up and
-        // cannot observe a closed channel that still has a message for this receiver.
+        // cannot report disconnection while a message remains for this receiver.
         let received = {
             let mut inner = receiver.shared.inner.lock();
 

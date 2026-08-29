@@ -94,7 +94,7 @@ impl<T> fmt::Debug for BoundedSender<T> {
 
 impl<T> Drop for BoundedSender<T> {
     fn drop(&mut self) {
-        // drop the sender; this closes the channel if it is the last sender
+        // Drop the sender; this disconnects the receiver if it is the last sender.
         drop(self.sender.take());
 
         match self.state.senders.fetch_sub(1, Ordering::AcqRel) {
@@ -287,13 +287,12 @@ impl<T> BoundedReceiver<T> {
 
     /// Receives the next value for this receiver and frees up a space in the buffer if successful.
     ///
-    /// This method returns `Err(RecvError::Disconnected)` if the channel has been closed and there
-    /// are no remaining messages in the channel's buffer. This indicates that no further values
-    /// can ever be received from this `Receiver`. The channel is closed when all senders have been
-    /// dropped.
+    /// This method returns `Err(RecvError::Disconnected)` after every sender has disconnected and
+    /// no messages remain in the channel's buffer. At that point, this `Receiver` can never receive
+    /// another value.
     ///
-    /// If there are no messages in the channel's buffer, but the channel has not yet been closed,
-    /// this method will sleep until a message is sent or the channel is closed.
+    /// If the buffer is empty while a sender remains, this method sleeps until a message is sent or
+    /// every sender disconnects.
     ///
     /// # Cancel safety
     ///

@@ -18,7 +18,7 @@
 use std::any::type_name;
 use std::fmt;
 
-/// An error returned when trying to send on a closed channel.
+/// An error returned when trying to send on a disconnected channel.
 ///
 /// Returned from [`UnboundedSender::send`] or [`BoundedSender::send`] if the
 /// corresponding [`UnboundedReceiver`] or [`BoundedReceiver`] has already been
@@ -53,7 +53,7 @@ impl<T> SendError<T> {
 
 impl<T> fmt::Display for SendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("sending on a closed channel")
+        f.write_str("sending on a disconnected channel")
     }
 }
 
@@ -95,7 +95,7 @@ impl<T> fmt::Display for TrySendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             TrySendError::Full(_) => "sending on a full channel",
-            TrySendError::Disconnected(_) => "sending on a closed channel",
+            TrySendError::Disconnected(_) => "sending on a disconnected channel",
         })
     }
 }
@@ -121,7 +121,7 @@ pub enum RecvError {
 
 impl fmt::Display for RecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("receiving on a closed channel")
+        f.write_str("receiving on a disconnected channel")
     }
 }
 
@@ -141,7 +141,7 @@ impl fmt::Display for TryRecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             TryRecvError::Empty => "receiving on an empty channel",
-            TryRecvError::Disconnected => "receiving on a closed channel",
+            TryRecvError::Disconnected => "receiving on a disconnected channel",
         })
     }
 }

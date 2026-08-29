@@ -147,7 +147,7 @@ fn test_try_recv() {
     assert_eq!(rx.try_recv(), Ok(10));
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
 
-    // Closed
+    // Disconnected
     drop(tx);
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
 }

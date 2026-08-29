@@ -65,6 +65,7 @@ pub use self::error::SendError;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitset::WaitSet;
 use crate::internal::waitset::WakerToken;
+use crate::internal::waitset::wake_all;
 
 /// Creates a watch channel with an initial value.
 ///
@@ -136,16 +137,11 @@ impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         let wakers = {
             let mut state = self.shared.state.lock();
-            state.senders = state
-                .senders
-                .checked_sub(1)
-                .expect("watch sender count underflowed");
+            state.senders -= 1;
             (state.senders == 0 && !state.waiters.is_empty()).then(|| state.waiters.take_wakers())
         };
         if let Some(wakers) = wakers {
-            for waker in wakers {
-                waker.wake();
-            }
+            wake_all(wakers);
         }
     }
 }
@@ -174,9 +170,7 @@ impl<T> Sender<T> {
             (wakers, replaced)
         };
         if let Some(wakers) = wakers {
-            for waker in wakers {
-                waker.wake();
-            }
+            wake_all(wakers);
         }
         drop(replaced);
         Ok(())
@@ -195,11 +189,6 @@ impl<T> Sender<T> {
             shared: self.shared.clone(),
             seen,
         }
-    }
-
-    /// Returns the number of active receivers.
-    pub fn receiver_count(&self) -> usize {
-        self.shared.state.lock().receivers
     }
 }
 
@@ -235,10 +224,7 @@ impl<T> fmt::Debug for Receiver<T> {
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         let mut state = self.shared.state.lock();
-        state.receivers = state
-            .receivers
-            .checked_sub(1)
-            .expect("watch receiver count underflowed");
+        state.receivers -= 1;
     }
 }
 

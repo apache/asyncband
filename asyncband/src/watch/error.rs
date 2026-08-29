@@ -42,7 +42,7 @@ impl<T> SendError<T> {
 
 impl<T> fmt::Display for SendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("sending on a closed channel")
+        f.write_str("sending on a disconnected channel")
     }
 }
 
@@ -63,7 +63,7 @@ pub enum RecvError {
 
 impl fmt::Display for RecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("receiving on a closed channel")
+        f.write_str("receiving on a disconnected channel")
     }
 }
 

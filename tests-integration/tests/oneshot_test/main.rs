@@ -120,7 +120,7 @@ fn dropping_receiver_after_send_drops_message() {
 }
 
 #[test]
-fn dropping_unpolled_recv_closes_channel() {
+fn dropping_unpolled_recv_disconnects_channel() {
     let (sender, receiver) = oneshot::channel::<u128>();
     let receiver = receiver.into_future();
 
@@ -249,7 +249,7 @@ fn poll_with_different_wakers_across_threads() {
 }
 
 #[test]
-fn drop_pending_receiver_closes_channel_and_drops_waker() {
+fn drop_pending_receiver_disconnects_channel_and_drops_waker() {
     let (sender, receiver) = oneshot::channel::<u128>();
     let mut receiver = receiver.into_future();
 

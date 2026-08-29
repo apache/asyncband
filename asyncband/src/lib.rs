@@ -112,7 +112,6 @@
 //!
 //! While incubation status is not necessarily a reflection of the completeness or stability of the
 //! code, it does indicate that the project has yet to be fully endorsed by the ASF.
-mod channel;
 mod internal;
 
 #[cfg(feature = "barrier")]
@@ -120,13 +119,13 @@ pub mod barrier;
 #[cfg(feature = "blocking")]
 pub mod blocking;
 #[cfg(feature = "broadcast")]
-pub use self::channel::broadcast;
+pub mod broadcast;
 #[cfg(feature = "condvar")]
 pub mod condvar;
 #[cfg(feature = "latch")]
 pub mod latch;
 #[cfg(feature = "mpsc")]
-pub use self::channel::mpsc;
+pub mod mpsc;
 #[cfg(feature = "mutex")]
 pub mod mutex;
 #[cfg(any(
@@ -137,7 +136,7 @@ pub mod mutex;
 ))]
 pub mod once;
 #[cfg(feature = "oneshot")]
-pub use self::channel::oneshot;
+pub mod oneshot;
 #[cfg(feature = "pool")]
 pub mod pool;
 #[cfg(feature = "rwlock")]
@@ -151,7 +150,7 @@ pub mod singleflight;
 #[cfg(feature = "waitgroup")]
 pub mod waitgroup;
 #[cfg(feature = "watch")]
-pub use self::channel::watch;
+pub mod watch;
 
 #[cfg(all(test, any(feature = "once-map", feature = "singleflight")))]
 mod test_support;
