@@ -18,6 +18,9 @@
 #[cfg(feature = "mpsc")]
 pub(crate) mod atomic_waker;
 
+#[cfg(feature = "once-map")]
+pub(crate) mod atomic_arc;
+
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",

@@ -20,27 +20,21 @@ use std::fmt;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::RandomState;
-use std::mem;
 use std::sync::Arc;
-use std::sync::MutexGuard;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
-use hashbrown::HashTable;
-
+use crate::internal::atomic_arc::AtomicArcOption;
 use crate::internal::mutex::Mutex;
 use crate::once::OnceCell;
 
 #[cfg(test)]
 mod tests;
 
-type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
-
 const TRIE_BITS: u32 = 4;
 const TRIE_FANOUT: usize = 1 << TRIE_BITS;
 const TRIE_MASK: u64 = TRIE_FANOUT as u64 - 1;
-// A full leaf can populate the next node under a well-distributed hash without allocating trie
-// nodes for very small maps.
-const MAX_LEAF_ENTRIES: usize = TRIE_FANOUT;
 
 struct TrieTable<K, V> {
     root: OnceLock<Box<TrieNode<K, V>>>,
@@ -51,62 +45,58 @@ struct TrieNode<K, V> {
 }
 
 struct TrieSlot<K, V> {
-    child: OnceLock<Box<TrieNode<K, V>>>,
-    entries: Mutex<Entries<K, V>>,
+    state: AtomicArcOption<TrieState<K, V>>,
+    mutation: Mutex<()>,
 }
 
-struct LockedLeaf<'a, K, V> {
-    slot: &'a TrieSlot<K, V>,
-    shift: u32,
-    entries: MutexGuard<'a, Entries<K, V>>,
+enum TrieState<K, V> {
+    Leaf(Leaf<K, V>),
+    Branch(Box<TrieNode<K, V>>),
+}
+
+struct Leaf<K, V> {
+    hash: u64,
+    entries: Vec<Arc<Entry<K, V>>>,
+}
+
+enum SlotMutation<K, V> {
+    Keep,
+    Replace(Option<Arc<TrieState<K, V>>>),
 }
 
 impl<K, V> TrieTable<K, V> {
     fn with_capacity(capacity: usize) -> Self {
         let root = OnceLock::new();
         if capacity != 0 {
-            root.get_or_init(|| Box::new(TrieNode::with_capacity(capacity, 0)));
+            root.get_or_init(|| Box::new(TrieNode::empty()));
         }
         Self { root }
     }
 
-    fn lock_leaf(&self, hash: u64) -> LockedLeaf<'_, K, V> {
+    fn read<R>(
+        &self,
+        hash: u64,
+        matches: impl Fn(&Entry<K, V>) -> bool,
+        found: impl Fn(&Entry<K, V>) -> R,
+    ) -> Option<R> {
+        self.root.get()?.read(hash, 0, &matches, &found)
+    }
+
+    fn mutate<R>(
+        &self,
+        hash: u64,
+        update: impl FnOnce(Option<&Arc<TrieState<K, V>>>, u32) -> (SlotMutation<K, V>, R),
+    ) -> R {
         let root = self.root.get_or_init(|| Box::new(TrieNode::empty()));
-        Self::lock_leaf_from(root, hash)
+        root.mutate(hash, 0, update)
     }
 
-    fn try_lock_leaf(&self, hash: u64) -> Option<LockedLeaf<'_, K, V>> {
-        self.root.get().map(|root| Self::lock_leaf_from(root, hash))
-    }
-
-    fn lock_leaf_from(mut node: &TrieNode<K, V>, hash: u64) -> LockedLeaf<'_, K, V> {
-        let mut shift = 0;
-        loop {
-            let slot = node.slot(hash, shift);
-            if let Some(child) = slot.child.get() {
-                node = child;
-                shift += TRIE_BITS;
-                continue;
-            }
-
-            let entries = slot.entries.lock();
-            if let Some(child) = slot.child.get() {
-                drop(entries);
-                node = child;
-                shift += TRIE_BITS;
-                continue;
-            }
-
-            return LockedLeaf {
-                slot,
-                shift,
-                entries,
-            };
-        }
-    }
-
-    fn split_if_needed(&self, leaf: LockedLeaf<'_, K, V>) {
-        TrieNode::split_leaf(leaf.slot, leaf.shift, leaf.entries);
+    fn try_mutate<R>(
+        &self,
+        hash: u64,
+        update: impl FnOnce(Option<&Arc<TrieState<K, V>>>, u32) -> (SlotMutation<K, V>, R),
+    ) -> Option<R> {
+        Some(self.root.get()?.mutate(hash, 0, update))
     }
 
     fn for_each(&self, mut visit: impl FnMut(&Arc<Entry<K, V>>)) {
@@ -120,30 +110,8 @@ impl<K, V> TrieNode<K, V> {
     fn empty() -> Self {
         Self {
             slots: std::array::from_fn(|_| TrieSlot {
-                child: OnceLock::new(),
-                entries: Mutex::new(HashTable::new()),
-            }),
-        }
-    }
-
-    fn with_capacity(capacity: usize, shift: u32) -> Self {
-        let slot_capacity = capacity / TRIE_FANOUT;
-        let extra_capacity = capacity % TRIE_FANOUT;
-        Self {
-            slots: std::array::from_fn(|index| {
-                let capacity = slot_capacity + usize::from(index < extra_capacity);
-                let child = OnceLock::new();
-                let entries = if capacity > MAX_LEAF_ENTRIES && shift + TRIE_BITS < u64::BITS {
-                    child
-                        .get_or_init(|| Box::new(Self::with_capacity(capacity, shift + TRIE_BITS)));
-                    HashTable::new()
-                } else {
-                    HashTable::with_capacity(capacity)
-                };
-                TrieSlot {
-                    child,
-                    entries: Mutex::new(entries),
-                }
+                state: AtomicArcOption::empty(),
+                mutation: Mutex::new(()),
             }),
         }
     }
@@ -152,60 +120,114 @@ impl<K, V> TrieNode<K, V> {
         &self.slots[((hash >> shift) & TRIE_MASK) as usize]
     }
 
-    fn split_leaf(slot: &TrieSlot<K, V>, shift: u32, mut entries: MutexGuard<'_, Entries<K, V>>) {
-        if entries.len() <= MAX_LEAF_ENTRIES || shift + TRIE_BITS >= u64::BITS {
-            return;
-        }
-
-        let Some(first) = entries.iter().next() else {
-            return;
-        };
-        if entries.iter().all(|entry| entry.hash == first.hash) {
-            return;
-        }
-
-        let child_shift = shift + TRIE_BITS;
-        let child = Box::new(Self::empty());
-        for entry in mem::take(&mut *entries) {
-            let child_slot = child.slot(entry.hash, child_shift);
-            child_slot
-                .entries
-                .lock()
-                .insert_unique(entry.hash, entry, |entry| entry.hash);
-        }
-        child.split_overfull_leaves(child_shift);
-
-        // The leaf lock serializes publication. Readers that observed no child recheck after
-        // acquiring that lock, so they cannot consult the now-empty leaf after this succeeds.
-        assert!(
-            slot.child.set(child).is_ok(),
-            "the leaf lock must serialize trie splits"
-        );
+    fn read<R>(
+        &self,
+        hash: u64,
+        shift: u32,
+        matches: &impl Fn(&Entry<K, V>) -> bool,
+        found: &impl Fn(&Entry<K, V>) -> R,
+    ) -> Option<R> {
+        self.slot(hash, shift).state.with(|state| {
+            let state = state?;
+            match &*state {
+                TrieState::Leaf(leaf) if leaf.hash == hash => leaf
+                    .entries
+                    .iter()
+                    .find(|entry| matches(entry))
+                    .map(|entry| found(entry)),
+                TrieState::Branch(child) => child.read(hash, shift + TRIE_BITS, matches, found),
+                TrieState::Leaf(_) => None,
+            }
+        })
     }
 
-    fn split_overfull_leaves(&self, shift: u32) {
-        for slot in &self.slots {
-            Self::split_leaf(slot, shift, slot.entries.lock());
+    fn mutate<R>(
+        &self,
+        hash: u64,
+        shift: u32,
+        update: impl FnOnce(Option<&Arc<TrieState<K, V>>>, u32) -> (SlotMutation<K, V>, R),
+    ) -> R {
+        let slot = self.slot(hash, shift);
+        let state = slot.state.load();
+        if let Some(TrieState::Branch(child)) = state.as_ref().map(Arc::as_ref) {
+            return child.mutate(hash, shift + TRIE_BITS, update);
         }
+        drop(state);
+
+        let mutation = slot.mutation.lock();
+        let state = slot.state.load();
+        if let Some(TrieState::Branch(child)) = state.as_deref() {
+            drop(mutation);
+            return child.mutate(hash, shift + TRIE_BITS, update);
+        }
+
+        let (update, result) = update(state.as_ref(), shift);
+        let retired = match update {
+            SlotMutation::Keep => None,
+            SlotMutation::Replace(replacement) => slot.state.swap(replacement),
+        };
+
+        // A removed entry may own user data. Release old snapshots only after unlocking the slot.
+        drop(mutation);
+        drop(state);
+        drop(retired);
+        result
     }
 
     fn for_each(&self, visit: &mut impl FnMut(&Arc<Entry<K, V>>)) {
         for slot in &self.slots {
-            if let Some(child) = slot.child.get() {
-                child.for_each(visit);
-                continue;
-            }
-
-            let entries = slot.entries.lock();
-            if let Some(child) = slot.child.get() {
-                drop(entries);
-                child.for_each(visit);
-                continue;
-            }
-            for entry in entries.iter() {
-                visit(entry);
+            let state = slot.state.load();
+            match state.as_ref().map(Arc::as_ref) {
+                Some(TrieState::Leaf(leaf)) => {
+                    for entry in &leaf.entries {
+                        visit(entry);
+                    }
+                }
+                Some(TrieState::Branch(child)) => child.for_each(visit),
+                None => {}
             }
         }
+    }
+
+    fn split_leaves(
+        old: Arc<TrieState<K, V>>,
+        new: Arc<TrieState<K, V>>,
+        shift: u32,
+    ) -> Arc<TrieState<K, V>> {
+        let TrieState::Leaf(old_leaf) = old.as_ref() else {
+            unreachable!("only leaves can be split")
+        };
+        let TrieState::Leaf(new_leaf) = new.as_ref() else {
+            unreachable!("only leaves can be split")
+        };
+        debug_assert_ne!(old_leaf.hash, new_leaf.hash);
+        debug_assert!(shift < u64::BITS);
+
+        let branch = Self::empty();
+        let old_index = ((old_leaf.hash >> shift) & TRIE_MASK) as usize;
+        let new_index = ((new_leaf.hash >> shift) & TRIE_MASK) as usize;
+        if old_index == new_index {
+            let child = Self::split_leaves(old, new, shift + TRIE_BITS);
+            branch.slots[old_index].state.store(Some(child));
+        } else {
+            branch.slots[old_index].state.store(Some(old));
+            branch.slots[new_index].state.store(Some(new));
+        }
+
+        Arc::new(TrieState::Branch(Box::new(branch)))
+    }
+}
+
+impl<K, V> TrieState<K, V> {
+    fn leaf(hash: u64, entries: Vec<Arc<Entry<K, V>>>) -> Arc<Self> {
+        Arc::new(Self::Leaf(Leaf { hash, entries }))
+    }
+
+    fn remove_from_leaf(leaf: &Leaf<K, V>, index: usize) -> (Option<Arc<Self>>, Arc<Entry<K, V>>) {
+        let mut entries = leaf.entries.clone();
+        let removed = entries.remove(index);
+        let replacement = (!entries.is_empty()).then(|| Self::leaf(leaf.hash, entries));
+        (replacement, removed)
     }
 }
 
@@ -213,6 +235,20 @@ struct Entry<K, V> {
     hash: u64,
     key: K,
     cell: OnceCell<V>,
+    callers: AtomicUsize,
+}
+
+impl<K, V> Entry<K, V> {
+    fn add_caller(&self) {
+        let previous = self.callers.fetch_add(1, Ordering::Relaxed);
+        assert!(previous < usize::MAX, "OnceMap caller count overflowed");
+    }
+
+    fn release_caller(&self) -> usize {
+        let previous = self.callers.fetch_sub(1, Ordering::AcqRel);
+        assert!(previous > 0, "OnceMap caller count underflowed");
+        previous - 1
+    }
 }
 
 enum Lookup<K, V> {
@@ -269,24 +305,64 @@ where
         V: Clone,
     {
         let hash = self.hasher.hash_one(&key);
-        let mut leaf = self.entries.lock_leaf(hash);
-        if let Some(entry) = leaf.entries.find(hash, |entry| entry.key.eq(&key)) {
-            return if let Some(value) = entry.cell.get().cloned() {
-                Lookup::Ready(value)
-            } else {
-                Lookup::Pending(Arc::clone(entry))
-            };
+        if let Some(value) = self
+            .entries
+            .read(
+                hash,
+                |entry| entry.key.eq(&key),
+                |entry| entry.cell.get().cloned(),
+            )
+            .flatten()
+        {
+            return Lookup::Ready(value);
         }
 
-        let entry = Arc::new(Entry {
-            hash,
-            key,
-            cell: OnceCell::new(),
-        });
-        leaf.entries
-            .insert_unique(hash, Arc::clone(&entry), |entry| entry.hash);
-        self.entries.split_if_needed(leaf);
-        Lookup::Pending(entry)
+        self.entries.mutate(hash, |state, shift| {
+            let leaf = match state.map(Arc::as_ref) {
+                Some(TrieState::Leaf(leaf)) => Some(leaf),
+                Some(TrieState::Branch(_)) => unreachable!("mutations stop at leaves"),
+                None => None,
+            };
+            if let Some(entry) = leaf
+                .filter(|leaf| leaf.hash == hash)
+                .and_then(|leaf| leaf.entries.iter().find(|entry| entry.key.eq(&key)))
+            {
+                let lookup = if let Some(value) = entry.cell.get().cloned() {
+                    Lookup::Ready(value)
+                } else {
+                    entry.add_caller();
+                    Lookup::Pending(Arc::clone(entry))
+                };
+                return (SlotMutation::Keep, lookup);
+            }
+
+            let entry = Arc::new(Entry {
+                hash,
+                key,
+                cell: OnceCell::new(),
+                callers: AtomicUsize::new(1),
+            });
+            let new_leaf = TrieState::leaf(hash, vec![Arc::clone(&entry)]);
+            let replacement = match state {
+                None => new_leaf,
+                Some(old) => match old.as_ref() {
+                    TrieState::Leaf(leaf) if leaf.hash == hash => {
+                        let mut entries = leaf.entries.clone();
+                        entries.push(Arc::clone(&entry));
+                        TrieState::leaf(hash, entries)
+                    }
+                    TrieState::Leaf(_) => {
+                        TrieNode::split_leaves(Arc::clone(old), new_leaf, shift + TRIE_BITS)
+                    }
+                    TrieState::Branch(_) => unreachable!("mutations stop at leaves"),
+                },
+            };
+
+            (
+                SlotMutation::Replace(Some(replacement)),
+                Lookup::Pending(entry),
+            )
+        })
     }
 
     fn get_value<Q>(&self, key: &Q) -> Option<V>
@@ -296,9 +372,13 @@ where
         V: Clone,
     {
         let hash = self.hasher.hash_one(key);
-        let leaf = self.entries.try_lock_leaf(hash)?;
-        let entry = leaf.entries.find(hash, |entry| entry.key.borrow() == key)?;
-        entry.cell.get().cloned()
+        self.entries
+            .read(
+                hash,
+                |entry| entry.key.borrow() == key,
+                |entry| entry.cell.get().cloned(),
+            )
+            .flatten()
     }
 
     fn remove_entry<Q>(&self, key: &Q) -> Option<Arc<Entry<K, V>>>
@@ -307,43 +387,50 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let hash = self.hasher.hash_one(key);
-        let mut leaf = self.entries.try_lock_leaf(hash)?;
-        let occupied = leaf
-            .entries
-            .find_entry(hash, |entry| entry.key.borrow() == key)
-            .ok()?;
-        let (entry, _) = occupied.remove();
-        drop(leaf);
-        Some(entry)
+        self.entries
+            .try_mutate(hash, |state, _| {
+                let Some(TrieState::Leaf(leaf)) = state.map(Arc::as_ref) else {
+                    return (SlotMutation::Keep, None);
+                };
+                if leaf.hash != hash {
+                    return (SlotMutation::Keep, None);
+                }
+                let Some(index) = leaf
+                    .entries
+                    .iter()
+                    .position(|entry| entry.key.borrow() == key)
+                else {
+                    return (SlotMutation::Keep, None);
+                };
+
+                let (replacement, removed) = TrieState::remove_from_leaf(leaf, index);
+                (SlotMutation::Replace(replacement), Some(removed))
+            })
+            .flatten()
     }
 
     fn cleanup_abandoned_entry(&self, entry: Arc<Entry<K, V>>) {
-        let Some(mut leaf) = self.entries.try_lock_leaf(entry.hash) else {
-            drop(entry);
-            return;
-        };
-        let Ok(occupied) = leaf
-            .entries
-            .find_entry(entry.hash, |stored| Arc::ptr_eq(stored, &entry))
-        else {
-            // A concurrent remove detached the entry. It may be the final owner, so release it
-            // after unlocking rather than running user destructors under the leaf lock.
-            drop(leaf);
-            drop(entry);
-            return;
-        };
+        let updated = self.entries.try_mutate(entry.hash, |state, _| {
+            let remaining_callers = entry.release_caller();
+            let Some(TrieState::Leaf(leaf)) = state.map(Arc::as_ref) else {
+                return (SlotMutation::Keep, ());
+            };
+            let Some(index) = leaf
+                .entries
+                .iter()
+                .position(|stored| Arc::ptr_eq(stored, &entry))
+            else {
+                return (SlotMutation::Keep, ());
+            };
+            if remaining_callers != 0 || entry.cell.initialized() {
+                return (SlotMutation::Keep, ());
+            }
 
-        // With map ownership confirmed and the leaf locked against new callers, two owners means
-        // the map and this cleanup guard are the only remaining references.
-        if Arc::strong_count(&entry) == 2 && !entry.cell.initialized() {
-            let (stored, _) = occupied.remove();
-            drop(leaf);
-            drop(entry);
-            drop(stored);
-        } else {
-            // A waiting cleanup must observe this call's reference being released while no new
-            // caller can clone the map's reference.
-            drop(entry);
+            let (replacement, _) = TrieState::remove_from_leaf(leaf, index);
+            (SlotMutation::Replace(replacement), ())
+        });
+        if updated.is_none() {
+            entry.release_caller();
         }
     }
 
@@ -353,16 +440,36 @@ where
             hash,
             key,
             cell: OnceCell::from_value(value),
+            callers: AtomicUsize::new(0),
         });
 
-        let mut leaf = self.entries.lock_leaf(hash);
-        let replaced = leaf
-            .entries
-            .find_entry(hash, |stored| stored.key.eq(&entry.key))
-            .ok()
-            .map(|occupied| occupied.remove().0);
-        leaf.entries.insert_unique(hash, entry, |entry| entry.hash);
-        self.entries.split_if_needed(leaf);
+        let replaced = self.entries.mutate(hash, |state, shift| {
+            let new_leaf = TrieState::leaf(hash, vec![Arc::clone(&entry)]);
+            let (replacement, replaced) = match state {
+                None => (new_leaf, None),
+                Some(old) => match old.as_ref() {
+                    TrieState::Leaf(leaf) if leaf.hash == hash => {
+                        let mut entries = leaf.entries.clone();
+                        let replaced = entries
+                            .iter()
+                            .position(|stored| stored.key.eq(&entry.key))
+                            .map(|index| {
+                                std::mem::replace(&mut entries[index], Arc::clone(&entry))
+                            });
+                        if replaced.is_none() {
+                            entries.push(Arc::clone(&entry));
+                        }
+                        (TrieState::leaf(hash, entries), replaced)
+                    }
+                    TrieState::Leaf(_) => (
+                        TrieNode::split_leaves(Arc::clone(old), new_leaf, shift + TRIE_BITS),
+                        None,
+                    ),
+                    TrieState::Branch(_) => unreachable!("mutations stop at leaves"),
+                },
+            };
+            (SlotMutation::Replace(Some(replacement)), replaced)
+        });
         drop(replaced);
     }
 }
@@ -411,7 +518,9 @@ where
     }
 
     fn dismiss(mut self) {
-        drop(self.entry.take());
+        let entry = self.entry.take().unwrap();
+        debug_assert!(entry.cell.initialized());
+        entry.release_caller();
     }
 }
 
@@ -450,7 +559,7 @@ where
         Self::with_capacity(0)
     }
 
-    /// Creates a new OnceMap with the default hasher and the specified capacity.
+    /// Creates a new OnceMap with the default hasher and the specified capacity hint.
     pub fn with_capacity(capacity: usize) -> Self {
         Self::with_capacity_and_hasher(capacity, RandomState::new())
     }
@@ -467,7 +576,7 @@ where
         Self::with_capacity_and_hasher(0, hasher)
     }
 
-    /// Creates a new OnceMap with the specified capacity and hasher.
+    /// Creates a new OnceMap with the specified capacity hint and hasher.
     pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
         Self {
             entries: TrieTable::with_capacity(capacity),

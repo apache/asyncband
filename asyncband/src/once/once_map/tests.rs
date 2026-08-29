@@ -15,9 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hash::BuildHasherDefault;
+use std::hash::Hasher;
 use std::sync::Arc;
 
+use super::Lookup;
 use super::OnceMap;
+use super::TrieState;
 use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
@@ -94,4 +98,73 @@ async fn failed_compute_preserves_entry_for_waiter_retry() {
     assert_eq!(map.len(), 1);
     assert_eq!(retry.await, Ok(1));
     assert_eq!(map.get("key"), Some(1));
+}
+
+#[test]
+fn reader_snapshot_does_not_keep_an_abandoned_entry_registered() {
+    let map = OnceMap::<&str, i32>::new();
+    let Lookup::Pending(entry) = map.get_or_insert("key") else {
+        unreachable!()
+    };
+    let root = map.entries.root.get().unwrap();
+    let snapshot = root.slot(entry.hash, 0).state.load().unwrap();
+    assert!(matches!(snapshot.as_ref(), TrieState::Leaf(_)));
+
+    map.cleanup_abandoned_entry(entry);
+
+    assert!(map.is_empty());
+    drop(snapshot);
+}
+
+#[test]
+fn concurrent_deep_reads_survive_replacement_and_removal() {
+    const ITERATIONS: usize = if cfg!(miri) { 32 } else { 2_000 };
+    const KEYS: u64 = 16;
+
+    #[derive(Default)]
+    struct IdentityHasher(u64);
+
+    impl Hasher for IdentityHasher {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+
+        fn write(&mut self, bytes: &[u8]) {
+            self.0 = bytes
+                .iter()
+                .fold(0, |hash, byte| hash.rotate_left(8) ^ u64::from(*byte));
+        }
+
+        fn write_u64(&mut self, value: u64) {
+            self.0 = value;
+        }
+    }
+
+    let map: OnceMap<u64, u64, BuildHasherDefault<IdentityHasher>> =
+        (0..KEYS).map(|key| (key << 32, key << 32)).collect();
+
+    std::thread::scope(|scope| {
+        for _ in 0..2 {
+            scope.spawn(|| {
+                for iteration in 0..ITERATIONS {
+                    let key = (iteration as u64 % KEYS) << 32;
+                    if let Some(value) = map.get(&key) {
+                        assert_eq!(value, key);
+                    }
+                    std::thread::yield_now();
+                }
+            });
+        }
+
+        for iteration in 0..ITERATIONS {
+            let key = (iteration as u64 % KEYS) << 32;
+            map.discard(&key);
+            map.insert(key, key);
+            std::thread::yield_now();
+        }
+    });
+
+    for key in (0..KEYS).map(|key| key << 32) {
+        assert_eq!(map.get(&key), Some(key));
+    }
 }
