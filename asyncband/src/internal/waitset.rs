@@ -158,10 +158,7 @@ mod tests {
 
     #[test]
     fn waker_token_preserves_the_option_niche() {
-        assert_eq!(
-            std::mem::size_of::<WakerToken>(),
-            std::mem::size_of::<Option<WakerToken>>()
-        );
+        assert_eq!(size_of::<WakerToken>(), size_of::<Option<WakerToken>>());
     }
 
     struct TrackWake(AtomicUsize);
@@ -252,7 +249,7 @@ mod tests {
         register(&mut waiters, &mut second, &panicking);
         register(&mut waiters, &mut third, &tracked);
 
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
             wake_all(waiters.take_wakers());
         }));
         assert!(result.is_err());
