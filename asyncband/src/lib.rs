@@ -64,10 +64,10 @@
 //! |                       | [`Latch`](latch::Latch)             | `latch`        | Wait until a one-way countdown completes.                                                              |
 //! |                       | [`WaitGroup`](waitgroup::WaitGroup) | `waitgroup`    | Wait for a dynamic group of tasks to finish.                                                           |
 //! |                       | [`Shutdown`](shutdown::Shutdown)    | `shutdown`     | Coordinate shutdown signals and completion.                                                            |
-//! | Channels              | [`oneshot`]                         | `oneshot`      | Send one value between two tasks.                                                                      |
-//! |                       | [`mpsc`]                            | `mpsc`         | Send each value from multiple producers to one receiver.                                               |
-//! |                       | [`broadcast`]                       | `broadcast`    | Broadcast values from one or more producers and retain them until every active receiver consumes them. |
-//! |                       | [`watch`]                           | `watch`        | Retain the latest state and coalesce intermediate updates.                                             |
+//! | Channels              | [`oneshot`]                         | `oneshot`      | Send one value from one sender to one receiver.                                                         |
+//! |                       | [`mpsc`]                            | `mpsc`         | Send each value from multiple producers to one receiver through a bounded or unbounded queue.           |
+//! |                       | [`broadcast::mpmc`]                 | `broadcast`    | Broadcast every value from multiple producers to every active receiver with unbounded retention.        |
+//! |                       | [`watch`]                           | `watch`        | Publish the latest state to independently tracked receivers and coalesce intermediate updates.          |
 //! | Resource reuse        | [`pool`]                            | `pool`         | Reuse objects through bounded or unbounded pool variants.                                              |
 //! | Workload coordination | [`Semaphore`](semaphore::Semaphore) | `semaphore`    | Control concurrent access with permits.                                                                |
 //! |                       | [`Group`](singleflight::Group)      | `singleflight` | Coalesce concurrent calls for the same key.                                                            |
