@@ -21,30 +21,42 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr;
 use std::sync::Arc;
-use std::sync::OnceLock;
-use std::sync::PoisonError;
-use std::sync::RwLock;
-use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering;
 
 struct Hazard {
     pointer: AtomicPtr<()>,
+    claimed: AtomicBool,
+    next: AtomicPtr<Hazard>,
 }
 
 impl Hazard {
-    const fn new() -> Self {
+    const fn claimed() -> Self {
         Self {
             pointer: AtomicPtr::new(ptr::null_mut()),
+            claimed: AtomicBool::new(true),
+            next: AtomicPtr::new(ptr::null_mut()),
         }
     }
 }
 
-static HAZARD_REGISTRY: OnceLock<RwLock<Vec<Weak<Hazard>>>> = OnceLock::new();
+// Records are never unlinked, so a scan may follow their pointers without protecting the registry
+// itself. Threads cache enough records for their deepest nesting and release their claims on exit;
+// later threads reuse those records, so sequential thread churn does not grow the registry.
+static HAZARDS: AtomicPtr<Hazard> = AtomicPtr::new(ptr::null_mut());
 
 struct ThreadHazards {
-    hazards: RefCell<Vec<Arc<Hazard>>>,
+    hazards: RefCell<Vec<&'static Hazard>>,
     depth: Cell<usize>,
+}
+
+impl Drop for ThreadHazards {
+    fn drop(&mut self) {
+        for hazard in self.hazards.get_mut().drain(..) {
+            release_hazard(hazard);
+        }
+    }
 }
 
 thread_local! {
@@ -54,15 +66,44 @@ thread_local! {
     } };
 }
 
-fn register_hazard() -> Arc<Hazard> {
-    let hazard = Arc::new(Hazard::new());
-    let mut hazards = HAZARD_REGISTRY
-        .get_or_init(|| RwLock::new(Vec::new()))
-        .write()
-        .unwrap_or_else(PoisonError::into_inner);
-    hazards.retain(|hazard| hazard.strong_count() != 0);
-    hazards.push(Arc::downgrade(&hazard));
-    hazard
+fn claim_hazard() -> &'static Hazard {
+    let mut current = HAZARDS.load(Ordering::Acquire);
+    while !current.is_null() {
+        // SAFETY: Hazard records are allocated once and never freed or unlinked.
+        let hazard = unsafe { &*current };
+        if hazard
+            .claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            return hazard;
+        }
+        current = hazard.next.load(Ordering::Relaxed);
+    }
+
+    let hazard: &'static Hazard = Box::leak(Box::new(Hazard::claimed()));
+    let raw = ptr::from_ref(hazard).cast_mut();
+    let mut head = HAZARDS.load(Ordering::SeqCst);
+    loop {
+        hazard.next.store(head, Ordering::Relaxed);
+        match HAZARDS.compare_exchange_weak(head, raw, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return hazard,
+            Err(actual) => head = actual,
+        }
+    }
+}
+
+fn release_hazard(hazard: &'static Hazard) {
+    debug_assert!(hazard.pointer.load(Ordering::Relaxed).is_null());
+    hazard.claimed.store(false, Ordering::Release);
+}
+
+struct HazardClaim(&'static Hazard);
+
+impl Drop for HazardClaim {
+    fn drop(&mut self) {
+        release_hazard(self.0);
+    }
 }
 
 fn with_thread_hazard<R>(f: impl FnOnce(&Hazard) -> R) -> R {
@@ -77,18 +118,19 @@ fn with_thread_hazard<R>(f: impl FnOnce(&Hazard) -> R) -> R {
         let hazard = {
             let mut hazards = thread.hazards.borrow_mut();
             if depth == hazards.len() {
-                hazards.push(register_hazard());
+                hazards.push(claim_hazard());
             }
-            Arc::as_ptr(&hazards[depth])
+            hazards[depth]
         };
-        // SAFETY: The hazard allocation is owned by the thread-local pool. Growing the pool can
-        // move its `Arc` handles but not the allocations to which they point.
-        let result = f.take().unwrap()(unsafe { &*hazard });
+        let result = f.take().unwrap()(hazard);
         drop(depth_guard);
         result
     }) {
         Ok(result) => result,
-        Err(_) => f.take().unwrap()(&register_hazard()),
+        Err(_) => {
+            let hazard = HazardClaim(claim_hazard());
+            f.take().unwrap()(hazard.0)
+        }
     }
 }
 
@@ -116,18 +158,23 @@ impl<'a> Protection<'a> {
 
 impl Drop for Protection<'_> {
     fn drop(&mut self) {
-        self.hazard.pointer.store(ptr::null_mut(), Ordering::SeqCst);
+        self.hazard
+            .pointer
+            .store(ptr::null_mut(), Ordering::Release);
     }
 }
 
 fn is_protected(pointer: *mut ()) -> bool {
-    HAZARD_REGISTRY
-        .get_or_init(|| RwLock::new(Vec::new()))
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .iter()
-        .filter_map(Weak::upgrade)
-        .any(|hazard| hazard.pointer.load(Ordering::SeqCst) == pointer)
+    let mut current = HAZARDS.load(Ordering::SeqCst);
+    while !current.is_null() {
+        // SAFETY: Hazard records are allocated once and never freed or unlinked.
+        let hazard = unsafe { &*current };
+        if hazard.pointer.load(Ordering::SeqCst) == pointer {
+            return true;
+        }
+        current = hazard.next.load(Ordering::Relaxed);
+    }
+    false
 }
 
 /// An atomically replaceable optional `Arc`.
@@ -136,9 +183,13 @@ fn is_protected(pointer: *mut ()) -> bool {
 /// A reader publishes the raw pointer in a thread-local hazard slot before dereferencing it. A
 /// writer keeps the replaced `Arc` alive until no hazard slot refers to it.
 ///
-/// All pointer and hazard operations are sequentially consistent. If a writer scans before a
-/// reader publishes its hazard, the reader's verification load must observe the replacement. If
-/// the verification still observes the old pointer, the later writer scan must observe the hazard.
+/// Registry publication, hazard publication, pointer verification and replacement, and hazard
+/// scans are sequentially consistent. A newly registered reader therefore either appears in the
+/// registry scan or verifies the pointer after its replacement. Likewise, if a writer scans a
+/// record before the reader publishes its hazard, the replacement precedes the reader's
+/// verification and that verification cannot still observe the old pointer. Otherwise the scan
+/// cannot overlook the published hazard. The initial pointer load can be relaxed because the
+/// verification load also acquires the published value.
 pub struct AtomicArcOption<T> {
     pointer: AtomicPtr<T>,
     ownership: PhantomData<Arc<T>>,
@@ -179,24 +230,27 @@ impl<T> AtomicArcOption<T> {
     pub fn with<R>(&self, f: impl for<'a> FnOnce(Option<Protected<'a, T>>) -> R) -> R {
         with_thread_hazard(|hazard| {
             loop {
-                let pointer = self.pointer.load(Ordering::SeqCst);
+                let pointer = self.pointer.load(Ordering::Relaxed);
                 if pointer.is_null() {
                     return f(None);
                 }
 
                 let protection = Protection::new(hazard, pointer.cast());
-                if self.pointer.load(Ordering::SeqCst) != pointer {
+                let verified = self.pointer.load(Ordering::SeqCst);
+                if verified != pointer {
                     drop(protection);
                     continue;
                 }
 
-                // SAFETY: The verified pointer came from `Arc::into_raw`, and `protection` prevents
-                // a writer from reclaiming it for the duration of the callback. The
-                // higher-ranked callback cannot return the borrowed reference in
-                // its result.
+                // Use the verified pointer rather than the first load. If an allocation is
+                // reclaimed and its address reused between the two loads, this carries the
+                // currently published allocation's provenance. `protection` prevents that
+                // allocation from being reclaimed for the duration of the callback, and the
+                // higher-ranked callback cannot return the borrowed reference in its result.
                 let result = f(Some(Protected {
-                    value: unsafe { &*pointer },
-                    pointer,
+                    // SAFETY: `verified` came from `Arc::into_raw` and remains protected.
+                    value: unsafe { &*verified },
+                    pointer: verified,
                 }));
                 drop(protection);
                 return result;
