@@ -18,9 +18,18 @@
 use std::sync::Arc;
 
 use super::OnceMap;
+use super::ReadyIndex;
 use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
+
+#[test]
+fn ready_index_bucket_count_is_bounded_by_shards() {
+    let shard_amount = 8;
+    let index = ReadyIndex::<usize, usize>::new(1_000_000, shard_amount);
+
+    assert_eq!(index.buckets.len(), shard_amount * 4);
+}
 
 #[tokio::test]
 async fn failed_compute_removes_empty_entry() {
@@ -29,7 +38,7 @@ async fn failed_compute_removes_empty_entry() {
     let result: Result<i32, &str> = map.try_compute("key", async || Err("fail")).await;
 
     assert_eq!(result, Err("fail"));
-    assert!(map.map.is_empty());
+    assert!(map.is_empty());
 }
 
 #[tokio::test]
@@ -46,7 +55,7 @@ async fn panicked_compute_removes_empty_entry() {
     });
 
     assert!(task.await.unwrap_err().is_panic());
-    assert!(map.map.is_empty());
+    assert!(map.is_empty());
 }
 
 #[tokio::test]
@@ -65,11 +74,11 @@ async fn cancelled_compute_removes_empty_entry() {
     });
 
     started_rx.await.unwrap();
-    assert_eq!(map.map.len(), 1);
+    assert_eq!(map.len(), 1);
 
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
-    assert!(map.map.is_empty());
+    assert!(map.is_empty());
 }
 
 #[tokio::test]
@@ -91,7 +100,7 @@ async fn failed_compute_preserves_entry_for_waiter_retry() {
     release_tx.send(()).unwrap();
     assert_eq!(first.await, Err("fail"));
 
-    assert_eq!(map.map.len(), 1);
+    assert_eq!(map.len(), 1);
     assert_eq!(retry.await, Ok(1));
     assert_eq!(map.get("key"), Some(1));
 }

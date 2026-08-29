@@ -18,23 +18,156 @@
 //! Singleflight provides a duplicate function call suppression mechanism.
 
 use std::borrow::Borrow;
+use std::fmt;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::RandomState;
 use std::sync::Arc;
+use std::sync::MutexGuard;
 
-use table::Entry;
-use table::Table;
+use hashbrown::HashTable;
 
-mod table;
+use crate::internal::cache_padded::CachePadded;
+use crate::internal::default_shard_count;
+use crate::internal::mutex::Mutex;
+use crate::once::OnceCell;
+
 #[cfg(test)]
 mod tests;
 
+type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
+type Shard<K, V> = CachePadded<Mutex<Entries<K, V>>>;
+
+struct Entry<K, V> {
+    hash: u64,
+    key: K,
+    cell: OnceCell<V>,
+}
+
 /// Group represents a class of work and forms a namespace in which
 /// units of work can be executed with duplicate suppression.
-#[derive(Debug)]
 pub struct Group<K, V, S = RandomState> {
-    map: Table<K, V, S>,
+    shards: Box<[Shard<K, V>]>,
+    hasher: S,
+}
+
+impl<K, V, S> fmt::Debug for Group<K, V, S>
+where
+    K: fmt::Debug,
+    V: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Write::write_str(f, "Group ")?;
+        let mut debug_map = f.debug_map();
+        for shard in &self.shards {
+            let entries = shard.lock();
+            debug_map.entries(entries.iter().map(|entry| (&entry.key, &entry.cell)));
+        }
+        debug_map.finish()
+    }
+}
+
+impl<K, V, S> Group<K, V, S> {
+    fn with_config(hasher: S, shard_amount: usize) -> Self {
+        assert!(
+            shard_amount.is_power_of_two(),
+            "shard amount must be greater than zero and a power of two"
+        );
+
+        let shards = (0..shard_amount)
+            .map(|_| CachePadded::new(Mutex::new(HashTable::new())))
+            .collect();
+        Self { shards, hasher }
+    }
+
+    fn lock_shard(&self, hash: u64) -> MutexGuard<'_, Entries<K, V>> {
+        self.shards[(hash as usize) & (self.shards.len() - 1)].lock()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.shards.iter().map(|shard| shard.lock().len()).sum()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.shards.iter().all(|shard| shard.lock().is_empty())
+    }
+}
+
+impl<K, V, S> Group<K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    fn get_or_insert(&self, key: K) -> Arc<Entry<K, V>> {
+        let hash = self.hasher.hash_one(&key);
+        let mut shard = self.lock_shard(hash);
+        shard
+            .entry(hash, |entry| entry.key.eq(&key), |entry| entry.hash)
+            .or_insert_with(|| {
+                Arc::new(Entry {
+                    hash,
+                    key,
+                    cell: OnceCell::new(),
+                })
+            })
+            .into_mut()
+            .clone()
+    }
+
+    fn remove<Q>(&self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let hash = self.hasher.hash_one(key);
+        let removed = {
+            let mut shard = self.lock_shard(hash);
+            let Ok(occupied) = shard.find_entry(hash, |entry| entry.key.borrow() == key) else {
+                return;
+            };
+            occupied.remove().0
+        };
+        drop(removed);
+    }
+
+    fn remove_if_current(&self, entry: &Arc<Entry<K, V>>) {
+        let removed = {
+            let mut shard = self.lock_shard(entry.hash);
+            let Ok(occupied) = shard.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, entry))
+            else {
+                return;
+            };
+            occupied.remove().0
+        };
+        drop(removed);
+    }
+
+    fn cleanup_abandoned_entry(&self, entry: Arc<Entry<K, V>>) {
+        let mut shard = self.lock_shard(entry.hash);
+        let Ok(occupied) = shard.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, &entry))
+        else {
+            // `forget` detached the entry. It may be the final owner, so release it after
+            // unlocking rather than running user destructors under the shard lock.
+            drop(shard);
+            drop(entry);
+            return;
+        };
+
+        // With group ownership confirmed and the shard locked against new callers, two owners
+        // means the group and this cleanup guard are the only remaining references.
+        if Arc::strong_count(&entry) == 2 && !entry.cell.initialized() {
+            let (stored, _) = occupied.remove();
+            drop(shard);
+            drop(entry);
+            drop(stored);
+        } else {
+            // A waiting cleanup must observe this call's reference being released while no new
+            // caller can clone the group's reference.
+            drop(entry);
+        }
+    }
 }
 
 // Holds one call's entry so Drop can clean it up if the work is abandoned.
@@ -53,7 +186,7 @@ where
     S: BuildHasher,
 {
     fn new(group: &'a Group<K, V, S>, key: K) -> Self {
-        let entry = group.map.get_or_insert(key);
+        let entry = group.get_or_insert(key);
 
         Self {
             group,
@@ -80,7 +213,7 @@ where
             return;
         };
 
-        self.group.map.cleanup_abandoned_entry(entry);
+        self.group.cleanup_abandoned_entry(entry);
     }
 }
 
@@ -102,9 +235,7 @@ where
 {
     /// Creates a new Group with the default hasher.
     pub fn new() -> Self {
-        Self {
-            map: Table::with_hasher(RandomState::new()),
-        }
+        Self::with_config(RandomState::new(), default_shard_count())
     }
 
     /// Creates a new Group with the default hasher and the specified shard amount.
@@ -113,9 +244,7 @@ where
     ///
     /// Panics if `shard_amount` is zero or is not a power of two.
     pub fn with_shard_amount(shard_amount: usize) -> Self {
-        Self {
-            map: Table::with_hasher_and_shard_amount(RandomState::new(), shard_amount),
-        }
+        Self::with_config(RandomState::new(), shard_amount)
     }
 }
 
@@ -127,9 +256,7 @@ where
 {
     /// Creates a new Group with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
-        Self {
-            map: Table::with_hasher(hasher),
-        }
+        Self::with_config(hasher, default_shard_count())
     }
 
     /// Creates a new Group with the given hasher and the specified shard amount.
@@ -138,9 +265,7 @@ where
     ///
     /// Panics if `shard_amount` is zero or is not a power of two.
     pub fn with_hasher_and_shard_amount(hasher: S, shard_amount: usize) -> Self {
-        Self {
-            map: Table::with_hasher_and_shard_amount(hasher, shard_amount),
-        }
+        Self::with_config(hasher, shard_amount)
     }
 
     /// Executes and returns the results of the given function, making sure that only one execution
@@ -202,9 +327,10 @@ where
         let guard = WorkCleanupGuard::new(self, key);
         let entry = guard.entry();
         let result = entry
+            .cell
             .get_or_init(async || {
                 let result = func().await;
-                self.map.remove_if_current(entry);
+                self.remove_if_current(entry);
                 result
             })
             .await
@@ -266,9 +392,10 @@ where
         let guard = WorkCleanupGuard::new(self, key);
         let entry = guard.entry();
         let result = entry
+            .cell
             .get_or_try_init(async || {
                 let result = func().await?;
-                self.map.remove_if_current(entry);
+                self.remove_if_current(entry);
                 Ok(result)
             })
             .await?
@@ -286,6 +413,6 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.map.remove(key);
+        self.remove(key);
     }
 }

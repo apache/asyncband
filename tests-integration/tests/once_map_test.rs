@@ -114,6 +114,25 @@ async fn get_remove_and_discard() {
     assert_eq!(map.get("key"), None);
 }
 
+#[test]
+fn discard_releases_the_removed_value() {
+    #[derive(Clone)]
+    struct DropCounter(Arc<AtomicUsize>);
+
+    impl Drop for DropCounter {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let drops = Arc::new(AtomicUsize::new(0));
+    let map: OnceMap<_, _> = [(0, DropCounter(Arc::clone(&drops)))].into_iter().collect();
+
+    map.discard(&0);
+
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test]
 async fn remove_while_computing_detaches_entry() {
     let map = Arc::new(OnceMap::new());
