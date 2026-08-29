@@ -201,9 +201,8 @@ The final tag starts the crates.io publishing job. Before approving the `release
 After publication:
 
 1. Verify the version and metadata on crates.io and docs.rs.
-2. Create a GitHub release from the final tag containing release notes and links to the ASF source archive; do not attach alternate release artifacts.
-3. Announce the release on `dev@asyncband.apache.org` and other appropriate channels, identifying it as Apache Asyncband (Incubating).
-4. Remove superseded releases from `dist/release`; they remain available from the ASF archive.
+2. Announce the release on `dev@asyncband.apache.org` and other appropriate channels, identifying it as Apache Asyncband (Incubating).
+3. Remove superseded releases from `dist/release`; they remain available from the ASF archive.
 
 ## Failed candidates and publication failures
 
