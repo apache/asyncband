@@ -75,8 +75,9 @@ cargo publish --package asyncband --locked --dry-run
 
 For a semver-major release, including a pre-1.0 minor release such as `0.7.0`, the semver command
 audits with minor compatibility rules so that breaking API changes remain visible. Review every
-reported change against `CHANGELOG.md` and `MIGRATE.md`, then explicitly acknowledge the reviewed
-inventory:
+reported change against `CHANGELOG.md`. Update `MIGRATE.md` only when a compatibility transition,
+such as a temporarily retained old name, requires instructions beyond the changelog. Then explicitly
+acknowledge the reviewed inventory:
 
 ```shell
 cargo x semver --release-version "${VERSION}" --acknowledge-breaking-changes
