@@ -62,9 +62,6 @@ pub(crate) mod value_cell;
 ))]
 pub(crate) mod mutex;
 
-#[cfg(feature = "once-map")]
-pub(crate) mod rwlock;
-
 #[cfg(any(
     feature = "mpsc",
     feature = "mutex",
@@ -99,9 +96,20 @@ pub(crate) mod waitlist;
 pub(crate) mod waitset;
 
 #[cfg(any(feature = "once-map", feature = "singleflight"))]
-pub fn default_shard_count() -> usize {
-    // Contention benchmarks favor more shards than worker threads. Keep this policy internal so it
-    // can be retuned as more architectures and workloads are measured.
-    (std::thread::available_parallelism().map_or(1, |parallelism| parallelism.get()) * 8)
+fn scaled_shard_count(scale: usize) -> usize {
+    (std::thread::available_parallelism().map_or(1, |parallelism| parallelism.get()) * scale)
         .next_power_of_two()
+}
+
+#[cfg(feature = "once-map")]
+pub fn once_map_shard_count() -> usize {
+    // OnceMap is typically long-lived, so preserve miss parallelism rather than optimizing its
+    // one-time construction cost. Ready values bypass these mutation shards entirely.
+    scaled_shard_count(8)
+}
+
+#[cfg(feature = "singleflight")]
+pub fn singleflight_shard_count() -> usize {
+    // Every call inserts and removes an entry, making shard-level write contention the common path.
+    scaled_shard_count(8)
 }

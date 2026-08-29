@@ -16,6 +16,8 @@
 // under the License.
 
 use std::collections::hash_map::RandomState;
+use std::hash::BuildHasherDefault;
+use std::hash::Hasher;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -207,4 +209,28 @@ async fn supports_non_clone_keys_and_owned_values() {
 
     assert_eq!(value, "value");
     assert_eq!(map.get(&Key(1)), Some("value".to_owned()));
+}
+
+#[tokio::test]
+async fn ready_entries_with_colliding_hashes_remain_independent() {
+    #[derive(Default)]
+    struct ConstantHasher;
+
+    impl Hasher for ConstantHasher {
+        fn finish(&self) -> u64 {
+            0
+        }
+
+        fn write(&mut self, _bytes: &[u8]) {}
+    }
+
+    let map = OnceMap::with_hasher(BuildHasherDefault::<ConstantHasher>::default());
+    assert_eq!(map.compute("first", async || 1).await, 1);
+    assert_eq!(map.compute("second", async || 2).await, 2);
+    assert_eq!(map.get("first"), Some(1));
+    assert_eq!(map.get("second"), Some(2));
+
+    map.discard("first");
+    assert_eq!(map.get("first"), None);
+    assert_eq!(map.get("second"), Some(2));
 }

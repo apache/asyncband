@@ -18,7 +18,9 @@
 use std::borrow::Borrow;
 use std::fmt;
 use std::hash::BuildHasher;
+use std::hash::BuildHasherDefault;
 use std::hash::Hash;
+use std::hash::Hasher;
 use std::hash::RandomState;
 use std::panic::UnwindSafe;
 use std::sync::Arc;
@@ -26,31 +28,29 @@ use std::sync::MutexGuard;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use arc_swap::ArcSwap;
 use hashbrown::HashTable;
+use scc::HashIndex;
+use scc::hash_index::Entry as IndexEntry;
 
 use crate::internal::cache_padded::CachePadded;
-use crate::internal::default_shard_count;
 use crate::internal::mutex::Mutex;
-use crate::internal::rwlock::RwLock;
+use crate::internal::once_map_shard_count;
 use crate::once::OnceCell;
 
 #[cfg(test)]
 mod tests;
 
-const TARGET_ENTRIES_PER_BUCKET: usize = 2;
-const MAX_READY_BUCKETS_PER_SHARD: usize = 4;
-
 type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
 type Shard<K, V> = CachePadded<Mutex<Entries<K, V>>>;
-type Bucket<K, V> = CachePadded<RwLock<HashTable<Arc<Entry<K, V>>>>>;
 
 struct Entry<K, V> {
     hash: u64,
     key: K,
     cell: OnceCell<V>,
-    // Accessed only while the corresponding primary shard is locked. Atomic interior mutability
-    // keeps `Entry` shareable with the read index; cross-lock ordering is not required.
-    was_indexed: AtomicBool,
+    // Accessed only while the corresponding mutation shard is locked. Atomic interior mutability
+    // keeps `Entry` shareable with the ready index.
+    indexed: AtomicBool,
 }
 
 enum Lookup<K, V> {
@@ -59,30 +59,99 @@ enum Lookup<K, V> {
 }
 
 struct ReadyIndex<K, V> {
-    buckets: Box<[Bucket<K, V>]>,
+    slots: HashIndex<u64, ReadySlot<K, V>, BuildIdentityHasher>,
 }
 
-impl<K, V> ReadyIndex<K, V> {
-    fn new(capacity: usize, shard_count: usize) -> Self {
-        // Capacity is only a hint for read parallelism here. Bound the bucket count so a large
-        // reservation does not eagerly allocate a proportional number of padded locks.
-        let target_bucket_count = capacity.div_ceil(TARGET_ENTRIES_PER_BUCKET);
-        let max_bucket_count = shard_count
-            .checked_mul(MAX_READY_BUCKETS_PER_SHARD)
-            .unwrap_or(shard_count);
-        let bucket_count = target_bucket_count
-            .clamp(shard_count, max_bucket_count)
-            .next_power_of_two();
+// Entries with the same user-provided hash share an immutable snapshot. Mutations are serialized by
+// the corresponding primary shard, while ready readers never write shared state.
+struct ReadySlot<K, V> {
+    entries: ArcSwap<Vec<Arc<Entry<K, V>>>>,
+}
 
+impl<K: Eq, V> ReadySlot<K, V> {
+    fn new(entry: &Arc<Entry<K, V>>) -> Self {
         Self {
-            buckets: (0..bucket_count)
-                .map(|_| CachePadded::new(RwLock::new(HashTable::new())))
-                .collect(),
+            entries: ArcSwap::from_pointee(vec![Arc::clone(entry)]),
         }
     }
 
-    fn bucket(&self, hash: u64) -> &Bucket<K, V> {
-        &self.buckets[(hash as usize) & (self.buckets.len() - 1)]
+    fn get<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+        V: Clone,
+    {
+        self.entries
+            .load()
+            .iter()
+            .find(|entry| entry.key.borrow() == key)
+            .and_then(|entry| entry.cell.get().cloned())
+    }
+
+    fn insert(&self, entry: &Arc<Entry<K, V>>) {
+        let mut entries = (**self.entries.load()).clone();
+        let replaced =
+            if let Some(stored) = entries.iter_mut().find(|stored| stored.key == entry.key) {
+                if Arc::ptr_eq(stored, entry) {
+                    return;
+                }
+                Some(std::mem::replace(stored, Arc::clone(entry)))
+            } else {
+                entries.push(Arc::clone(entry));
+                None
+            };
+
+        let previous = self.entries.swap(Arc::new(entries));
+        drop(previous);
+        drop(replaced);
+    }
+
+    fn remove(&self, entry: &Arc<Entry<K, V>>) -> bool {
+        let mut entries = (**self.entries.load()).clone();
+        let Some(index) = entries.iter().position(|stored| Arc::ptr_eq(stored, entry)) else {
+            return false;
+        };
+        let removed = entries.swap_remove(index);
+        let empty = entries.is_empty();
+
+        let previous = self.entries.swap(Arc::new(entries));
+        drop(previous);
+        drop(removed);
+        empty
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.load().is_empty()
+    }
+}
+
+type BuildIdentityHasher = BuildHasherDefault<IdentityHasher>;
+
+// The outer index is keyed by the hash already computed with the map's hasher.
+#[derive(Default)]
+struct IdentityHasher(u64);
+
+impl Hasher for IdentityHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(*byte);
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+}
+
+impl<K: Eq, V> ReadyIndex<K, V> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            slots: HashIndex::with_capacity_and_hasher(capacity, BuildIdentityHasher::default()),
+        }
     }
 
     fn get<Q>(&self, hash: u64, key: &Q) -> Option<V>
@@ -91,43 +160,30 @@ impl<K, V> ReadyIndex<K, V> {
         Q: Eq + ?Sized,
         V: Clone,
     {
-        self.bucket(hash)
-            .read()
-            .find(hash, |entry| entry.key.borrow() == key)
-            .and_then(|entry| entry.cell.get().cloned())
+        self.slots
+            .peek_with(&hash, |_, slot| slot.get(key))
+            .flatten()
     }
 
-    fn insert(&self, entry: &Arc<Entry<K, V>>)
-    where
-        K: Eq,
-    {
-        let mut entries = self.bucket(entry.hash).write();
-        let replaced = if let Ok(occupied) =
-            entries.find_entry(entry.hash, |stored| stored.key == entry.key)
-        {
-            if Arc::ptr_eq(occupied.get(), entry) {
-                return;
+    fn insert(&self, entry: &Arc<Entry<K, V>>) {
+        match self.slots.entry_sync(entry.hash) {
+            IndexEntry::Occupied(occupied) => occupied.get().insert(entry),
+            IndexEntry::Vacant(vacant) => {
+                vacant.insert_entry(ReadySlot::new(entry));
             }
-            Some(occupied.remove().0)
-        } else {
-            None
-        };
-
-        entries.insert_unique(entry.hash, Arc::clone(entry), |entry| entry.hash);
-        drop(entries);
-        drop(replaced);
+        }
     }
 
     fn remove(&self, entry: &Arc<Entry<K, V>>) {
-        let mut entries = self.bucket(entry.hash).write();
-
-        let Ok(occupied) = entries.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, entry))
-        else {
-            return;
-        };
-        let (removed, _) = occupied.remove();
-        drop(entries);
-        drop(removed);
+        let became_empty = self
+            .slots
+            .peek_with(&entry.hash, |_, slot| slot.remove(entry))
+            .unwrap_or(false);
+        if became_empty {
+            // HashIndex may reclaim its node later. Empty the snapshot first so deferred metadata
+            // cannot keep the user's key or value alive after removal.
+            self.slots.remove_if_sync(&entry.hash, ReadySlot::is_empty);
+        }
     }
 }
 
@@ -136,14 +192,15 @@ impl<K, V> ReadyIndex<K, V> {
 /// Note that this always clones the value out of the underlying map. Because of this, it's common
 /// to wrap the `V` in an `Arc<V>` to make cloning cheap.
 pub struct OnceMap<K, V, S = RandomState> {
-    // Mutations always lock a primary shard before the corresponding ready bucket.
+    // Pending computations and mutations are coordinated through these shards.
     shards: Box<[Shard<K, V>]>,
-    // Initialized entries are mirrored here so hit-only reads do not contend on primary shards.
+    // Initialized entries are mirrored here so hit-only reads avoid mutation-shard contention.
     ready: ReadyIndex<K, V>,
     hasher: S,
 }
 
-/// Operations recover poisoned shard locks before accessing their contents.
+// HashIndex does not infer UnwindSafe for arbitrary entries. OnceMap recovers poisoned mutation
+// shards and only publishes immutable initialized entries to the ready index.
 impl<K, V, S: UnwindSafe> UnwindSafe for OnceMap<K, V, S> {}
 
 impl<K, V, S> fmt::Debug for OnceMap<K, V, S>
@@ -201,7 +258,7 @@ where
                         hash,
                         key,
                         cell: OnceCell::new(),
-                        was_indexed: AtomicBool::new(false),
+                        indexed: AtomicBool::new(false),
                     })
                 })
                 .into_mut()
@@ -239,18 +296,19 @@ where
         V: Clone,
     {
         let value = entry.cell.get()?.clone();
+        self.index_if_current(entry);
+        Some(value)
+    }
 
-        {
-            let shard = self.lock_shard(entry.hash);
-            if shard
+    fn index_if_current(&self, entry: &Arc<Entry<K, V>>) {
+        let shard = self.lock_shard(entry.hash);
+        if !entry.indexed.load(Ordering::Relaxed)
+            && shard
                 .find(entry.hash, |stored| Arc::ptr_eq(stored, entry))
                 .is_some()
-            {
-                self.index(entry);
-            }
+        {
+            self.index(entry);
         }
-
-        Some(value)
     }
 
     fn remove_entry<Q>(&self, key: &Q) -> Option<Arc<Entry<K, V>>>
@@ -301,7 +359,7 @@ where
             hash,
             key,
             cell: OnceCell::from_value(value),
-            was_indexed: AtomicBool::new(false),
+            indexed: AtomicBool::new(false),
         });
 
         let mut shard = self.lock_shard(hash);
@@ -321,11 +379,11 @@ where
 
     fn index(&self, entry: &Arc<Entry<K, V>>) {
         self.ready.insert(entry);
-        entry.was_indexed.store(true, Ordering::Relaxed);
+        entry.indexed.store(true, Ordering::Relaxed);
     }
 
     fn remove_from_index(&self, entry: &Arc<Entry<K, V>>) {
-        if entry.was_indexed.load(Ordering::Relaxed) {
+        if entry.indexed.load(Ordering::Relaxed) {
             self.ready.remove(entry);
         }
     }
@@ -433,7 +491,7 @@ where
 
     /// Creates a new OnceMap with the specified capacity and hasher.
     pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
-        let shard_count = default_shard_count();
+        let shard_count = once_map_shard_count();
         let shard_capacity = capacity / shard_count;
         let extra_capacity = capacity % shard_count;
         let shards = (0..shard_count)
@@ -445,7 +503,7 @@ where
 
         Self {
             shards,
-            ready: ReadyIndex::new(capacity, shard_count),
+            ready: ReadyIndex::new(capacity),
             hasher,
         }
     }

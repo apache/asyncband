@@ -24,7 +24,6 @@ use divan::Bencher;
 use divan::black_box;
 
 use crate::support::bench_context;
-use crate::support::defer_input_drop;
 use crate::support::poll_pending;
 use crate::support::poll_pinned_ready;
 use crate::support::poll_ready;
@@ -44,63 +43,56 @@ fn construct_default(bencher: Bencher) {
 }
 
 #[divan::bench]
-fn work_ready(bencher: Bencher) {
+fn work_vacant(bencher: Bencher) {
+    let group = BenchGroup::default();
     let mut context = bench_context();
-    bencher
-        .with_inputs(BenchGroup::default)
-        .bench_local_values(|group| {
-            let result = black_box(poll_ready(
-                group.work(black_box(0), || async { black_box(1) }),
-                &mut context,
-            ));
-            defer_input_drop(group, result)
-        });
+    bencher.bench_local(|| {
+        black_box(poll_ready(
+            group.work(black_box(0), || async { black_box(1) }),
+            &mut context,
+        ))
+    });
 }
 
 #[divan::bench]
 fn try_work_error(bencher: Bencher) {
+    let group = BenchGroup::default();
     let mut context = bench_context();
-    bencher
-        .with_inputs(BenchGroup::default)
-        .bench_local_values(|group| {
-            let result = black_box(poll_ready(
-                group.try_work(black_box(0), || async { Err::<usize, ()>(()) }),
-                &mut context,
-            ));
-            defer_input_drop(group, result)
-        });
+    bencher.bench_local(|| {
+        black_box(poll_ready(
+            group.try_work(black_box(0), || async { Err::<usize, ()>(()) }),
+            &mut context,
+        ))
+    });
 }
 
 #[divan::bench(args = WAITER_COUNTS)]
 fn coalesced_work_batch(bencher: Bencher, waiter_count: usize) {
+    let group = BenchGroup::default();
     let mut context = bench_context();
 
-    bencher
-        .with_inputs(BenchGroup::default)
-        .bench_local_values(|group| {
-            let gate = Cell::new(false);
-            let mut leader = Box::pin(group.work(0, || async {
-                wait_until_open(&gate).await;
-                black_box(1usize)
-            }));
-            poll_pending(leader.as_mut(), &mut context);
+    bencher.bench_local(|| {
+        let gate = Cell::new(false);
+        let mut leader = Box::pin(group.work(0, || async {
+            wait_until_open(&gate).await;
+            black_box(1usize)
+        }));
+        poll_pending(leader.as_mut(), &mut context);
 
-            let mut waiters = (0..waiter_count)
-                .map(|_| Box::pin(group.work(0, || async { unreachable!() })))
-                .collect::<Vec<_>>();
-            for waiter in &mut waiters {
-                poll_pending(waiter.as_mut(), &mut context);
-            }
+        let mut waiters = (0..waiter_count)
+            .map(|_| Box::pin(group.work(0, || async { unreachable!() })))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            poll_pending(waiter.as_mut(), &mut context);
+        }
 
-            gate.set(true);
-            black_box(poll_pinned_ready(leader.as_mut(), &mut context));
-            drop(leader);
-            for mut waiter in waiters {
-                black_box(poll_pinned_ready(waiter.as_mut(), &mut context));
-            }
-
-            defer_input_drop(group, ())
-        });
+        gate.set(true);
+        black_box(poll_pinned_ready(leader.as_mut(), &mut context));
+        drop(leader);
+        for mut waiter in waiters {
+            black_box(poll_pinned_ready(waiter.as_mut(), &mut context));
+        }
+    });
 }
 
 #[divan::bench(threads = THREAD_COUNTS)]

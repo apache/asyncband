@@ -32,7 +32,9 @@ rust-version = "1.86.0"
 asyncband = { path = "asyncband" }
 
 # Optional runtime dependencies
+arc-swap = "1.9.2"
 hashbrown = { version = "0.17.1", default-features = false }
+scc = "3.8.7"
 
 # Dev dependencies
 async-broadcast = { version = "0.7.2" }

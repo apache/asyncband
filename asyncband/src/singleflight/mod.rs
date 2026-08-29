@@ -28,8 +28,8 @@ use std::sync::MutexGuard;
 use hashbrown::HashTable;
 
 use crate::internal::cache_padded::CachePadded;
-use crate::internal::default_shard_count;
 use crate::internal::mutex::Mutex;
+use crate::internal::singleflight_shard_count;
 use crate::once::OnceCell;
 
 #[cfg(test)]
@@ -235,7 +235,7 @@ where
 {
     /// Creates a new Group with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
-        let shard_count = default_shard_count();
+        let shard_count = singleflight_shard_count();
         let shards = (0..shard_count)
             .map(|_| CachePadded::new(Mutex::new(HashTable::new())))
             .collect();

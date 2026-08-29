@@ -24,7 +24,7 @@ use super::support::BenchMap;
 use super::support::CONTENDED_ENTRY_COUNTS;
 use super::support::CONTENDED_THREAD_SLOTS;
 use super::support::THREAD_COUNTS;
-use super::support::preloaded_map;
+use super::support::ready_map;
 use crate::support::bench_context;
 use crate::support::defer_input_drop;
 use crate::support::poll_pending;
@@ -71,12 +71,29 @@ fn compute_vacant(bencher: Bencher) {
 
 #[divan::bench]
 fn compute_occupied(bencher: Bencher) {
+    let map = ready_map(1);
+    let mut context = bench_context();
+    bencher.bench_local(|| {
+        black_box(poll_ready(
+            map.compute(black_box(0), || async { black_box(2) }),
+            &mut context,
+        ))
+    });
+}
+
+#[divan::bench]
+fn compute_first_cached_hit(bencher: Bencher) {
     let mut context = bench_context();
     bencher
-        .with_inputs(|| [(0, 1)].into_iter().collect::<BenchMap>())
+        .with_inputs(|| {
+            let map = BenchMap::default();
+            let mut context = bench_context();
+            poll_ready(map.compute(0, || async { 1 }), &mut context);
+            map
+        })
         .bench_local_values(|map| {
             let result = black_box(poll_ready(
-                map.compute(black_box(0), || async { black_box(2) }),
+                map.compute(black_box(0), || async { unreachable!() }),
                 &mut context,
             ));
             defer_input_drop(map, result)
@@ -85,20 +102,14 @@ fn compute_occupied(bencher: Bencher) {
 
 #[divan::bench(args = CACHED_ENTRY_COUNTS)]
 fn try_compute_error(bencher: Bencher, cached_entries: usize) {
+    let map = ready_map(cached_entries);
     let mut context = bench_context();
-    bencher
-        .with_inputs(|| {
-            (0..cached_entries)
-                .map(|key| (key, key))
-                .collect::<BenchMap>()
-        })
-        .bench_local_values(|map| {
-            let result = black_box(poll_ready(
-                map.try_compute(black_box(usize::MAX), || async { Err::<usize, ()>(()) }),
-                &mut context,
-            ));
-            defer_input_drop(map, result)
-        });
+    bencher.bench_local(|| {
+        black_box(poll_ready(
+            map.try_compute(black_box(usize::MAX), || async { Err::<usize, ()>(()) }),
+            &mut context,
+        ))
+    });
 }
 
 #[divan::bench(args = COMPUTATION_COUNTS)]
@@ -161,7 +172,7 @@ fn independent_compute_batch(bencher: Bencher, computation_count: usize) {
 
 #[divan::bench(threads = THREAD_COUNTS)]
 fn contended_compute_hit_same_key(bencher: Bencher) {
-    let map = [(0, 1)].into_iter().collect::<BenchMap>();
+    let map = ready_map(1);
 
     bencher.bench(|| {
         let mut context = bench_context();
@@ -174,7 +185,7 @@ fn contended_compute_hit_same_key(bencher: Bencher) {
 
 #[divan::bench(threads = THREAD_COUNTS, args = CONTENDED_ENTRY_COUNTS)]
 fn contended_compute_hit_disjoint(bencher: Bencher, cached_entries: usize) {
-    let map = preloaded_map(cached_entries);
+    let map = ready_map(cached_entries);
 
     bencher
         .with_inputs(|| {
@@ -192,7 +203,7 @@ fn contended_compute_hit_disjoint(bencher: Bencher, cached_entries: usize) {
 
 #[divan::bench(threads = THREAD_COUNTS, args = CONTENDED_ENTRY_COUNTS)]
 fn contended_compute_miss_churn(bencher: Bencher, cached_entries: usize) {
-    let map = preloaded_map(cached_entries);
+    let map = ready_map(cached_entries);
 
     bencher
         .with_inputs(|| {
@@ -212,7 +223,7 @@ fn contended_compute_miss_churn(bencher: Bencher, cached_entries: usize) {
 
 #[divan::bench(threads = THREAD_COUNTS, args = CONTENDED_ENTRY_COUNTS)]
 fn contended_compute_mixed(bencher: Bencher, cached_entries: usize) {
-    let map = preloaded_map(cached_entries);
+    let map = ready_map(cached_entries);
 
     bencher
         .with_inputs(|| {
