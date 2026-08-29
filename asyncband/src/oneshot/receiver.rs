@@ -81,8 +81,8 @@ impl<T> Receiver<T> {
 
         // ORDERING: Relaxed is sufficient to enforce the method's contract.
         //
-        // Once true has been observed, it will remain true. However, if false is observed,
-        // the sender might have just disconnected but this thread has not observed it yet.
+        // Once true has been observed, it will remain true. However, if false is observed, the
+        // sender might just have been dropped without this thread observing it yet.
         matches!(channel.state.load(Ordering::Relaxed), DISCONNECTED)
     }
 
@@ -156,7 +156,7 @@ impl<T> Drop for Receiver<T> {
         //
         // ORDERING: This is a bidirectional ownership handoff. Release publishes the receiver's
         // last access when the sender must reclaim the allocation; Acquire receives a
-        // sender-published message or disconnect before receiver-side cleanup.
+        // sender-published message or disconnected state before receiver-side cleanup.
         match channel.state.swap(DISCONNECTED, Ordering::AcqRel) {
             // The sender has not sent anything, nor is it dropped. The sender is responsible for
             // deallocating the channel.
@@ -384,10 +384,10 @@ impl<T> Drop for Recv<T> {
 /// Error returned by [`Receiver::try_recv`].
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TryRecvError {
-    /// This channel is currently empty, but the sender has not yet disconnected, so data may yet
-    /// become available.
+    /// No message is currently available, but the sender handle remains and may still send one.
     Empty,
-    /// The sender has become disconnected, and there will never be any more data received on it.
+    /// No message can become available because the sender was dropped without sending or the
+    /// message has already been received.
     Disconnected,
 }
 
@@ -409,7 +409,8 @@ impl std::error::Error for TryRecvError {}
 /// `try_recv` calls will return [`TryRecvError::Disconnected`] instead.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RecvError {
-    /// The sender has become disconnected, and there will never be any more data received on it.
+    /// No message can become available because the sender was dropped without sending or the
+    /// message has already been received.
     Disconnected,
 }
 

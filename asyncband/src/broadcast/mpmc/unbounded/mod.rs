@@ -147,7 +147,7 @@ pub fn unbounded<T: Clone>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
 /// Error returned by [`UnboundedReceiver::recv`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecvError {
-    /// The sender has become disconnected, and there will never be any more data received on it.
+    /// All sender handles have been dropped, and no buffered messages remain for this receiver.
     Disconnected,
 }
 
@@ -164,10 +164,9 @@ impl std::error::Error for RecvError {}
 /// Error returned by [`UnboundedReceiver::try_recv`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TryRecvError {
-    /// This channel is currently empty, but the sender(s) have not yet disconnected, so data may
-    /// yet become available.
+    /// No message is currently available, but at least one sender handle remains.
     Empty,
-    /// The sender has become disconnected, and there will never be any more data received on it.
+    /// All sender handles have been dropped, and no buffered messages remain for this receiver.
     Disconnected,
 }
 
@@ -367,8 +366,8 @@ struct Shared<T> {
 
 /// A sender handle to the broadcast channel.
 ///
-/// The sender can be cloned to create multiple producers. Dropping every sender disconnects each
-/// receiver after it drains its buffered messages.
+/// The sender can be cloned to create multiple producers. Dropping the final sender disconnects
+/// the channel. Each receiver may drain its own buffered messages before observing disconnection.
 pub struct UnboundedSender<T> {
     shared: Arc<Shared<T>>,
 }
@@ -395,8 +394,7 @@ impl<T> Drop for UnboundedSender<T> {
     fn drop(&mut self) {
         match self.shared.senders.fetch_sub(1, Ordering::AcqRel) {
             1 => {
-                // If this is the last sender, we need to wake up the receiver so it can
-                // observe the disconnected state.
+                // Wake every parked receiver so it can observe the channel's disconnected state.
                 let wakers = self.shared.inner.lock().waiters.take_wakers();
                 wake_all(wakers);
             }
@@ -468,6 +466,9 @@ impl<T> UnboundedSender<T> {
     /// This is not the number of messages any single receiver can still read. It is the shared
     /// backlog kept alive by the slowest active receiver.
     ///
+    /// The returned value is an instantaneous snapshot. It is suitable for diagnostics and soft
+    /// flow-control decisions, but concurrent sends and receives may change it immediately.
+    ///
     /// # Examples
     ///
     /// ```
@@ -482,27 +483,6 @@ impl<T> UnboundedSender<T> {
     /// ```
     pub fn buffer_len(&self) -> usize {
         self.shared.inner.lock().buffer.len()
-    }
-
-    /// Returns the number of active receivers.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use asyncband::broadcast::mpmc;
-    ///
-    /// let (tx, rx) = mpmc::unbounded::<i32>();
-    /// assert_eq!(tx.receiver_count(), 1);
-    ///
-    /// let rx2 = tx.subscribe();
-    /// assert_eq!(tx.receiver_count(), 2);
-    ///
-    /// drop(rx);
-    /// drop(rx2);
-    /// assert_eq!(tx.receiver_count(), 0);
-    /// ```
-    pub fn receiver_count(&self) -> usize {
-        self.shared.inner.lock().receivers.len()
     }
 
     /// Creates a new receiver that starts receiving messages from the current tail of the channel.
@@ -563,8 +543,8 @@ impl<T: Clone> UnboundedReceiver<T> {
     /// # Returns
     ///
     /// * `Ok(T)`: The next message.
-    /// * `Err(RecvError::Disconnected)`: All senders have been dropped and no more messages are
-    ///   available.
+    /// * `Err(RecvError::Disconnected)`: All sender handles have been dropped and no more messages
+    ///   are available for this receiver.
     ///
     /// # Cancel safety
     ///
@@ -598,8 +578,8 @@ impl<T: Clone> UnboundedReceiver<T> {
     ///
     /// * `Ok(T)`: The next message.
     /// * `Err(TryRecvError::Empty)`: No message is currently available.
-    /// * `Err(TryRecvError::Disconnected)`: All senders have been dropped and no more messages are
-    ///   available.
+    /// * `Err(TryRecvError::Disconnected)`: All sender handles have been dropped and no more
+    ///   messages are available for this receiver.
     ///
     /// # Examples
     ///
@@ -689,6 +669,9 @@ impl<T> UnboundedReceiver<T> {
     /// This count is specific to this receiver, unlike [`UnboundedSender::buffer_len`], which
     /// reports the shared backlog retained by the slowest active receiver.
     ///
+    /// The returned value is an instantaneous snapshot. It is suitable for detecting that this
+    /// receiver is falling behind, but concurrent sends may change it immediately.
+    ///
     /// # Examples
     ///
     /// ```
@@ -714,6 +697,8 @@ impl<T> UnboundedReceiver<T> {
     }
 
     /// Returns `true` if this receiver has no currently available messages.
+    ///
+    /// This is an instantaneous snapshot with the same concurrency caveat as [`Self::len`].
     ///
     /// # Examples
     ///

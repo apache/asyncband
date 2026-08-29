@@ -55,8 +55,8 @@ impl<T> Sender<T> {
         let channel_ptr = sender.channel_ptr;
 
         // SAFETY: The channel exists on the heap for the entire duration of this method, and we
-        // only ever acquire shared references to it. Note that if the receiver disconnects it
-        // does not free the channel.
+        // only ever acquire shared references to it. Dropping the receiver does not immediately
+        // free the channel.
         let channel = unsafe { channel_ptr.as_ref() };
 
         // Write the message into the channel on the heap.
@@ -124,15 +124,15 @@ impl<T> Sender<T> {
     /// error.
     pub fn is_disconnected(&self) -> bool {
         // SAFETY: The channel exists on the heap for the entire duration of this method, and we
-        // only ever acquire shared references to it. Note that if the receiver disconnects it
-        // does not free the channel.
+        // only ever acquire shared references to it. Dropping the receiver does not immediately
+        // free the channel.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
         // ORDERING: Relaxed is sufficient for the method's contract: if this returns true, a
         // future call to send is guaranteed to return an error.
         //
-        // Once true has been observed, it will remain true. However, if false is observed,
-        // the receiver might have just disconnected but this thread has not observed it yet.
+        // Once true has been observed, it will remain true. However, if false is observed, the
+        // receiver might just have been dropped without this thread observing it yet.
         matches!(channel.state.load(Ordering::Relaxed), DISCONNECTED)
     }
 
@@ -153,14 +153,14 @@ impl<T> Drop for Sender<T> {
         //   alive, and thus didn't free the channel.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
-        // Disconnect directly, or begin awakening a receiving task:
+        // Publish the channel's disconnected state directly, or begin awakening a receiving task:
         //
         // * EMPTY ^ 001 = DISCONNECTED
         // * RECEIVING ^ 001 = AWAKING
         // * DISCONNECTED ^ 001 = EMPTY (invalid), but this state is never observed
         //
-        // ORDERING: Release publishes a direct disconnect and orders it before the waiting path's
-        // final publication. The RMW's load half is Relaxed, so branches that consume
+        // ORDERING: Release publishes the disconnected state and orders it before the waiting
+        // path's final publication. The RMW's load half is Relaxed, so branches that consume
         // receiver-published resources use an Acquire fence.
         match channel.state.fetch_xor(0b001, Ordering::Release) {
             // The receiver is not waiting, nor is it dropped. The receiver is responsible for

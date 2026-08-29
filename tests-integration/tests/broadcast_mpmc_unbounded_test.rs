@@ -56,7 +56,6 @@ impl Drop for Reentrant {
         if let Some(channel) = &self.channel {
             // Deadlocks if the channel still holds its lock while dropping reclaimed messages.
             let _ = channel.buffer_len();
-            let _ = channel.receiver_count();
         }
     }
 }
@@ -249,9 +248,8 @@ async fn send_without_receivers_does_not_buffer() {
 }
 
 #[test]
-fn receiver_count_and_len_track_each_receiver() {
+fn len_tracks_each_receiver() {
     let (tx, mut rx1) = unbounded();
-    assert_eq!(tx.receiver_count(), 1);
     assert_eq!(rx1.len(), 0);
     assert!(rx1.is_empty());
 
@@ -261,7 +259,6 @@ fn receiver_count_and_len_track_each_receiver() {
     assert!(!rx1.is_empty());
 
     let mut rx2 = tx.subscribe();
-    assert_eq!(tx.receiver_count(), 2);
     assert_eq!(rx2.len(), 0);
     assert!(rx2.is_empty());
 
@@ -272,7 +269,6 @@ fn receiver_count_and_len_track_each_receiver() {
     assert_eq!(rx2.try_recv(), Ok(3));
     assert_eq!(rx2.len(), 0);
     drop(rx2);
-    assert_eq!(tx.receiver_count(), 1);
 
     assert_eq!(rx1.try_recv(), Ok(1));
     assert_eq!(rx1.len(), 2);
@@ -477,7 +473,7 @@ fn parked_recv_wakes_when_the_last_sender_drops() {
 }
 
 #[test]
-fn parked_recv_prefers_buffered_messages_over_disconnect() {
+fn parked_recv_prefers_buffered_messages_over_disconnection() {
     let (tx, mut rx) = unbounded();
     let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
     let waker = Waker::from(tracker);
@@ -495,7 +491,7 @@ fn parked_recv_prefers_buffered_messages_over_disconnect() {
 }
 
 #[tokio::test]
-async fn recv_drains_buffered_messages_before_reporting_disconnect() {
+async fn recv_drains_buffered_messages_before_reporting_disconnection() {
     let (tx, mut rx) = unbounded();
 
     tx.send(1);
@@ -508,7 +504,7 @@ async fn recv_drains_buffered_messages_before_reporting_disconnect() {
 }
 
 #[tokio::test]
-async fn recv_reports_disconnect_without_any_message() {
+async fn recv_reports_disconnection_without_any_message() {
     let (tx, mut rx) = unbounded::<()>();
     drop(tx);
     assert_eq!(rx.recv().await, Err(RecvError::Disconnected));
@@ -593,7 +589,6 @@ fn randomized_operations_track_the_reference_model() {
                 _ => {}
             }
 
-            assert_eq!(tx.receiver_count(), model.len(), "seed {seed}");
             let retained = model
                 .iter()
                 .map(|(_, cursor)| *cursor)

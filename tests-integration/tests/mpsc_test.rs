@@ -201,7 +201,7 @@ fn try_recv_unbounded() {
 }
 
 #[test]
-fn try_recv_disconnect_while_empty_unbounded() {
+fn try_recv_reports_disconnection_while_empty_unbounded() {
     let (tx, mut rx) = mpsc::unbounded::<()>();
 
     assert_eq!(Err(TryRecvError::Empty), rx.try_recv());
@@ -257,7 +257,7 @@ fn try_send_recv_bounded() {
 }
 
 #[tokio::test]
-async fn try_send_after_disconnect_bounded() {
+async fn try_send_after_disconnection_bounded() {
     let (tx, rx) = mpsc::bounded(1);
 
     tx.try_send(1).unwrap();
@@ -267,7 +267,7 @@ async fn try_send_after_disconnect_bounded() {
 }
 
 #[tokio::test]
-async fn send_after_disconnect_bounded() {
+async fn send_after_disconnection_bounded() {
     let (tx, mut rx) = mpsc::bounded(1);
 
     tx.send(1).await.unwrap();

@@ -88,13 +88,12 @@ impl<T> fmt::Debug for UnboundedSender<T> {
 
 impl<T> Drop for UnboundedSender<T> {
     fn drop(&mut self) {
-        // Drop the sender; this disconnects the receiver if it is the last sender.
+        // Dropping the final underlying sender disconnects the channel.
         drop(self.sender.take());
 
         match self.state.senders.fetch_sub(1, Ordering::AcqRel) {
             1 => {
-                // If this is the last sender, we need to wake up the receiver so it can
-                // observe the disconnected state.
+                // Wake the receiver so it can observe the channel's disconnected state.
                 self.state.rx_waker.wake();
             }
             _ => {
@@ -186,12 +185,12 @@ impl<T> UnboundedReceiver<T> {
 
     /// Receives the next value for this receiver.
     ///
-    /// This method returns `Err(RecvError::Disconnected)` after every sender has disconnected and
-    /// no messages remain in the channel's buffer. At that point, this `Receiver` can never receive
-    /// another value.
+    /// This method returns `Err(RecvError::Disconnected)` after all sender handles have been
+    /// dropped and no buffered messages remain. At that point, this `Receiver` can never
+    /// receive another value.
     ///
     /// If the buffer is empty while a sender remains, this method sleeps until a message is sent or
-    /// every sender disconnects.
+    /// the final sender is dropped.
     ///
     /// # Cancel safety
     ///

@@ -28,7 +28,7 @@
 //! version observed. Because snapshots do not retain the channel's internal lock, they may be kept
 //! or moved independently while senders continue publishing newer values.
 //!
-//! If every sender disconnects after publishing a final unseen value, each receiver can still
+//! If all sender handles are dropped after publishing a final unseen value, each receiver can still
 //! observe that value once before [`RecvError::Disconnected`] is reported.
 //!
 //! # Examples
@@ -243,7 +243,7 @@ impl<T> Receiver<T> {
 
     /// Returns whether a version newer than the last observed version exists.
     ///
-    /// An unseen final version is reported before disconnection, even if every sender has already
+    /// An unseen final version is reported before disconnection, even if all sender handles have
     /// been dropped.
     pub fn has_changed(&self) -> Result<bool, RecvError> {
         let state = self.shared.state.lock();
@@ -268,7 +268,7 @@ impl<T> Receiver<T> {
         .await
     }
 
-    /// Returns whether every sender has been dropped.
+    /// Returns whether all sender handles have been dropped.
     ///
     /// This does not mark the current version observed, so it may return `true` while a final
     /// unseen value is still available through [`Receiver::changed`].
