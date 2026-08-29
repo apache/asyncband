@@ -19,7 +19,7 @@
 pub(crate) mod atomic_waker;
 
 #[cfg(feature = "once-map")]
-pub(crate) mod atomic_arc;
+pub(crate) mod atomic_snapshot;
 
 #[cfg(any(
     feature = "barrier",

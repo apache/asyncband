@@ -25,7 +25,8 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-use crate::internal::atomic_arc::AtomicArcOption;
+use crate::internal::atomic_snapshot::AtomicSnapshot;
+use crate::internal::atomic_snapshot::SnapshotReclaimer;
 use crate::internal::mutex::Mutex;
 use crate::once::OnceCell;
 
@@ -37,7 +38,12 @@ const TRIE_FANOUT: usize = 1 << TRIE_BITS;
 const TRIE_MASK: u64 = TRIE_FANOUT as u64 - 1;
 
 struct TrieTable<K, V> {
-    root: OnceLock<Box<TrieNode<K, V>>>,
+    root: OnceLock<Box<TrieRoot<K, V>>>,
+}
+
+struct TrieRoot<K, V> {
+    node: TrieNode<K, V>,
+    reclaimer: OnceLock<SnapshotReclaimer<TrieState<K, V>>>,
 }
 
 struct TrieNode<K, V> {
@@ -45,7 +51,7 @@ struct TrieNode<K, V> {
 }
 
 struct TrieSlot<K, V> {
-    state: AtomicArcOption<TrieState<K, V>>,
+    state: AtomicSnapshot<TrieState<K, V>>,
     mutation: Mutex<()>,
 }
 
@@ -61,14 +67,15 @@ struct Leaf<K, V> {
 
 enum SlotMutation<K, V> {
     Keep,
-    Replace(Option<Arc<TrieState<K, V>>>),
+    ReplacePromptly(Option<Arc<TrieState<K, V>>>),
+    ReplaceDeferred(Option<Arc<TrieState<K, V>>>),
 }
 
 impl<K, V> TrieTable<K, V> {
     fn with_capacity(capacity: usize) -> Self {
         let root = OnceLock::new();
         if capacity != 0 {
-            root.get_or_init(|| Box::new(TrieNode::empty()));
+            root.get_or_init(|| Box::new(TrieRoot::empty()));
         }
         Self { root }
     }
@@ -79,7 +86,7 @@ impl<K, V> TrieTable<K, V> {
         matches: impl Fn(&Entry<K, V>) -> bool,
         found: impl Fn(&Entry<K, V>) -> R,
     ) -> Option<R> {
-        self.root.get()?.read(hash, 0, &matches, &found)
+        self.root.get()?.node.read(hash, 0, &matches, &found)
     }
 
     fn mutate<R>(
@@ -87,8 +94,8 @@ impl<K, V> TrieTable<K, V> {
         hash: u64,
         update: impl FnOnce(Option<&Arc<TrieState<K, V>>>, u32) -> (SlotMutation<K, V>, R),
     ) -> R {
-        let root = self.root.get_or_init(|| Box::new(TrieNode::empty()));
-        root.mutate(hash, 0, update)
+        let root = self.root.get_or_init(|| Box::new(TrieRoot::empty()));
+        root.node.mutate(hash, 0, &root.reclaimer, update)
     }
 
     fn try_mutate<R>(
@@ -96,12 +103,22 @@ impl<K, V> TrieTable<K, V> {
         hash: u64,
         update: impl FnOnce(Option<&Arc<TrieState<K, V>>>, u32) -> (SlotMutation<K, V>, R),
     ) -> Option<R> {
-        Some(self.root.get()?.mutate(hash, 0, update))
+        let root = self.root.get()?;
+        Some(root.node.mutate(hash, 0, &root.reclaimer, update))
     }
 
     fn for_each(&self, mut visit: impl FnMut(&Arc<Entry<K, V>>)) {
         if let Some(root) = self.root.get() {
-            root.for_each(&mut visit);
+            root.node.for_each(&mut visit);
+        }
+    }
+}
+
+impl<K, V> TrieRoot<K, V> {
+    fn empty() -> Self {
+        Self {
+            node: TrieNode::empty(),
+            reclaimer: OnceLock::new(),
         }
     }
 }
@@ -110,7 +127,7 @@ impl<K, V> TrieNode<K, V> {
     fn empty() -> Self {
         Self {
             slots: std::array::from_fn(|_| TrieSlot {
-                state: AtomicArcOption::empty(),
+                state: AtomicSnapshot::empty(),
                 mutation: Mutex::new(()),
             }),
         }
@@ -127,7 +144,7 @@ impl<K, V> TrieNode<K, V> {
         matches: &impl Fn(&Entry<K, V>) -> bool,
         found: &impl Fn(&Entry<K, V>) -> R,
     ) -> Option<R> {
-        self.slot(hash, shift).state.with(|state| {
+        self.slot(hash, shift).state.read(|state| {
             let state = state?;
             match &*state {
                 TrieState::Leaf(leaf) if leaf.hash == hash => leaf
@@ -145,38 +162,58 @@ impl<K, V> TrieNode<K, V> {
         &self,
         hash: u64,
         shift: u32,
+        reclaimer: &OnceLock<SnapshotReclaimer<TrieState<K, V>>>,
         update: impl FnOnce(Option<&Arc<TrieState<K, V>>>, u32) -> (SlotMutation<K, V>, R),
     ) -> R {
         let slot = self.slot(hash, shift);
-        let state = slot.state.load();
+        let state = slot.state.load_owned();
         if let Some(TrieState::Branch(child)) = state.as_ref().map(Arc::as_ref) {
-            return child.mutate(hash, shift + TRIE_BITS, update);
+            return child.mutate(hash, shift + TRIE_BITS, reclaimer, update);
         }
         drop(state);
 
         let mutation = slot.mutation.lock();
-        let state = slot.state.load();
+        let state = slot.state.load_owned();
         if let Some(TrieState::Branch(child)) = state.as_deref() {
             drop(mutation);
-            return child.mutate(hash, shift + TRIE_BITS, update);
+            return child.mutate(hash, shift + TRIE_BITS, reclaimer, update);
         }
 
         let (update, result) = update(state.as_ref(), shift);
         let retired = match update {
             SlotMutation::Keep => None,
-            SlotMutation::Replace(replacement) => slot.state.swap(replacement),
+            SlotMutation::ReplacePromptly(replacement) => slot
+                .state
+                .replace(replacement)
+                .map(|snapshot| (snapshot, false)),
+            SlotMutation::ReplaceDeferred(replacement) => slot
+                .state
+                .replace(replacement)
+                .map(|snapshot| (snapshot, true)),
         };
 
         // A removed entry may own user data. Release old snapshots only after unlocking the slot.
         drop(mutation);
         drop(state);
-        drop(retired);
+        if let Some((retired, defer)) = retired {
+            if defer {
+                retired.defer(reclaimer.get_or_init(SnapshotReclaimer::new));
+            } else if let Some(reclaimer) = reclaimer.get() {
+                retired.defer(reclaimer);
+                // Older growth snapshots can also hold the removed entry. Prompt replacement must
+                // pay that retirement debt before returning so user key/value drops stay prompt.
+                reclaimer.reclaim_all();
+            } else {
+                // No older snapshot was deferred, so the replacement can reclaim directly.
+                drop(retired);
+            }
+        }
         result
     }
 
     fn for_each(&self, visit: &mut impl FnMut(&Arc<Entry<K, V>>)) {
         for slot in &self.slots {
-            let state = slot.state.load();
+            let state = slot.state.load_owned();
             match state.as_ref().map(Arc::as_ref) {
                 Some(TrieState::Leaf(leaf)) => {
                     for entry in &leaf.entries {
@@ -208,10 +245,10 @@ impl<K, V> TrieNode<K, V> {
         let new_index = ((new_leaf.hash >> shift) & TRIE_MASK) as usize;
         if old_index == new_index {
             let child = Self::split_leaves(old, new, shift + TRIE_BITS);
-            branch.slots[old_index].state.store(Some(child));
+            branch.slots[old_index].state.initialize(child);
         } else {
-            branch.slots[old_index].state.store(Some(old));
-            branch.slots[new_index].state.store(Some(new));
+            branch.slots[old_index].state.initialize(old);
+            branch.slots[new_index].state.initialize(new);
         }
 
         Arc::new(TrieState::Branch(Box::new(branch)))
@@ -359,7 +396,7 @@ where
             };
 
             (
-                SlotMutation::Replace(Some(replacement)),
+                SlotMutation::ReplaceDeferred(Some(replacement)),
                 Lookup::Pending(entry),
             )
         })
@@ -404,7 +441,7 @@ where
                 };
 
                 let (replacement, removed) = TrieState::remove_from_leaf(leaf, index);
-                (SlotMutation::Replace(replacement), Some(removed))
+                (SlotMutation::ReplacePromptly(replacement), Some(removed))
             })
             .flatten()
     }
@@ -427,7 +464,7 @@ where
             }
 
             let (replacement, _) = TrieState::remove_from_leaf(leaf, index);
-            (SlotMutation::Replace(replacement), ())
+            (SlotMutation::ReplacePromptly(replacement), ())
         });
         if updated.is_none() {
             entry.release_caller();
@@ -468,7 +505,12 @@ where
                     TrieState::Branch(_) => unreachable!("mutations stop at leaves"),
                 },
             };
-            (SlotMutation::Replace(Some(replacement)), replaced)
+            let mutation = if replaced.is_some() {
+                SlotMutation::ReplacePromptly(Some(replacement))
+            } else {
+                SlotMutation::ReplaceDeferred(Some(replacement))
+            };
+            (mutation, replaced)
         });
         drop(replaced);
     }

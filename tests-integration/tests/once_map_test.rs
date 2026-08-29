@@ -138,9 +138,8 @@ async fn get_remove_and_discard() {
     assert_eq!(map.get("key"), None);
 }
 
-#[test]
-fn discard_releases_the_removed_value() {
-    #[derive(Clone)]
+#[tokio::test]
+async fn discard_releases_a_value_held_by_growth_snapshots() {
     struct DropCounter(Arc<AtomicUsize>);
 
     impl Drop for DropCounter {
@@ -149,8 +148,24 @@ fn discard_releases_the_removed_value() {
         }
     }
 
+    #[derive(Default)]
+    struct ConstantHasher;
+
+    impl Hasher for ConstantHasher {
+        fn finish(&self) -> u64 {
+            0
+        }
+
+        fn write(&mut self, _bytes: &[u8]) {}
+    }
+
     let drops = Arc::new(AtomicUsize::new(0));
-    let map: OnceMap<_, _> = [(0, DropCounter(Arc::clone(&drops)))].into_iter().collect();
+    let first = Arc::new(DropCounter(Arc::clone(&drops)));
+    let second = Arc::new(DropCounter(Arc::clone(&drops)));
+    let map = OnceMap::with_hasher(BuildHasherDefault::<ConstantHasher>::default());
+    map.compute(0, async || Arc::clone(&first)).await;
+    map.compute(1, async || Arc::clone(&second)).await;
+    drop(first);
 
     map.discard(&0);
 

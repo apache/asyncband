@@ -107,7 +107,7 @@ fn reader_snapshot_does_not_keep_an_abandoned_entry_registered() {
         unreachable!()
     };
     let root = map.entries.root.get().unwrap();
-    let snapshot = root.slot(entry.hash, 0).state.load().unwrap();
+    let snapshot = root.node.slot(entry.hash, 0).state.load_owned().unwrap();
     assert!(matches!(snapshot.as_ref(), TrieState::Leaf(_)));
 
     map.cleanup_abandoned_entry(entry);
