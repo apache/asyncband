@@ -100,10 +100,8 @@ pub(crate) mod waitset;
 
 #[cfg(any(feature = "once-map", feature = "singleflight"))]
 pub fn default_shard_count() -> usize {
-    // Tested on a 32-core machine, the optimal shard count for `OnceMap` and `Singleflight` is 256.
-    // So I use 8 as the coefficient, which is 256 / 32.
-    // Need to test on other machines to see if this coefficient is optimal.
-    // Dashmap use 4.
+    // Contention benchmarks favor more shards than worker threads. Keep this policy internal so it
+    // can be retuned as more architectures and workloads are measured.
     (std::thread::available_parallelism().map_or(1, |parallelism| parallelism.get()) * 8)
         .next_power_of_two()
 }

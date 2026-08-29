@@ -68,18 +68,6 @@ where
 }
 
 impl<K, V, S> Group<K, V, S> {
-    fn with_config(hasher: S, shard_amount: usize) -> Self {
-        assert!(
-            shard_amount.is_power_of_two(),
-            "shard amount must be greater than zero and a power of two"
-        );
-
-        let shards = (0..shard_amount)
-            .map(|_| CachePadded::new(Mutex::new(HashTable::new())))
-            .collect();
-        Self { shards, hasher }
-    }
-
     fn lock_shard(&self, hash: u64) -> MutexGuard<'_, Entries<K, V>> {
         self.shards[(hash as usize) & (self.shards.len() - 1)].lock()
     }
@@ -235,16 +223,7 @@ where
 {
     /// Creates a new Group with the default hasher.
     pub fn new() -> Self {
-        Self::with_config(RandomState::new(), default_shard_count())
-    }
-
-    /// Creates a new Group with the default hasher and the specified shard amount.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `shard_amount` is zero or is not a power of two.
-    pub fn with_shard_amount(shard_amount: usize) -> Self {
-        Self::with_config(RandomState::new(), shard_amount)
+        Self::with_hasher(RandomState::new())
     }
 }
 
@@ -256,16 +235,11 @@ where
 {
     /// Creates a new Group with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
-        Self::with_config(hasher, default_shard_count())
-    }
-
-    /// Creates a new Group with the given hasher and the specified shard amount.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `shard_amount` is zero or is not a power of two.
-    pub fn with_hasher_and_shard_amount(hasher: S, shard_amount: usize) -> Self {
-        Self::with_config(hasher, shard_amount)
+        let shard_count = default_shard_count();
+        let shards = (0..shard_count)
+            .map(|_| CachePadded::new(Mutex::new(HashTable::new())))
+            .collect();
+        Self { shards, hasher }
     }
 
     /// Executes and returns the results of the given function, making sure that only one execution

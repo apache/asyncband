@@ -24,11 +24,14 @@ use crate::test_support::poll_once;
 // These tests stay next to the implementation because they inspect private state.
 
 #[test]
-fn ready_index_bucket_count_is_bounded_by_shards() {
-    let shard_amount = 8;
-    let index = ReadyIndex::<usize, usize>::new(1_000_000, shard_amount);
+fn large_capacity_does_not_scale_ready_locks() {
+    let shard_count = 8;
+    let index = ReadyIndex::<usize, usize>::new(1_000_000, shard_count);
 
-    assert_eq!(index.buckets.len(), shard_amount * 4);
+    assert_eq!(
+        index.buckets.len(),
+        shard_count * super::MAX_READY_BUCKETS_PER_SHARD
+    );
 }
 
 #[tokio::test]

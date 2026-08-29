@@ -38,9 +38,6 @@ use crate::once::OnceCell;
 mod tests;
 
 const TARGET_ENTRIES_PER_BUCKET: usize = 2;
-// Capacity may increase read parallelism, but it must not turn a reservation into an unbounded
-// number of eagerly allocated locks. Four preserves the benchmarked 1,024-entry layout on hosts
-// whose default rounds to 128 shards.
 const MAX_READY_BUCKETS_PER_SHARD: usize = 4;
 
 type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
@@ -66,13 +63,15 @@ struct ReadyIndex<K, V> {
 }
 
 impl<K, V> ReadyIndex<K, V> {
-    fn new(capacity: usize, shard_amount: usize) -> Self {
+    fn new(capacity: usize, shard_count: usize) -> Self {
+        // Capacity is only a hint for read parallelism here. Bound the bucket count so a large
+        // reservation does not eagerly allocate a proportional number of padded locks.
         let target_bucket_count = capacity.div_ceil(TARGET_ENTRIES_PER_BUCKET);
-        let max_bucket_count = shard_amount
+        let max_bucket_count = shard_count
             .checked_mul(MAX_READY_BUCKETS_PER_SHARD)
-            .unwrap_or(shard_amount);
+            .unwrap_or(shard_count);
         let bucket_count = target_bucket_count
-            .clamp(shard_amount, max_bucket_count)
+            .clamp(shard_count, max_bucket_count)
             .next_power_of_two();
 
         Self {
@@ -164,28 +163,6 @@ where
 }
 
 impl<K, V, S> OnceMap<K, V, S> {
-    fn with_config(capacity: usize, hasher: S, shard_amount: usize) -> Self {
-        assert!(
-            shard_amount.is_power_of_two(),
-            "shard amount must be greater than zero and a power of two"
-        );
-
-        let shard_capacity = capacity / shard_amount;
-        let extra_capacity = capacity % shard_amount;
-        let shards = (0..shard_amount)
-            .map(|shard_index| {
-                let capacity = shard_capacity + usize::from(shard_index < extra_capacity);
-                CachePadded::new(Mutex::new(HashTable::with_capacity(capacity)))
-            })
-            .collect();
-
-        Self {
-            shards,
-            ready: ReadyIndex::new(capacity, shard_amount),
-            hasher,
-        }
-    }
-
     fn lock_shard(&self, hash: u64) -> MutexGuard<'_, Entries<K, V>> {
         self.shards[(hash as usize) & (self.shards.len() - 1)].lock()
     }
@@ -362,7 +339,7 @@ where
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let iter = iter.into_iter();
-        let map = Self::with_config(iter.size_hint().0, S::default(), default_shard_count());
+        let map = Self::with_capacity_and_hasher(iter.size_hint().0, S::default());
         for (key, value) in iter {
             map.insert(key, value);
         }
@@ -434,31 +411,12 @@ where
 {
     /// Creates a new OnceMap with the default hasher.
     pub fn new() -> Self {
-        Self::with_config(0, RandomState::new(), default_shard_count())
+        Self::with_capacity(0)
     }
 
     /// Creates a new OnceMap with the default hasher and the specified capacity.
     pub fn with_capacity(capacity: usize) -> Self {
-        Self::with_config(capacity, RandomState::new(), default_shard_count())
-    }
-
-    /// Creates a new OnceMap with the default hasher and the specified shard amount.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `shard_amount` is zero or is not a power of two.
-    pub fn with_shard_amount(shard_amount: usize) -> Self {
-        Self::with_config(0, RandomState::new(), shard_amount)
-    }
-
-    /// Creates a new OnceMap with the default hasher, the specified capacity, and the specified
-    /// shard amount.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `shard_amount` is zero or is not a power of two.
-    pub fn with_capacity_and_shard_amount(capacity: usize, shard_amount: usize) -> Self {
-        Self::with_config(capacity, RandomState::new(), shard_amount)
+        Self::with_capacity_and_hasher(capacity, RandomState::new())
     }
 }
 
@@ -470,34 +428,26 @@ where
 {
     /// Creates a new OnceMap with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
-        Self::with_config(0, hasher, default_shard_count())
+        Self::with_capacity_and_hasher(0, hasher)
     }
 
-    /// Create a OnceMap with the specified capacity and hasher.
+    /// Creates a new OnceMap with the specified capacity and hasher.
     pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
-        Self::with_config(capacity, hasher, default_shard_count())
-    }
+        let shard_count = default_shard_count();
+        let shard_capacity = capacity / shard_count;
+        let extra_capacity = capacity % shard_count;
+        let shards = (0..shard_count)
+            .map(|shard_index| {
+                let capacity = shard_capacity + usize::from(shard_index < extra_capacity);
+                CachePadded::new(Mutex::new(HashTable::with_capacity(capacity)))
+            })
+            .collect();
 
-    /// Creates a new OnceMap with the given hasher and the specified shard amount.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `shard_amount` is zero or is not a power of two.
-    pub fn with_hasher_and_shard_amount(hasher: S, shard_amount: usize) -> Self {
-        Self::with_config(0, hasher, shard_amount)
-    }
-
-    /// Creates a new OnceMap with the specified capacity, hasher, and shard amount.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `shard_amount` is zero or is not a power of two.
-    pub fn with_capacity_and_hasher_and_shard_amount(
-        capacity: usize,
-        hasher: S,
-        shard_amount: usize,
-    ) -> Self {
-        Self::with_config(capacity, hasher, shard_amount)
+        Self {
+            shards,
+            ready: ReadyIndex::new(capacity, shard_count),
+            hasher,
+        }
     }
 
     /// Compute the value for the given key if absent.

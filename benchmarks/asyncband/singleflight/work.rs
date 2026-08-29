@@ -36,11 +36,18 @@ const WAITER_COUNTS: &[usize] = &[1, 8, 32];
 const THREAD_COUNTS: &[usize] = &[1, 2, 8, 32];
 const DISJOINT_KEY_SPAN: usize = 1 << 16;
 
+type BenchGroup = Group<usize, usize, BuildHasherDefault<DefaultHasher>>;
+
+#[divan::bench]
+fn construct_default(bencher: Bencher) {
+    bencher.bench_local(BenchGroup::default);
+}
+
 #[divan::bench]
 fn work_ready(bencher: Bencher) {
     let mut context = bench_context();
     bencher
-        .with_inputs(Group::<usize, usize>::new)
+        .with_inputs(BenchGroup::default)
         .bench_local_values(|group| {
             let result = black_box(poll_ready(
                 group.work(black_box(0), || async { black_box(1) }),
@@ -54,7 +61,7 @@ fn work_ready(bencher: Bencher) {
 fn try_work_error(bencher: Bencher) {
     let mut context = bench_context();
     bencher
-        .with_inputs(Group::<usize, usize>::new)
+        .with_inputs(BenchGroup::default)
         .bench_local_values(|group| {
             let result = black_box(poll_ready(
                 group.try_work(black_box(0), || async { Err::<usize, ()>(()) }),
@@ -67,35 +74,38 @@ fn try_work_error(bencher: Bencher) {
 #[divan::bench(args = WAITER_COUNTS)]
 fn coalesced_work_batch(bencher: Bencher, waiter_count: usize) {
     let mut context = bench_context();
-    let group = Group::<usize, usize>::new();
 
-    bencher.bench_local(|| {
-        let gate = Cell::new(false);
-        let mut leader = Box::pin(group.work(0, || async {
-            wait_until_open(&gate).await;
-            black_box(1usize)
-        }));
-        poll_pending(leader.as_mut(), &mut context);
+    bencher
+        .with_inputs(BenchGroup::default)
+        .bench_local_values(|group| {
+            let gate = Cell::new(false);
+            let mut leader = Box::pin(group.work(0, || async {
+                wait_until_open(&gate).await;
+                black_box(1usize)
+            }));
+            poll_pending(leader.as_mut(), &mut context);
 
-        let mut waiters = (0..waiter_count)
-            .map(|_| Box::pin(group.work(0, || async { unreachable!() })))
-            .collect::<Vec<_>>();
-        for waiter in &mut waiters {
-            poll_pending(waiter.as_mut(), &mut context);
-        }
+            let mut waiters = (0..waiter_count)
+                .map(|_| Box::pin(group.work(0, || async { unreachable!() })))
+                .collect::<Vec<_>>();
+            for waiter in &mut waiters {
+                poll_pending(waiter.as_mut(), &mut context);
+            }
 
-        gate.set(true);
-        black_box(poll_pinned_ready(leader.as_mut(), &mut context));
-        drop(leader);
-        for mut waiter in waiters {
-            black_box(poll_pinned_ready(waiter.as_mut(), &mut context));
-        }
-    });
+            gate.set(true);
+            black_box(poll_pinned_ready(leader.as_mut(), &mut context));
+            drop(leader);
+            for mut waiter in waiters {
+                black_box(poll_pinned_ready(waiter.as_mut(), &mut context));
+            }
+
+            defer_input_drop(group, ())
+        });
 }
 
 #[divan::bench(threads = THREAD_COUNTS)]
 fn contended_work_disjoint_churn(bencher: Bencher) {
-    let group = Group::<usize, usize, BuildHasherDefault<DefaultHasher>>::default();
+    let group = BenchGroup::default();
 
     bencher.bench(|| {
         let mut context = bench_context();

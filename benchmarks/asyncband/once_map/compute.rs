@@ -43,6 +43,11 @@ enum MixedInput {
     Miss(usize),
 }
 
+#[divan::bench]
+fn construct_default(bencher: Bencher) {
+    bencher.bench_local(BenchMap::default);
+}
+
 fn miss_key(cached_entries: usize, slot: usize, ticket: usize) -> usize {
     // Workers start at different phases but traverse the same keyspace.
     let thread_offset =
@@ -100,52 +105,58 @@ fn try_compute_error(bencher: Bencher, cached_entries: usize) {
 fn coalesced_compute_batch(bencher: Bencher, computation_count: usize) {
     let mut context = bench_context();
 
-    bencher.bench_local(|| {
-        let map = BenchMap::default();
-        let gate = Cell::new(false);
-        let mut computations = (0..computation_count)
-            .map(|_| {
-                Box::pin(map.compute(0, || async {
-                    wait_until_open(&gate).await;
-                    black_box(1usize)
-                }))
-            })
-            .collect::<Vec<_>>();
-        for computation in &mut computations {
-            poll_pending(computation.as_mut(), &mut context);
-        }
+    bencher
+        .with_inputs(BenchMap::default)
+        .bench_local_values(|map| {
+            let gate = Cell::new(false);
+            let mut computations = (0..computation_count)
+                .map(|_| {
+                    Box::pin(map.compute(0, || async {
+                        wait_until_open(&gate).await;
+                        black_box(1usize)
+                    }))
+                })
+                .collect::<Vec<_>>();
+            for computation in &mut computations {
+                poll_pending(computation.as_mut(), &mut context);
+            }
 
-        gate.set(true);
-        for mut computation in computations {
-            black_box(poll_pinned_ready(computation.as_mut(), &mut context));
-        }
-    });
+            gate.set(true);
+            for mut computation in computations {
+                black_box(poll_pinned_ready(computation.as_mut(), &mut context));
+            }
+
+            defer_input_drop(map, ())
+        });
 }
 
 #[divan::bench(args = COMPUTATION_COUNTS)]
 fn independent_compute_batch(bencher: Bencher, computation_count: usize) {
     let mut context = bench_context();
 
-    bencher.bench_local(|| {
-        let map = BenchMap::default();
-        let gate = Cell::new(false);
-        let mut computations = (0..computation_count)
-            .map(|key| {
-                Box::pin(map.compute(key, || async {
-                    wait_until_open(&gate).await;
-                    black_box(1usize)
-                }))
-            })
-            .collect::<Vec<_>>();
-        for computation in &mut computations {
-            poll_pending(computation.as_mut(), &mut context);
-        }
+    bencher
+        .with_inputs(BenchMap::default)
+        .bench_local_values(|map| {
+            let gate = Cell::new(false);
+            let mut computations = (0..computation_count)
+                .map(|key| {
+                    Box::pin(map.compute(key, || async {
+                        wait_until_open(&gate).await;
+                        black_box(1usize)
+                    }))
+                })
+                .collect::<Vec<_>>();
+            for computation in &mut computations {
+                poll_pending(computation.as_mut(), &mut context);
+            }
 
-        gate.set(true);
-        for mut computation in computations {
-            black_box(poll_pinned_ready(computation.as_mut(), &mut context));
-        }
-    });
+            gate.set(true);
+            for mut computation in computations {
+                black_box(poll_pinned_ready(computation.as_mut(), &mut context));
+            }
+
+            defer_input_drop(map, ())
+        });
 }
 
 #[divan::bench(threads = THREAD_COUNTS)]
