@@ -61,6 +61,7 @@
 //! |                       | [`LazyCell`](once::LazyCell)        | `lazy-cell`    | Lazily initialize a value with a stored asynchronous function.                                         |
 //! |                       | [`OnceMap`](once::OnceMap)          | `once-map`     | Initialize and store one value per key.                                                                |
 //! | Task coordination     | [`Barrier`](barrier::Barrier)       | `barrier`      | Wait until all participants reach a synchronization point.                                             |
+//! |                       | [`Completion`](completion::Completion) | `completion` | Publish one shared result to any number of current and future observers.                                |
 //! |                       | [`Latch`](latch::Latch)             | `latch`        | Wait until a one-way countdown completes.                                                              |
 //! |                       | [`WaitGroup`](waitgroup::WaitGroup) | `waitgroup`    | Wait for a dynamic group of tasks to finish.                                                           |
 //! |                       | [`Shutdown`](shutdown::Shutdown)    | `shutdown`     | Coordinate shutdown signals and completion.                                                            |
@@ -120,6 +121,8 @@ pub mod barrier;
 pub mod blocking;
 #[cfg(feature = "broadcast")]
 pub mod broadcast;
+#[cfg(feature = "completion")]
+pub mod completion;
 #[cfg(feature = "condvar")]
 pub mod condvar;
 #[cfg(feature = "latch")]
