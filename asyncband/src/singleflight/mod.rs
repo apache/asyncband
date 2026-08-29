@@ -23,20 +23,16 @@ use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::RandomState;
 use std::sync::Arc;
-use std::sync::MutexGuard;
 
 use hashbrown::HashTable;
 
-use crate::internal::cache_padded::CachePadded;
 use crate::internal::mutex::Mutex;
-use crate::internal::singleflight_shard_count;
 use crate::once::OnceCell;
 
 #[cfg(test)]
 mod tests;
 
 type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
-type Shard<K, V> = CachePadded<Mutex<Entries<K, V>>>;
 
 struct Entry<K, V> {
     hash: u64,
@@ -47,7 +43,9 @@ struct Entry<K, V> {
 /// Group represents a class of work and forms a namespace in which
 /// units of work can be executed with duplicate suppression.
 pub struct Group<K, V, S = RandomState> {
-    shards: Box<[Shard<K, V>]>,
+    // This lock protects only entry lookup, insertion, and removal. User work is always run after
+    // releasing it.
+    entries: Mutex<Entries<K, V>>,
     hasher: S,
 }
 
@@ -59,27 +57,21 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Write::write_str(f, "Group ")?;
         let mut debug_map = f.debug_map();
-        for shard in &self.shards {
-            let entries = shard.lock();
-            debug_map.entries(entries.iter().map(|entry| (&entry.key, &entry.cell)));
-        }
+        let entries = self.entries.lock();
+        debug_map.entries(entries.iter().map(|entry| (&entry.key, &entry.cell)));
         debug_map.finish()
     }
 }
 
 impl<K, V, S> Group<K, V, S> {
-    fn lock_shard(&self, hash: u64) -> MutexGuard<'_, Entries<K, V>> {
-        self.shards[(hash as usize) & (self.shards.len() - 1)].lock()
-    }
-
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.shards.iter().map(|shard| shard.lock().len()).sum()
+        self.entries.lock().len()
     }
 
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        self.shards.iter().all(|shard| shard.lock().is_empty())
+        self.entries.lock().is_empty()
     }
 }
 
@@ -90,8 +82,8 @@ where
 {
     fn get_or_insert(&self, key: K) -> Arc<Entry<K, V>> {
         let hash = self.hasher.hash_one(&key);
-        let mut shard = self.lock_shard(hash);
-        shard
+        let mut entries = self.entries.lock();
+        entries
             .entry(hash, |entry| entry.key.eq(&key), |entry| entry.hash)
             .or_insert_with(|| {
                 Arc::new(Entry {
@@ -111,8 +103,8 @@ where
     {
         let hash = self.hasher.hash_one(key);
         let removed = {
-            let mut shard = self.lock_shard(hash);
-            let Ok(occupied) = shard.find_entry(hash, |entry| entry.key.borrow() == key) else {
+            let mut entries = self.entries.lock();
+            let Ok(occupied) = entries.find_entry(hash, |entry| entry.key.borrow() == key) else {
                 return;
             };
             occupied.remove().0
@@ -122,8 +114,8 @@ where
 
     fn remove_if_current(&self, entry: &Arc<Entry<K, V>>) {
         let removed = {
-            let mut shard = self.lock_shard(entry.hash);
-            let Ok(occupied) = shard.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, entry))
+            let mut entries = self.entries.lock();
+            let Ok(occupied) = entries.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, entry))
             else {
                 return;
             };
@@ -133,21 +125,21 @@ where
     }
 
     fn cleanup_abandoned_entry(&self, entry: Arc<Entry<K, V>>) {
-        let mut shard = self.lock_shard(entry.hash);
-        let Ok(occupied) = shard.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, &entry))
+        let mut entries = self.entries.lock();
+        let Ok(occupied) = entries.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, &entry))
         else {
             // `forget` detached the entry. It may be the final owner, so release it after
-            // unlocking rather than running user destructors under the shard lock.
-            drop(shard);
+            // unlocking rather than running user destructors under the table lock.
+            drop(entries);
             drop(entry);
             return;
         };
 
-        // With group ownership confirmed and the shard locked against new callers, two owners
+        // With group ownership confirmed and the table locked against new callers, two owners
         // means the group and this cleanup guard are the only remaining references.
         if Arc::strong_count(&entry) == 2 && !entry.cell.initialized() {
             let (stored, _) = occupied.remove();
-            drop(shard);
+            drop(entries);
             drop(entry);
             drop(stored);
         } else {
@@ -235,11 +227,10 @@ where
 {
     /// Creates a new Group with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
-        let shard_count = singleflight_shard_count();
-        let shards = (0..shard_count)
-            .map(|_| CachePadded::new(Mutex::new(HashTable::new())))
-            .collect();
-        Self { shards, hasher }
+        Self {
+            entries: Mutex::new(HashTable::new()),
+            hasher,
+        }
     }
 
     /// Executes and returns the results of the given function, making sure that only one execution

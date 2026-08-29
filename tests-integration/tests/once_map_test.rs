@@ -86,6 +86,28 @@ async fn concurrent_compute_runs_once() {
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_growth_keeps_every_entry() {
+    let map = Arc::new(OnceMap::new());
+    let mut workers = Vec::new();
+    for worker in 0..8 {
+        let map = Arc::clone(&map);
+        workers.push(tokio::spawn(async move {
+            for offset in 0..128 {
+                let key = worker * 128 + offset;
+                assert_eq!(map.compute(key, async move || key * 2).await, key * 2);
+            }
+        }));
+    }
+
+    for worker in workers {
+        worker.await.unwrap();
+    }
+    for key in 0..1024 {
+        assert_eq!(map.get(&key), Some(key * 2));
+    }
+}
+
 #[tokio::test]
 async fn failed_try_compute_can_be_retried_and_then_cached() {
     let map = OnceMap::new();
@@ -199,6 +221,23 @@ fn from_iter_keeps_last_value_for_duplicate_key() {
     assert_eq!(map.get(&Key("c")), None);
 }
 
+#[test]
+fn entries_remain_accessible_as_the_map_grows() {
+    let map: OnceMap<usize, usize> = (0..1024).map(|key| (key, key * 2)).collect();
+
+    for key in 0..1024 {
+        assert_eq!(map.get(&key), Some(key * 2));
+    }
+
+    for key in (0..1024).step_by(3) {
+        assert_eq!(map.remove(&key), Some(key * 2));
+    }
+    for key in 0..1024 {
+        let expected = (key % 3 != 0).then_some(key * 2);
+        assert_eq!(map.get(&key), expected);
+    }
+}
+
 #[tokio::test]
 async fn supports_non_clone_keys_and_owned_values() {
     #[derive(Hash, PartialEq, Eq, Debug)]
@@ -225,12 +264,48 @@ async fn entries_with_colliding_hashes_remain_independent() {
     }
 
     let map = OnceMap::with_hasher(BuildHasherDefault::<ConstantHasher>::default());
-    assert_eq!(map.compute("first", async || 1).await, 1);
-    assert_eq!(map.compute("second", async || 2).await, 2);
-    assert_eq!(map.get("first"), Some(1));
-    assert_eq!(map.get("second"), Some(2));
+    for key in 0..32 {
+        assert_eq!(map.compute(key, async move || key * 2).await, key * 2);
+    }
+    for key in 0..32 {
+        assert_eq!(map.get(&key), Some(key * 2));
+    }
 
-    map.discard("first");
-    assert_eq!(map.get("first"), None);
-    assert_eq!(map.get("second"), Some(2));
+    for key in (0..32).step_by(2) {
+        map.discard(&key);
+    }
+    for key in 0..32 {
+        let expected = (key % 2 != 0).then_some(key * 2);
+        assert_eq!(map.get(&key), expected);
+    }
+}
+
+#[tokio::test]
+async fn entries_with_a_long_common_hash_prefix_remain_accessible() {
+    #[derive(Default)]
+    struct UpperBitsHasher(u64);
+
+    impl Hasher for UpperBitsHasher {
+        fn finish(&self) -> u64 {
+            self.0 << 32
+        }
+
+        fn write(&mut self, bytes: &[u8]) {
+            self.0 = bytes
+                .iter()
+                .fold(0, |hash, byte| hash.rotate_left(8) ^ u64::from(*byte));
+        }
+
+        fn write_usize(&mut self, value: usize) {
+            self.0 = value as u64;
+        }
+    }
+
+    let map = OnceMap::with_hasher(BuildHasherDefault::<UpperBitsHasher>::default());
+    for key in 0..32 {
+        assert_eq!(map.compute(key, async move || key).await, key);
+    }
+    for key in 0..32 {
+        assert_eq!(map.get(&key), Some(key));
+    }
 }

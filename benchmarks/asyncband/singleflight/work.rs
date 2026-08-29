@@ -27,19 +27,15 @@ use crate::support::bench_context;
 use crate::support::poll_pending;
 use crate::support::poll_pinned_ready;
 use crate::support::poll_ready;
-use crate::support::spin_poll_ready;
-use crate::support::thread_slot_ticket;
 use crate::support::wait_until_open;
 
 const WAITER_COUNTS: &[usize] = &[1, 8, 32];
-const THREAD_COUNTS: &[usize] = &[1, 2, 8, 32];
-const DISJOINT_KEY_SPAN: usize = 1 << 16;
 
 type BenchGroup = Group<usize, usize, BuildHasherDefault<DefaultHasher>>;
 
 #[divan::bench]
 fn construct_default(bencher: Bencher) {
-    bencher.bench_local(BenchGroup::default);
+    bencher.bench_local(|| black_box(BenchGroup::default()));
 }
 
 #[divan::bench]
@@ -92,20 +88,5 @@ fn coalesced_work_batch(bencher: Bencher, waiter_count: usize) {
         for mut waiter in waiters {
             black_box(poll_pinned_ready(waiter.as_mut(), &mut context));
         }
-    });
-}
-
-#[divan::bench(threads = THREAD_COUNTS)]
-fn contended_work_disjoint_churn(bencher: Bencher) {
-    let group = BenchGroup::default();
-
-    bencher.bench(|| {
-        let mut context = bench_context();
-        let (slot, ticket) = thread_slot_ticket();
-        let key = slot * DISJOINT_KEY_SPAN + ticket % DISJOINT_KEY_SPAN;
-        black_box(spin_poll_ready(
-            group.work(black_box(key), || async move { key }),
-            &mut context,
-        ))
     });
 }

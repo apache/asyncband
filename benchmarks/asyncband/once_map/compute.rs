@@ -36,23 +36,10 @@ use crate::support::wait_until_open;
 
 const CACHED_ENTRY_COUNTS: &[usize] = &[0, 64, 1024];
 const COMPUTATION_COUNTS: &[usize] = &[2, 9, 33];
-const MISS_KEYSPACE_SIZE: usize = 1 << 16;
-
-enum MixedInput {
-    Hit(usize),
-    Miss(usize),
-}
 
 #[divan::bench]
 fn construct_default(bencher: Bencher) {
-    bencher.bench_local(BenchMap::default);
-}
-
-fn miss_key(cached_entries: usize, slot: usize, ticket: usize) -> usize {
-    // Workers start at different phases but traverse the same keyspace.
-    let thread_offset =
-        slot % CONTENDED_THREAD_SLOTS * (MISS_KEYSPACE_SIZE / CONTENDED_THREAD_SLOTS);
-    cached_entries + (thread_offset + ticket) % MISS_KEYSPACE_SIZE
+    bencher.bench_local(|| black_box(BenchMap::default()));
 }
 
 #[divan::bench]
@@ -179,57 +166,5 @@ fn contended_compute_hit_disjoint(bencher: Bencher, cached_entries: usize) {
                 map.compute(black_box(key), || async { unreachable!() }),
                 &mut context,
             ))
-        });
-}
-
-#[divan::bench(threads = THREAD_COUNTS, args = CONTENDED_ENTRY_COUNTS)]
-fn contended_compute_miss_churn(bencher: Bencher, cached_entries: usize) {
-    let map = cached_map(cached_entries);
-
-    bencher
-        .with_inputs(|| {
-            let (slot, ticket) = thread_slot_ticket();
-            miss_key(cached_entries, slot, ticket)
-        })
-        .bench_values(|key| {
-            let mut context = bench_context();
-            let value = spin_poll_ready(
-                map.compute(black_box(key), || async move { key }),
-                &mut context,
-            );
-            map.discard(&key);
-            black_box(value)
-        });
-}
-
-#[divan::bench(threads = THREAD_COUNTS, args = CONTENDED_ENTRY_COUNTS)]
-fn contended_compute_mixed(bencher: Bencher, cached_entries: usize) {
-    let map = cached_map(cached_entries);
-
-    bencher
-        .with_inputs(|| {
-            let (slot, ticket) = thread_slot_ticket();
-            if (slot + ticket) % 2 == 0 {
-                MixedInput::Hit((slot + ticket / 2 * CONTENDED_THREAD_SLOTS) % cached_entries)
-            } else {
-                MixedInput::Miss(miss_key(cached_entries, slot, ticket / 2))
-            }
-        })
-        .bench_values(|input| {
-            let mut context = bench_context();
-            match input {
-                MixedInput::Hit(key) => black_box(spin_poll_ready(
-                    map.compute(black_box(key), || async { unreachable!() }),
-                    &mut context,
-                )),
-                MixedInput::Miss(key) => {
-                    let value = spin_poll_ready(
-                        map.compute(black_box(key), || async move { key }),
-                        &mut context,
-                    );
-                    map.discard(&key);
-                    black_box(value)
-                }
-            }
         });
 }

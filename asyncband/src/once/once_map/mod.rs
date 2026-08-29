@@ -20,21 +20,194 @@ use std::fmt;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::RandomState;
+use std::mem;
 use std::sync::Arc;
 use std::sync::MutexGuard;
+use std::sync::OnceLock;
 
 use hashbrown::HashTable;
 
-use crate::internal::cache_padded::CachePadded;
 use crate::internal::mutex::Mutex;
-use crate::internal::once_map_shard_count;
 use crate::once::OnceCell;
 
 #[cfg(test)]
 mod tests;
 
 type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
-type Shard<K, V> = CachePadded<Mutex<Entries<K, V>>>;
+
+const TRIE_BITS: u32 = 4;
+const TRIE_FANOUT: usize = 1 << TRIE_BITS;
+const TRIE_MASK: u64 = TRIE_FANOUT as u64 - 1;
+// A full leaf can populate the next node under a well-distributed hash without allocating trie
+// nodes for very small maps.
+const MAX_LEAF_ENTRIES: usize = TRIE_FANOUT;
+
+struct TrieTable<K, V> {
+    root: OnceLock<Box<TrieNode<K, V>>>,
+}
+
+struct TrieNode<K, V> {
+    slots: [TrieSlot<K, V>; TRIE_FANOUT],
+}
+
+struct TrieSlot<K, V> {
+    child: OnceLock<Box<TrieNode<K, V>>>,
+    entries: Mutex<Entries<K, V>>,
+}
+
+struct LockedLeaf<'a, K, V> {
+    slot: &'a TrieSlot<K, V>,
+    shift: u32,
+    entries: MutexGuard<'a, Entries<K, V>>,
+}
+
+impl<K, V> TrieTable<K, V> {
+    fn with_capacity(capacity: usize) -> Self {
+        let root = OnceLock::new();
+        if capacity != 0 {
+            root.get_or_init(|| Box::new(TrieNode::with_capacity(capacity, 0)));
+        }
+        Self { root }
+    }
+
+    fn lock_leaf(&self, hash: u64) -> LockedLeaf<'_, K, V> {
+        let root = self.root.get_or_init(|| Box::new(TrieNode::empty()));
+        Self::lock_leaf_from(root, hash)
+    }
+
+    fn try_lock_leaf(&self, hash: u64) -> Option<LockedLeaf<'_, K, V>> {
+        self.root.get().map(|root| Self::lock_leaf_from(root, hash))
+    }
+
+    fn lock_leaf_from(mut node: &TrieNode<K, V>, hash: u64) -> LockedLeaf<'_, K, V> {
+        let mut shift = 0;
+        loop {
+            let slot = node.slot(hash, shift);
+            if let Some(child) = slot.child.get() {
+                node = child;
+                shift += TRIE_BITS;
+                continue;
+            }
+
+            let entries = slot.entries.lock();
+            if let Some(child) = slot.child.get() {
+                drop(entries);
+                node = child;
+                shift += TRIE_BITS;
+                continue;
+            }
+
+            return LockedLeaf {
+                slot,
+                shift,
+                entries,
+            };
+        }
+    }
+
+    fn split_if_needed(&self, leaf: LockedLeaf<'_, K, V>) {
+        TrieNode::split_leaf(leaf.slot, leaf.shift, leaf.entries);
+    }
+
+    fn for_each(&self, mut visit: impl FnMut(&Arc<Entry<K, V>>)) {
+        if let Some(root) = self.root.get() {
+            root.for_each(&mut visit);
+        }
+    }
+}
+
+impl<K, V> TrieNode<K, V> {
+    fn empty() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| TrieSlot {
+                child: OnceLock::new(),
+                entries: Mutex::new(HashTable::new()),
+            }),
+        }
+    }
+
+    fn with_capacity(capacity: usize, shift: u32) -> Self {
+        let slot_capacity = capacity / TRIE_FANOUT;
+        let extra_capacity = capacity % TRIE_FANOUT;
+        Self {
+            slots: std::array::from_fn(|index| {
+                let capacity = slot_capacity + usize::from(index < extra_capacity);
+                let child = OnceLock::new();
+                let entries = if capacity > MAX_LEAF_ENTRIES && shift + TRIE_BITS < u64::BITS {
+                    child
+                        .get_or_init(|| Box::new(Self::with_capacity(capacity, shift + TRIE_BITS)));
+                    HashTable::new()
+                } else {
+                    HashTable::with_capacity(capacity)
+                };
+                TrieSlot {
+                    child,
+                    entries: Mutex::new(entries),
+                }
+            }),
+        }
+    }
+
+    fn slot(&self, hash: u64, shift: u32) -> &TrieSlot<K, V> {
+        &self.slots[((hash >> shift) & TRIE_MASK) as usize]
+    }
+
+    fn split_leaf(slot: &TrieSlot<K, V>, shift: u32, mut entries: MutexGuard<'_, Entries<K, V>>) {
+        if entries.len() <= MAX_LEAF_ENTRIES || shift + TRIE_BITS >= u64::BITS {
+            return;
+        }
+
+        let Some(first) = entries.iter().next() else {
+            return;
+        };
+        if entries.iter().all(|entry| entry.hash == first.hash) {
+            return;
+        }
+
+        let child_shift = shift + TRIE_BITS;
+        let child = Box::new(Self::empty());
+        for entry in mem::take(&mut *entries) {
+            let child_slot = child.slot(entry.hash, child_shift);
+            child_slot
+                .entries
+                .lock()
+                .insert_unique(entry.hash, entry, |entry| entry.hash);
+        }
+        child.split_overfull_leaves(child_shift);
+
+        // The leaf lock serializes publication. Readers that observed no child recheck after
+        // acquiring that lock, so they cannot consult the now-empty leaf after this succeeds.
+        assert!(
+            slot.child.set(child).is_ok(),
+            "the leaf lock must serialize trie splits"
+        );
+    }
+
+    fn split_overfull_leaves(&self, shift: u32) {
+        for slot in &self.slots {
+            Self::split_leaf(slot, shift, slot.entries.lock());
+        }
+    }
+
+    fn for_each(&self, visit: &mut impl FnMut(&Arc<Entry<K, V>>)) {
+        for slot in &self.slots {
+            if let Some(child) = slot.child.get() {
+                child.for_each(visit);
+                continue;
+            }
+
+            let entries = slot.entries.lock();
+            if let Some(child) = slot.child.get() {
+                drop(entries);
+                child.for_each(visit);
+                continue;
+            }
+            for entry in entries.iter() {
+                visit(entry);
+            }
+        }
+    }
+}
 
 struct Entry<K, V> {
     hash: u64,
@@ -52,8 +225,8 @@ enum Lookup<K, V> {
 /// Note that this always clones the value out of the underlying map. Because of this, it's common
 /// to wrap the `V` in an `Arc<V>` to make cloning cheap.
 pub struct OnceMap<K, V, S = RandomState> {
-    // Sharding provides cross-key concurrency without RwLock reader-state contention on hot keys.
-    shards: Box<[Shard<K, V>]>,
+    // The trie allocates its root on first insertion and splits only occupied hash prefixes.
+    entries: TrieTable<K, V>,
     hasher: S,
 }
 
@@ -65,27 +238,24 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Write::write_str(f, "OnceMap ")?;
         let mut debug_map = f.debug_map();
-        for shard in &self.shards {
-            let entries = shard.lock();
-            debug_map.entries(entries.iter().map(|entry| (&entry.key, &entry.cell)));
-        }
+        self.entries.for_each(|entry| {
+            debug_map.entry(&entry.key, &entry.cell);
+        });
         debug_map.finish()
     }
 }
 
 impl<K, V, S> OnceMap<K, V, S> {
-    fn lock_shard(&self, hash: u64) -> MutexGuard<'_, Entries<K, V>> {
-        self.shards[(hash as usize) & (self.shards.len() - 1)].lock()
-    }
-
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.shards.iter().map(|shard| shard.lock().len()).sum()
+        let mut len = 0;
+        self.entries.for_each(|_| len += 1);
+        len
     }
 
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        self.shards.iter().all(|shard| shard.lock().is_empty())
+        self.len() == 0
     }
 }
 
@@ -99,22 +269,24 @@ where
         V: Clone,
     {
         let hash = self.hasher.hash_one(&key);
-        let mut shard = self.lock_shard(hash);
-        let entry = shard
-            .entry(hash, |entry| entry.key.eq(&key), |entry| entry.hash)
-            .or_insert_with(|| {
-                Arc::new(Entry {
-                    hash,
-                    key,
-                    cell: OnceCell::new(),
-                })
-            })
-            .into_mut();
-        if let Some(value) = entry.cell.get().cloned() {
-            Lookup::Ready(value)
-        } else {
-            Lookup::Pending(Arc::clone(entry))
+        let mut leaf = self.entries.lock_leaf(hash);
+        if let Some(entry) = leaf.entries.find(hash, |entry| entry.key.eq(&key)) {
+            return if let Some(value) = entry.cell.get().cloned() {
+                Lookup::Ready(value)
+            } else {
+                Lookup::Pending(Arc::clone(entry))
+            };
         }
+
+        let entry = Arc::new(Entry {
+            hash,
+            key,
+            cell: OnceCell::new(),
+        });
+        leaf.entries
+            .insert_unique(hash, Arc::clone(&entry), |entry| entry.hash);
+        self.entries.split_if_needed(leaf);
+        Lookup::Pending(entry)
     }
 
     fn get_value<Q>(&self, key: &Q) -> Option<V>
@@ -124,8 +296,8 @@ where
         V: Clone,
     {
         let hash = self.hasher.hash_one(key);
-        let shard = self.lock_shard(hash);
-        let entry = shard.find(hash, |entry| entry.key.borrow() == key)?;
+        let leaf = self.entries.try_lock_leaf(hash)?;
+        let entry = leaf.entries.find(hash, |entry| entry.key.borrow() == key)?;
         entry.cell.get().cloned()
     }
 
@@ -135,31 +307,37 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let hash = self.hasher.hash_one(key);
-        let mut shard = self.lock_shard(hash);
-        let occupied = shard
+        let mut leaf = self.entries.try_lock_leaf(hash)?;
+        let occupied = leaf
+            .entries
             .find_entry(hash, |entry| entry.key.borrow() == key)
             .ok()?;
         let (entry, _) = occupied.remove();
-        drop(shard);
+        drop(leaf);
         Some(entry)
     }
 
     fn cleanup_abandoned_entry(&self, entry: Arc<Entry<K, V>>) {
-        let mut shard = self.lock_shard(entry.hash);
-        let Ok(occupied) = shard.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, &entry))
+        let Some(mut leaf) = self.entries.try_lock_leaf(entry.hash) else {
+            drop(entry);
+            return;
+        };
+        let Ok(occupied) = leaf
+            .entries
+            .find_entry(entry.hash, |stored| Arc::ptr_eq(stored, &entry))
         else {
             // A concurrent remove detached the entry. It may be the final owner, so release it
-            // after unlocking rather than running user destructors under the shard lock.
-            drop(shard);
+            // after unlocking rather than running user destructors under the leaf lock.
+            drop(leaf);
             drop(entry);
             return;
         };
 
-        // With map ownership confirmed and the shard locked against new callers, two owners means
+        // With map ownership confirmed and the leaf locked against new callers, two owners means
         // the map and this cleanup guard are the only remaining references.
         if Arc::strong_count(&entry) == 2 && !entry.cell.initialized() {
             let (stored, _) = occupied.remove();
-            drop(shard);
+            drop(leaf);
             drop(entry);
             drop(stored);
         } else {
@@ -177,13 +355,14 @@ where
             cell: OnceCell::from_value(value),
         });
 
-        let mut shard = self.lock_shard(hash);
-        let replaced = shard
+        let mut leaf = self.entries.lock_leaf(hash);
+        let replaced = leaf
+            .entries
             .find_entry(hash, |stored| stored.key.eq(&entry.key))
             .ok()
             .map(|occupied| occupied.remove().0);
-        shard.insert_unique(hash, entry, |entry| entry.hash);
-        drop(shard);
+        leaf.entries.insert_unique(hash, entry, |entry| entry.hash);
+        self.entries.split_if_needed(leaf);
         drop(replaced);
     }
 }
@@ -290,17 +469,10 @@ where
 
     /// Creates a new OnceMap with the specified capacity and hasher.
     pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
-        let shard_count = once_map_shard_count();
-        let shard_capacity = capacity / shard_count;
-        let extra_capacity = capacity % shard_count;
-        let shards = (0..shard_count)
-            .map(|shard_index| {
-                let capacity = shard_capacity + usize::from(shard_index < extra_capacity);
-                CachePadded::new(Mutex::new(HashTable::with_capacity(capacity)))
-            })
-            .collect();
-
-        Self { shards, hasher }
+        Self {
+            entries: TrieTable::with_capacity(capacity),
+            hasher,
+        }
     }
 
     /// Compute the value for the given key if absent.
