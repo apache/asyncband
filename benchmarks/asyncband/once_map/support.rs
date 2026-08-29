@@ -24,6 +24,7 @@ use crate::support::bench_context;
 use crate::support::poll_ready;
 
 pub const CONTENDED_ENTRY_COUNTS: &[usize] = &[64, 1024];
+pub const CONTENDED_SAMPLE_SIZE: u32 = 256;
 pub const CONTENDED_THREAD_SLOTS: usize = 32;
 pub const THREAD_COUNTS: &[usize] = &[1, 2, 8, 32];
 

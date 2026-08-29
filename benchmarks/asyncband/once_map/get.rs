@@ -19,19 +19,24 @@ use divan::Bencher;
 use divan::black_box;
 
 use super::support::CONTENDED_ENTRY_COUNTS;
+use super::support::CONTENDED_SAMPLE_SIZE;
 use super::support::CONTENDED_THREAD_SLOTS;
 use super::support::THREAD_COUNTS;
 use super::support::cached_map;
 use crate::support::thread_slot_ticket;
 
-#[divan::bench(threads = THREAD_COUNTS)]
+#[divan::bench(threads = THREAD_COUNTS, sample_size = CONTENDED_SAMPLE_SIZE)]
 fn contended_get_hit_same_key(bencher: Bencher) {
     let map = cached_map(1);
 
     bencher.bench(|| black_box(map.get(black_box(&0))));
 }
 
-#[divan::bench(threads = THREAD_COUNTS, args = CONTENDED_ENTRY_COUNTS)]
+#[divan::bench(
+    threads = THREAD_COUNTS,
+    args = CONTENDED_ENTRY_COUNTS,
+    sample_size = CONTENDED_SAMPLE_SIZE
+)]
 fn contended_get_hit_disjoint(bencher: Bencher, cached_entries: usize) {
     let map = cached_map(cached_entries);
 
