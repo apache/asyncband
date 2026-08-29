@@ -1,20 +1,17 @@
-# Agent Instructions
+# Repository Guidelines
 
-## Cargo XTask
+## Workflows
 
-Use `cargo x` as the source of truth for repository workflows.
+Use `cargo x` as the source of truth for repository workflows. Read `cargo x --help` and the relevant subcommand's `--help` before running build, test, lint, or formatting commands.
 
-- Run `cargo x --help` before choosing build, test, lint, or formatting commands.
-- Run `cargo x <command> --help` for command-specific behavior.
+## Rust Style
 
-## Code Style
+Declare restricted visibility at the module boundary and use `pub` for items in that module's API.
 
-- Express visibility at the module boundary. Inside a restricted module, use `pub` for its module API instead of repeating `pub(crate)`.
+## Documentation
 
-## Commits and Pull Requests
+Keep each Markdown prose paragraph and list item on one source line.
 
-Follow the semantic definition at `.github/semantic.yml`.
+## Pull Requests
 
-- Keep title descriptions short.
-- Simple PR descriptions should only include a `Summary` section.
-- Complex PR descriptions may also include a `Design Notes` section.
+Format pull request titles according to `.github/semantic.yml` and keep the description concise. Use a `Summary` section for routine changes and add `Design Notes` only when the design needs explanation.

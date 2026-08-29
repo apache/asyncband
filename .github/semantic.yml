@@ -15,15 +15,15 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# The pull request's title should be fulfilled the following pattern:
+# Pull request titles must follow this pattern:
 #
 #     <type>[optional scope]: <description>
 #
-# ... where valid types and scopes can be found below; for example:
+# Valid types appear below; for example:
 #
-#     build(maven): One level down for native profile
+#     docs: refine release runbook
 #
-# More about configurations on https://github.com/Ezard/semantic-prs#configuration
+# Configuration reference: https://github.com/Ezard/semantic-prs#configuration
 
 enabled: true
 
@@ -42,4 +42,4 @@ types:
   - chore
   - revert
 
-targetUrl: https://github.com/fast/asyncband/blob/main/.github/semantic.yml
+targetUrl: https://github.com/apache/asyncband/blob/main/.github/semantic.yml
