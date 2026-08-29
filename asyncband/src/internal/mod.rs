@@ -103,8 +103,8 @@ fn scaled_shard_count(scale: usize) -> usize {
 
 #[cfg(feature = "once-map")]
 pub fn once_map_shard_count() -> usize {
-    // OnceMap is typically long-lived, so preserve miss parallelism rather than optimizing its
-    // one-time construction cost. Ready values bypass these mutation shards entirely.
+    // OnceMap is typically long-lived, so preserve parallelism rather than optimizing its one-time
+    // construction cost. Read locks keep cached values concurrent within a shard.
     scaled_shard_count(8)
 }
 

@@ -31,12 +31,11 @@ type BenchHasher = BuildHasherDefault<DefaultHasher>;
 
 pub type BenchMap = OnceMap<usize, usize, BenchHasher>;
 
-pub fn ready_map(cached_entries: usize) -> BenchMap {
+pub fn cached_map(cached_entries: usize) -> BenchMap {
     let map = BenchMap::default();
     let mut context = bench_context();
     for key in 0..cached_entries {
         poll_ready(map.compute(key, || async move { key }), &mut context);
-        // Promote computed entries so hit benchmarks start on the steady-state ready path.
         assert_eq!(map.get(&key), Some(key));
     }
     map
