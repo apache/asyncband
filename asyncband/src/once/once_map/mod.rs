@@ -59,7 +59,9 @@ enum Lookup<K, V> {
 }
 
 struct ReadyIndex<K, V> {
-    slots: HashIndex<u64, ReadySlot<K, V>, BuildIdentityHasher>,
+    // HashIndex readers may observe a relocated snapshot of its value. Keep the mutable slot
+    // behind an Arc so every snapshot addresses the same ArcSwap.
+    slots: HashIndex<u64, Arc<ReadySlot<K, V>>, BuildIdentityHasher>,
 }
 
 // Entries with the same user-provided hash share an immutable snapshot. Mutations are serialized by
@@ -169,7 +171,7 @@ impl<K: Eq, V> ReadyIndex<K, V> {
         match self.slots.entry_sync(entry.hash) {
             IndexEntry::Occupied(occupied) => occupied.get().insert(entry),
             IndexEntry::Vacant(vacant) => {
-                vacant.insert_entry(ReadySlot::new(entry));
+                vacant.insert_entry(Arc::new(ReadySlot::new(entry)));
             }
         }
     }
@@ -182,7 +184,8 @@ impl<K: Eq, V> ReadyIndex<K, V> {
         if became_empty {
             // HashIndex may reclaim its node later. Empty the snapshot first so deferred metadata
             // cannot keep the user's key or value alive after removal.
-            self.slots.remove_if_sync(&entry.hash, ReadySlot::is_empty);
+            self.slots
+                .remove_if_sync(&entry.hash, |slot| slot.is_empty());
         }
     }
 }

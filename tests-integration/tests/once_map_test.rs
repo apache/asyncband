@@ -212,25 +212,36 @@ async fn supports_non_clone_keys_and_owned_values() {
 }
 
 #[tokio::test]
-async fn ready_entries_with_colliding_hashes_remain_independent() {
+async fn ready_entries_with_colliding_hashes_survive_index_growth() {
     #[derive(Default)]
-    struct ConstantHasher;
+    struct PairCollisionHasher(u64);
 
-    impl Hasher for ConstantHasher {
+    impl Hasher for PairCollisionHasher {
         fn finish(&self) -> u64 {
-            0
+            self.0
         }
 
         fn write(&mut self, _bytes: &[u8]) {}
+
+        fn write_u64(&mut self, value: u64) {
+            self.0 = if value <= 1 { 0 } else { value };
+        }
     }
 
-    let map = OnceMap::with_hasher(BuildHasherDefault::<ConstantHasher>::default());
-    assert_eq!(map.compute("first", async || 1).await, 1);
-    assert_eq!(map.compute("second", async || 2).await, 2);
-    assert_eq!(map.get("first"), Some(1));
-    assert_eq!(map.get("second"), Some(2));
+    let map = OnceMap::with_hasher(BuildHasherDefault::<PairCollisionHasher>::default());
+    assert_eq!(map.compute(0_u64, async || 0).await, 0);
+    assert_eq!(map.get(&0), Some(0));
 
-    map.discard("first");
-    assert_eq!(map.get("first"), None);
-    assert_eq!(map.get("second"), Some(2));
+    for key in 2..1024 {
+        assert_eq!(map.compute(key, async move || key).await, key);
+        assert_eq!(map.get(&key), Some(key));
+    }
+
+    assert_eq!(map.compute(1, async || 1).await, 1);
+    assert_eq!(map.get(&0), Some(0));
+    assert_eq!(map.get(&1), Some(1));
+
+    map.discard(&0);
+    assert_eq!(map.get(&0), None);
+    assert_eq!(map.get(&1), Some(1));
 }
