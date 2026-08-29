@@ -36,13 +36,6 @@ impl<T> Mutex<T> {
     }
 }
 
-#[cfg(any(feature = "once-map", feature = "singleflight"))]
-/// Alignment uses 60% more memory (64/40) but improves write performance by 25% at 32 threads. (On
-/// Zen 5 CPUs)
-/// Need to test on other architectures.
-#[repr(align(64))]
-pub struct CachePaddedMutex<T>(pub Mutex<T>);
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

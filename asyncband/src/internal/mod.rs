@@ -40,6 +40,9 @@ pub(crate) mod arena;
 #[allow(dead_code)]
 pub(crate) mod countdown;
 
+#[cfg(any(feature = "once-map", feature = "singleflight"))]
+pub(crate) mod cache_padded;
+
 #[cfg(any(feature = "lazy-cell", feature = "once-cell"))]
 // `LazyCell` and `OnceCell` use different subsets of `ValueCell`, so single-feature builds leave
 // some operations in the shared implementation unused.

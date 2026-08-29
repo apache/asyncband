@@ -27,8 +27,8 @@ use std::sync::atomic::Ordering;
 
 use hashbrown::HashTable;
 
+use crate::internal::cache_padded::CachePadded;
 use crate::internal::default_shard_count;
-use crate::internal::mutex::CachePaddedMutex;
 use crate::internal::mutex::Mutex;
 use crate::once::OnceCell;
 
@@ -37,6 +37,7 @@ mod ready_index;
 use ready_index::ReadyIndex;
 
 type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
+type Shard<K, V> = CachePadded<Mutex<Entries<K, V>>>;
 
 pub struct Entry<K, V> {
     hash: u64,
@@ -75,7 +76,7 @@ impl<K, V> Entry<K, V> {
 }
 
 pub struct Table<K, V, S> {
-    shards: Box<[CachePaddedMutex<Entries<K, V>>]>,
+    shards: Box<[Shard<K, V>]>,
     index: ReadyIndex<K, V>,
     hasher: S,
 }
@@ -91,7 +92,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut debug_map = f.debug_map();
         for shard in &self.shards {
-            let entries = shard.0.lock();
+            let entries = shard.lock();
             debug_map.entries(entries.iter().map(|entry| (&entry.key, &entry.cell)));
         }
         debug_map.finish()
@@ -123,7 +124,7 @@ impl<K, V, S> Table<K, V, S> {
 
         let shard_capacity = capacity.div_ceil(shard_amount);
         let shards = (0..shard_amount)
-            .map(|_| CachePaddedMutex(Mutex::new(HashTable::with_capacity(shard_capacity))))
+            .map(|_| CachePadded::new(Mutex::new(HashTable::with_capacity(shard_capacity))))
             .collect();
 
         Self {
@@ -134,19 +135,17 @@ impl<K, V, S> Table<K, V, S> {
     }
 
     fn lock_shard(&self, hash: u64) -> MutexGuard<'_, Entries<K, V>> {
-        self.shards[(hash as usize) & (self.shards.len() - 1)]
-            .0
-            .lock()
+        self.shards[(hash as usize) & (self.shards.len() - 1)].lock()
     }
 
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.shards.iter().map(|shard| shard.0.lock().len()).sum()
+        self.shards.iter().map(|shard| shard.lock().len()).sum()
     }
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.shards.iter().all(|shard| shard.0.lock().is_empty())
+        self.shards.iter().all(|shard| shard.lock().is_empty())
     }
 }
 

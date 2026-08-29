@@ -21,22 +21,12 @@ use std::sync::Arc;
 use hashbrown::HashTable;
 
 use super::Entry;
+use crate::internal::cache_padded::CachePadded;
 use crate::internal::rwlock::RwLock;
 
 const TARGET_ENTRIES_PER_BUCKET: usize = 2;
 
-#[repr(align(64))]
-struct Bucket<K, V> {
-    entries: RwLock<HashTable<Arc<Entry<K, V>>>>,
-}
-
-impl<K, V> Bucket<K, V> {
-    fn new() -> Self {
-        Self {
-            entries: RwLock::new(HashTable::new()),
-        }
-    }
-}
+type Bucket<K, V> = CachePadded<RwLock<HashTable<Arc<Entry<K, V>>>>>;
 
 pub struct ReadyIndex<K, V> {
     buckets: Box<[Bucket<K, V>]>,
@@ -50,7 +40,9 @@ impl<K, V> ReadyIndex<K, V> {
             .next_power_of_two();
 
         Self {
-            buckets: (0..bucket_count).map(|_| Bucket::new()).collect(),
+            buckets: (0..bucket_count)
+                .map(|_| CachePadded::new(RwLock::new(HashTable::new())))
+                .collect(),
         }
     }
 
@@ -65,7 +57,6 @@ impl<K, V> ReadyIndex<K, V> {
         V: Clone,
     {
         self.bucket(hash)
-            .entries
             .read()
             .find(hash, |entry| entry.key.borrow() == key)
             .and_then(|entry| entry.get().cloned())
@@ -75,7 +66,7 @@ impl<K, V> ReadyIndex<K, V> {
     where
         K: Eq,
     {
-        let mut entries = self.bucket(entry.hash).entries.write();
+        let mut entries = self.bucket(entry.hash).write();
 
         if let Ok(occupied) = entries.find_entry(entry.hash, |stored| stored.key == entry.key) {
             if Arc::ptr_eq(occupied.get(), entry) {
@@ -88,7 +79,7 @@ impl<K, V> ReadyIndex<K, V> {
     }
 
     pub fn remove(&self, entry: &Arc<Entry<K, V>>) {
-        let mut entries = self.bucket(entry.hash).entries.write();
+        let mut entries = self.bucket(entry.hash).write();
 
         if let Ok(occupied) = entries.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, entry)) {
             drop(occupied.remove());
