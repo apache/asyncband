@@ -297,10 +297,35 @@ impl<M: ManageObject> Pool<M> {
     /// objects from the pool that have not been used for more than one minute. The task will
     /// terminate if the pool is dropped.
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// # use std::convert::Infallible;
+    /// # use std::sync::Arc;
+    /// # use std::time::Duration;
+    /// # use asyncband::pool::ManageObject;
+    /// # use asyncband::pool::ObjectStatus;
+    /// # use asyncband::pool::bounded::Pool;
+    /// # use asyncband::pool::bounded::PoolConfig;
     /// let interval = Duration::from_secs(30);
     /// let max_age = Duration::from_secs(60);
     ///
+    /// # struct Manager;
+    /// # impl ManageObject for Manager {
+    /// #     type Object = u32;
+    /// #     type Error = Infallible;
+    /// #
+    /// #     async fn create(&self) -> Result<Self::Object, Self::Error> {
+    /// #         Ok(0)
+    /// #     }
+    /// #
+    /// #     async fn is_recyclable(
+    /// #         &self,
+    /// #         _object: &mut Self::Object,
+    /// #         _status: &ObjectStatus,
+    /// #     ) -> Result<(), Self::Error> {
+    /// #         Ok(())
+    /// #     }
+    /// # }
+    /// # let pool = Pool::new(PoolConfig::new(16), Manager);
     /// let weak_pool = Arc::downgrade(&pool);
     /// tokio::spawn(async move {
     ///     loop {

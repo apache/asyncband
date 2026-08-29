@@ -113,28 +113,60 @@
 //! deadline for the complete checkout operation. Asyncband therefore returns an ordinary future so
 //! the caller can apply one end-to-end deadline with its chosen timer:
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use std::sync::Arc;
 //! use std::time::Duration;
 //!
+//! use asyncband::pool::ManageObject;
+//! use asyncband::pool::ObjectStatus;
 //! use asyncband::pool::bounded::Object;
 //! use asyncband::pool::bounded::Pool;
+//! # use asyncband::pool::bounded::PoolConfig;
 //!
-//! #[derive(Debug, Clone)]
-//! pub struct ConnectionPool {
+//! # struct Connection;
+//! # #[derive(Debug)]
+//! # struct Error;
+//! # struct ManageConnection;
+//! # impl ManageObject for ManageConnection {
+//! #     type Object = Connection;
+//! #     type Error = Error;
+//! #
+//! #     async fn create(&self) -> Result<Self::Object, Self::Error> {
+//! #         Ok(Connection)
+//! #     }
+//! #
+//! #     async fn is_recyclable(
+//! #         &self,
+//! #         _object: &mut Self::Object,
+//! #         _status: &ObjectStatus,
+//! #     ) -> Result<(), Self::Error> {
+//! #         Ok(())
+//! #     }
+//! # }
+//! # enum AcquireError {
+//! #     Create(Error),
+//! #     Timeout,
+//! # }
+//!
+//! #[derive(Clone)]
+//! struct ConnectionPool {
 //!     pool: Arc<Pool<ManageConnection>>,
 //! }
 //!
 //! impl ConnectionPool {
-//!     pub async fn acquire(&self) -> Result<Object<ManageConnection>, Error> {
+//!     async fn acquire(&self) -> Result<Object<ManageConnection>, AcquireError> {
 //!         const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 //!
 //!         // Callers can use the timer implementation of their runtime.
-//!         let result = tokio::time::timeout(ACQUIRE_TIMEOUT, self.pool.get()).await;
-//!
-//!         // ... processing the result
+//!         match tokio::time::timeout(ACQUIRE_TIMEOUT, self.pool.get()).await {
+//!             Ok(result) => result.map_err(AcquireError::Create),
+//!             Err(_) => Err(AcquireError::Timeout),
+//!         }
 //!     }
 //! }
+//! # let _pool = ConnectionPool {
+//! #     pool: Pool::new(PoolConfig::new(16), ManageConnection),
+//! # };
 //! ```
 //!
 //! ## Why are general before/after hooks outside the pool?

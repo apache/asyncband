@@ -400,10 +400,15 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// objects from the pool that have not been used for more than one minute. The task will
     /// terminate if the pool is dropped.
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// # use std::sync::Arc;
+    /// # use std::time::Duration;
+    /// # use asyncband::pool::unbounded::Pool;
+    /// # use asyncband::pool::unbounded::PoolConfig;
     /// let interval = Duration::from_secs(30);
     /// let max_age = Duration::from_secs(60);
     ///
+    /// # let pool = Pool::<Vec<u8>>::never_manage(PoolConfig::default());
     /// let weak_pool = Arc::downgrade(&pool);
     /// tokio::spawn(async move {
     ///     loop {

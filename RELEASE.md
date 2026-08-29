@@ -73,6 +73,17 @@ cargo x semver --release-version "${VERSION}"
 cargo publish --package asyncband --locked --dry-run
 ```
 
+For a semver-major release, including a pre-1.0 minor release such as `0.7.0`, the semver command
+audits with minor compatibility rules so that breaking API changes remain visible. Review every
+reported change against `CHANGELOG.md` and `MIGRATE.md`, then explicitly acknowledge the reviewed
+inventory:
+
+```shell
+cargo x semver --release-version "${VERSION}" --acknowledge-breaking-changes
+```
+
+Do not use `--acknowledge-breaking-changes` for a semver-minor or semver-patch release.
+
 Open and merge a normal pull request. Do not push the version change directly to `main`; the final release is identified by tags, so the release process does not require a direct branch push.
 
 Record the merge commit as `RELEASE_COMMIT`. All candidate artifacts, the final tag, and the crates.io package must come from this exact commit.
@@ -115,13 +126,15 @@ git archive --format=tar --prefix="${SOURCE_DIR}/" "${RC_TAG}" \
 Verify the artifacts before uploading them:
 
 ```shell
-cd dist
-shasum -a 512 --check "${SOURCE_DIR}.tar.gz.sha512"
-gpg --verify "${SOURCE_DIR}.tar.gz.asc" "${SOURCE_DIR}.tar.gz"
-tar --extract --gzip --file "${SOURCE_DIR}.tar.gz"
-cd "${SOURCE_DIR}"
-cargo test --workspace --all-features --locked
-cargo publish --package asyncband --locked --dry-run
+(
+  cd dist
+  shasum -a 512 --check "${SOURCE_DIR}.tar.gz.sha512"
+  gpg --verify "${SOURCE_DIR}.tar.gz.asc" "${SOURCE_DIR}.tar.gz"
+  tar --extract --gzip --file "${SOURCE_DIR}.tar.gz"
+  cd "${SOURCE_DIR}"
+  cargo test --workspace --all-features --locked
+  cargo publish --package asyncband --locked --dry-run
+)
 ```
 
 Also inspect the archive for unexpected binary files, verify `LICENSE`, `NOTICE`, and `DISCLAIMER`, and check that its contents correspond to the RC tag.
