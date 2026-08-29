@@ -15,15 +15,15 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Pull request titles must follow this pattern:
+# The pull request's title should be fulfilled the following pattern:
 #
 #     <type>[optional scope]: <description>
 #
-# Valid types appear below; for example:
+# ... where valid types and scopes can be found below; for example:
 #
-#     docs: refine release runbook
+#     build(maven): One level down for native profile
 #
-# Configuration reference: https://github.com/Ezard/semantic-prs#configuration
+# More about configurations on https://github.com/Ezard/semantic-prs#configuration
 
 enabled: true
 
