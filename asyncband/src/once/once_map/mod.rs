@@ -21,14 +21,12 @@ use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::RandomState;
 use std::sync::Arc;
-use std::sync::PoisonError;
-use std::sync::RwLock;
-use std::sync::RwLockReadGuard;
-use std::sync::RwLockWriteGuard;
+use std::sync::MutexGuard;
 
 use hashbrown::HashTable;
 
 use crate::internal::cache_padded::CachePadded;
+use crate::internal::mutex::Mutex;
 use crate::internal::once_map_shard_count;
 use crate::once::OnceCell;
 
@@ -36,7 +34,7 @@ use crate::once::OnceCell;
 mod tests;
 
 type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
-type Shard<K, V> = CachePadded<RwLock<Entries<K, V>>>;
+type Shard<K, V> = CachePadded<Mutex<Entries<K, V>>>;
 
 struct Entry<K, V> {
     hash: u64,
@@ -54,7 +52,7 @@ enum Lookup<K, V> {
 /// Note that this always clones the value out of the underlying map. Because of this, it's common
 /// to wrap the `V` in an `Arc<V>` to make cloning cheap.
 pub struct OnceMap<K, V, S = RandomState> {
-    // Reads share a shard lock, while insertions and removals take it exclusively.
+    // Sharding provides cross-key concurrency without RwLock reader-state contention on hot keys.
     shards: Box<[Shard<K, V>]>,
     hasher: S,
 }
@@ -68,7 +66,7 @@ where
         fmt::Write::write_str(f, "OnceMap ")?;
         let mut debug_map = f.debug_map();
         for shard in &self.shards {
-            let entries = shard.read().unwrap_or_else(PoisonError::into_inner);
+            let entries = shard.lock();
             debug_map.entries(entries.iter().map(|entry| (&entry.key, &entry.cell)));
         }
         debug_map.finish()
@@ -76,34 +74,18 @@ where
 }
 
 impl<K, V, S> OnceMap<K, V, S> {
-    fn read_shard(&self, hash: u64) -> RwLockReadGuard<'_, Entries<K, V>> {
-        self.shards[(hash as usize) & (self.shards.len() - 1)]
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn write_shard(&self, hash: u64) -> RwLockWriteGuard<'_, Entries<K, V>> {
-        self.shards[(hash as usize) & (self.shards.len() - 1)]
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
+    fn lock_shard(&self, hash: u64) -> MutexGuard<'_, Entries<K, V>> {
+        self.shards[(hash as usize) & (self.shards.len() - 1)].lock()
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.shards
-            .iter()
-            .map(|shard| shard.read().unwrap_or_else(PoisonError::into_inner).len())
-            .sum()
+        self.shards.iter().map(|shard| shard.lock().len()).sum()
     }
 
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        self.shards.iter().all(|shard| {
-            shard
-                .read()
-                .unwrap_or_else(PoisonError::into_inner)
-                .is_empty()
-        })
+        self.shards.iter().all(|shard| shard.lock().is_empty())
     }
 }
 
@@ -117,40 +99,21 @@ where
         V: Clone,
     {
         let hash = self.hasher.hash_one(&key);
-        let entry = {
-            let shard = self.read_shard(hash);
-            shard.find(hash, |entry| entry.key.eq(&key)).map(Arc::clone)
-        };
-        if let Some(entry) = entry {
-            return Self::lookup(entry);
-        }
-
-        let entry = {
-            let mut shard = self.write_shard(hash);
-            shard
-                .entry(hash, |entry| entry.key.eq(&key), |entry| entry.hash)
-                .or_insert_with(|| {
-                    Arc::new(Entry {
-                        hash,
-                        key,
-                        cell: OnceCell::new(),
-                    })
+        let mut shard = self.lock_shard(hash);
+        let entry = shard
+            .entry(hash, |entry| entry.key.eq(&key), |entry| entry.hash)
+            .or_insert_with(|| {
+                Arc::new(Entry {
+                    hash,
+                    key,
+                    cell: OnceCell::new(),
                 })
-                .into_mut()
-                .clone()
-        };
-
-        Self::lookup(entry)
-    }
-
-    fn lookup(entry: Arc<Entry<K, V>>) -> Lookup<K, V>
-    where
-        V: Clone,
-    {
+            })
+            .into_mut();
         if let Some(value) = entry.cell.get().cloned() {
             Lookup::Ready(value)
         } else {
-            Lookup::Pending(entry)
+            Lookup::Pending(Arc::clone(entry))
         }
     }
 
@@ -161,12 +124,8 @@ where
         V: Clone,
     {
         let hash = self.hasher.hash_one(key);
-        let entry = {
-            let shard = self.read_shard(hash);
-            shard
-                .find(hash, |entry| entry.key.borrow() == key)
-                .map(Arc::clone)
-        }?;
+        let shard = self.lock_shard(hash);
+        let entry = shard.find(hash, |entry| entry.key.borrow() == key)?;
         entry.cell.get().cloned()
     }
 
@@ -176,7 +135,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let hash = self.hasher.hash_one(key);
-        let mut shard = self.write_shard(hash);
+        let mut shard = self.lock_shard(hash);
         let occupied = shard
             .find_entry(hash, |entry| entry.key.borrow() == key)
             .ok()?;
@@ -186,7 +145,7 @@ where
     }
 
     fn cleanup_abandoned_entry(&self, entry: Arc<Entry<K, V>>) {
-        let mut shard = self.write_shard(entry.hash);
+        let mut shard = self.lock_shard(entry.hash);
         let Ok(occupied) = shard.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, &entry))
         else {
             // A concurrent remove detached the entry. It may be the final owner, so release it
@@ -218,7 +177,7 @@ where
             cell: OnceCell::from_value(value),
         });
 
-        let mut shard = self.write_shard(hash);
+        let mut shard = self.lock_shard(hash);
         let replaced = shard
             .find_entry(hash, |stored| stored.key.eq(&entry.key))
             .ok()
@@ -337,7 +296,7 @@ where
         let shards = (0..shard_count)
             .map(|shard_index| {
                 let capacity = shard_capacity + usize::from(shard_index < extra_capacity);
-                CachePadded::new(RwLock::new(HashTable::with_capacity(capacity)))
+                CachePadded::new(Mutex::new(HashTable::with_capacity(capacity)))
             })
             .collect();
 
