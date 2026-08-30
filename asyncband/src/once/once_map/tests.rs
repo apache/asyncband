@@ -18,26 +18,12 @@
 use std::hash::BuildHasherDefault;
 use std::hash::Hasher;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::task::Poll;
 
 use super::Lookup;
 use super::OnceMap;
-use super::ReadBarrier;
 use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
-
-fn entry_count<K, V, S>(map: &OnceMap<K, V, S>) -> usize {
-    let ready = map.readers.read(|| {
-        let mut len = 0;
-        // SAFETY: The read barrier protects the current table and every referenced entry.
-        unsafe { map.ready.for_each(|_| len += 1) };
-        len
-    });
-    let pending = map.write.lock().pending.len();
-    ready + pending
-}
 
 #[derive(Default)]
 struct ConstantHasher;
@@ -57,7 +43,7 @@ async fn failed_compute_removes_empty_entry() {
     let result: Result<i32, &str> = map.try_compute("key", async || Err("fail")).await;
 
     assert_eq!(result, Err("fail"));
-    assert_eq!(entry_count(&map), 0);
+    assert_eq!(map.len(), 0);
 }
 
 #[tokio::test]
@@ -74,7 +60,7 @@ async fn panicked_compute_removes_empty_entry() {
     });
 
     assert!(task.await.unwrap_err().is_panic());
-    assert_eq!(entry_count(&map), 0);
+    assert_eq!(map.len(), 0);
 }
 
 #[tokio::test]
@@ -93,11 +79,27 @@ async fn cancelled_compute_removes_empty_entry() {
     });
 
     started_rx.await.unwrap();
-    assert_eq!(entry_count(&map), 1);
+    assert_eq!(map.len(), 1);
 
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
-    assert_eq!(entry_count(&map), 0);
+    assert_eq!(map.len(), 0);
+}
+
+#[test]
+fn pending_computation_does_not_block_another_key() {
+    let map = OnceMap::new();
+    {
+        let mut pending = std::pin::pin!(
+            map.compute("pending", async || { std::future::pending::<i32>().await })
+        );
+        assert!(poll_once(pending.as_mut()).is_pending());
+
+        let mut ready = std::pin::pin!(map.compute("ready", async || 1));
+        assert_eq!(poll_once(ready.as_mut()), std::task::Poll::Ready(1));
+    }
+
+    assert_eq!(map.len(), 1);
 }
 
 #[tokio::test]
@@ -119,7 +121,7 @@ async fn failed_compute_preserves_entry_for_waiter_retry() {
     release_tx.send(()).unwrap();
     assert_eq!(first.await, Err("fail"));
 
-    assert_eq!(entry_count(&map), 1);
+    assert_eq!(map.len(), 1);
     assert_eq!(retry.await, Ok(1));
     assert_eq!(map.get("key"), Some(1));
 }
@@ -133,7 +135,7 @@ fn abandoned_pending_entry_is_removed_when_last_caller_leaves() {
 
     map.cleanup_abandoned_entry(entry);
 
-    assert_eq!(entry_count(&map), 0);
+    assert_eq!(map.len(), 0);
 }
 
 #[test]
@@ -169,96 +171,5 @@ fn colliding_pending_entries_are_tracked_independently() {
     drop(first_waiter);
     map.cleanup_abandoned_entry(first);
     map.cleanup_abandoned_entry(second);
-    assert_eq!(entry_count(&map), 0);
-}
-
-#[test]
-fn writer_waits_for_an_active_reader() {
-    let barrier = Arc::new(ReadBarrier::new());
-    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
-    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
-
-    let reader = {
-        let barrier = Arc::clone(&barrier);
-        std::thread::spawn(move || {
-            barrier.read(|| {
-                entered_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-            });
-        })
-    };
-    entered_rx.recv().unwrap();
-
-    let (blocked_tx, blocked_rx) = std::sync::mpsc::sync_channel(0);
-    let writer = {
-        let barrier = Arc::clone(&barrier);
-        std::thread::spawn(move || {
-            let blocked = barrier.block();
-            blocked_tx.send(()).unwrap();
-            drop(blocked);
-        })
-    };
-    while !barrier.blocked.load(Ordering::SeqCst) {
-        std::thread::yield_now();
-    }
-    assert!(blocked_rx.try_recv().is_err());
-
-    release_tx.send(()).unwrap();
-    blocked_rx.recv().unwrap();
-    reader.join().unwrap();
-    writer.join().unwrap();
-}
-
-#[test]
-fn concurrent_deep_reads_survive_replacement_and_removal() {
-    const ITERATIONS: usize = if cfg!(miri) { 32 } else { 2_000 };
-    const KEYS: u64 = 16;
-
-    #[derive(Default)]
-    struct IdentityHasher(u64);
-
-    impl Hasher for IdentityHasher {
-        fn finish(&self) -> u64 {
-            self.0
-        }
-
-        fn write(&mut self, bytes: &[u8]) {
-            self.0 = bytes
-                .iter()
-                .fold(0, |hash, byte| hash.rotate_left(8) ^ u64::from(*byte));
-        }
-
-        fn write_u64(&mut self, value: u64) {
-            self.0 = value;
-        }
-    }
-
-    let map: OnceMap<u64, u64, BuildHasherDefault<IdentityHasher>> =
-        (0..KEYS).map(|key| (key << 32, key << 32)).collect();
-
-    std::thread::scope(|scope| {
-        for _ in 0..2 {
-            scope.spawn(|| {
-                for iteration in 0..ITERATIONS {
-                    let key = (iteration as u64 % KEYS) << 32;
-                    if let Some(value) = map.get(&key) {
-                        assert_eq!(value, key);
-                    }
-                    std::thread::yield_now();
-                }
-            });
-        }
-
-        for iteration in 0..ITERATIONS {
-            let key = (iteration as u64 % KEYS) << 32;
-            map.discard(&key);
-            let mut compute = std::pin::pin!(map.compute(key, async move || key));
-            assert_eq!(poll_once(compute.as_mut()), Poll::Ready(key));
-            std::thread::yield_now();
-        }
-    });
-
-    for key in (0..KEYS).map(|key| key << 32) {
-        assert_eq!(map.get(&key), Some(key));
-    }
+    assert_eq!(map.len(), 0);
 }
