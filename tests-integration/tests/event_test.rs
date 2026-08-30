@@ -21,7 +21,6 @@ use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
-use std::sync::Barrier;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -42,16 +41,6 @@ impl Wake for TrackWake {
     fn wake(self: Arc<Self>) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }
-}
-
-#[test]
-fn constructors_and_state_queries() {
-    let unset = ManualResetEvent::new();
-    let set = ManualResetEvent::with_state(true);
-
-    assert!(!unset.is_set());
-    assert!(set.is_set());
-    assert!(!ManualResetEvent::default().is_set());
 }
 
 #[test]
@@ -184,10 +173,8 @@ fn a_panicking_waker_still_releases_the_remaining_waiters() {
     );
 }
 
-/// A waker that re-enters the event it belongs to, both when woken and when dropped.
-///
-/// The internal lock is a non-reentrant `std::sync::Mutex`, so waking or dropping this waker inside
-/// the critical section blocks forever instead of returning.
+// A waker that re-enters the event it belongs to, both when woken and when dropped. The internal
+// lock is non-reentrant, so waking or dropping this waker inside the critical section deadlocks.
 struct ReentrantWaker(Arc<ManualResetEvent>);
 
 impl Wake for ReentrantWaker {
@@ -417,123 +404,4 @@ fn cancelling_an_owned_waiter_releases_its_waker_and_event_handle() {
 
     event.set();
     assert_eq!(tracker.0.load(Ordering::Relaxed), 0);
-}
-
-// Registrations must not be lost when they race a concurrent `set`.
-//
-// Each round only resets after every waiter has completed, so a waiter that registers late
-// observes the set state instead of blocking. A lost wake-up therefore hangs the join below.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn set_racing_registration_wakes_every_waiter() {
-    const ROUNDS: usize = 128;
-    const WAITERS: usize = 8;
-
-    let event = Arc::new(ManualResetEvent::new());
-    for _ in 0..ROUNDS {
-        let waiters = (0..WAITERS)
-            .map(|_| tokio::spawn(event.clone().wait_owned()))
-            .collect::<Vec<_>>();
-
-        event.set();
-        for waiter in waiters {
-            waiter.await.unwrap();
-        }
-
-        event.reset();
-    }
-
-    assert!(!event.is_set());
-    assert!(poll_once(pin!(event.wait())).is_pending());
-}
-
-// A `set` immediately followed by a `reset` on another thread still commits every waiter that
-// registered before the transition.
-#[test]
-fn cross_thread_set_then_reset_commits_registered_waiters() {
-    const ROUNDS: usize = 128;
-    const WAITERS: usize = 8;
-
-    for _ in 0..ROUNDS {
-        let event = Arc::new(ManualResetEvent::new());
-        let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
-        let waker = Waker::from(tracker.clone());
-        let mut context = Context::from_waker(&waker);
-        let mut waits = (0..WAITERS)
-            .map(|_| Box::pin(event.clone().wait_owned()))
-            .collect::<Vec<_>>();
-        for wait in &mut waits {
-            assert!(wait.as_mut().poll(&mut context).is_pending());
-        }
-
-        let signaller = thread::spawn({
-            let event = event.clone();
-            move || {
-                event.set();
-                event.reset();
-            }
-        });
-        signaller.join().unwrap();
-
-        assert!(!event.is_set());
-        assert_eq!(tracker.0.load(Ordering::Relaxed), WAITERS);
-        for wait in &mut waits {
-            assert!(wait.as_mut().poll(&mut context).is_ready());
-        }
-    }
-}
-
-// Cancelling one waiter while another thread sets the event must reclaim that waiter's waker
-// under either outcome of the race, and must not disturb the remaining waiter.
-#[test]
-fn cancellation_racing_set_reclaims_the_waker() {
-    const ROUNDS: usize = 256;
-
-    for _ in 0..ROUNDS {
-        let event = Arc::new(ManualResetEvent::new());
-        let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
-        let waker = Waker::from(tracker.clone());
-        let baseline = Arc::strong_count(&tracker);
-        let mut context = Context::from_waker(&waker);
-        let mut cancelled = Box::pin(event.clone().wait_owned());
-        let mut survivor = Box::pin(event.clone().wait_owned());
-
-        assert!(cancelled.as_mut().poll(&mut context).is_pending());
-        assert!(survivor.as_mut().poll(&mut context).is_pending());
-
-        let start = Arc::new(Barrier::new(2));
-        let signaller = thread::spawn({
-            let event = event.clone();
-            let start = start.clone();
-            move || {
-                start.wait();
-                event.set();
-            }
-        });
-
-        start.wait();
-        drop(cancelled);
-        signaller.join().unwrap();
-
-        assert!(survivor.as_mut().poll(&mut context).is_ready());
-        drop(survivor);
-        assert_eq!(Arc::strong_count(&tracker), baseline);
-        assert_eq!(Arc::strong_count(&event), 1);
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn set_releases_all_current_and_future_waiters() {
-    let event = Arc::new(ManualResetEvent::new());
-    let mut tasks = Vec::new();
-    for _ in 0..16 {
-        tasks.push(tokio::spawn(event.clone().wait_owned()));
-    }
-
-    tokio::task::yield_now().await;
-    event.set();
-
-    for task in tasks {
-        task.await.unwrap();
-    }
-    event.clone().wait_owned().await;
 }

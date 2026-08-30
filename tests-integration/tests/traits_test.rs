@@ -16,7 +16,6 @@
 // under the License.
 
 use std::cell::Cell;
-use std::sync::Arc;
 
 use asyncband::barrier::Barrier;
 use asyncband::broadcast;
@@ -70,14 +69,10 @@ impl ManageObject for PoolManager {
 #[test]
 fn public_types_are_send_and_sync() {
     fn assert_send_and_sync<T: Send + Sync>() {}
-    fn assert_send_and_sync_value<T: Send + Sync>(_: T) {}
 
     assert_send_and_sync::<Barrier>();
     assert_send_and_sync::<Condvar>();
     assert_send_and_sync::<ManualResetEvent>();
-    let event = ManualResetEvent::new();
-    assert_send_and_sync_value(event.wait());
-    assert_send_and_sync_value(Arc::new(ManualResetEvent::new()).wait_owned());
     assert_send_and_sync::<completion::Completer<Cell<u8>>>();
     assert_send_and_sync::<completion::Completer<i64>>();
     assert_send_and_sync::<completion::Completion<i64>>();

@@ -17,18 +17,17 @@
 
 //! A reusable, level-triggered signal for coordinating tasks.
 //!
-//! A [`ManualResetEvent`] is either set or unset. Calling [`set`](ManualResetEvent::set) makes the
-//! event ready, releases every waiter registered during the current unset period, and keeps later
-//! waits ready. Calling [`reset`](ManualResetEvent::reset) makes subsequent waits block again.
+//! A [`ManualResetEvent`] is either set or unset. Calling [`set`](ManualResetEvent::set) releases
+//! every registered wait and makes future waits ready. The signal remains set until
+//! [`reset`](ManualResetEvent::reset) makes new waits block again.
 //!
-//! A waiter registered before `set` is committed to completion even if another task calls `reset`
-//! before the waiter is polled again. This differs from a condition variable: the event retains its
-//! set state and does not require an external predicate or mutex.
+//! The retained set state distinguishes this primitive from a condition variable, whose
+//! notifications are not buffered. Unlike a latch, a manual-reset event can be reset and reused.
 //!
-//! Registration happens on a wait's first poll, so `set` followed immediately by `reset` is not a
-//! reliable way to release everyone waiting at that moment: a future constructed before the `set`
-//! but not yet polled was never a waiter of it. Keep the event set for as long as the condition it
-//! reports holds.
+//! A wait registered before `set` is committed to completion even if another task calls `reset`
+//! before that wait is polled again. Registration happens on the first poll, not when the future is
+//! constructed, so `set` followed immediately by `reset` is not a pulse for unpolled futures. Keep
+//! the event set for as long as the condition it represents holds.
 //!
 //! # Examples
 //!
@@ -65,39 +64,18 @@ use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::waitset::wake_all;
 
-/// A reusable event that releases all waiters when set and stays ready until reset.
+/// A reusable event that remains set until explicitly reset.
 ///
-/// `set` and `reset` are idempotent. A wait that has returned `Pending` and is still registered
-/// when a successful unset to set transition occurs is committed to completion by that transition,
-/// even if `reset` happens before the future is polled again.
-///
-/// Dropping a pending wait and a concurrent `set` linearize on the same internal lock, and
-/// whichever acquires it first decides the outcome. If the drop wins, the waiter is already gone
-/// and that `set` never commits it. If the `set` wins, the waiter is committed and the drop then
-/// removes a node whose completion no one will observe; because `set` invokes wakers after
-/// releasing the lock, that waker may still run after the drop has returned.
-///
-/// Neither order withholds the signal from another waiter: a commitment is not a permit that a
-/// cancelled wait could consume.
-///
-/// Registration happens on the first poll, not when [`wait`](Self::wait) constructs the future, so
-/// a wait first polled after a reset belongs to the new unset period even when it was constructed
-/// before the preceding `set`.
+/// See the [module-level documentation](self) for its waiting semantics.
 ///
 /// # Synchronization
 ///
-/// Memory operations sequenced before a [`set`](Self::set) call that performs an unset to set
-/// transition have a happens-before relationship with code that runs after any wait completed by
-/// that transition, including a wait first polled while the resulting set state is still current. A
-/// producer may therefore publish shared state and then call `set`, and every waiter that call
-/// releases observes it.
+/// An unset-to-set transition synchronizes with the waits it releases and with waits first polled
+/// while the event remains set. Memory operations sequenced before [`set`](Self::set) are therefore
+/// visible after those waits complete.
 ///
-/// A `set` call that finds the event already set performs no transition and does not establish the
-/// guarantee above.
-///
-/// The API makes no publication guarantee for state observed through [`is_set`](Self::is_set), so
-/// that query can neither stand in for a wait nor support check-then-act: the state it reports may
-/// change before the caller acts on it.
+/// A `set` call that finds the event already set does not establish this guarantee.
+/// [`is_set`](Self::is_set) is only a snapshot and cannot replace a wait or support check-then-act.
 pub struct ManualResetEvent {
     state: Mutex<State>,
 }
@@ -158,15 +136,15 @@ impl ManualResetEvent {
         self.state.lock().is_set
     }
 
-    /// Sets the event and releases every waiter registered during the current unset period.
+    /// Sets the event and releases every currently registered wait.
     ///
     /// The event remains set until [`reset`](Self::reset) is called. Calling `set` while it is
-    /// already set has no effect. Wakers are invoked after the internal lock is released; if one
-    /// panics, the remaining waiters are still woken and the first panic reaches the caller.
+    /// already set has no effect. No ordering is guaranteed among the released waits.
     ///
-    /// A waker may therefore re-enter the event. The whole registered cohort is detached before any
-    /// waker runs, so a wait registered from a wake callback belongs to the period current when it
-    /// registers rather than to this call. No ordering is guaranteed among the released waits.
+    /// # Panics
+    ///
+    /// Panics if a registered waker panics. The state transition remains committed, and every
+    /// remaining registered waker is still notified before the first panic resumes.
     ///
     /// # Examples
     ///
@@ -191,6 +169,8 @@ impl ManualResetEvent {
             }
 
             state.is_set = true;
+            // Detach the complete cohort before invoking any waker. A wake callback may reset the
+            // event and register a new wait, which must belong to the state current at that point.
             let mut wakers = Vec::new();
             while let Some((_id, waiter)) = state.waiters.unlink_first_waiter(|waiter| {
                 waiter.notified = true;
@@ -206,7 +186,7 @@ impl ManualResetEvent {
         wake_all(wakers.into_iter());
     }
 
-    /// Resets the event so subsequent waits block until another [`set`](Self::set).
+    /// Resets the event so new waits block until another [`set`](Self::set).
     ///
     /// Waiters already committed by a preceding `set` remain ready. Calling `reset` while the
     /// event is already unset has no effect.
@@ -233,11 +213,18 @@ impl ManualResetEvent {
         self.state.lock().is_set = false;
     }
 
-    /// Returns a future that waits until the event is set.
+    /// Waits until the event is set.
     ///
-    /// A poll that observes the event set returns `Ready` immediately. A wait that has returned
-    /// `Pending` and is still registered is committed to completion by the next
-    /// [`set`](Self::set), even if a [`reset`](Self::reset) happens before it is polled again.
+    /// If the event is already set, the wait completes immediately. Once a [`set`](Self::set)
+    /// commits a registered wait, a later [`reset`](Self::reset) cannot make that wait pending
+    /// again.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending wait unregisters only that call; it does not change the event or affect
+    /// other waiters. If cancellation races with `set`, either cancellation unregisters first or
+    /// `set` commits the wait first. A waker already detached by `set` may still run after the wait
+    /// is dropped.
     ///
     /// # Examples
     ///
@@ -265,10 +252,11 @@ impl ManualResetEvent {
         fut.await
     }
 
-    /// Returns an owned future that waits until the event is set.
+    /// Waits until the event is set without borrowing it.
     ///
-    /// The event must be held in an [`Arc`]. The returned future owns that `Arc` and therefore has
-    /// no borrowing lifetime, which makes it suitable for spawned tasks.
+    /// The event must be held in an [`Arc`]. The returned future owns that `Arc`, which makes it
+    /// suitable for spawned tasks. Its waiting and cancellation semantics match
+    /// [`wait`](Self::wait).
     ///
     /// # Examples
     ///
@@ -417,21 +405,10 @@ impl Waiter {
     }
 }
 
-/// A borrowed future returned by [`ManualResetEvent::wait`].
-///
-/// Dropping a pending wait unregisters only that waiter; it leaves the event state and every other
-/// waiter untouched.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 struct ManualResetEventWait<'a> {
     waiter: Option<WaiterId>,
     event: &'a ManualResetEvent,
-}
-
-impl fmt::Debug for ManualResetEventWait<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ManualResetEventWait")
-            .finish_non_exhaustive()
-    }
 }
 
 impl Future for ManualResetEventWait<'_> {
@@ -449,20 +426,10 @@ impl Drop for ManualResetEventWait<'_> {
     }
 }
 
-/// An owned future returned by [`ManualResetEvent::wait_owned`].
-///
-/// This behaves like [`ManualResetEventWait`] and keeps the event alive through its [`Arc`].
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 struct OwnedManualResetEventWait {
     waiter: Option<WaiterId>,
     event: Arc<ManualResetEvent>,
-}
-
-impl fmt::Debug for OwnedManualResetEventWait {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OwnedManualResetEventWait")
-            .finish_non_exhaustive()
-    }
 }
 
 impl Future for OwnedManualResetEventWait {

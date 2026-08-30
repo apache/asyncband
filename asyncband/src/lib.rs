@@ -65,7 +65,7 @@
 //! |                       | [`OnceMap`](once::OnceMap)                    | `once-map`     | Initialize and store one value per key.                                                                |
 //! | Task coordination     | [`Barrier`](barrier::Barrier)                 | `barrier`      | Wait until all participants reach a synchronization point.                                             |
 //! |                       | [`Completion`](completion::Completion)       | `completion`   | Publish one shared result to any number of current and future observers.                                |
-//! |                       | [`ManualResetEvent`](event::ManualResetEvent) | `event`        | Reuse a level-triggered signal that releases all current waiters.                                      |
+//! |                       | [`ManualResetEvent`](event::ManualResetEvent) | `event`        | Signal current and future waits until explicitly reset.                                                |
 //! |                       | [`Latch`](latch::Latch)                       | `latch`        | Wait until a one-way countdown completes.                                                              |
 //! |                       | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Wait for a dynamic group of tasks to finish.                                                           |
 //! |                       | [`Shutdown`](shutdown::Shutdown)              | `shutdown`     | Coordinate shutdown signals and completion.                                                            |
