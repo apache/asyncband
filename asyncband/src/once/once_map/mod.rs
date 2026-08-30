@@ -30,6 +30,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering;
 
+use hashbrown::HashTable;
+
 use crate::internal::mutex::Mutex;
 use crate::once::OnceCell;
 
@@ -241,7 +243,7 @@ impl ReadBarrier {
         let marker = self.marker();
         assert!(
             !current_thread_reads(marker),
-            "OnceMap removal cannot be called from its own key or value callback"
+            "OnceMap removal cannot run reentrantly during a read of the same map"
         );
         let was_blocked = self.blocked.swap(true, Ordering::SeqCst);
         assert!(!was_blocked, "nested OnceMap removal is not supported");
@@ -576,10 +578,8 @@ struct Entry<K, V> {
     cell: OnceCell<V>,
 }
 
-type PendingEntries<K, V> = Vec<Arc<Entry<K, V>>>;
-
 struct WriteState<K, V> {
-    pending: PendingEntries<K, V>,
+    pending: HashTable<Arc<Entry<K, V>>>,
 }
 
 enum Lookup<K, V> {
@@ -617,7 +617,7 @@ where
             }
         });
         let write = self.write.lock();
-        for entry in &write.pending {
+        for entry in write.pending.iter() {
             debug_map.entry(&entry.key, &entry.cell);
         }
         debug_map.finish()
@@ -652,11 +652,7 @@ where
             return Lookup::Ready(value);
         }
 
-        if let Some(entry) = write
-            .pending
-            .iter()
-            .find(|entry| entry.hash == hash && entry.key.eq(&key))
-        {
+        if let Some(entry) = write.pending.find(hash, |entry| entry.key.eq(&key)) {
             return Lookup::Pending(Arc::clone(entry));
         }
 
@@ -665,7 +661,9 @@ where
             key,
             cell: OnceCell::new(),
         });
-        write.pending.push(Arc::clone(&entry));
+        write
+            .pending
+            .insert_unique(hash, Arc::clone(&entry), |entry| entry.hash);
         Lookup::Pending(entry)
     }
 
@@ -695,9 +693,9 @@ where
     fn publish_if_current(&self, entry: &Arc<Entry<K, V>>) {
         debug_assert!(entry.cell.initialized());
         let mut write = self.write.lock();
-        let Some(stored) =
-            remove_pending_if(&mut write.pending, |stored| Arc::ptr_eq(stored, entry))
-        else {
+        let Some(stored) = remove_pending_if(&mut write.pending, entry.hash, |stored| {
+            Arc::ptr_eq(stored, entry)
+        }) else {
             return;
         };
 
@@ -716,9 +714,7 @@ where
         // SAFETY: The write lock serializes deletion, and the barrier has drained every reader.
         let ready = unsafe { self.ready.remove(hash, key) };
         let pending = if ready.is_none() {
-            remove_pending_if(&mut write.pending, |entry| {
-                entry.hash == hash && entry.key.borrow() == key
-            })
+            remove_pending_if(&mut write.pending, hash, |entry| entry.key.borrow() == key)
         } else {
             None
         };
@@ -730,10 +726,9 @@ where
     fn cleanup_abandoned_entry(&self, entry: Arc<Entry<K, V>>) {
         let removed = {
             let mut write = self.write.lock();
-            let Some(index) = write
+            let Ok(occupied) = write
                 .pending
-                .iter()
-                .position(|stored| Arc::ptr_eq(stored, &entry))
+                .find_entry(entry.hash, |stored| Arc::ptr_eq(stored, &entry))
             else {
                 drop(write);
                 drop(entry);
@@ -743,7 +738,7 @@ where
             // With table ownership confirmed and the writer locked against new callers, two
             // owners means the table and this cleanup guard are the only remaining references.
             if Arc::strong_count(&entry) == 2 && !entry.cell.initialized() {
-                Some(write.pending.swap_remove(index))
+                Some(occupied.remove().0)
             } else {
                 // A waiting cleanup must observe this call's reference being released while no new
                 // caller can clone the table's reference.
@@ -766,9 +761,7 @@ where
         // SAFETY: Exclusive map access proves that no reader or competing writer exists.
         let ready = unsafe { self.ready.remove(hash, &entry.key) };
         let pending = if ready.is_none() {
-            remove_pending_if(&mut write.pending, |stored| {
-                stored.hash == hash && stored.key.eq(&entry.key)
-            })
+            remove_pending_if(&mut write.pending, hash, |stored| stored.key.eq(&entry.key))
         } else {
             None
         };
@@ -779,11 +772,11 @@ where
 }
 
 fn remove_pending_if<K, V>(
-    pending: &mut PendingEntries<K, V>,
+    pending: &mut HashTable<Arc<Entry<K, V>>>,
+    hash: u64,
     matches: impl Fn(&Arc<Entry<K, V>>) -> bool,
 ) -> Option<Arc<Entry<K, V>>> {
-    let index = pending.iter().position(matches)?;
-    Some(pending.swap_remove(index))
+    Some(pending.find_entry(hash, matches).ok()?.remove().0)
 }
 
 impl<K, V, S> FromIterator<(K, V)> for OnceMap<K, V, S>
@@ -863,12 +856,7 @@ where
 {
     /// Creates a new OnceMap with the default hasher.
     pub fn new() -> Self {
-        Self::with_capacity(0)
-    }
-
-    /// Creates a new OnceMap with the default hasher and the specified capacity hint.
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self::with_capacity_and_hasher(capacity, RandomState::new())
+        Self::with_hasher(RandomState::new())
     }
 }
 
@@ -880,16 +868,11 @@ where
 {
     /// Creates a new OnceMap with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
-        Self::with_capacity_and_hasher(0, hasher)
-    }
-
-    /// Creates a new OnceMap with the specified capacity hint and hasher.
-    pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
         Self {
             ready: ReadyTrie::new(),
             readers: ReadBarrier::new(),
             write: Mutex::new(WriteState {
-                pending: Vec::with_capacity(capacity),
+                pending: HashTable::new(),
             }),
             hasher,
         }
@@ -961,6 +944,12 @@ where
     /// computation is detached but continues for callers that already joined it; its result is not
     /// stored in the map.
     ///
+    /// # Panics
+    ///
+    /// Panics if called reentrantly from a key or value trait implementation that is running during
+    /// a synchronous read of this map, such as `Eq`, `Borrow`, `Clone`, or `Debug`. Calling this
+    /// from the asynchronous initializer passed to [`compute`](Self::compute) is supported.
+    ///
     /// [`remove`]: Self::remove
     pub fn discard<Q>(&self, key: &Q)
     where
@@ -978,6 +967,12 @@ where
     /// This may wait for concurrent lookups that are already reading the map. An in-flight
     /// computation is detached but continues for callers that already joined it; its result is not
     /// stored in the map.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called reentrantly from a key or value trait implementation that is running during
+    /// a synchronous read of this map, such as `Eq`, `Borrow`, `Clone`, or `Debug`. Calling this
+    /// from the asynchronous initializer passed to [`compute`](Self::compute) is supported.
     ///
     /// [`discard`]: Self::discard
     pub fn remove<Q>(&self, key: &Q) -> Option<V>

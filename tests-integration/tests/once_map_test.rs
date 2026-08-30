@@ -30,11 +30,9 @@ use asyncband::once::OnceMap;
 fn constructors_and_default() {
     let _: OnceMap<String, i32> = OnceMap::default();
     let _: OnceMap<String, i32> = OnceMap::new();
-    let _: OnceMap<String, i32> = OnceMap::with_capacity(10);
     let _: OnceMap<String, i32> = OnceMap::with_hasher(RandomState::new());
-    let _: OnceMap<String, i32> = OnceMap::with_capacity_and_hasher(10, RandomState::new());
 
-    let map: OnceMap<String, i32> = OnceMap::with_capacity(100);
+    let map: OnceMap<String, i32> = OnceMap::new();
     assert!(format!("{map:?}").contains("OnceMap"));
 }
 

@@ -39,6 +39,17 @@ fn entry_count<K, V, S>(map: &OnceMap<K, V, S>) -> usize {
     ready + pending
 }
 
+#[derive(Default)]
+struct ConstantHasher;
+
+impl Hasher for ConstantHasher {
+    fn finish(&self) -> u64 {
+        0
+    }
+
+    fn write(&mut self, _bytes: &[u8]) {}
+}
+
 #[tokio::test]
 async fn failed_compute_removes_empty_entry() {
     let map = OnceMap::new();
@@ -127,17 +138,6 @@ fn abandoned_pending_entry_is_removed_when_last_caller_leaves() {
 
 #[test]
 fn colliding_ready_entries_can_be_unlinked_independently() {
-    #[derive(Default)]
-    struct ConstantHasher;
-
-    impl Hasher for ConstantHasher {
-        fn finish(&self) -> u64 {
-            0
-        }
-
-        fn write(&mut self, _bytes: &[u8]) {}
-    }
-
     let map: OnceMap<usize, usize, BuildHasherDefault<ConstantHasher>> =
         (0..4).map(|key| (key, key * 2)).collect();
 
@@ -148,6 +148,28 @@ fn colliding_ready_entries_can_be_unlinked_independently() {
     assert_eq!(map.get(&1), None);
     assert_eq!(map.get(&2), Some(4));
     assert_eq!(map.get(&3), None);
+}
+
+#[test]
+fn colliding_pending_entries_are_tracked_independently() {
+    let map: OnceMap<usize, usize, BuildHasherDefault<ConstantHasher>> = OnceMap::default();
+    let Lookup::Pending(first) = map.get_or_insert(1) else {
+        unreachable!()
+    };
+    let Lookup::Pending(first_waiter) = map.get_or_insert(1) else {
+        unreachable!()
+    };
+    let Lookup::Pending(second) = map.get_or_insert(2) else {
+        unreachable!()
+    };
+
+    assert!(Arc::ptr_eq(&first, &first_waiter));
+    assert!(!Arc::ptr_eq(&first, &second));
+
+    drop(first_waiter);
+    map.cleanup_abandoned_entry(first);
+    map.cleanup_abandoned_entry(second);
+    assert_eq!(entry_count(&map), 0);
 }
 
 #[test]
