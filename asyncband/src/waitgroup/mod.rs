@@ -15,43 +15,38 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A synchronization primitive for waiting on multiple tasks to complete.
+//! Wait for a set of worker handles to be dropped.
 //!
-//! Similar to Go's WaitGroup, this type allows a task to wait for multiple other
-//! tasks to finish. Each task holds a handle to the WaitGroup, and the main task
-//! can wait for all handles to be dropped before proceeding.
-//!
-//! A WaitGroup waits for a collection of tasks to finish. The main task calls
-//! [`clone()`] to create a new worker handle for each task, and can then wait
-//! for all tasks to complete by calling `.await` on the WaitGroup.
+//! A [`WaitGroup`] starts with one coordinator handle. Clone that handle once for each unit of work
+//! and move the clones into their workers. Dropping a worker handle marks that worker as complete.
+//! Awaiting the coordinator consumes it and waits until every remaining handle has been dropped.
 //!
 //! # Examples
 //!
 //! ```
 //! # #[tokio::main]
 //! # async fn main() {
-//! use std::time::Duration;
-//!
 //! use asyncband::waitgroup::WaitGroup;
-//! let wg = WaitGroup::new();
 //!
-//! for i in 0..3 {
-//!     let wg = wg.clone();
-//!     tokio::spawn(async move {
-//!         println!("Task {} starting", i);
-//!         tokio::time::sleep(Duration::from_millis(100)).await;
-//!         // wg is automatically decremented when dropped
-//!         drop(wg);
-//!     });
+//! async fn do_work() {}
+//!
+//! let group = WaitGroup::new();
+//! let mut tasks = Vec::new();
+//!
+//! for _ in 0..3 {
+//!     let worker = group.clone();
+//!     tasks.push(tokio::spawn(async move {
+//!         do_work().await;
+//!         drop(worker); // Signals completion. This would also happen at the end of the task.
+//!     }));
 //! }
 //!
-//! // Wait for all tasks to complete
-//! wg.await;
-//! println!("All tasks completed");
+//! group.await;
+//! for task in tasks {
+//!     task.await.unwrap();
+//! }
 //! # }
 //! ```
-//!
-//! [`clone()`]: WaitGroup::clone
 
 use std::fmt;
 use std::future::Future;
@@ -67,7 +62,7 @@ use crate::internal::waitset::WakerToken;
 #[cfg(test)]
 mod tests;
 
-/// A synchronization primitive for waiting on multiple tasks to complete.
+/// A group of handles whose collective completion can be awaited.
 ///
 /// See the [module level documentation](self) for more.
 pub struct WaitGroup {
@@ -104,7 +99,7 @@ impl WaitGroup {
 }
 
 impl Clone for WaitGroup {
-    /// Creates a new worker handle for the WaitGroup.
+    /// Creates a new worker handle for the wait group.
     ///
     /// This increments the WaitGroup counter. The counter will be decremented
     /// when the new handle is dropped.
@@ -133,8 +128,7 @@ impl IntoFuture for WaitGroup {
     type Output = ();
     type IntoFuture = Wait;
 
-    /// Converts the WaitGroup into a future that completes when all tasks finish. This decreases
-    /// the WaitGroup counter.
+    /// Consumes this handle and waits for all other handles to be dropped.
     fn into_future(self) -> Self::IntoFuture {
         let state = self.state.clone();
         drop(self);
@@ -142,11 +136,10 @@ impl IntoFuture for WaitGroup {
     }
 }
 
-/// A future that completes when all tasks in a WaitGroup have finished.
+/// A future that completes when every [`WaitGroup`] handle has been dropped.
 ///
-/// This type is created by either: (1) calling `.await` on a `WaitGroup`, or (2) cloning
-/// itself, which does not increase the WaitGroup counter, but creates a new future that
-/// will complete when the WaitGroup counter reaches zero.
+/// Awaiting a [`WaitGroup`] creates this future. Cloning a `Wait` creates another observer without
+/// adding a worker to the group.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Wait {
     token: Option<WakerToken>,
@@ -182,8 +175,6 @@ impl Future for Wait {
 
 impl Drop for Wait {
     fn drop(&mut self) {
-        if self.token.is_some() {
-            self.state.unregister_waker(&mut self.token);
-        }
+        self.state.unregister(&mut self.token);
     }
 }

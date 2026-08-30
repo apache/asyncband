@@ -15,9 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::Cell;
+use std::future::poll_fn;
 use std::hash::BuildHasherDefault;
 use std::hash::Hasher;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
+use std::pin::pin;
 use std::sync::Arc;
+use std::task::Poll;
 
 use super::Lookup;
 use super::OnceMap;
@@ -36,53 +42,41 @@ impl Hasher for ConstantHasher {
     fn write(&mut self, _bytes: &[u8]) {}
 }
 
-#[tokio::test]
-async fn failed_compute_removes_empty_entry() {
+#[test]
+fn failed_compute_removes_empty_entry() {
     let map = OnceMap::new();
 
-    let result: Result<i32, &str> = map.try_compute("key", async || Err("fail")).await;
+    let mut compute = pin!(map.try_compute("key", async || Err::<i32, &str>("fail")));
 
-    assert_eq!(result, Err("fail"));
+    assert_eq!(poll_once(compute.as_mut()), Poll::Ready(Err("fail")));
     assert_eq!(map.len(), 0);
 }
 
-#[tokio::test]
-async fn panicked_compute_removes_empty_entry() {
-    let map = Arc::new(OnceMap::<&str, i32>::new());
+#[test]
+fn panicked_compute_removes_empty_entry() {
+    let map = OnceMap::<&str, i32>::new();
 
-    let map_clone = map.clone();
-    let task = tokio::spawn(async move {
-        map_clone
-            .compute("key", async || {
-                panic!("oops");
-            })
-            .await
-    });
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let mut compute = pin!(map.compute("key", async || {
+            panic!("oops");
+        }));
+        let _ = poll_once(compute.as_mut());
+    }));
 
-    assert!(task.await.unwrap_err().is_panic());
+    assert!(result.is_err());
     assert_eq!(map.len(), 0);
 }
 
-#[tokio::test]
-async fn cancelled_compute_removes_empty_entry() {
-    let map = Arc::new(OnceMap::<&str, i32>::new());
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+#[test]
+fn cancelled_compute_removes_empty_entry() {
+    let map = OnceMap::<&str, i32>::new();
 
-    let map_clone = map.clone();
-    let task = tokio::spawn(async move {
-        map_clone
-            .compute("key", async move || {
-                started_tx.send(()).unwrap();
-                std::future::pending().await
-            })
-            .await
-    });
+    {
+        let mut compute = pin!(map.compute("key", async || std::future::pending::<i32>().await));
+        assert!(poll_once(compute.as_mut()).is_pending());
+        assert_eq!(map.len(), 1);
+    }
 
-    started_rx.await.unwrap();
-    assert_eq!(map.len(), 1);
-
-    task.abort();
-    assert!(task.await.unwrap_err().is_cancelled());
     assert_eq!(map.len(), 0);
 }
 
@@ -102,27 +96,33 @@ fn pending_computation_does_not_block_another_key() {
     assert_eq!(map.len(), 1);
 }
 
-#[tokio::test]
-async fn failed_compute_preserves_entry_for_waiter_retry() {
+#[test]
+fn failed_compute_preserves_entry_for_waiter_retry() {
     let map = OnceMap::new();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let released = Cell::new(false);
 
-    let first = map.try_compute("key", async move || {
-        release_rx.await.unwrap();
+    let first = map.try_compute("key", async || {
+        poll_fn(|_| {
+            released
+                .get()
+                .then_some(())
+                .map_or(Poll::Pending, Poll::Ready)
+        })
+        .await;
         Err::<i32, &str>("fail")
     });
-    tokio::pin!(first);
+    let mut first = pin!(first);
     assert!(poll_once(first.as_mut()).is_pending());
 
     let retry = map.try_compute("key", async || Ok::<i32, &str>(1));
-    tokio::pin!(retry);
+    let mut retry = pin!(retry);
     assert!(poll_once(retry.as_mut()).is_pending());
 
-    release_tx.send(()).unwrap();
-    assert_eq!(first.await, Err("fail"));
+    released.set(true);
+    assert_eq!(poll_once(first.as_mut()), Poll::Ready(Err("fail")));
 
     assert_eq!(map.len(), 1);
-    assert_eq!(retry.await, Ok(1));
+    assert_eq!(poll_once(retry.as_mut()), Poll::Ready(Ok(1)));
     assert_eq!(map.get("key"), Some(1));
 }
 

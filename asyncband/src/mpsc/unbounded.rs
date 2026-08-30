@@ -104,7 +104,7 @@ impl<T> Drop for UnboundedSender<T> {
 }
 
 impl<T> UnboundedSender<T> {
-    /// Attempts to send a message without blocking.
+    /// Sends a message without blocking.
     ///
     /// This method is not marked async because sending a message to an unbounded channel
     /// never requires any form of waiting. Because of this, the `send` method can be
@@ -113,7 +113,7 @@ impl<T> UnboundedSender<T> {
     /// If the receiver has been dropped, this function returns an error. The error includes
     /// the value passed to `send`.
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
-        // SAFETY: The sender is guaranteed to be non-null before dropped.
+        // INVARIANT: A shared borrow of the endpoint cannot overlap its destructor.
         let sender = self.sender.as_ref().unwrap();
         sender.send(value).map_err(|err| SendError::new(err.0))?;
 
@@ -189,7 +189,7 @@ impl<T> UnboundedReceiver<T> {
     /// no buffered messages remain. At that point, this `Receiver` can never receive another
     /// value.
     ///
-    /// If the buffer is empty while a sender remains, this method sleeps until a message is sent or
+    /// If the buffer is empty while a sender remains, this method waits until a message is sent or
     /// the final sender is dropped.
     ///
     /// # Cancel safety

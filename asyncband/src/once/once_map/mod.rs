@@ -53,17 +53,19 @@ pub struct OnceMap<K, V, S = RandomState> {
     hasher: S,
 }
 
-impl<K, V, S> fmt::Debug for OnceMap<K, V, S>
-where
-    K: fmt::Debug,
-    V: fmt::Debug,
-{
+impl<K, V, S> fmt::Debug for OnceMap<K, V, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Formatting user types can run arbitrary code, so release the table lock first.
-        let entries: Vec<_> = self.entries.lock().iter().cloned().collect();
-        fmt::Write::write_str(f, "OnceMap ")?;
-        f.debug_map()
-            .entries(entries.iter().map(|entry| (&entry.key, &entry.cell)))
+        let (len, pending) = {
+            let entries = self.entries.lock();
+            let pending = entries
+                .iter()
+                .filter(|entry| !entry.cell.initialized())
+                .count();
+            (entries.len(), pending)
+        };
+        f.debug_struct("OnceMap")
+            .field("len", &len)
+            .field("pending", &pending)
             .finish()
     }
 }

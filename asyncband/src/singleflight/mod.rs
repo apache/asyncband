@@ -47,17 +47,12 @@ pub struct Group<K, V, S = RandomState> {
     hasher: S,
 }
 
-impl<K, V, S> fmt::Debug for Group<K, V, S>
-where
-    K: fmt::Debug,
-    V: fmt::Debug,
-{
+impl<K, V, S> fmt::Debug for Group<K, V, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Write::write_str(f, "Group ")?;
-        let mut debug_map = f.debug_map();
-        let entries = self.entries.lock();
-        debug_map.entries(entries.iter().map(|entry| (&entry.key, &entry.cell)));
-        debug_map.finish()
+        let in_flight = self.entries.lock().len();
+        f.debug_struct("Group")
+            .field("in_flight", &in_flight)
+            .finish()
     }
 }
 

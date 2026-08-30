@@ -19,6 +19,7 @@ use std::cell::Cell;
 
 use asyncband::barrier::Barrier;
 use asyncband::broadcast;
+use asyncband::completion;
 use asyncband::condvar::Condvar;
 use asyncband::event::ManualResetEvent;
 use asyncband::event::ManualResetEventWait;
@@ -76,6 +77,10 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<ManualResetEvent>();
     assert_send_and_sync::<ManualResetEventWait<'_>>();
     assert_send_and_sync::<OwnedManualResetEventWait>();
+    assert_send_and_sync::<completion::Completer<Cell<u8>>>();
+    assert_send_and_sync::<completion::Completer<i64>>();
+    assert_send_and_sync::<completion::Completion<i64>>();
+    assert_send_and_sync::<completion::Abandoned>();
     assert_send_and_sync::<LazyCell<u32, std::future::Ready<u32>>>();
     assert_send_and_sync::<Once>();
     assert_send_and_sync::<OnceCell<u32>>();
@@ -127,6 +132,9 @@ fn movable_public_types_are_send() {
 
     let (_tx, mut rx) = watch::channel(0);
     assert_send_value(rx.changed());
+
+    let (_completer, completion) = completion::new::<i64>();
+    assert_send_value(completion.wait());
 }
 
 #[test]
@@ -138,6 +146,9 @@ fn public_types_are_unpin() {
     assert_unpin::<ManualResetEvent>();
     assert_unpin::<ManualResetEventWait<'_>>();
     assert_unpin::<OwnedManualResetEventWait>();
+    assert_unpin::<completion::Completer<i64>>();
+    assert_unpin::<completion::Completion<i64>>();
+    assert_unpin::<completion::Abandoned>();
     assert_unpin::<Latch>();
     assert_unpin::<LazyCell<u32, std::future::Ready<u32>>>();
     assert_unpin::<Once>();
