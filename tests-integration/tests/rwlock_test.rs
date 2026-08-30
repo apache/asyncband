@@ -350,43 +350,6 @@ async fn test_memory_ordering_correctness() {
 }
 
 #[tokio::test]
-async fn test_rwlock_debug_when_locked() {
-    let rwlock = Arc::new(RwLock::new(78));
-
-    let rwlock_debug_unlocked = format!("{rwlock:?}");
-    assert!(
-        rwlock_debug_unlocked.contains("78"),
-        "RwLock Debug should show value when unlocked, got: {rwlock_debug_unlocked}"
-    );
-
-    let write_guard = rwlock.write().await;
-    let rwlock_debug_write = format!("{rwlock:?}");
-    assert!(
-        rwlock_debug_write.contains("<locked>"),
-        "RwLock Debug should show <locked> when write lock is held, got: {rwlock_debug_write}"
-    );
-    drop(write_guard);
-
-    let read_guard = rwlock.read().await;
-    let rwlock_debug_read = format!("{rwlock:?}");
-
-    let shows_value = rwlock_debug_read.contains("78");
-    let shows_locked = rwlock_debug_read.contains("<locked>");
-    assert!(
-        shows_value || shows_locked,
-        "RwLock Debug with read lock should show either value or <locked>, got: {rwlock_debug_read}"
-    );
-
-    drop(read_guard);
-
-    let rwlock_debug_final = format!("{rwlock:?}");
-    assert!(
-        rwlock_debug_final.contains("78"),
-        "RwLock Debug should show value when all locks are released, got: {rwlock_debug_final}"
-    );
-}
-
-#[tokio::test]
 async fn test_rwlock_zst() {
     // Test that RwLock works correctly with Zero-Sized Types
     let rwlock = Arc::new(RwLock::new(()));

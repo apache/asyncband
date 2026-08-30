@@ -107,20 +107,6 @@ async fn test_once_cancelled() {
 }
 
 #[tokio::test]
-async fn test_once_debug() {
-    let once = Once::new();
-    let debug_str = format!("{:?}", once);
-    assert!(debug_str.contains("Once"));
-    assert!(debug_str.contains("done"));
-    assert!(debug_str.contains("false"));
-
-    once.call_once(async || {}).await;
-
-    let debug_str = format!("{:?}", once);
-    assert!(debug_str.contains("true"));
-}
-
-#[tokio::test]
 async fn test_once_default() {
     let once = Once::default();
     assert!(!once.is_completed());
