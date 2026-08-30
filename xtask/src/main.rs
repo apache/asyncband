@@ -42,6 +42,7 @@ impl Command {
             SubCommand::Build(cmd) => cmd.run(),
             SubCommand::Check(cmd) => cmd.run(),
             SubCommand::Lint(cmd) => cmd.run(),
+            SubCommand::Miri(cmd) => cmd.run(),
             SubCommand::Semver(cmd) => cmd.run(),
             SubCommand::Test(cmd) => cmd.run(),
         }
@@ -58,6 +59,8 @@ enum SubCommand {
     Check(CommandCheck),
     #[clap(about = "Run workspace quality checks.")]
     Lint(CommandLint),
+    #[clap(about = "Check memory safety with Miri.")]
+    Miri(CommandMiri),
     #[clap(about = "Verify API compatibility for a planned release.")]
     Semver(CommandSemver),
     #[clap(about = "Run unit tests.")]
@@ -97,6 +100,23 @@ impl CommandCheck {
             run_command(make_check_cmd(feature));
         }
         run_command(make_check_cmd(&features));
+    }
+}
+
+#[derive(Parser)]
+struct CommandMiri;
+
+impl CommandMiri {
+    fn run(self) {
+        run_command(make_miri_cmd(PACKAGE_NAME, &["--lib", "--all-features"]));
+        run_command(make_miri_cmd(
+            "tests-integration",
+            &["--test", "oneshot_test"],
+        ));
+        run_command(make_miri_cmd(
+            "tests-integration",
+            &["--test", "unsafe_paths_test"],
+        ));
     }
 }
 
@@ -384,6 +404,13 @@ fn make_check_cmd(features: &[String]) -> StdCommand {
     for feature in features {
         cmd.args(["--features", feature]);
     }
+    cmd
+}
+
+fn make_miri_cmd(package: &str, target: &[&str]) -> StdCommand {
+    let mut cmd = find_command("cargo");
+    cmd.args(["+nightly", "miri", "test", "--package", package]);
+    cmd.args(target);
     cmd
 }
 

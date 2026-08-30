@@ -87,6 +87,31 @@ jobs:
         run: cargo x test --no-capture
         shell: bash
 
+  miri:
+    name: Run Miri tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+      MIRIFLAGS: >-
+        -Zmiri-strict-provenance
+        -Zmiri-symbolic-alignment-check
+        -Zmiri-many-seeds=0..4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install nightly toolchain
+        run: >-
+          rustup toolchain install nightly
+          --profile minimal
+          --component miri
+          --allow-downgrade
+          --no-self-update
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Set up Miri
+        run: cargo +nightly miri setup
+      - name: Run Miri tests
+        run: cargo x miri
+
   benchmark:
     name: Run benchmarks
     runs-on: ubuntu-24.04
@@ -110,6 +135,7 @@ jobs:
     needs:
       - benchmark
       - check
+      - miri
       - test
     steps:
       - name: Guardian
@@ -117,6 +143,7 @@ jobs:
           if [[ ! ( \
                  "${{ needs.benchmark.result }}" == "success" \
               && "${{ needs.check.result }}" == "success" \
+              && "${{ needs.miri.result }}" == "success" \
               && "${{ needs.test.result }}" == "success" \
               ) ]]; then
             echo "Required jobs haven't been completed successfully."
