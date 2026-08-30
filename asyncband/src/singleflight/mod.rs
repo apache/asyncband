@@ -32,8 +32,6 @@ use crate::once::OnceCell;
 #[cfg(test)]
 mod tests;
 
-type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
-
 struct Entry<K, V> {
     hash: u64,
     key: K,
@@ -43,9 +41,9 @@ struct Entry<K, V> {
 /// Group represents a class of work and forms a namespace in which
 /// units of work can be executed with duplicate suppression.
 pub struct Group<K, V, S = RandomState> {
-    // This lock protects only entry lookup, insertion, and removal. User work is always run after
-    // releasing it.
-    entries: Mutex<Entries<K, V>>,
+    // This lock protects only entry lookup, insertion, and removal.
+    // User work is always run after releasing it.
+    entries: Mutex<HashTable<Arc<Entry<K, V>>>>,
     hasher: S,
 }
 
