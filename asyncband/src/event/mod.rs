@@ -298,36 +298,56 @@ impl ManualResetEvent {
     /// event is set never enqueues. A linked waiter therefore always belongs to an unset event, so
     /// `notified` alone decides whether a registered waiter is already committed.
     fn poll_wait(&self, waiter_id: &mut Option<WaiterId>, cx: &mut Context<'_>) -> Poll<()> {
-        let (poll, replaced_waker) = {
-            let mut state = self.state.lock();
-            match *waiter_id {
-                Some(id) if state.waiters.waiter_mut(id).notified => {
-                    let waiter = state.remove_waiter(id);
-                    *waiter_id = None;
-                    (Poll::Ready(()), waiter.waker)
+        // Ready waits require no waker, and a pending wait normally keeps the same one. Inspect the
+        // state before cloning to preserve those fast paths. If registration needs a new waker,
+        // release the lock, clone, and repeat the full state check because the clone callback may
+        // re-enter and set or reset the event.
+        let mut prepared_waker = None;
+        loop {
+            let (poll, retired_waker) = {
+                let mut state = self.state.lock();
+                match *waiter_id {
+                    Some(id) if state.waiters.waiter_mut(id).notified => {
+                        let waiter = state.remove_waiter(id);
+                        *waiter_id = None;
+                        (Poll::Ready(()), waiter.waker)
+                    }
+                    Some(id) => {
+                        debug_assert!(
+                            !state.is_set,
+                            "a linked waiter must belong to an unset event"
+                        );
+                        let waiter = state.waiters.waiter_mut(id);
+                        if prepared_waker.is_none() && waiter.will_wake(cx.waker()) {
+                            return Poll::Pending;
+                        }
+                        let Some(waker) = prepared_waker.take() else {
+                            drop(state);
+                            prepared_waker = Some(cx.waker().clone());
+                            continue;
+                        };
+                        (Poll::Pending, Some(waiter.replace_waker(waker)))
+                    }
+                    None if state.is_set => (Poll::Ready(()), None),
+                    None => {
+                        let Some(waker) = prepared_waker.take() else {
+                            drop(state);
+                            prepared_waker = Some(cx.waker().clone());
+                            continue;
+                        };
+                        *waiter_id = Some(state.waiters.push_back(Waiter {
+                            notified: false,
+                            waker: Some(waker),
+                        }));
+                        (Poll::Pending, None)
+                    }
                 }
-                Some(id) => {
-                    debug_assert!(
-                        !state.is_set,
-                        "a linked waiter must belong to an unset event"
-                    );
-                    let waiter = state.waiters.waiter_mut(id);
-                    let replaced = waiter.update_waker(cx);
-                    (Poll::Pending, replaced)
-                }
-                None if state.is_set => (Poll::Ready(()), None),
-                None => {
-                    *waiter_id = Some(state.waiters.push_back(Waiter {
-                        notified: false,
-                        waker: Some(cx.waker().clone()),
-                    }));
-                    (Poll::Pending, None)
-                }
-            }
-        };
+            };
 
-        drop(replaced_waker);
-        poll
+            drop(retired_waker);
+            drop(prepared_waker);
+            return poll;
+        }
     }
 
     fn unregister_waiter(&self, waiter_id: &mut Option<WaiterId>) {
@@ -379,15 +399,19 @@ struct Waiter {
 }
 
 impl Waiter {
-    fn update_waker(&mut self, cx: &mut Context<'_>) -> Option<Waker> {
+    fn will_wake(&self, waker: &Waker) -> bool {
+        self.waker
+            .as_ref()
+            .expect("an unnotified waiter must retain its waker")
+            .will_wake(waker)
+    }
+
+    fn replace_waker(&mut self, waker: Waker) -> Waker {
         let current = self
             .waker
             .as_mut()
             .expect("an unnotified waiter must retain its waker");
-        if current.will_wake(cx.waker()) {
-            return None;
-        }
-        Some(mem::replace(current, cx.waker().clone()))
+        mem::replace(current, waker)
     }
 }
 

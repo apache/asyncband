@@ -31,6 +31,7 @@ use std::time::Duration;
 use asyncband::barrier::Barrier;
 use asyncband::broadcast::mpmc;
 use asyncband::completion;
+use asyncband::event::ManualResetEvent;
 use asyncband::latch::Latch;
 use asyncband::watch;
 
@@ -107,6 +108,35 @@ fn completion_clones_wakers_outside_its_state_lock() {
             assert_eq!(
                 poll_with(wait.as_mut(), &waker),
                 Poll::Ready(Err(completion::Abandoned))
+            );
+        },
+    );
+}
+
+#[test]
+fn event_clones_wakers_outside_its_state_lock() {
+    assert_completes_without_deadlock(
+        "waker clone callback deadlocked against the event lock",
+        || {
+            let event = Arc::new(ManualResetEvent::new());
+            let callback_event = event.clone();
+            let waker = waker_with_clone_callback(move || callback_event.set());
+            let mut first_wait = Box::pin(event.wait());
+
+            assert_eq!(poll_with(first_wait.as_mut(), &waker), Poll::Ready(()));
+
+            event.reset();
+            let mut repolled_wait = Box::pin(event.wait());
+            assert_eq!(
+                poll_with(repolled_wait.as_mut(), Waker::noop()),
+                Poll::Pending
+            );
+
+            let callback_event = event.clone();
+            let replacement = waker_with_clone_callback(move || callback_event.set());
+            assert_eq!(
+                poll_with(repolled_wait.as_mut(), &replacement),
+                Poll::Ready(())
             );
         },
     );
