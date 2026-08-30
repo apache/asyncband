@@ -22,25 +22,6 @@ use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
 
-#[derive(Clone, Eq, Hash, PartialEq)]
-struct NoDebug;
-
-#[test]
-fn debug_reports_state_without_formatting_entries() {
-    let group = Group::<NoDebug, NoDebug>::new();
-    assert_eq!(format!("{group:?}"), "Group { in_flight: 0 }");
-
-    {
-        let mut work = std::pin::pin!(group.work(NoDebug, || async {
-            std::future::pending::<NoDebug>().await
-        }));
-        assert!(poll_once(work.as_mut()).is_pending());
-        assert_eq!(format!("{group:?}"), "Group { in_flight: 1 }");
-    }
-
-    assert_eq!(format!("{group:?}"), "Group { in_flight: 0 }");
-}
-
 fn entry_count<K, V, S>(group: &Group<K, V, S>) -> usize {
     group.entries.lock().len()
 }

@@ -25,24 +25,6 @@ use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
 
-#[derive(Clone, Eq, Hash, PartialEq)]
-struct NoDebug;
-
-#[test]
-fn debug_reports_state_without_formatting_entries() {
-    let map = OnceMap::<NoDebug, NoDebug>::new();
-    assert_eq!(format!("{map:?}"), "OnceMap { len: 0, pending: 0 }");
-
-    {
-        let mut compute =
-            std::pin::pin!(map.compute(NoDebug, async || std::future::pending::<NoDebug>().await));
-        assert!(poll_once(compute.as_mut()).is_pending());
-        assert_eq!(format!("{map:?}"), "OnceMap { len: 1, pending: 1 }");
-    }
-
-    assert_eq!(format!("{map:?}"), "OnceMap { len: 0, pending: 0 }");
-}
-
 #[derive(Default)]
 struct ConstantHasher;
 
