@@ -16,6 +16,7 @@
 // under the License.
 
 use std::borrow::Borrow;
+use std::cell::Cell;
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasherDefault;
 use std::hash::Hash;
@@ -25,6 +26,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use asyncband::once::OnceMap;
+use tests_integration::poll_once;
 
 #[test]
 fn constructors_and_default() {
@@ -236,6 +238,37 @@ async fn remove_while_computing_allows_a_new_generation() {
 
     assert_eq!(task.await.unwrap(), 1);
     assert_eq!(map.get("key"), Some(2));
+}
+
+#[test]
+fn remove_detaches_waiters_from_a_new_generation() {
+    let map = OnceMap::new();
+    let release = Cell::new(false);
+
+    let mut leader = std::pin::pin!(map.compute("key", async || {
+        std::future::poll_fn(|_| {
+            if release.get() {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+        1
+    }));
+    assert!(poll_once(leader.as_mut()).is_pending());
+
+    let mut waiter = std::pin::pin!(map.compute("key", async || 2));
+    assert!(poll_once(waiter.as_mut()).is_pending());
+
+    assert_eq!(map.remove("key"), None);
+    let mut replacement = std::pin::pin!(map.compute("key", async || 3));
+    assert_eq!(poll_once(replacement.as_mut()), std::task::Poll::Ready(3));
+
+    release.set(true);
+    assert_eq!(poll_once(leader.as_mut()), std::task::Poll::Ready(1));
+    assert_eq!(poll_once(waiter.as_mut()), std::task::Poll::Ready(1));
+    assert_eq!(map.get("key"), Some(3));
 }
 
 #[tokio::test]

@@ -19,6 +19,7 @@ use std::hash::BuildHasherDefault;
 use std::hash::Hasher;
 use std::sync::Arc;
 
+use super::InitializationGuard;
 use super::Lookup;
 use super::OnceMap;
 use crate::test_support::poll_once;
@@ -103,7 +104,7 @@ fn pending_computation_does_not_block_another_key() {
 }
 
 #[tokio::test]
-async fn failed_compute_preserves_entry_for_waiter_retry() {
+async fn failed_compute_wakes_waiter_to_retry() {
     let map = OnceMap::new();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
 
@@ -121,7 +122,7 @@ async fn failed_compute_preserves_entry_for_waiter_retry() {
     release_tx.send(()).unwrap();
     assert_eq!(first.await, Err("fail"));
 
-    assert_eq!(map.len(), 1);
+    assert_eq!(map.len(), 0);
     assert_eq!(retry.await, Ok(1));
     assert_eq!(map.get("key"), Some(1));
 }
@@ -129,11 +130,11 @@ async fn failed_compute_preserves_entry_for_waiter_retry() {
 #[test]
 fn abandoned_pending_entry_is_removed_when_last_caller_leaves() {
     let map = OnceMap::<&str, i32>::new();
-    let Lookup::Pending(entry) = map.get_or_insert("key") else {
+    let Lookup::Start(entry) = map.lookup("key") else {
         unreachable!()
     };
 
-    map.cleanup_abandoned_entry(entry);
+    drop(InitializationGuard::new(&map, entry));
 
     assert_eq!(map.len(), 0);
 }
@@ -155,13 +156,13 @@ fn colliding_ready_entries_can_be_unlinked_independently() {
 #[test]
 fn colliding_pending_entries_are_tracked_independently() {
     let map: OnceMap<usize, usize, BuildHasherDefault<ConstantHasher>> = OnceMap::default();
-    let Lookup::Pending(first) = map.get_or_insert(1) else {
+    let Lookup::Start(first) = map.lookup(1) else {
         unreachable!()
     };
-    let Lookup::Pending(first_waiter) = map.get_or_insert(1) else {
+    let Lookup::Wait(_, first_waiter) = map.lookup(1) else {
         unreachable!()
     };
-    let Lookup::Pending(second) = map.get_or_insert(2) else {
+    let Lookup::Start(second) = map.lookup(2) else {
         unreachable!()
     };
 
@@ -169,7 +170,7 @@ fn colliding_pending_entries_are_tracked_independently() {
     assert!(!Arc::ptr_eq(&first, &second));
 
     drop(first_waiter);
-    map.cleanup_abandoned_entry(first);
-    map.cleanup_abandoned_entry(second);
+    drop(InitializationGuard::new(&map, first));
+    drop(InitializationGuard::new(&map, second));
     assert_eq!(map.len(), 0);
 }

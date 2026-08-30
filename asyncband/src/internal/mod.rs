@@ -24,6 +24,7 @@ pub(crate) mod atomic_waker;
     feature = "latch",
     feature = "mpsc",
     feature = "mutex",
+    feature = "once-map",
     feature = "rwlock",
     feature = "semaphore",
     feature = "waitgroup",
@@ -52,6 +53,7 @@ pub(crate) mod value_cell;
     feature = "latch",
     feature = "mpsc",
     feature = "mutex",
+    feature = "once-map",
     feature = "rwlock",
     feature = "semaphore",
     feature = "waitgroup",
@@ -83,11 +85,12 @@ pub(crate) mod waitlist;
     feature = "barrier",
     feature = "broadcast",
     feature = "latch",
+    feature = "once-map",
     feature = "once",
     feature = "waitgroup",
     feature = "watch",
 ))]
-// `barrier` constructs a wait set with `with_capacity`, while countdown-based primitives use
-// `new`. One constructor is therefore unused in every single-primitive build.
+// `barrier` constructs a wait set with `with_capacity`, while the other primitives use `new`. One
+// constructor is therefore unused in every single-primitive build.
 #[allow(dead_code)]
 pub(crate) mod waitset;
