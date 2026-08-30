@@ -91,7 +91,7 @@ use crate::semaphore::Semaphore;
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct PoolConfig {
-    /// Maximum size of the [`Pool`].
+    /// Maximum size of the [`Pool`]. Must be greater than zero.
     pub max_size: usize,
 
     /// Queue strategy of the [`Pool`].
@@ -104,7 +104,9 @@ pub struct PoolConfig {
 }
 
 impl PoolConfig {
-    /// Creates a new [`PoolConfig`].
+    /// Creates a new [`PoolConfig`] for a pool with the given maximum size.
+    ///
+    /// [`Pool::new`] panics if `max_size` is zero.
     pub fn new(max_size: usize) -> Self {
         Self {
             max_size,
@@ -174,7 +176,16 @@ where
 
 impl<M: ManageObject> Pool<M> {
     /// Creates a new [`Pool`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `config.max_size` is zero.
     pub fn new(config: PoolConfig, manager: M) -> Arc<Self> {
+        assert!(
+            config.max_size > 0,
+            "bounded pool max_size must be greater than zero"
+        );
+
         let permits = Arc::new(Semaphore::new(config.max_size));
         let slots = Mutex::new(PoolState::new());
 
