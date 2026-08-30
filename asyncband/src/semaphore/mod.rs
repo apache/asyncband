@@ -497,7 +497,7 @@ impl OwnedSemaphorePermit {
         self.permits = 0;
     }
 
-    /// Merge two [`SemaphorePermit`] instances together, consuming `other`
+    /// Merge two [`OwnedSemaphorePermit`] instances together, consuming `other`
     /// without releasing the permits it holds.
     ///
     /// Permits held by both `self` and `other` are released when `self` drops.
@@ -515,10 +515,10 @@ impl OwnedSemaphorePermit {
     /// use asyncband::semaphore::Semaphore;
     ///
     /// let sem = Arc::new(Semaphore::new(10));
-    /// let mut permit = sem.try_acquire(1).unwrap();
+    /// let mut permit = sem.clone().try_acquire_owned(1).unwrap();
     ///
     /// for _ in 0..9 {
-    ///     let new_permit = sem.try_acquire(1).unwrap();
+    ///     let new_permit = sem.clone().try_acquire_owned(1).unwrap();
     ///     // Merge individual permits into a single one.
     ///     permit.merge(new_permit)
     /// }
@@ -582,10 +582,12 @@ impl OwnedSemaphorePermit {
     /// # Examples
     ///
     /// ```
+    /// use std::sync::Arc;
+    ///
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Semaphore::new(5);
-    /// let permit = sem.try_acquire(3).unwrap();
+    /// let sem = Arc::new(Semaphore::new(5));
+    /// let permit = sem.try_acquire_owned(3).unwrap();
     /// assert_eq!(permit.permits(), 3);
     /// ```
     pub fn permits(&self) -> usize {
