@@ -22,7 +22,7 @@ use crate::internal::value_cell::ValueCell;
 use crate::semaphore::Semaphore;
 use crate::semaphore::SemaphorePermit;
 
-/// A thread-safe cell which can nominally be written to only once.
+/// A thread-safe cell whose value is asynchronously initialized at most once.
 ///
 /// Callers provide an initializer when accessing an empty cell. An initializer that returns an
 /// error, panics, or is cancelled leaves the cell empty so a later caller can retry. Use
@@ -44,12 +44,10 @@ use crate::semaphore::SemaphorePermit;
 /// let handle2 = tokio::spawn(async { CELL.get_or_init(move || async { 2 }).await });
 /// let result1 = handle1.await.unwrap();
 /// let result2 = handle2.await.unwrap();
-/// println!("Results: {}, {}", result1, result2);
+/// assert_eq!(result1, result2);
+/// assert!(*result1 == 1 || *result1 == 2);
 /// # }
 /// ```
-///
-/// The outputs must be either `Results: 1, 1` or `Results: 2, 2`, i.e. once the value is set via
-/// an asynchronous function, the value inside the `OnceCell` will be immutable.
 pub struct OnceCell<T> {
     value: ValueCell<T>,
     semaphore: Semaphore,
@@ -253,7 +251,7 @@ impl<T> OnceCell<T> {
     /// Initializes the contents of the cell to `value` if the cell was uninitialized,
     /// then returns a reference to it.
     ///
-    /// May wait if another thread is currently attempting to initialize the cell. The cell is
+    /// May wait if another task is currently attempting to initialize the cell. The cell is
     /// guaranteed to contain a value when `try_insert` returns, though not necessarily the
     /// one provided.
     ///

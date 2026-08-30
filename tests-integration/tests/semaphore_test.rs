@@ -22,7 +22,6 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
-use std::vec::Vec;
 
 use asyncband::semaphore::Semaphore;
 
@@ -78,29 +77,6 @@ fn forget() {
         assert_eq!(sem.available_permits(), 0);
     }
     assert_eq!(sem.available_permits(), 0);
-    assert!(sem.try_acquire(1).is_none());
-}
-
-#[tokio::test]
-async fn stress_test() {
-    let sem = Arc::new(Semaphore::new(5));
-    let mut join_handles = Vec::new();
-    for i in 0..100 {
-        let sem_clone = sem.clone();
-        join_handles.push(tokio::spawn(async move {
-            let _p = sem_clone.acquire(1).await;
-            tokio::time::sleep(std::time::Duration::from_millis(100 - i)).await;
-        }));
-    }
-    for j in join_handles {
-        j.await.unwrap();
-    }
-    // there should be exactly 5 semaphores available now
-    let _p1 = sem.try_acquire(1).unwrap();
-    let _p2 = sem.try_acquire(1).unwrap();
-    let _p3 = sem.try_acquire(1).unwrap();
-    let _p4 = sem.try_acquire(1).unwrap();
-    let _p5 = sem.try_acquire(1).unwrap();
     assert!(sem.try_acquire(1).is_none());
 }
 

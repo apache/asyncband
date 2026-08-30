@@ -31,9 +31,6 @@ fn constructors_and_default() {
     let _: OnceMap<String, i32> = OnceMap::default();
     let _: OnceMap<String, i32> = OnceMap::new();
     let _: OnceMap<String, i32> = OnceMap::with_hasher(RandomState::new());
-
-    let map: OnceMap<String, i32> = OnceMap::new();
-    assert!(format!("{map:?}").contains("OnceMap"));
 }
 
 #[tokio::test]

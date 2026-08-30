@@ -24,10 +24,9 @@
 //!   shutdown request.
 //! * [`ShutdownWatch`] can observe the shutdown request without delaying completion.
 //!
-//! Internally, the shutdown signal is implemented using a countdown latch, and the task completion
-//! is tracked using a wait group. [`Shutdown`] is cloneable, allowing multiple control handles to
-//! request shutdown or wait for completion. [`ShutdownGuard`] is also cloneable; each clone keeps
-//! completion pending independently until it is dropped.
+//! [`Shutdown`] is cloneable, allowing multiple control handles to request shutdown or wait for
+//! completion. [`ShutdownGuard`] is also cloneable; each clone keeps completion pending
+//! independently until it is dropped.
 //!
 //! Awaiting [`Shutdown`] requests shutdown and then waits until all [`ShutdownGuard`] handles have
 //! been dropped. The request is made when the future is first polled, not when the value is created
@@ -40,18 +39,24 @@
 //! # #[tokio::main]
 //! # async fn main() {
 //! let (shutdown, guard) = asyncband::shutdown::new();
+//! let mut tasks = Vec::new();
 //!
-//! for i in 0..3 {
+//! for _ in 0..3 {
 //!     let guard = guard.clone();
-//!     tokio::spawn(async move {
-//!         println!("Task {} starting", i);
+//!     let task = tokio::spawn(async move {
 //!         guard.shutdown_requested().await;
-//!         println!("Task {} done", i);
+//!         1
 //!     });
+//!     tasks.push(task);
 //! }
 //! drop(guard);
 //!
 //! shutdown.await;
+//! let mut completed = 0;
+//! for task in tasks {
+//!     completed += task.await.unwrap();
+//! }
+//! assert_eq!(completed, 3);
 //! # }
 //! ```
 
@@ -180,10 +185,9 @@ impl ShutdownGuard {
         self.latch.wait().await;
     }
 
-    /// Returns an owned future that resolves when shutdown is requested.
+    /// Returns a future that resolves when shutdown is requested.
     ///
-    /// The returned future has no lifetime constraints and does not keep shutdown completion
-    /// pending.
+    /// The returned future can be moved into a spawned task.
     pub fn shutdown_requested_owned(&self) -> impl Future<Output = ()> + 'static {
         self.latch.clone().wait_owned()
     }

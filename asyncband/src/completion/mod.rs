@@ -97,7 +97,7 @@ enum Status {
 
 /// The error returned by [`Completion::wait`] when the completer was dropped without a value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Abandoned;
+pub struct Abandoned(());
 
 impl fmt::Display for Abandoned {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -158,15 +158,14 @@ impl<T> Completer<T> {
                 drop(value);
                 panic!("pending completion value must be unset");
             }
+            // Publish the value before making completion observable and detaching its waiters.
             state.status = Status::Completed;
-            (!state.waiters.is_empty()).then(|| state.waiters.take_wakers())
+            state.waiters.drain()
         };
         // `complete` consumes the only completer. Disarm its destructor before invoking arbitrary
         // wake callbacks; the completed state no longer needs abandonment handling.
         self.shared = Weak::new();
-        if let Some(wakers) = wakers {
-            wake_all(wakers);
-        }
+        wake_all(wakers);
         Ok(())
     }
 }
@@ -181,12 +180,11 @@ impl<T> Drop for Completer<T> {
             if state.status != Status::Pending {
                 return;
             }
+            // Publish abandonment and detach its waiters atomically with respect to registration.
             state.status = Status::Abandoned;
-            (!state.waiters.is_empty()).then(|| state.waiters.take_wakers())
+            state.waiters.drain()
         };
-        if let Some(wakers) = wakers {
-            wake_all(wakers);
-        }
+        wake_all(wakers);
     }
 }
 
@@ -225,7 +223,7 @@ impl<T> Completion<T> {
     pub async fn wait(&self) -> Result<&T, Abandoned> {
         Wait {
             completion: self,
-            registration: None,
+            token: None,
         }
         .await
     }
@@ -233,7 +231,7 @@ impl<T> Completion<T> {
 
 struct Wait<'a, T> {
     completion: &'a Completion<T>,
-    registration: Option<WakerToken>,
+    token: Option<WakerToken>,
 }
 
 impl<'a, T> Future for Wait<'a, T> {
@@ -241,6 +239,10 @@ impl<'a, T> Future for Wait<'a, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
+        // Terminal waits require no waker, so inspect the state before cloning. If a pending wait
+        // needs a new waker, release the lock, clone, and repeat the full state check before
+        // registration. The loop executes at most twice: once to prepare a waker and once to
+        // register it or observe the intervening terminal transition.
         let mut prepared_waker = None;
         loop {
             let (poll, retired_waker) = {
@@ -248,9 +250,7 @@ impl<'a, T> Future for Wait<'a, T> {
                 match state.status {
                     Status::Pending => {
                         if prepared_waker.is_none()
-                            && state
-                                .waiters
-                                .registered_waker_will_wake(&this.registration, cx.waker())
+                            && state.waiters.will_wake(&this.token, cx.waker())
                         {
                             return Poll::Pending;
                         }
@@ -259,13 +259,11 @@ impl<'a, T> Future for Wait<'a, T> {
                             prepared_waker = Some(cx.waker().clone());
                             continue;
                         };
-                        let retired = state
-                            .waiters
-                            .register_owned_waker(&mut this.registration, waker);
+                        let retired = state.waiters.register(&mut this.token, waker);
                         (Poll::Pending, retired)
                     }
                     Status::Completed => {
-                        let retired = state.waiters.unregister_waker(&mut this.registration);
+                        let retired = state.waiters.unregister(&mut this.token);
                         let completion: &'a Completion<T> = this.completion;
                         let value = completion
                             .shared
@@ -275,8 +273,8 @@ impl<'a, T> Future for Wait<'a, T> {
                         (Poll::Ready(Ok(value)), retired)
                     }
                     Status::Abandoned => {
-                        let retired = state.waiters.unregister_waker(&mut this.registration);
-                        (Poll::Ready(Err(Abandoned)), retired)
+                        let retired = state.waiters.unregister(&mut this.token);
+                        (Poll::Ready(Err(Abandoned(()))), retired)
                     }
                 }
             };
@@ -289,9 +287,13 @@ impl<'a, T> Future for Wait<'a, T> {
 
 impl<T> Drop for Wait<'_, T> {
     fn drop(&mut self) {
+        if self.token.is_none() {
+            return;
+        }
+
         let waker = {
             let mut state = self.completion.shared.state.lock();
-            state.waiters.unregister_waker(&mut self.registration)
+            state.waiters.unregister(&mut self.token)
         };
         drop(waker);
     }

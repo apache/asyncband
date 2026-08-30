@@ -15,7 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A multi-producer, single-consumer queue for sending values between asynchronous tasks.
+//! Multi-producer, single-consumer channels for asynchronous tasks.
+//!
+//! [`bounded`] applies backpressure once its fixed-capacity buffer fills. [`unbounded`] never waits
+//! to send while the receiver is alive, but a slow receiver can cause memory use to grow without a
+//! configured limit.
 
 mod bounded;
 mod error;

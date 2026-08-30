@@ -40,23 +40,20 @@
 //! use asyncband::mutex::Mutex;
 //!
 //! let pair = Arc::new((Mutex::new(false), Condvar::new()));
-//! let pair_clone = pair.clone();
+//! let notifier_pair = pair.clone();
 //!
-//! // Inside our lock, spawn a new thread, and then wait for it to start.
-//! tokio::spawn(async move {
-//!     let (lock, cvar) = &*pair_clone;
-//!     let mut started = lock.lock().await;
-//!     *started = true;
-//!     // We notify the condvar that the value has changed.
+//! let notifier = tokio::spawn(async move {
+//!     let (lock, cvar) = &*notifier_pair;
+//!     let mut ready = lock.lock().await;
+//!     *ready = true;
 //!     cvar.notify_one();
 //! });
 //!
-//! // Wait for the thread to start up.
 //! let (lock, cvar) = &*pair;
-//! let mut started = lock.lock().await;
-//! while !*started {
-//!     started = cvar.wait(started).await;
-//! }
+//! let ready = cvar.wait_while(lock.lock().await, |ready| !*ready).await;
+//! assert!(*ready);
+//! drop(ready);
+//! notifier.await.unwrap();
 //! # }
 //! ```
 
@@ -247,21 +244,20 @@ impl Condvar {
     /// let pair = Arc::new((Mutex::new(false), Condvar::new()));
     /// let pair_clone = pair.clone();
     ///
-    /// tokio::spawn(async move {
+    /// let notifier = tokio::spawn(async move {
     ///     let (lock, cvar) = &*pair_clone;
     ///     let mut started = lock.lock().await;
     ///     *started = true;
-    ///     // We notify the condvar that the value has changed.
     ///     cvar.notify_one();
     /// });
     ///
-    /// // Wait for the thread to start up.
     /// let (lock, cvar) = &*pair;
-    /// // As long as the value inside the `Mutex<bool>` is `false`, we wait.
     /// let guard = cvar
     ///     .wait_while(lock.lock().await, |started| !*started)
     ///     .await;
     /// assert!(*guard);
+    /// drop(guard);
+    /// notifier.await.unwrap();
     /// # }
     /// ```
     pub async fn wait_while<'a, T, F>(
@@ -293,21 +289,20 @@ impl Condvar {
     /// let pair = (Arc::new(Mutex::new(false)), Arc::new(Condvar::new()));
     /// let pair_clone = pair.clone();
     ///
-    /// tokio::spawn(async move {
+    /// let notifier = tokio::spawn(async move {
     ///     let (lock, cvar) = pair_clone;
     ///     let mut started = lock.lock_owned().await;
     ///     *started = true;
-    ///     // We notify the condvar that the value has changed.
     ///     cvar.notify_one();
     /// });
     ///
-    /// // Wait for the thread to start up.
     /// let (lock, cvar) = pair;
-    /// // As long as the value inside the `Mutex<bool>` is `false`, we wait.
     /// let guard = cvar
     ///     .wait_while_owned(lock.lock_owned().await, |started| !*started)
     ///     .await;
     /// assert!(*guard);
+    /// drop(guard);
+    /// notifier.await.unwrap();
     /// # }
     /// ```
     pub async fn wait_while_owned<T, F>(
