@@ -10,13 +10,14 @@ All notable changes to this project will be documented in this file.
 
 * Gate all exported primitives behind opt-in Cargo features and enable no features by default; downstream dependencies must explicitly enable the APIs they use.
 * Raise the minimum supported Rust version from 1.85.0 to 1.86.0.
-* Remove `admission::FairShare` and its `admission` Cargo feature from the feature set.
+* Remove the `admission` module, including `FairShare`, `FairSharePermit`, and `OwnedFairSharePermit`.
 * Remove the `asyncband::atomicbox` module and its `AtomicBox` and `AtomicOptionBox` types from the public API.
-* Remove the lossy `broadcast::overflow` channel; the new `broadcast::mpmc::unbounded` channel provides lossless unbounded retention under the retained `broadcast` Cargo feature.
+* Remove the lossy `broadcast::overflow` channel; use the new lossless `broadcast::mpmc::unbounded` channel instead.
+* Remove `OnceMap::with_capacity` and `OnceMap::with_capacity_and_hasher`; use `OnceMap::new` or `OnceMap::with_hasher`, which allocate the backing table lazily.
 * Rename `oneshot::Sender::is_closed` and `oneshot::Receiver::is_closed` to `is_disconnected`.
 * Remove `Semaphore::try_acquire_and_forget`, `Semaphore::acquire_and_forget`, `Semaphore::try_acquire_owned_and_forget`, and `Semaphore::acquire_owned_and_forget`; acquire a permit and call its `forget` method instead.
 * Replace `Semaphore::forget` with `Semaphore::drain_permits` and `Semaphore::forget_exact` with `Semaphore::reduce_permits`; permit-level `forget` methods are unchanged.
-* Rename `ShutdownSend` and `ShutdownRecv` to `Shutdown` and `ShutdownGuard`; rename `shutdown::new_pair` to `shutdown::new`; make `Shutdown` awaitable for requesting shutdown and awaiting completion; and rename the remaining operations to `request_shutdown`, `watch`, `into_watch`, `is_shutdown_requested`, `shutdown_requested`, and `shutdown_requested_owned`.
+* Redesign graceful shutdown: rename `ShutdownSend` and `ShutdownRecv` to `Shutdown` and `ShutdownGuard`, and `shutdown::new_pair` to `shutdown::new`; replace `ShutdownSend::shutdown` with `Shutdown::request_shutdown` and `ShutdownSend::await_shutdown` with awaiting `Shutdown`; rename `is_shutdown_now`, `is_shutdown`, and `is_shutdown_owned` to `is_shutdown_requested`, `shutdown_requested`, and `shutdown_requested_owned`; and add `ShutdownGuard::into_watch`.
 
 ### New features
 
