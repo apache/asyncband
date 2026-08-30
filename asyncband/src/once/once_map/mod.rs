@@ -624,25 +624,6 @@ where
     }
 }
 
-impl<K, V, S> OnceMap<K, V, S> {
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        let ready = self.readers.read(|| {
-            let mut len = 0;
-            // SAFETY: The read barrier protects every allocation visited by the trie.
-            unsafe { self.ready.for_each(|_| len += 1) };
-            len
-        });
-        let pending = self.write.lock().pending.len();
-        ready + pending
-    }
-
-    #[cfg(test)]
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
 impl<K, V, S> OnceMap<K, V, S>
 where
     K: Eq + Hash,

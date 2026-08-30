@@ -28,6 +28,17 @@ use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
 
+fn entry_count<K, V, S>(map: &OnceMap<K, V, S>) -> usize {
+    let ready = map.readers.read(|| {
+        let mut len = 0;
+        // SAFETY: The read barrier protects every allocation visited by the trie.
+        unsafe { map.ready.for_each(|_| len += 1) };
+        len
+    });
+    let pending = map.write.lock().pending.len();
+    ready + pending
+}
+
 #[tokio::test]
 async fn failed_compute_removes_empty_entry() {
     let map = OnceMap::new();
@@ -35,7 +46,7 @@ async fn failed_compute_removes_empty_entry() {
     let result: Result<i32, &str> = map.try_compute("key", async || Err("fail")).await;
 
     assert_eq!(result, Err("fail"));
-    assert!(map.is_empty());
+    assert_eq!(entry_count(&map), 0);
 }
 
 #[tokio::test]
@@ -52,7 +63,7 @@ async fn panicked_compute_removes_empty_entry() {
     });
 
     assert!(task.await.unwrap_err().is_panic());
-    assert!(map.is_empty());
+    assert_eq!(entry_count(&map), 0);
 }
 
 #[tokio::test]
@@ -71,11 +82,11 @@ async fn cancelled_compute_removes_empty_entry() {
     });
 
     started_rx.await.unwrap();
-    assert_eq!(map.len(), 1);
+    assert_eq!(entry_count(&map), 1);
 
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
-    assert!(map.is_empty());
+    assert_eq!(entry_count(&map), 0);
 }
 
 #[tokio::test]
@@ -97,7 +108,7 @@ async fn failed_compute_preserves_entry_for_waiter_retry() {
     release_tx.send(()).unwrap();
     assert_eq!(first.await, Err("fail"));
 
-    assert_eq!(map.len(), 1);
+    assert_eq!(entry_count(&map), 1);
     assert_eq!(retry.await, Ok(1));
     assert_eq!(map.get("key"), Some(1));
 }
@@ -111,7 +122,7 @@ fn abandoned_pending_entry_is_removed_when_last_caller_leaves() {
 
     map.cleanup_abandoned_entry(entry);
 
-    assert!(map.is_empty());
+    assert_eq!(entry_count(&map), 0);
 }
 
 #[test]

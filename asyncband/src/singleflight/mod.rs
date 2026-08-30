@@ -63,18 +63,6 @@ where
     }
 }
 
-impl<K, V, S> Group<K, V, S> {
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.entries.lock().len()
-    }
-
-    #[cfg(test)]
-    fn is_empty(&self) -> bool {
-        self.entries.lock().is_empty()
-    }
-}
-
 impl<K, V, S> Group<K, V, S>
 where
     K: Eq + Hash,

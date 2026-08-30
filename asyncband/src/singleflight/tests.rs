@@ -22,6 +22,10 @@ use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
 
+fn entry_count<K, V, S>(group: &Group<K, V, S>) -> usize {
+    group.entries.lock().len()
+}
+
 #[tokio::test]
 async fn panicked_work_removes_empty_entry() {
     let group = Arc::new(Group::<&str, String>::new());
@@ -36,7 +40,7 @@ async fn panicked_work_removes_empty_entry() {
     });
 
     assert!(task.await.unwrap_err().is_panic());
-    assert!(group.is_empty());
+    assert_eq!(entry_count(&group), 0);
 
     let result = group.work("key", || async { "success".to_owned() }).await;
     assert_eq!(result, "success");
@@ -58,11 +62,11 @@ async fn cancelled_work_removes_empty_entry() {
     });
 
     started_rx.await.unwrap();
-    assert_eq!(group.len(), 1);
+    assert_eq!(entry_count(&group), 1);
 
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
-    assert!(group.is_empty());
+    assert_eq!(entry_count(&group), 0);
 }
 
 #[tokio::test]
@@ -73,7 +77,7 @@ async fn failed_try_work_removes_empty_entry() {
         .try_work("key", || async { Err::<&str, &str>("error") })
         .await;
     assert_eq!(result, Err("error"));
-    assert!(group.is_empty());
+    assert_eq!(entry_count(&group), 0);
 
     let retry = group
         .try_work("key", || async { Ok::<&str, ()>("success") })
@@ -100,7 +104,7 @@ async fn failed_try_work_preserves_entry_for_waiter_retry() {
     release_tx.send(()).unwrap();
     assert_eq!(first.await, Err("fail"));
 
-    assert_eq!(group.len(), 1);
+    assert_eq!(entry_count(&group), 1);
     assert_eq!(retry.await, Ok("success"));
-    assert!(group.is_empty());
+    assert_eq!(entry_count(&group), 0);
 }
