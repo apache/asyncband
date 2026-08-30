@@ -180,7 +180,7 @@ impl Barrier {
             state: Mutex::new(BarrierState {
                 arrived: 0,
                 generation: 0,
-                waiters: WaitSet::with_capacity(n.saturating_sub(1) as usize),
+                waiters: WaitSet::with_capacity((n - 1) as usize),
             }),
         }
     }
