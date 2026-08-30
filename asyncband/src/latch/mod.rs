@@ -55,7 +55,6 @@
 //! [`count_down()`]: Latch::count_down
 //! [`arrive()`]: Latch::arrive
 
-use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -258,19 +257,10 @@ impl Latch {
     }
 }
 
-/// A wait future returned by [`Latch::wait()`].
-///
-/// This future will complete when the latch count reaches zero.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct LatchWait<'a> {
+struct LatchWait<'a> {
     token: Option<WakerToken>,
     latch: &'a Latch,
-}
-
-impl fmt::Debug for LatchWait<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LatchWait").finish_non_exhaustive()
-    }
 }
 
 impl Future for LatchWait<'_> {
@@ -288,19 +278,10 @@ impl Drop for LatchWait<'_> {
     }
 }
 
-/// An owned wait future returned by [`Latch::wait()`].
-///
-/// This future will complete when the latch count reaches zero.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct OwnedLatchWait {
+struct OwnedLatchWait {
     token: Option<WakerToken>,
     latch: Arc<Latch>,
-}
-
-impl fmt::Debug for OwnedLatchWait {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OwnedLatchWait").finish_non_exhaustive()
-    }
 }
 
 impl Future for OwnedLatchWait {
