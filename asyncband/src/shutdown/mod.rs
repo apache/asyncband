@@ -185,10 +185,10 @@ impl ShutdownGuard {
         self.latch.wait().await;
     }
 
-    /// Returns an owned future that resolves when shutdown is requested.
+    /// Returns a future that can outlive this guard and resolves when shutdown is requested.
     ///
-    /// The returned future has no lifetime constraints and does not itself keep shutdown
-    /// completion pending. This guard continues to do so until it is dropped.
+    /// The future only observes the request and does not delay shutdown completion. This guard
+    /// delays completion until it is dropped.
     pub fn shutdown_requested_owned(&self) -> impl Future<Output = ()> + 'static {
         self.latch.clone().wait_owned()
     }
