@@ -257,7 +257,7 @@ impl ManualResetEvent {
     /// assert_eq!(released, "released");
     /// # }
     /// ```
-    pub fn wait(&self) -> ManualResetEventWait<'_> {
+    pub fn wait(&self) -> impl Future<Output = ()> + Send + Sync + Unpin + '_ {
         ManualResetEventWait {
             waiter: None,
             event: self,
@@ -285,7 +285,7 @@ impl ManualResetEvent {
     /// waiter.await.unwrap();
     /// # }
     /// ```
-    pub fn wait_owned(self: Arc<Self>) -> OwnedManualResetEventWait {
+    pub fn wait_owned(self: Arc<Self>) -> impl Future<Output = ()> + Send + Sync + Unpin + 'static {
         OwnedManualResetEventWait {
             waiter: None,
             event: self,
@@ -420,7 +420,7 @@ impl Waiter {
 /// Dropping a pending wait unregisters only that waiter; it leaves the event state and every other
 /// waiter untouched.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct ManualResetEventWait<'a> {
+struct ManualResetEventWait<'a> {
     waiter: Option<WaiterId>,
     event: &'a ManualResetEvent,
 }
@@ -451,7 +451,7 @@ impl Drop for ManualResetEventWait<'_> {
 ///
 /// This behaves like [`ManualResetEventWait`] and keeps the event alive through its [`Arc`].
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct OwnedManualResetEventWait {
+struct OwnedManualResetEventWait {
     waiter: Option<WaiterId>,
     event: Arc<ManualResetEvent>,
 }

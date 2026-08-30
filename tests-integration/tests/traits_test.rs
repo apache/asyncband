@@ -16,14 +16,13 @@
 // under the License.
 
 use std::cell::Cell;
+use std::sync::Arc;
 
 use asyncband::barrier::Barrier;
 use asyncband::broadcast;
 use asyncband::completion;
 use asyncband::condvar::Condvar;
 use asyncband::event::ManualResetEvent;
-use asyncband::event::ManualResetEventWait;
-use asyncband::event::OwnedManualResetEventWait;
 use asyncband::latch::Latch;
 use asyncband::mpsc;
 use asyncband::mutex::Mutex;
@@ -71,12 +70,14 @@ impl ManageObject for PoolManager {
 #[test]
 fn public_types_are_send_and_sync() {
     fn assert_send_and_sync<T: Send + Sync>() {}
+    fn assert_send_and_sync_value<T: Send + Sync>(_: T) {}
 
     assert_send_and_sync::<Barrier>();
     assert_send_and_sync::<Condvar>();
     assert_send_and_sync::<ManualResetEvent>();
-    assert_send_and_sync::<ManualResetEventWait<'_>>();
-    assert_send_and_sync::<OwnedManualResetEventWait>();
+    let event = ManualResetEvent::new();
+    assert_send_and_sync_value(event.wait());
+    assert_send_and_sync_value(Arc::new(ManualResetEvent::new()).wait_owned());
     assert_send_and_sync::<completion::Completer<Cell<u8>>>();
     assert_send_and_sync::<completion::Completer<i64>>();
     assert_send_and_sync::<completion::Completion<i64>>();
@@ -140,12 +141,14 @@ fn movable_public_types_are_send() {
 #[test]
 fn public_types_are_unpin() {
     fn assert_unpin<T: Unpin>() {}
+    fn assert_unpin_value<T: Unpin>(_: T) {}
 
     assert_unpin::<Barrier>();
     assert_unpin::<Condvar>();
     assert_unpin::<ManualResetEvent>();
-    assert_unpin::<ManualResetEventWait<'_>>();
-    assert_unpin::<OwnedManualResetEventWait>();
+    let event = ManualResetEvent::new();
+    assert_unpin_value(event.wait());
+    assert_unpin_value(Arc::new(ManualResetEvent::new()).wait_owned());
     assert_unpin::<completion::Completer<i64>>();
     assert_unpin::<completion::Completion<i64>>();
     assert_unpin::<completion::Abandoned>();

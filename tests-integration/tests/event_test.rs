@@ -34,7 +34,6 @@ use std::thread;
 use std::time::Duration;
 
 use asyncband::event::ManualResetEvent;
-use asyncband::event::OwnedManualResetEventWait;
 use tests_integration::poll_once;
 
 struct TrackWake(AtomicUsize);
@@ -271,15 +270,16 @@ fn wakers_are_woken_and_dropped_outside_the_internal_lock() {
 // A waker that resets the event and registers a fresh waiter from inside the wake callback.
 struct ResetAndRegister {
     event: Arc<ManualResetEvent>,
-    fresh: Mutex<Option<OwnedManualResetEventWait>>,
+    fresh: Mutex<Option<Pin<Box<dyn Future<Output = ()> + Send>>>>,
     fresh_was_pending: AtomicBool,
 }
 
 impl Wake for ResetAndRegister {
     fn wake(self: Arc<Self>) {
         self.event.reset();
-        let mut wait = self.event.clone().wait_owned();
-        let pending = Pin::new(&mut wait)
+        let mut wait = Box::pin(self.event.clone().wait_owned());
+        let pending = wait
+            .as_mut()
             .poll(&mut Context::from_waker(Waker::noop()))
             .is_pending();
         self.fresh_was_pending.store(pending, Ordering::Relaxed);
@@ -331,14 +331,16 @@ fn a_wait_registered_from_a_wake_callback_belongs_to_the_next_period() {
         .take()
         .expect("the callback registered a waiter");
     assert!(
-        Pin::new(&mut fresh)
+        fresh
+            .as_mut()
             .poll(&mut Context::from_waker(Waker::noop()))
             .is_pending()
     );
 
     event.set();
     assert!(
-        Pin::new(&mut fresh)
+        fresh
+            .as_mut()
             .poll(&mut Context::from_waker(Waker::noop()))
             .is_ready()
     );
