@@ -236,31 +236,49 @@ impl<'a, T> Future for Wait<'a, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let (poll, retired_waker) = {
-            let mut state = this.completion.shared.state.lock();
-            match state.status {
-                Status::Pending => {
-                    let retired = state.waiters.register_waker(&mut this.registration, cx);
-                    (Poll::Pending, retired)
+        let mut prepared_waker = None;
+        loop {
+            let (poll, retired_waker) = {
+                let mut state = this.completion.shared.state.lock();
+                match state.status {
+                    Status::Pending => {
+                        if prepared_waker.is_none()
+                            && state
+                                .waiters
+                                .registered_waker_will_wake(&this.registration, cx.waker())
+                        {
+                            return Poll::Pending;
+                        }
+                        let Some(waker) = prepared_waker.take() else {
+                            drop(state);
+                            prepared_waker = Some(cx.waker().clone());
+                            continue;
+                        };
+                        let retired = state
+                            .waiters
+                            .register_owned_waker(&mut this.registration, waker);
+                        (Poll::Pending, retired)
+                    }
+                    Status::Completed => {
+                        let retired = state.waiters.unregister_waker(&mut this.registration);
+                        let completion: &'a Completion<T> = this.completion;
+                        let value = completion
+                            .shared
+                            .value
+                            .get()
+                            .expect("completed value must be initialized");
+                        (Poll::Ready(Ok(value)), retired)
+                    }
+                    Status::Closed => {
+                        let retired = state.waiters.unregister_waker(&mut this.registration);
+                        (Poll::Ready(Err(WaitError::Closed)), retired)
+                    }
                 }
-                Status::Completed => {
-                    let retired = state.waiters.unregister_waker(&mut this.registration);
-                    let completion: &'a Completion<T> = this.completion;
-                    let value = completion
-                        .shared
-                        .value
-                        .get()
-                        .expect("completed value must be initialized");
-                    (Poll::Ready(Ok(value)), retired)
-                }
-                Status::Closed => {
-                    let retired = state.waiters.unregister_waker(&mut this.registration);
-                    (Poll::Ready(Err(WaitError::Closed)), retired)
-                }
-            }
-        };
-        drop(retired_waker);
-        poll
+            };
+            drop(retired_waker);
+            drop(prepared_waker);
+            return poll;
+        }
     }
 }
 

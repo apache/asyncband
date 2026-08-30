@@ -16,6 +16,7 @@
 // under the License.
 
 use std::future::Future;
+use std::mem::ManuallyDrop;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Barrier;
@@ -24,6 +25,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::RawWaker;
+use std::task::RawWakerVTable;
 use std::task::Wake;
 use std::task::Waker;
 use std::thread;
@@ -62,6 +65,8 @@ impl Wake for WakeCallback {
 
 struct DropCallbackWake(Mutex<Option<Box<dyn FnOnce() + Send>>>);
 
+struct CloneCallbackWake(Mutex<Option<Box<dyn FnOnce() + Send>>>);
+
 struct ReentrantRejected {
     completer: Option<Arc<completion::Completer<ReentrantRejected>>>,
 }
@@ -86,6 +91,45 @@ impl Drop for DropCallbackWake {
             callback();
         }
     }
+}
+
+unsafe fn clone_callback_waker(data: *const ()) -> RawWaker {
+    // SAFETY: Every raw pointer using this vtable comes from `Arc::into_raw` below. ManuallyDrop
+    // keeps the original waker's strong reference alive while the clone callback borrows it.
+    let state = ManuallyDrop::new(unsafe { Arc::<CloneCallbackWake>::from_raw(data.cast()) });
+    if let Some(callback) = state.0.lock().unwrap().take() {
+        callback();
+    }
+    RawWaker::new(
+        Arc::into_raw(Arc::clone(&state)).cast(),
+        &CLONE_CALLBACK_VTABLE,
+    )
+}
+
+unsafe fn wake_clone_callback_waker(data: *const ()) {
+    // SAFETY: `wake` consumes the raw waker's strong reference exactly once.
+    drop(unsafe { Arc::<CloneCallbackWake>::from_raw(data.cast()) });
+}
+
+unsafe fn wake_clone_callback_waker_by_ref(_data: *const ()) {}
+
+unsafe fn drop_clone_callback_waker(data: *const ()) {
+    // SAFETY: `drop` consumes the raw waker's strong reference exactly once.
+    drop(unsafe { Arc::<CloneCallbackWake>::from_raw(data.cast()) });
+}
+
+static CLONE_CALLBACK_VTABLE: RawWakerVTable = RawWakerVTable::new(
+    clone_callback_waker,
+    wake_clone_callback_waker,
+    wake_clone_callback_waker_by_ref,
+    drop_clone_callback_waker,
+);
+
+fn waker_with_clone_callback(callback: impl FnOnce() + Send + 'static) -> Waker {
+    let state = Arc::new(CloneCallbackWake(Mutex::new(Some(Box::new(callback)))));
+    let raw = RawWaker::new(Arc::into_raw(state).cast(), &CLONE_CALLBACK_VTABLE);
+    // SAFETY: The vtable preserves the Arc strong count and all callbacks are thread safe.
+    unsafe { Waker::from_raw(raw) }
 }
 
 fn poll_with<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
@@ -391,6 +435,25 @@ fn wake_callbacks_run_outside_the_completion_lock() {
     finished_rx
         .recv_timeout(Duration::from_secs(10))
         .expect("wake callback deadlocked against the completion lock");
+    worker.join().unwrap();
+}
+
+#[test]
+fn waker_clone_callbacks_run_outside_the_completion_lock() {
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || {
+        let (_completer, completion) = completion::channel::<usize>();
+        let callback_completion = completion.clone();
+        let waker = waker_with_clone_callback(move || drop(callback_completion));
+        let mut wait = Box::pin(completion.wait());
+
+        assert!(poll_with(wait.as_mut(), &waker).is_pending());
+        finished_tx.send(()).unwrap();
+    });
+
+    finished_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("waker clone callback deadlocked against the completion lock");
     worker.join().unwrap();
 }
 

@@ -108,22 +108,55 @@ impl WaitSet {
         token: &mut Option<WakerToken>,
         cx: &mut Context<'_>,
     ) -> Option<Waker> {
-        if let Some(current) = token.as_ref() {
-            if current.epoch == self.epoch {
-                let waker = self
-                    .waiters
-                    .get_mut(current.slot)
-                    .expect("current waker token must refer to an occupied slot");
-                if !waker.will_wake(cx.waker()) {
-                    return Some(mem::replace(waker, cx.waker().clone()));
-                }
-                return None;
-            }
+        if self.registered_waker_will_wake(token, cx.waker()) {
+            return None;
+        }
+        if let Some(waker) = self.current_waker(token) {
+            return Some(mem::replace(waker, cx.waker().clone()));
         }
 
         *token = Some(WakerToken {
             epoch: self.epoch,
             slot: self.waiters.insert(cx.waker().clone()),
+        });
+        None
+    }
+
+    /// Returns whether `token` identifies a registered waker for the same task as `waker`.
+    #[inline]
+    pub fn registered_waker_will_wake(&self, token: &Option<WakerToken>, waker: &Waker) -> bool {
+        let Some(current) = token.as_ref() else {
+            return false;
+        };
+        if current.epoch != self.epoch {
+            return false;
+        }
+        self.waiters
+            .get(current.slot)
+            .expect("current waker token must refer to an occupied slot")
+            .will_wake(waker)
+    }
+
+    /// Registers or updates an already cloned waker in the current wake epoch.
+    ///
+    /// Any waker not retained by the wait set is returned so the caller can drop it after releasing
+    /// the lock that protects this wait set.
+    #[inline]
+    pub fn register_owned_waker(
+        &mut self,
+        token: &mut Option<WakerToken>,
+        waker: Waker,
+    ) -> Option<Waker> {
+        if let Some(current) = self.current_waker(token) {
+            if !current.will_wake(&waker) {
+                return Some(mem::replace(current, waker));
+            }
+            return Some(waker);
+        }
+
+        *token = Some(WakerToken {
+            epoch: self.epoch,
+            slot: self.waiters.insert(waker),
         });
         None
     }
@@ -138,6 +171,18 @@ impl WaitSet {
             return Some(self.waiters.remove(token.slot));
         }
         None
+    }
+
+    fn current_waker(&mut self, token: &Option<WakerToken>) -> Option<&mut Waker> {
+        let current = token.as_ref()?;
+        if current.epoch != self.epoch {
+            return None;
+        }
+        Some(
+            self.waiters
+                .get_mut(current.slot)
+                .expect("current waker token must refer to an occupied slot"),
+        )
     }
 
     #[cfg(test)]
