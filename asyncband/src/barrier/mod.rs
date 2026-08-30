@@ -180,7 +180,7 @@ impl Barrier {
             state: Mutex::new(BarrierState {
                 arrived: 0,
                 generation: 0,
-                waiters: WaitSet::with_capacity(n as usize),
+                waiters: WaitSet::with_capacity(n.saturating_sub(1) as usize),
             }),
         }
     }
@@ -244,7 +244,7 @@ impl Barrier {
             if state.arrived == self.n {
                 state.arrived = 0;
                 state.generation += 1;
-                let wakers = state.waiters.take_wakers();
+                let wakers = state.waiters.drain();
                 drop(state);
                 wake_all(wakers);
                 return BarrierWaitResult(true);
@@ -294,19 +294,19 @@ impl Future for BarrierWait<'_> {
         // Waker cloning may call back into the barrier, so it must happen before taking the state
         // lock. The generation is checked afterward to close the resulting race.
         let waker = cx.waker().clone();
-        let (poll, retired_waker) = {
-            let mut state = barrier.state.lock();
-            if *generation < state.generation {
-                // Advancing the generation drains its registrations under this same lock.
-                *token = None;
-                (Poll::Ready(()), Some(waker))
-            } else {
-                let retired = state.waiters.register_waker(token, waker);
-                (Poll::Pending, retired)
-            }
-        };
+        let mut state = barrier.state.lock();
+        if *generation < state.generation {
+            // Advancing the generation drains its registrations under this same lock.
+            *token = None;
+            drop(state);
+            drop(waker);
+            return Poll::Ready(());
+        }
+
+        let retired_waker = state.waiters.register(token, waker);
+        drop(state);
         drop(retired_waker);
-        poll
+        Poll::Pending
     }
 }
 
@@ -315,7 +315,7 @@ impl Drop for BarrierWait<'_> {
         if self.token.is_some() {
             let removed_waker = {
                 let mut state = self.barrier.state.lock();
-                state.waiters.unregister_waker(&mut self.token)
+                state.waiters.unregister(&mut self.token)
             };
             drop(removed_waker);
         }

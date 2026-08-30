@@ -15,6 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Cancellable storage for task wakers.
+//!
+//! A `WaitSet` is protected by the state lock of its owning primitive. It only moves already owned
+//! wakers while that lock is held: cloning must happen before taking the lock, and unused, removed,
+//! or drained wakers must be dropped or woken after releasing it. This keeps arbitrary waker
+//! callbacks outside primitive critical sections.
+
 use std::mem;
 use std::panic;
 use std::panic::AssertUnwindSafe;
@@ -84,22 +91,21 @@ impl WaitSet {
         }
     }
 
-    /// Returns whether no wakers are currently registered.
+    /// Drains all registered wakers as an owning iterator without waking them.
+    ///
+    /// A non-empty drain starts a new epoch so tokens retained by the drained futures cannot alias
+    /// slots reused by later registrations.
     #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.waiters.is_empty()
-    }
-
-    /// Takes all registered wakers as an owning iterator without waking them.
-    #[inline]
-    pub fn take_wakers(&mut self) -> impl Iterator<Item = Waker> + 'static {
-        self.epoch = self.epoch.checked_add(1).expect("wait set epoch overflow");
+    pub fn drain(&mut self) -> impl Iterator<Item = Waker> + 'static {
+        if !self.waiters.is_empty() {
+            self.epoch = self.epoch.checked_add(1).expect("wait set epoch overflow");
+        }
         self.waiters.take_all()
     }
 
     /// Returns whether `token` identifies a registered waker for the same task as `waker`.
     #[inline]
-    pub fn registered_waker_will_wake(&self, token: &Option<WakerToken>, waker: &Waker) -> bool {
+    pub fn will_wake(&self, token: &Option<WakerToken>, waker: &Waker) -> bool {
         let Some(current) = token.as_ref() else {
             return false;
         };
@@ -120,11 +126,8 @@ impl WaitSet {
     /// Any waker not retained by the wait set is returned so the caller can drop it after releasing
     /// the lock that protects this wait set.
     #[inline]
-    pub fn register_waker(
-        &mut self,
-        token: &mut Option<WakerToken>,
-        waker: Waker,
-    ) -> Option<Waker> {
+    #[must_use = "drop the returned waker after releasing the wait set's state lock"]
+    pub fn register(&mut self, token: &mut Option<WakerToken>, waker: Waker) -> Option<Waker> {
         if let Some(current) = self.current_waker(token) {
             if !current.will_wake(&waker) {
                 return Some(mem::replace(current, waker));
@@ -143,7 +146,8 @@ impl WaitSet {
     ///
     /// The returned waker must be dropped after releasing the lock that protects this wait set.
     #[inline]
-    pub fn unregister_waker(&mut self, token: &mut Option<WakerToken>) -> Option<Waker> {
+    #[must_use = "drop the returned waker after releasing the wait set's state lock"]
+    pub fn unregister(&mut self, token: &mut Option<WakerToken>) -> Option<Waker> {
         let token = token.take()?;
         if token.epoch == self.epoch {
             return Some(self.waiters.remove(token.slot));
@@ -231,7 +235,7 @@ mod tests {
         token: &mut Option<WakerToken>,
         waker: &Waker,
     ) -> Option<Waker> {
-        waiters.register_waker(token, waker.clone())
+        waiters.register(token, waker.clone())
     }
 
     #[test]
@@ -245,12 +249,12 @@ mod tests {
         let mut second_token = None;
 
         register(&mut waiters, &mut first_token, &first_waker);
-        assert_eq!(waiters.take_wakers().count(), 1);
+        assert_eq!(waiters.drain().count(), 1);
 
         register(&mut waiters, &mut second_token, &second_waker);
         register(&mut waiters, &mut first_token, &first_waker);
 
-        let registered = waiters.take_wakers().collect::<Vec<_>>();
+        let registered = waiters.drain().collect::<Vec<_>>();
         assert_eq!(registered.len(), 2);
         wake_all(registered.into_iter());
         assert_eq!(first_task.0.load(Ordering::Relaxed), 1);
@@ -272,7 +276,7 @@ mod tests {
         register(&mut waiters, &mut third, &tracked);
 
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            wake_all(waiters.take_wakers());
+            wake_all(waiters.drain());
         }));
         assert!(result.is_err());
         assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
@@ -287,7 +291,7 @@ mod tests {
         register(&mut waiters, &mut token, &waker);
         drop(waker);
 
-        let removed = waiters.unregister_waker(&mut token);
+        let removed = waiters.unregister(&mut token);
         assert_eq!(waiters.registered_len(), 0);
         assert!(!dropped.load(Ordering::Relaxed));
 

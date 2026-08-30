@@ -138,11 +138,12 @@ impl<T> Drop for Sender<T> {
         let wakers = {
             let mut state = self.shared.state.lock();
             state.senders -= 1;
-            (state.senders == 0 && !state.waiters.is_empty()).then(|| state.waiters.take_wakers())
+            if state.senders != 0 {
+                return;
+            }
+            state.waiters.drain()
         };
-        if let Some(wakers) = wakers {
-            wake_all(wakers);
-        }
+        wake_all(wakers);
     }
 }
 
@@ -166,12 +167,10 @@ impl<T> Sender<T> {
                 .expect("watch channel version counter overflowed");
             let replaced = mem::replace(&mut state.value, Arc::new(value));
             state.version = version;
-            let wakers = (!state.waiters.is_empty()).then(|| state.waiters.take_wakers());
+            let wakers = state.waiters.drain();
             (wakers, replaced)
         };
-        if let Some(wakers) = wakers {
-            wake_all(wakers);
-        }
+        wake_all(wakers);
         drop(replaced);
         Ok(())
     }
@@ -263,7 +262,7 @@ impl<T> Receiver<T> {
     pub async fn changed(&mut self) -> Result<Arc<T>, RecvError> {
         Changed {
             receiver: self,
-            registration: None,
+            token: None,
         }
         .await
     }
@@ -279,7 +278,7 @@ impl<T> Receiver<T> {
 
 struct Changed<'a, T> {
     receiver: &'a mut Receiver<T>,
-    registration: Option<WakerToken>,
+    token: Option<WakerToken>,
 }
 
 impl<T> Future for Changed<'_, T> {
@@ -290,35 +289,40 @@ impl<T> Future for Changed<'_, T> {
         // A changed call normally parks once and then consumes one update. Preparing its waker
         // before the lock avoids a second lock acquisition on that common pending path.
         let waker = cx.waker().clone();
-        let (poll, retired_waker, unused_waker) = {
-            let mut state = this.receiver.shared.state.lock();
-            if state.version != this.receiver.seen {
-                let retired = state.waiters.unregister_waker(&mut this.registration);
-                this.receiver.seen = state.version;
-                (Poll::Ready(Ok(state.value.clone())), retired, Some(waker))
-            } else if state.senders == 0 {
-                let retired = state.waiters.unregister_waker(&mut this.registration);
-                (
-                    Poll::Ready(Err(RecvError::Disconnected)),
-                    retired,
-                    Some(waker),
-                )
-            } else {
-                let retired = state.waiters.register_waker(&mut this.registration, waker);
-                (Poll::Pending, retired, None)
-            }
-        };
+        let mut state = this.receiver.shared.state.lock();
+        if state.version != this.receiver.seen {
+            let retired_waker = state.waiters.unregister(&mut this.token);
+            this.receiver.seen = state.version;
+            let value = state.value.clone();
+            drop(state);
+            drop(retired_waker);
+            drop(waker);
+            return Poll::Ready(Ok(value));
+        }
+        if state.senders == 0 {
+            let retired_waker = state.waiters.unregister(&mut this.token);
+            drop(state);
+            drop(retired_waker);
+            drop(waker);
+            return Poll::Ready(Err(RecvError::Disconnected));
+        }
+
+        let retired_waker = state.waiters.register(&mut this.token, waker);
+        drop(state);
         drop(retired_waker);
-        drop(unused_waker);
-        poll
+        Poll::Pending
     }
 }
 
 impl<T> Drop for Changed<'_, T> {
     fn drop(&mut self) {
+        if self.token.is_none() {
+            return;
+        }
+
         let waker = {
             let mut state = self.receiver.shared.state.lock();
-            state.waiters.unregister_waker(&mut self.registration)
+            state.waiters.unregister(&mut self.token)
         };
         drop(waker);
     }

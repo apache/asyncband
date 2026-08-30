@@ -284,9 +284,7 @@ impl Future for LatchWait<'_> {
 
 impl Drop for LatchWait<'_> {
     fn drop(&mut self) {
-        if self.token.is_some() {
-            self.latch.state.unregister_waker(&mut self.token);
-        }
+        self.latch.state.unregister(&mut self.token);
     }
 }
 
@@ -316,8 +314,6 @@ impl Future for OwnedLatchWait {
 
 impl Drop for OwnedLatchWait {
     fn drop(&mut self) {
-        if self.token.is_some() {
-            self.latch.state.unregister_waker(&mut self.token);
-        }
+        self.latch.state.unregister(&mut self.token);
     }
 }

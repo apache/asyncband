@@ -396,7 +396,10 @@ impl<T> Drop for UnboundedSender<T> {
         match self.shared.senders.fetch_sub(1, Ordering::AcqRel) {
             1 => {
                 // Wake every parked receiver so it can observe the channel's disconnected state.
-                let wakers = self.shared.inner.lock().waiters.take_wakers();
+                let wakers = {
+                    let mut inner = self.shared.inner.lock();
+                    inner.waiters.drain()
+                };
                 wake_all(wakers);
             }
             _ => {
@@ -454,7 +457,7 @@ impl<T> UnboundedSender<T> {
                 inner.peak_len = inner.peak_len.max(inner.buffer.len());
             }
 
-            inner.waiters.take_wakers()
+            inner.waiters.drain()
         };
 
         // Notify all waiting receivers. An unsent message is dropped here too, once the lock is
@@ -568,7 +571,7 @@ impl<T: Clone> UnboundedReceiver<T> {
     pub async fn recv(&mut self) -> Result<T, RecvError> {
         Recv {
             receiver: self,
-            registration: None,
+            token: None,
         }
         .await
     }
@@ -701,19 +704,19 @@ impl<T> UnboundedReceiver<T> {
 
 struct Recv<'a, T> {
     receiver: &'a mut UnboundedReceiver<T>,
-    registration: Option<WakerToken>,
+    token: Option<WakerToken>,
 }
 
 impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
-        // Ready paths clear the registration, so only a cancelled pending receive takes this lock.
-        if self.registration.is_none() {
+        // Ready paths clear the token, so only a cancelled pending receive takes this lock.
+        if self.token.is_none() {
             return;
         }
 
         let waker = {
             let mut inner = self.receiver.shared.inner.lock();
-            inner.waiters.unregister_waker(&mut self.registration)
+            inner.waiters.unregister(&mut self.token)
         };
         drop(waker);
     }
@@ -723,10 +726,7 @@ impl<T: Clone> Future for Recv<'_, T> {
     type Output = Result<T, RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self {
-            receiver,
-            registration,
-        } = self.get_mut();
+        let Self { receiver, token } = self.get_mut();
 
         let mut prepared_waker = None;
         // Senders append messages and drain the wait set under this same lock. If the receive is
@@ -739,17 +739,13 @@ impl<T: Clone> Future for Recv<'_, T> {
                 Some(received) => break received,
                 None => {
                     if receiver.shared.senders.load(Ordering::Acquire) == 0 {
-                        *registration = None;
+                        *token = None;
                         drop(inner);
                         drop(prepared_waker);
                         return Poll::Ready(Err(RecvError::Disconnected));
                     }
 
-                    if prepared_waker.is_none()
-                        && inner
-                            .waiters
-                            .registered_waker_will_wake(registration, cx.waker())
-                    {
+                    if prepared_waker.is_none() && inner.waiters.will_wake(token, cx.waker()) {
                         return Poll::Pending;
                     }
                     let Some(waker) = prepared_waker.take() else {
@@ -757,7 +753,7 @@ impl<T: Clone> Future for Recv<'_, T> {
                         prepared_waker = Some(cx.waker().clone());
                         continue;
                     };
-                    let retired_waker = inner.waiters.register_waker(registration, waker);
+                    let retired_waker = inner.waiters.register(token, waker);
                     drop(inner);
                     drop(retired_waker);
                     return Poll::Pending;
@@ -767,7 +763,7 @@ impl<T: Clone> Future for Recv<'_, T> {
         drop(prepared_waker);
 
         let (msg, reclaimed) = received;
-        *registration = None;
+        *token = None;
         Poll::Ready(Ok(take_msg(msg, reclaimed)))
     }
 }

@@ -182,8 +182,6 @@ impl Future for Wait {
 
 impl Drop for Wait {
     fn drop(&mut self) {
-        if self.token.is_some() {
-            self.state.unregister_waker(&mut self.token);
-        }
+        self.state.unregister(&mut self.token);
     }
 }

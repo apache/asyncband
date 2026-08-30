@@ -192,6 +192,10 @@ impl<T> Arena<T> {
             first: None,
             rest: Vec::new(),
         };
+        if len == 0 {
+            return values.into_iter();
+        }
+
         for slot in self.slots.drain(..) {
             if let Slot::Occupied(value) = slot {
                 if values.first.is_none() {
