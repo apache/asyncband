@@ -499,14 +499,14 @@ impl<T, M: ManageObject<Object = T>> Drop for Object<T, M> {
 impl<T, M: ManageObject<Object = T>> Deref for Object<T, M> {
     type Target = T;
     fn deref(&self) -> &T {
-        // SAFETY: `state` is always `Some` when `Object` is owned.
+        // INVARIANT: `state` is `Some` until this object is detached or dropped.
         &self.state.as_ref().unwrap().o
     }
 }
 
 impl<T, M: ManageObject<Object = T>> DerefMut for Object<T, M> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: `state` is always `Some` when `Object` is owned.
+        // INVARIANT: `state` is `Some` until this object is detached or dropped.
         &mut self.state.as_mut().unwrap().o
     }
 }
@@ -528,7 +528,7 @@ impl<T, M: ManageObject<Object = T>> Object<T, M> {
     ///
     /// This reduces the size of the pool by one.
     pub fn detach(mut self) -> M::Object {
-        // SAFETY: `state` is always `Some` when `Object` is owned.
+        // INVARIANT: `state` is `Some` until this object is detached or dropped.
         let mut o = self.state.take().unwrap().o;
         if let Some(pool) = self.pool.upgrade() {
             pool.detach_object(&mut o);
@@ -538,7 +538,7 @@ impl<T, M: ManageObject<Object = T>> Object<T, M> {
 
     /// Returns the status of the object.
     pub fn status(&self) -> ObjectStatus {
-        // SAFETY: `state` is always `Some` when `Object` is owned.
+        // INVARIANT: `state` is `Some` until this object is detached or dropped.
         self.state.as_ref().unwrap().status
     }
 }
@@ -574,7 +574,7 @@ impl<T, M: ManageObject<Object = T>> Drop for UnreadyObject<T, M> {
 
 impl<T, M: ManageObject<Object = T>> UnreadyObject<T, M> {
     fn ready(mut self) -> Object<T, M> {
-        // SAFETY: `state` is always `Some` when `UnreadyObject` is owned.
+        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
         let state = Some(self.state.take().unwrap());
         let pool = self.pool.clone();
         Object { state, pool }
@@ -589,7 +589,7 @@ impl<T, M: ManageObject<Object = T>> UnreadyObject<T, M> {
     }
 
     fn state(&mut self) -> &mut ObjectState<T> {
-        // SAFETY: `state` is always `Some` when `UnreadyObject` is owned.
+        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
         self.state.as_mut().unwrap()
     }
 }
