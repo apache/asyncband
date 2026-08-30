@@ -22,7 +22,7 @@ All notable changes to this project will be documented in this file.
 
 * Implement `broadcast::mpmc::unbounded`, an unbounded broadcast channel that retains messages until all active receivers consume them or are dropped.
 * Add an opt-in latest-state channel under `asyncband::watch`.
-* Add an opt-in shared one-shot completion primitive under `asyncband::completion` for publishing one result to current and future observers.
+* Add an opt-in shared one-shot completion primitive under `asyncband::completion` with a single-use completer, cloneable observers, a retained borrowed result, and observable abandonment.
 * Add opt-in `asyncband::once::LazyCell` for values that own one asynchronous initializer and preserve its in-flight future across caller cancellation.
 * Add opt-in bounded and unbounded runtime-agnostic object pools under `asyncband::pool`.
 * Add an opt-in `asyncband::blocking::FutureExt` bridge with `block_on` and `wait_timeout` methods for waiting on runtime-agnostic futures from synchronous code.

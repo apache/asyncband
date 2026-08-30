@@ -17,10 +17,11 @@
 
 //! A shared one-shot completion primitive.
 //!
-//! A [`Completer`] publishes one value, while any number of cloned [`Completion`] observers wait
-//! for that same value. Observers created after completion see it immediately. The stored value is
-//! returned by reference, so callers decide whether to borrow it, clone it, or use an [`Arc`]-
-//! wrapped value when they need independently owned shared results.
+//! A single-use [`Completer`] publishes one value, while any number of cloned [`Completion`]
+//! observers wait for that same value. Observers created after completion see it immediately.
+//! If the completer is dropped without publishing a value, every observer returns [`Abandoned`].
+//! The stored value is returned by reference, so callers decide whether to borrow it, clone it, or
+//! use an [`Arc`]-wrapped value when they need independently owned shared results.
 //!
 //! Unlike `oneshot`, which transfers one value to one receiver, completion can fan one result out
 //! to many current and future observers without creating and managing one channel per observer.
@@ -34,7 +35,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() {
-//! let (completer, completion) = completion::channel();
+//! let (completer, completion) = completion::new();
 //! let first = completion.clone();
 //! let second = completion.clone();
 //!
@@ -47,11 +48,6 @@
 //! # }
 //! ```
 
-mod error;
-
-#[cfg(test)]
-mod tests;
-
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -61,20 +57,17 @@ use std::sync::Weak;
 use std::task::Context;
 use std::task::Poll;
 
-pub use self::error::CompleteError;
-pub use self::error::WaitError;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitset::WaitSet;
 use crate::internal::waitset::WakerToken;
 use crate::internal::waitset::wake_all;
 
-/// Creates a shared one-shot completion primitive.
-pub fn channel<T>() -> (Completer<T>, Completion<T>) {
+/// Creates a single-use [`Completer`] and a cloneable [`Completion`] observer.
+pub fn new<T>() -> (Completer<T>, Completion<T>) {
     let shared = Arc::new(Shared {
         value: OnceLock::new(),
         state: Mutex::new(State {
             status: Status::Pending,
-            observers: 1,
             waiters: WaitSet::new(),
         }),
     });
@@ -92,7 +85,6 @@ struct Shared<T> {
 
 struct State {
     status: Status,
-    observers: usize,
     waiters: WaitSet,
 }
 
@@ -100,13 +92,26 @@ struct State {
 enum Status {
     Pending,
     Completed,
-    Closed,
+    Abandoned,
 }
+
+/// The error returned by [`Completion::wait`] when the completer was dropped without a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Abandoned;
+
+impl fmt::Display for Abandoned {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("completion was abandoned before a value was provided")
+    }
+}
+
+impl std::error::Error for Abandoned {}
 
 /// The capability that completes a [`Completion`] with one value.
 ///
-/// This type deliberately does not implement [`Clone`]. Dropping it before completion closes the
-/// primitive and wakes all pending observers.
+/// This type deliberately does not implement [`Clone`], and [`complete`](Self::complete) consumes
+/// it. Dropping it before completion abandons the primitive and wakes all pending observers.
+#[must_use = "dropping the completer abandons the completion"]
 pub struct Completer<T> {
     shared: Weak<Shared<T>>,
 }
@@ -114,7 +119,7 @@ pub struct Completer<T> {
 // SAFETY: The completer can only move an owned `T` into the shared `OnceLock` while holding the
 // state mutex; it never exposes or accesses the stored value afterward. `Completion<T>` retains its
 // ordinary auto traits, so observers cannot cross threads unless `T` can be shared. `T: Send` also
-// permits the shared allocation and its value to be destroyed by a completing thread when its
+// permits the shared allocation and its value to be destroyed by the completing thread if its
 // temporary strong reference is the last one.
 unsafe impl<T: Send> Send for Completer<T> {}
 unsafe impl<T: Send> Sync for Completer<T> {}
@@ -128,23 +133,25 @@ impl<T> fmt::Debug for Completer<T> {
 impl<T> Completer<T> {
     /// Completes the primitive with `value` and wakes all pending observers.
     ///
-    /// The value is rejected and returned if another value has already completed the primitive or
-    /// if no observers remain.
+    /// Returns `value` if all observers were already dropped. A successful completion does not
+    /// guarantee that an observer will remain alive long enough to read the value.
     ///
     /// # Panics
     ///
     /// Panics if a registered waker panics while being notified. The value is committed before
-    /// notification begins, so subsequent completion attempts are rejected. Before resuming the
-    /// panic, `complete` still attempts to wake every remaining registered waker.
-    pub fn complete(&self, value: T) -> Result<(), CompleteError<T>> {
+    /// notification begins. Before resuming the panic, `complete` still attempts to wake every
+    /// remaining registered waker.
+    pub fn complete(mut self, value: T) -> Result<(), T> {
         let Some(shared) = self.shared.upgrade() else {
-            return Err(CompleteError::new(value));
+            return Err(value);
         };
         let wakers = {
             let mut state = shared.state.lock();
-            if state.status != Status::Pending || state.observers == 0 {
-                return Err(CompleteError::new(value));
-            }
+            assert_eq!(
+                state.status,
+                Status::Pending,
+                "a live completer must refer to a pending completion"
+            );
 
             if let Err(value) = shared.value.set(value) {
                 drop(state);
@@ -154,6 +161,9 @@ impl<T> Completer<T> {
             state.status = Status::Completed;
             (!state.waiters.is_empty()).then(|| state.waiters.take_wakers())
         };
+        // `complete` consumes the only completer. Disarm its destructor before invoking arbitrary
+        // wake callbacks; the completed state no longer needs abandonment handling.
+        self.shared = Weak::new();
         if let Some(wakers) = wakers {
             wake_all(wakers);
         }
@@ -171,7 +181,7 @@ impl<T> Drop for Completer<T> {
             if state.status != Status::Pending {
                 return;
             }
-            state.status = Status::Closed;
+            state.status = Status::Abandoned;
             (!state.waiters.is_empty()).then(|| state.waiters.take_wakers())
         };
         if let Some(wakers) = wakers {
@@ -192,12 +202,6 @@ pub struct Completion<T> {
 
 impl<T> Clone for Completion<T> {
     fn clone(&self) -> Self {
-        let mut state = self.shared.state.lock();
-        state.observers = state
-            .observers
-            .checked_add(1)
-            .expect("completion observer count overflowed");
-        drop(state);
         Self {
             shared: self.shared.clone(),
         }
@@ -210,22 +214,15 @@ impl<T> fmt::Debug for Completion<T> {
     }
 }
 
-impl<T> Drop for Completion<T> {
-    fn drop(&mut self) {
-        let mut state = self.shared.state.lock();
-        state.observers -= 1;
-    }
-}
-
 impl<T> Completion<T> {
     /// Waits for the shared value and returns a reference to it.
     ///
-    /// Returns [`WaitError::Closed`] if the completer is dropped before providing a value. This
-    /// transport-level closure remains distinct from any error stored inside `T`.
+    /// Returns [`Abandoned`] if the completer is dropped before providing a value. Abandonment
+    /// remains distinct from any error stored inside `T`.
     ///
     /// This method is cancel safe. Dropping one pending wait unregisters only that call and does
     /// not affect this observer, another wait, or the eventual result.
-    pub async fn wait(&self) -> Result<&T, WaitError> {
+    pub async fn wait(&self) -> Result<&T, Abandoned> {
         Wait {
             completion: self,
             registration: None,
@@ -240,7 +237,7 @@ struct Wait<'a, T> {
 }
 
 impl<'a, T> Future for Wait<'a, T> {
-    type Output = Result<&'a T, WaitError>;
+    type Output = Result<&'a T, Abandoned>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -277,9 +274,9 @@ impl<'a, T> Future for Wait<'a, T> {
                             .expect("completed value must be initialized");
                         (Poll::Ready(Ok(value)), retired)
                     }
-                    Status::Closed => {
+                    Status::Abandoned => {
                         let retired = state.waiters.unregister_waker(&mut this.registration);
-                        (Poll::Ready(Err(WaitError::Closed)), retired)
+                        (Poll::Ready(Err(Abandoned)), retired)
                     }
                 }
             };

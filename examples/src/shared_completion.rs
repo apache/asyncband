@@ -25,7 +25,7 @@ use asyncband::completion;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let (completer, completion) = completion::channel();
+    let (completer, completion) = completion::new();
     let dashboard = completion.clone();
     let audit_log = completion.clone();
 

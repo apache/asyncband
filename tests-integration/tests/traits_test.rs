@@ -74,8 +74,7 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<completion::Completer<Cell<u8>>>();
     assert_send_and_sync::<completion::Completer<i64>>();
     assert_send_and_sync::<completion::Completion<i64>>();
-    assert_send_and_sync::<completion::CompleteError<i64>>();
-    assert_send_and_sync::<completion::WaitError>();
+    assert_send_and_sync::<completion::Abandoned>();
     assert_send_and_sync::<LazyCell<u32, std::future::Ready<u32>>>();
     assert_send_and_sync::<Once>();
     assert_send_and_sync::<OnceCell<u32>>();
@@ -128,7 +127,7 @@ fn movable_public_types_are_send() {
     let (_tx, mut rx) = watch::channel(0);
     assert_send_value(rx.changed());
 
-    let (_completer, completion) = completion::channel::<i64>();
+    let (_completer, completion) = completion::new::<i64>();
     assert_send_value(completion.wait());
 }
 
@@ -140,8 +139,7 @@ fn public_types_are_unpin() {
     assert_unpin::<Condvar>();
     assert_unpin::<completion::Completer<i64>>();
     assert_unpin::<completion::Completion<i64>>();
-    assert_unpin::<completion::CompleteError<i64>>();
-    assert_unpin::<completion::WaitError>();
+    assert_unpin::<completion::Abandoned>();
     assert_unpin::<Latch>();
     assert_unpin::<LazyCell<u32, std::future::Ready<u32>>>();
     assert_unpin::<Once>();
