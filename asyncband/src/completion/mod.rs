@@ -111,6 +111,14 @@ pub struct Completer<T> {
     shared: Weak<Shared<T>>,
 }
 
+// SAFETY: The completer can only move an owned `T` into the shared `OnceLock` while holding the
+// state mutex; it never exposes or accesses the stored value afterward. `Completion<T>` retains its
+// ordinary auto traits, so observers cannot cross threads unless `T` can be shared. `T: Send` also
+// permits the shared allocation and its value to be destroyed by a completing thread when its
+// temporary strong reference is the last one.
+unsafe impl<T: Send> Send for Completer<T> {}
+unsafe impl<T: Send> Sync for Completer<T> {}
+
 impl<T> fmt::Debug for Completer<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Completer").finish_non_exhaustive()

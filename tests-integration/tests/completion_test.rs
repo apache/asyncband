@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::Cell;
 use std::future::Future;
 use std::mem::ManuallyDrop;
 use std::pin::Pin;
@@ -154,6 +155,18 @@ fn all_observers_borrow_the_same_non_clone_value() {
     assert!(std::ptr::eq(first_value, second_value));
     assert!(std::ptr::eq(first_value, repeated));
     assert!(std::ptr::eq(first_value, late_value));
+}
+
+#[test]
+fn completer_transfers_a_send_only_value_between_threads() {
+    let (completer, completion) = completion::channel::<Cell<u8>>();
+
+    thread::spawn(move || completer.complete(Cell::new(7)))
+        .join()
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(pollster::block_on(completion.wait()).unwrap().get(), 7);
 }
 
 #[test]

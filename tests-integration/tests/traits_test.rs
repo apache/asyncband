@@ -71,6 +71,7 @@ fn public_types_are_send_and_sync() {
 
     assert_send_and_sync::<Barrier>();
     assert_send_and_sync::<Condvar>();
+    assert_send_and_sync::<completion::Completer<Cell<u8>>>();
     assert_send_and_sync::<completion::Completer<i64>>();
     assert_send_and_sync::<completion::Completion<i64>>();
     assert_send_and_sync::<completion::CompleteError<i64>>();
