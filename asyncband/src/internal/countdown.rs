@@ -79,17 +79,22 @@ impl CountdownState {
             return Poll::Ready(());
         }
 
-        let replaced_waker = {
+        // Cloning a waker can invoke arbitrary user code. Do it before taking the waiter lock, then
+        // recheck the countdown so a transition made by the clone callback cannot be missed.
+        let waker = cx.waker().clone();
+        let (poll, retired_waker) = {
             let mut waiters = self.waiters.lock();
             if self.state() == 0 {
                 // A concurrent zero transition will drain after this lock is released.
                 *token = None;
-                return Poll::Ready(());
+                (Poll::Ready(()), Some(waker))
+            } else {
+                let retired = waiters.register_waker(token, waker);
+                (Poll::Pending, retired)
             }
-            waiters.register_waker(token, cx)
         };
-        drop(replaced_waker);
-        Poll::Pending
+        drop(retired_waker);
+        poll
     }
 
     #[inline]

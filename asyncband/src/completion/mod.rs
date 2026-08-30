@@ -259,9 +259,7 @@ impl<'a, T> Future for Wait<'a, T> {
                             prepared_waker = Some(cx.waker().clone());
                             continue;
                         };
-                        let retired = state
-                            .waiters
-                            .register_owned_waker(&mut this.registration, waker);
+                        let retired = state.waiters.register_waker(&mut this.registration, waker);
                         (Poll::Pending, retired)
                     }
                     Status::Completed => {

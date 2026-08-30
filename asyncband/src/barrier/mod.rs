@@ -291,17 +291,22 @@ impl Future for BarrierWait<'_> {
             barrier,
         } = self.get_mut();
 
-        let replaced_waker = {
+        // Waker cloning may call back into the barrier, so it must happen before taking the state
+        // lock. The generation is checked afterward to close the resulting race.
+        let waker = cx.waker().clone();
+        let (poll, retired_waker) = {
             let mut state = barrier.state.lock();
             if *generation < state.generation {
                 // Advancing the generation drains its registrations under this same lock.
                 *token = None;
-                return Poll::Ready(());
+                (Poll::Ready(()), Some(waker))
+            } else {
+                let retired = state.waiters.register_waker(token, waker);
+                (Poll::Pending, retired)
             }
-            state.waiters.register_waker(token, cx)
         };
-        drop(replaced_waker);
-        Poll::Pending
+        drop(retired_waker);
+        poll
     }
 }
 

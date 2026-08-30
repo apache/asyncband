@@ -287,21 +287,29 @@ impl<T> Future for Changed<'_, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let (poll, retired_waker) = {
+        // A changed call normally parks once and then consumes one update. Preparing its waker
+        // before the lock avoids a second lock acquisition on that common pending path.
+        let waker = cx.waker().clone();
+        let (poll, retired_waker, unused_waker) = {
             let mut state = this.receiver.shared.state.lock();
             if state.version != this.receiver.seen {
                 let retired = state.waiters.unregister_waker(&mut this.registration);
                 this.receiver.seen = state.version;
-                (Poll::Ready(Ok(state.value.clone())), retired)
+                (Poll::Ready(Ok(state.value.clone())), retired, Some(waker))
             } else if state.senders == 0 {
                 let retired = state.waiters.unregister_waker(&mut this.registration);
-                (Poll::Ready(Err(RecvError::Disconnected)), retired)
+                (
+                    Poll::Ready(Err(RecvError::Disconnected)),
+                    retired,
+                    Some(waker),
+                )
             } else {
-                let retired = state.waiters.register_waker(&mut this.registration, cx);
-                (Poll::Pending, retired)
+                let retired = state.waiters.register_waker(&mut this.registration, waker);
+                (Poll::Pending, retired, None)
             }
         };
         drop(retired_waker);
+        drop(unused_waker);
         poll
     }
 }

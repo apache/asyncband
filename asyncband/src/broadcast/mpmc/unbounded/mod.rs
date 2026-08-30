@@ -728,27 +728,43 @@ impl<T: Clone> Future for Recv<'_, T> {
             registration,
         } = self.get_mut();
 
-        // One critical section decides between all three outcomes. Senders append messages and
-        // drain the wait set under this same lock, so registering here cannot miss a wake-up and
-        // cannot report disconnection while a message remains for this receiver.
-        let received = {
+        let mut prepared_waker = None;
+        // Senders append messages and drain the wait set under this same lock. If the receive is
+        // pending, clone its waker without the lock and retry the complete decision before
+        // registering it, so neither a wake-up nor a reentrant clone callback can be missed.
+        let received = loop {
             let mut inner = receiver.shared.inner.lock();
 
             match inner.receive(receiver.key) {
-                Some(received) => received,
+                Some(received) => break received,
                 None => {
                     if receiver.shared.senders.load(Ordering::Acquire) == 0 {
                         *registration = None;
+                        drop(inner);
+                        drop(prepared_waker);
                         return Poll::Ready(Err(RecvError::Disconnected));
                     }
 
-                    let waker = inner.waiters.register_waker(registration, cx);
+                    if prepared_waker.is_none()
+                        && inner
+                            .waiters
+                            .registered_waker_will_wake(registration, cx.waker())
+                    {
+                        return Poll::Pending;
+                    }
+                    let Some(waker) = prepared_waker.take() else {
+                        drop(inner);
+                        prepared_waker = Some(cx.waker().clone());
+                        continue;
+                    };
+                    let retired_waker = inner.waiters.register_waker(registration, waker);
                     drop(inner);
-                    drop(waker);
+                    drop(retired_waker);
                     return Poll::Pending;
                 }
             }
         };
+        drop(prepared_waker);
 
         let (msg, reclaimed) = received;
         *registration = None;

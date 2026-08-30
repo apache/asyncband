@@ -18,7 +18,6 @@
 use std::mem;
 use std::panic;
 use std::panic::AssertUnwindSafe;
-use std::task::Context;
 use std::task::Waker;
 
 use crate::internal::arena::Arena;
@@ -98,30 +97,6 @@ impl WaitSet {
         self.waiters.take_all()
     }
 
-    /// Registers or updates a waker in the current wake epoch.
-    ///
-    /// If an existing waker is replaced, it is returned so the caller can drop it after releasing
-    /// the lock that protects this wait set.
-    #[inline]
-    pub fn register_waker(
-        &mut self,
-        token: &mut Option<WakerToken>,
-        cx: &mut Context<'_>,
-    ) -> Option<Waker> {
-        if self.registered_waker_will_wake(token, cx.waker()) {
-            return None;
-        }
-        if let Some(waker) = self.current_waker(token) {
-            return Some(mem::replace(waker, cx.waker().clone()));
-        }
-
-        *token = Some(WakerToken {
-            epoch: self.epoch,
-            slot: self.waiters.insert(cx.waker().clone()),
-        });
-        None
-    }
-
     /// Returns whether `token` identifies a registered waker for the same task as `waker`.
     #[inline]
     pub fn registered_waker_will_wake(&self, token: &Option<WakerToken>, waker: &Waker) -> bool {
@@ -139,10 +114,13 @@ impl WaitSet {
 
     /// Registers or updates an already cloned waker in the current wake epoch.
     ///
+    /// The caller must clone the waker before acquiring the lock that protects this wait set,
+    /// because cloning can invoke arbitrary user code.
+    ///
     /// Any waker not retained by the wait set is returned so the caller can drop it after releasing
     /// the lock that protects this wait set.
     #[inline]
-    pub fn register_owned_waker(
+    pub fn register_waker(
         &mut self,
         token: &mut Option<WakerToken>,
         waker: Waker,
@@ -253,7 +231,7 @@ mod tests {
         token: &mut Option<WakerToken>,
         waker: &Waker,
     ) -> Option<Waker> {
-        waiters.register_waker(token, &mut Context::from_waker(waker))
+        waiters.register_waker(token, waker.clone())
     }
 
     #[test]
