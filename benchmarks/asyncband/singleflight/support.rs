@@ -15,8 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// SingleFlight does not retain completed values. Cold benchmarks create a leader for an absent
-// key; hot benchmarks join coordination state that is already in flight.
-mod cold;
-mod hot;
-mod support;
+use std::hash::BuildHasherDefault;
+use std::hash::DefaultHasher;
+
+use asyncband::singleflight::Group;
+
+use crate::support::thread_slot_ticket;
+
+pub const BATCH_SIZES: &[usize] = &[2, 8, 32];
+pub const BATCH_SAMPLE_SIZE: u32 = 64;
+pub const CONTENDED_SAMPLE_SIZE: u32 = 64;
+pub const FAST_SAMPLE_SIZE: u32 = 256;
+pub const THREAD_COUNTS: &[usize] = &[1, 2, 8, 32];
+
+pub type BenchGroup = Group<usize, usize, BuildHasherDefault<DefaultHasher>>;
+
+pub fn unique_thread_key() -> usize {
+    const THREAD_SLOTS: usize = 64;
+
+    let (slot, ticket) = thread_slot_ticket();
+    ticket.wrapping_mul(THREAD_SLOTS).wrapping_add(slot)
+}

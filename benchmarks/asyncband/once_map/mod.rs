@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod compute;
-mod get;
+// Keep benchmark names aligned with the state observed by the caller. A cold operation creates
+// coordination state, a hot operation only reads an established map, and maintenance removes it.
+mod cold;
+mod hot;
+mod maintenance;
 mod support;
