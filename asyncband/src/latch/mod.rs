@@ -15,15 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A countdown latch that allows one or more tasks to wait until a set of operations completes.
+//! Wait for a one-way countdown to reach zero.
 //!
-//! Unlike a barrier, a latch's count can only decrease and cannot be reused once it reaches zero.
-//! This makes it ideal for scenarios where you need to wait for a specific number of events or
-//! operations to complete.
-//!
-//! A latch starts with an initial count and tasks can wait for this count to reach zero.
-//! The count can be decremented by calling [`count_down()`] or [`arrive()`]. Once the count
-//! reaches zero, all waiting tasks are unblocked.
+//! A [`Latch`] starts with a fixed count. [`Latch::count_down`] decrements it by one and
+//! [`Latch::arrive`] decrements it by an arbitrary amount. Both operations saturate at zero. Once
+//! zero is reached, all current and future waits complete immediately; a latch cannot be reset or
+//! reused for another countdown.
 //!
 //! # Examples
 //!
@@ -35,25 +32,21 @@
 //! use asyncband::latch::Latch;
 //!
 //! let latch = Arc::new(Latch::new(3));
-//! let mut handles = Vec::new();
+//! let mut tasks = Vec::new();
 //!
-//! for i in 0..3 {
+//! for _ in 0..3 {
 //!     let latch = latch.clone();
-//!     handles.push(tokio::spawn(async move {
-//!         println!("Task {} starting", i);
-//!         // Simulate some work
-//!         latch.count_down(); // Signal completion
-//!     }));
+//!     let task = tokio::spawn(async move { latch.count_down() });
+//!     tasks.push(task);
 //! }
 //!
-//! // Wait for all tasks to complete
 //! latch.wait().await;
-//! println!("All tasks completed");
+//! for task in tasks {
+//!     task.await.unwrap();
+//! }
+//! assert_eq!(latch.count(), 0);
 //! # }
 //! ```
-//!
-//! [`count_down()`]: Latch::count_down
-//! [`arrive()`]: Latch::arrive
 
 use std::future::Future;
 use std::pin::Pin;
@@ -64,7 +57,7 @@ use std::task::Poll;
 use crate::internal::countdown::CountdownState;
 use crate::internal::waitset::WakerToken;
 
-/// A synchronization primitive that can be used to coordinate multiple tasks.
+/// A one-shot countdown that can wake any number of waiting tasks.
 ///
 /// See the [module level documentation](self) for more.
 #[derive(Debug)]
@@ -75,16 +68,12 @@ pub struct Latch {
 impl Latch {
     /// Creates a new latch initialized with the given count.
     ///
-    /// # Arguments
-    ///
-    /// * `count` - The initial count value. Tasks will wait until this count reaches zero.
-    ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::latch::Latch;
     ///
-    /// let latch = Latch::new(3); // Creates a latch with count of 3
+    /// let latch = Latch::new(3);
     /// ```
     pub fn new(count: u32) -> Self {
         Self {
@@ -93,8 +82,6 @@ impl Latch {
     }
 
     /// Returns the current count.
-    ///
-    /// This method is typically used for debugging and testing purposes.
     ///
     /// # Examples
     ///
@@ -118,8 +105,8 @@ impl Latch {
     /// use asyncband::latch::Latch;
     ///
     /// let latch = Latch::new(2);
-    /// latch.count_down(); // Count is now 1
-    /// latch.count_down(); // Count is now 0, all waiting tasks are woken
+    /// latch.count_down();
+    /// assert_eq!(latch.count(), 1);
     /// ```
     pub fn count_down(&self) {
         if self.state.decrement(1) {
@@ -129,19 +116,8 @@ impl Latch {
 
     /// Decrements the latch count by `n`, waking up all waiting tasks if the counter reaches zero.
     ///
-    /// This method provides a way to decrement the counter by more than one at a time.
-    /// It will not cause an overflow when decrementing the counter.
-    ///
-    /// # Arguments
-    ///
-    /// * `n` - The amount to decrement the counter by
-    ///
-    /// # Behavior
-    ///
-    /// * If `n` is zero or the counter has already reached zero, nothing happens
-    /// * If the current count is greater than `n`, it is decremented by `n`
-    /// * If the current count is greater than 0 but less than or equal to `n`, the count becomes
-    ///   zero and all waiting tasks are woken
+    /// The count saturates at zero. Passing zero or calling this after the latch has completed has
+    /// no effect.
     ///
     /// # Examples
     ///
@@ -149,8 +125,10 @@ impl Latch {
     /// use asyncband::latch::Latch;
     ///
     /// let latch = Latch::new(5);
-    /// latch.arrive(3); // Count is now 2
-    /// latch.arrive(2); // Count is now 0, all waiting tasks are woken
+    /// latch.arrive(3);
+    /// assert_eq!(latch.count(), 2);
+    /// latch.arrive(10);
+    /// assert_eq!(latch.count(), 0);
     /// ```
     pub fn arrive(&self, n: u32) {
         if n != 0 && self.state.decrement(n) {
@@ -160,10 +138,7 @@ impl Latch {
 
     /// Attempts to wait for the latch count to reach zero without blocking.
     ///
-    /// # Returns
-    ///
-    /// * `Ok(())` if the count is zero
-    /// * `Err(count)` if the count is not zero, where `count` is the current count
+    /// Returns `Ok(())` if the latch is complete, or `Err(count)` with the current nonzero count.
     ///
     /// # Examples
     ///
@@ -183,27 +158,19 @@ impl Latch {
 
     /// Returns a future that will complete when the latch count reaches zero.
     ///
+    /// This method is cancel safe. Dropping a pending wait does not change the countdown or affect
+    /// other waiters.
+    ///
     /// # Examples
     ///
     /// ```
     /// # #[tokio::main]
     /// # async fn main() {
-    /// use std::sync::Arc;
-    ///
     /// use asyncband::latch::Latch;
     ///
-    /// let latch = Arc::new(Latch::new(1));
-    /// let latch2 = latch.clone();
-    ///
-    /// // Spawn a task that will wait for the latch
-    /// let handle = tokio::spawn(async move {
-    ///     latch2.wait().await;
-    ///     println!("Latch reached zero!");
-    /// });
-    ///
-    /// // Count down the latch
+    /// let latch = Latch::new(1);
     /// latch.count_down();
-    /// handle.await.unwrap();
+    /// latch.wait().await;
     /// # }
     /// ```
     pub async fn wait(&self) {
@@ -216,8 +183,8 @@ impl Latch {
 
     /// Returns a future that will complete when the latch count reaches zero.
     ///
-    /// The latch must be wrapped in an [`Arc`] to call this method. Thus, the returned future has
-    /// no lifetime constraints.
+    /// The latch must be wrapped in an [`Arc`] to call this method. The future owns that `Arc`, so
+    /// it can be moved into a spawned task. Like [`wait`](Self::wait), this method is cancel safe.
     ///
     /// # Examples
     ///
@@ -229,17 +196,9 @@ impl Latch {
     /// use asyncband::latch::Latch;
     ///
     /// let latch = Arc::new(Latch::new(1));
-    /// let latch2 = latch.clone();
-    ///
-    /// // Spawn a task that will wait for the latch
-    /// let handle = tokio::spawn(async move {
-    ///     latch2.wait_owned().await;
-    ///     println!("Latch reached zero!");
-    /// });
-    ///
-    /// // Count down the latch
+    /// let waiter = tokio::spawn(latch.clone().wait_owned());
     /// latch.count_down();
-    /// handle.await.unwrap();
+    /// waiter.await.unwrap();
     /// # }
     /// ```
     pub async fn wait_owned(self: Arc<Self>) {
