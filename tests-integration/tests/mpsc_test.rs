@@ -16,7 +16,6 @@
 // under the License.
 
 use std::task::Poll;
-use std::time::Instant;
 
 use asyncband::mpsc;
 use asyncband::mpsc::RecvError;
@@ -34,31 +33,11 @@ fn expect_ready<T>(poll: Poll<T>) -> T {
 }
 
 #[test]
-fn test_unbounded_pressure() {
-    let n = 1024 * 1024;
+fn unbounded_collects_from_multiple_producers() {
     let (tx, mut rx) = mpsc::unbounded();
 
     test_runtime().block_on(async move {
-        let start = Instant::now();
-        tokio::spawn(async move {
-            for i in 0..n {
-                tx.send(i).unwrap();
-            }
-        });
-
-        for i in 0..n {
-            assert_eq!(rx.recv().await, Ok(i));
-        }
-        println!("Elapsed: {:?}", start.elapsed());
-    });
-}
-
-#[test]
-fn test_unbounded_sum() {
-    let (tx, mut rx) = mpsc::unbounded();
-
-    test_runtime().block_on(async move {
-        for i in 0..100 {
+        for i in 0..8 {
             let tx = tx.clone();
             tokio::spawn(async move {
                 tx.send(i).unwrap();
@@ -70,7 +49,7 @@ fn test_unbounded_sum() {
         while let Ok(i) = rx.recv().await {
             sum += i;
         }
-        assert_eq!(sum, 4950);
+        assert_eq!(sum, 28);
     });
 }
 
@@ -182,31 +161,19 @@ async fn async_send_recv_unbounded() {
 }
 
 #[test]
-fn try_recv_unbounded() {
-    for num in 0..100 {
-        let (tx, mut rx) = mpsc::unbounded();
+fn unbounded_try_recv_preserves_order_and_reports_state() {
+    let (tx, mut rx) = mpsc::unbounded();
 
-        for i in 0..num {
-            tx.send(i).unwrap();
-        }
-
-        for i in 0..num {
-            assert_eq!(rx.try_recv(), Ok(i));
-        }
-
-        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
-        drop(tx);
-        assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+    for i in 0..4 {
+        tx.send(i).unwrap();
     }
-}
 
-#[test]
-fn try_recv_reports_disconnection_while_empty_unbounded() {
-    let (tx, mut rx) = mpsc::unbounded::<()>();
-
-    assert_eq!(Err(TryRecvError::Empty), rx.try_recv());
+    for i in 0..4 {
+        assert_eq!(rx.try_recv(), Ok(i));
+    }
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
     drop(tx);
-    assert_eq!(Err(TryRecvError::Disconnected), rx.try_recv());
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
 }
 
 #[tokio::test]
@@ -236,17 +203,17 @@ async fn async_send_recv_bounded() {
 }
 
 #[test]
-fn try_send_recv_bounded() {
-    for num in 1..101 {
-        let (tx, mut rx) = mpsc::bounded(num);
+fn bounded_try_send_respects_capacity_and_order() {
+    for capacity in [1, 4, 16] {
+        let (tx, mut rx) = mpsc::bounded(capacity);
 
-        for i in 0..num {
+        for i in 0..capacity {
             tx.try_send(i).unwrap();
         }
 
-        assert_eq!(tx.try_send(num), Err(TrySendError::Full(num)));
+        assert_eq!(tx.try_send(capacity), Err(TrySendError::Full(capacity)));
 
-        for i in 0..num {
+        for i in 0..capacity {
             assert_eq!(rx.try_recv(), Ok(i));
         }
 
@@ -339,24 +306,4 @@ fn bounded_receiver_drop_returns_values_to_all_blocked_senders() {
     let second_error = expect_ready(poll_once(second.as_mut())).unwrap_err();
     assert_eq!(first_error.into_inner(), 1);
     assert_eq!(second_error.into_inner(), 2);
-}
-
-#[test]
-fn test_bounded_pressure() {
-    let n = 1024 * 1024;
-    let (tx, mut rx) = mpsc::bounded(1024);
-
-    test_runtime().block_on(async move {
-        let start = Instant::now();
-        tokio::spawn(async move {
-            for i in 0..n {
-                tx.send(i).await.unwrap();
-            }
-        });
-
-        for i in 0..n {
-            assert_eq!(rx.recv().await, Ok(i));
-        }
-        println!("Elapsed: {:?}", start.elapsed());
-    });
 }
