@@ -241,6 +241,8 @@ impl ReadBarrier {
     // The caller must serialize blockers and every operation that can free protected data.
     fn block(&self) -> BlockedReaders<'_> {
         let marker = self.marker();
+        // Trait implementations invoked by a read are expected not to reenter the map. Detect this
+        // misuse rather than waiting forever for the current thread's own reader record to clear.
         assert!(
             !current_thread_reads(marker),
             "OnceMap removal cannot run reentrantly during a read of the same map"
@@ -944,12 +946,6 @@ where
     /// computation is detached but continues for callers that already joined it; its result is not
     /// stored in the map.
     ///
-    /// # Panics
-    ///
-    /// Panics if called reentrantly from a key or value trait implementation that is running during
-    /// a synchronous read of this map, such as `Eq`, `Borrow`, `Clone`, or `Debug`. Calling this
-    /// from the asynchronous initializer passed to [`compute`](Self::compute) is supported.
-    ///
     /// [`remove`]: Self::remove
     pub fn discard<Q>(&self, key: &Q)
     where
@@ -967,12 +963,6 @@ where
     /// This may wait for concurrent lookups that are already reading the map. An in-flight
     /// computation is detached but continues for callers that already joined it; its result is not
     /// stored in the map.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called reentrantly from a key or value trait implementation that is running during
-    /// a synchronous read of this map, such as `Eq`, `Borrow`, `Clone`, or `Debug`. Calling this
-    /// from the asynchronous initializer passed to [`compute`](Self::compute) is supported.
     ///
     /// [`discard`]: Self::discard
     pub fn remove<Q>(&self, key: &Q) -> Option<V>
