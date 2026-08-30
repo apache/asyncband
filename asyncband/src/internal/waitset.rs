@@ -214,25 +214,24 @@ mod tests {
     #[test]
     fn stale_token_does_not_alias_a_reused_slot() {
         let mut waiters = WaitSet::new();
-        let first_waker = Waker::from(Arc::new(TrackWake(AtomicUsize::new(0))));
-        let second_waker = Waker::from(Arc::new(TrackWake(AtomicUsize::new(0))));
-        let mut first = None;
-        let mut second = None;
+        let first_task = Arc::new(TrackWake(AtomicUsize::new(0)));
+        let first_waker = Waker::from(first_task.clone());
+        let second_task = Arc::new(TrackWake(AtomicUsize::new(0)));
+        let second_waker = Waker::from(second_task.clone());
+        let mut first_token = None;
+        let mut second_token = None;
 
-        register(&mut waiters, &mut first, &first_waker);
+        register(&mut waiters, &mut first_token, &first_waker);
         assert_eq!(waiters.take_wakers().count(), 1);
 
-        register(&mut waiters, &mut second, &second_waker);
-        register(&mut waiters, &mut first, &first_waker);
+        register(&mut waiters, &mut second_token, &second_waker);
+        register(&mut waiters, &mut first_token, &first_waker);
 
         let registered = waiters.take_wakers().collect::<Vec<_>>();
         assert_eq!(registered.len(), 2);
-        assert!(registered.iter().any(|waker| waker.will_wake(&first_waker)));
-        assert!(
-            registered
-                .iter()
-                .any(|waker| waker.will_wake(&second_waker))
-        );
+        wake_all(registered.into_iter());
+        assert_eq!(first_task.0.load(Ordering::Relaxed), 1);
+        assert_eq!(second_task.0.load(Ordering::Relaxed), 1);
     }
 
     #[test]

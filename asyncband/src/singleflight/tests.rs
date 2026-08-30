@@ -15,7 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
+use std::cell::Cell;
+use std::future::poll_fn;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
+use std::pin::pin;
+use std::task::Poll;
 
 use super::Group;
 use crate::test_support::poll_once;
@@ -26,85 +31,75 @@ fn entry_count<K, V, S>(group: &Group<K, V, S>) -> usize {
     group.entries.lock().len()
 }
 
-#[tokio::test]
-async fn panicked_work_removes_empty_entry() {
-    let group = Arc::new(Group::<&str, String>::new());
+#[test]
+fn panicked_work_removes_empty_entry() {
+    let group = Group::<&str, String>::new();
 
-    let group_clone = group.clone();
-    let task = tokio::spawn(async move {
-        group_clone
-            .work("key", || async {
-                panic!("oops");
-            })
-            .await
-    });
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let mut work = pin!(group.work("key", || async {
+            panic!("oops");
+        }));
+        let _ = poll_once(work.as_mut());
+    }));
 
-    assert!(task.await.unwrap_err().is_panic());
+    assert!(result.is_err());
     assert_eq!(entry_count(&group), 0);
 
-    let result = group.work("key", || async { "success".to_owned() }).await;
-    assert_eq!(result, "success");
+    let mut retry = pin!(group.work("key", || async { "success".to_owned() }));
+    assert_eq!(poll_once(retry.as_mut()), Poll::Ready("success".to_owned()));
 }
 
-#[tokio::test]
-async fn cancelled_work_removes_empty_entry() {
-    let group = Arc::new(Group::<&str, &str>::new());
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+#[test]
+fn cancelled_work_removes_empty_entry() {
+    let group = Group::<&str, &str>::new();
 
-    let group_clone = group.clone();
-    let task = tokio::spawn(async move {
-        group_clone
-            .work("key", || async move {
-                started_tx.send(()).unwrap();
-                std::future::pending().await
-            })
-            .await
-    });
+    {
+        let mut work = pin!(group.work("key", || async { std::future::pending::<&str>().await }));
+        assert!(poll_once(work.as_mut()).is_pending());
+        assert_eq!(entry_count(&group), 1);
+    }
 
-    started_rx.await.unwrap();
-    assert_eq!(entry_count(&group), 1);
-
-    task.abort();
-    assert!(task.await.unwrap_err().is_cancelled());
     assert_eq!(entry_count(&group), 0);
 }
 
-#[tokio::test]
-async fn failed_try_work_removes_empty_entry() {
+#[test]
+fn failed_try_work_removes_empty_entry() {
     let group = Group::new();
 
-    let result = group
-        .try_work("key", || async { Err::<&str, &str>("error") })
-        .await;
-    assert_eq!(result, Err("error"));
+    let mut work = pin!(group.try_work("key", || async { Err::<&str, &str>("error") }));
+    assert_eq!(poll_once(work.as_mut()), Poll::Ready(Err("error")));
     assert_eq!(entry_count(&group), 0);
 
-    let retry = group
-        .try_work("key", || async { Ok::<&str, ()>("success") })
-        .await;
-    assert_eq!(retry, Ok("success"));
+    let mut retry = pin!(group.try_work("key", || async { Ok::<&str, ()>("success") }));
+    assert_eq!(poll_once(retry.as_mut()), Poll::Ready(Ok("success")));
 }
 
-#[tokio::test]
-async fn failed_try_work_preserves_entry_for_waiter_retry() {
+#[test]
+fn failed_try_work_preserves_entry_for_waiter_retry() {
     let group = Group::new();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let released = Cell::new(false);
 
-    let first = group.try_work("key", || async move {
-        release_rx.await.unwrap();
+    let first = group.try_work("key", || async {
+        poll_fn(|_| {
+            released
+                .get()
+                .then_some(())
+                .map_or(Poll::Pending, Poll::Ready)
+        })
+        .await;
         Err::<&str, &str>("fail")
     });
-    tokio::pin!(first);
+    let mut first = pin!(first);
     assert!(poll_once(first.as_mut()).is_pending());
 
     let retry = group.try_work("key", || async { Ok::<&str, &str>("success") });
-    tokio::pin!(retry);
+    let mut retry = pin!(retry);
     assert!(poll_once(retry.as_mut()).is_pending());
 
-    release_tx.send(()).unwrap();
-    assert_eq!(first.await, Err("fail"));
+    released.set(true);
+    assert_eq!(poll_once(first.as_mut()), Poll::Ready(Err("fail")));
 
     assert_eq!(entry_count(&group), 1);
-    assert_eq!(retry.await, Ok("success"));
+    assert_eq!(poll_once(retry.as_mut()), Poll::Ready(Ok("success")));
     assert_eq!(entry_count(&group), 0);
 }

@@ -451,3 +451,46 @@ fn acquired_or_enqueue(
         return false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Wake;
+
+    use super::*;
+
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn release_drains_more_than_one_wake_batch() {
+        const WAITER_COUNT: usize = WAKE_BATCH_SIZE + 3;
+
+        let semaphore = Semaphore::new(0);
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(counter.clone());
+        let mut acquires = (0..WAITER_COUNT)
+            .map(|_| semaphore.poll_acquire(1))
+            .collect::<Vec<_>>();
+
+        for acquire in &mut acquires {
+            assert!(acquire.poll_once(&waker).is_pending());
+        }
+        assert_eq!(semaphore.num_waiter_nodes(), WAITER_COUNT);
+
+        semaphore.release(WAITER_COUNT);
+        assert_eq!(counter.0.load(Ordering::Relaxed), WAITER_COUNT);
+
+        for acquire in &mut acquires {
+            assert!(acquire.poll_once(&waker).is_ready());
+        }
+        assert_eq!(semaphore.num_waiter_nodes(), 0);
+    }
+}
