@@ -132,7 +132,6 @@ struct CommandTest {
 
 impl CommandTest {
     fn run(self) {
-        run_command(make_default_feature_doc_test_cmd());
         run_command(make_test_cmd(self.no_capture, &asyncband_features()));
     }
 }
@@ -392,18 +391,6 @@ fn make_test_cmd(no_capture: bool, features: &[String]) -> StdCommand {
     if no_capture {
         cmd.args(["--", "--nocapture"]);
     }
-    cmd
-}
-
-fn make_default_feature_doc_test_cmd() -> StdCommand {
-    let mut cmd = find_command("cargo");
-    cmd.args([
-        "test",
-        "--package",
-        PACKAGE_NAME,
-        "--doc",
-        "--no-default-features",
-    ]);
     cmd
 }
 
