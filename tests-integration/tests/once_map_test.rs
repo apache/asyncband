@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasherDefault;
+use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -139,7 +141,38 @@ async fn get_remove_and_discard() {
 }
 
 #[tokio::test]
-async fn discard_releases_a_value_held_by_growth_snapshots() {
+async fn discard_releases_the_removed_key_and_value() {
+    struct Key {
+        value: usize,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Borrow<usize> for Key {
+        fn borrow(&self) -> &usize {
+            &self.value
+        }
+    }
+
+    impl PartialEq for Key {
+        fn eq(&self, other: &Self) -> bool {
+            self.value == other.value
+        }
+    }
+
+    impl Eq for Key {}
+
+    impl Hash for Key {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.value.hash(state);
+        }
+    }
+
+    impl Drop for Key {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     struct DropCounter(Arc<AtomicUsize>);
 
     impl Drop for DropCounter {
@@ -148,32 +181,28 @@ async fn discard_releases_a_value_held_by_growth_snapshots() {
         }
     }
 
-    #[derive(Default)]
-    struct ConstantHasher;
+    let key_drops = Arc::new(AtomicUsize::new(0));
+    let value_drops = Arc::new(AtomicUsize::new(0));
+    let value = Arc::new(DropCounter(Arc::clone(&value_drops)));
+    let map = OnceMap::new();
+    map.compute(
+        Key {
+            value: 1,
+            drops: Arc::clone(&key_drops),
+        },
+        async || Arc::clone(&value),
+    )
+    .await;
+    drop(value);
 
-    impl Hasher for ConstantHasher {
-        fn finish(&self) -> u64 {
-            0
-        }
+    map.discard(&1);
 
-        fn write(&mut self, _bytes: &[u8]) {}
-    }
-
-    let drops = Arc::new(AtomicUsize::new(0));
-    let first = Arc::new(DropCounter(Arc::clone(&drops)));
-    let second = Arc::new(DropCounter(Arc::clone(&drops)));
-    let map = OnceMap::with_hasher(BuildHasherDefault::<ConstantHasher>::default());
-    map.compute(0, async || Arc::clone(&first)).await;
-    map.compute(1, async || Arc::clone(&second)).await;
-    drop(first);
-
-    map.discard(&0);
-
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(key_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(value_drops.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
-async fn remove_while_computing_detaches_entry() {
+async fn remove_while_computing_allows_a_new_generation() {
     let map = Arc::new(OnceMap::new());
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
@@ -191,10 +220,11 @@ async fn remove_while_computing_detaches_entry() {
 
     started_rx.await.unwrap();
     assert_eq!(map.remove("key"), None);
+    assert_eq!(map.compute("key", async || 2).await, 2);
     release_tx.send(()).unwrap();
 
     assert_eq!(task.await.unwrap(), 1);
-    assert_eq!(map.get("key"), None);
+    assert_eq!(map.get("key"), Some(2));
 }
 
 #[tokio::test]

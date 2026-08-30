@@ -18,10 +18,12 @@
 use std::hash::BuildHasherDefault;
 use std::hash::Hasher;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::task::Poll;
 
 use super::Lookup;
 use super::OnceMap;
-use super::TrieState;
+use super::ReadBarrier;
 use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
@@ -101,19 +103,77 @@ async fn failed_compute_preserves_entry_for_waiter_retry() {
 }
 
 #[test]
-fn reader_snapshot_does_not_keep_an_abandoned_entry_registered() {
+fn abandoned_pending_entry_is_removed_when_last_caller_leaves() {
     let map = OnceMap::<&str, i32>::new();
     let Lookup::Pending(entry) = map.get_or_insert("key") else {
         unreachable!()
     };
-    let root = map.entries.root.get().unwrap();
-    let snapshot = root.node.slot(entry.hash, 0).state.load_owned().unwrap();
-    assert!(matches!(snapshot.as_ref(), TrieState::Leaf(_)));
 
     map.cleanup_abandoned_entry(entry);
 
     assert!(map.is_empty());
-    drop(snapshot);
+}
+
+#[test]
+fn colliding_ready_entries_can_be_unlinked_independently() {
+    #[derive(Default)]
+    struct ConstantHasher;
+
+    impl Hasher for ConstantHasher {
+        fn finish(&self) -> u64 {
+            0
+        }
+
+        fn write(&mut self, _bytes: &[u8]) {}
+    }
+
+    let map: OnceMap<usize, usize, BuildHasherDefault<ConstantHasher>> =
+        (0..4).map(|key| (key, key * 2)).collect();
+
+    map.discard(&1);
+    map.discard(&3);
+
+    assert_eq!(map.get(&0), Some(0));
+    assert_eq!(map.get(&1), None);
+    assert_eq!(map.get(&2), Some(4));
+    assert_eq!(map.get(&3), None);
+}
+
+#[test]
+fn writer_waits_for_an_active_reader() {
+    let barrier = Arc::new(ReadBarrier::new());
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+
+    let reader = {
+        let barrier = Arc::clone(&barrier);
+        std::thread::spawn(move || {
+            barrier.read(|| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            });
+        })
+    };
+    entered_rx.recv().unwrap();
+
+    let (blocked_tx, blocked_rx) = std::sync::mpsc::sync_channel(0);
+    let writer = {
+        let barrier = Arc::clone(&barrier);
+        std::thread::spawn(move || {
+            let blocked = barrier.block();
+            blocked_tx.send(()).unwrap();
+            drop(blocked);
+        })
+    };
+    while !barrier.blocked.load(Ordering::SeqCst) {
+        std::thread::yield_now();
+    }
+    assert!(blocked_rx.try_recv().is_err());
+
+    release_tx.send(()).unwrap();
+    blocked_rx.recv().unwrap();
+    reader.join().unwrap();
+    writer.join().unwrap();
 }
 
 #[test]
@@ -159,7 +219,8 @@ fn concurrent_deep_reads_survive_replacement_and_removal() {
         for iteration in 0..ITERATIONS {
             let key = (iteration as u64 % KEYS) << 32;
             map.discard(&key);
-            map.insert(key, key);
+            let mut compute = std::pin::pin!(map.compute(key, async move || key));
+            assert_eq!(poll_once(compute.as_mut()), Poll::Ready(key));
             std::thread::yield_now();
         }
     });
