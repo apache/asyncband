@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::pin::Pin;
 use std::pin::pin;
 
 use asyncband::event::ManualResetEvent;
@@ -116,14 +115,16 @@ fn waiter_fan_out(bencher: Bencher, waiter_count: usize) {
         .counter(ItemsCount::new(waiter_count))
         .bench_local(|| {
             let event = ManualResetEvent::new();
-            let mut waiters = (0..waiter_count).map(|_| event.wait()).collect::<Vec<_>>();
+            let mut waiters = (0..waiter_count)
+                .map(|_| Box::pin(event.wait()))
+                .collect::<Vec<_>>();
             for waiter in &mut waiters {
-                poll_pending(Pin::new(waiter), &mut context);
+                poll_pending(waiter.as_mut(), &mut context);
             }
 
             event.set();
             for mut waiter in waiters {
-                poll_pinned_ready(Pin::new(&mut waiter), &mut context);
+                poll_pinned_ready(waiter.as_mut(), &mut context);
             }
             black_box(event)
         });

@@ -257,11 +257,12 @@ impl ManualResetEvent {
     /// assert_eq!(released, "released");
     /// # }
     /// ```
-    pub fn wait(&self) -> impl Future<Output = ()> + Send + Sync + Unpin + '_ {
-        ManualResetEventWait {
+    pub async fn wait(&self) {
+        let fut = ManualResetEventWait {
             waiter: None,
             event: self,
-        }
+        };
+        fut.await
     }
 
     /// Returns an owned future that waits until the event is set.
@@ -285,11 +286,12 @@ impl ManualResetEvent {
     /// waiter.await.unwrap();
     /// # }
     /// ```
-    pub fn wait_owned(self: Arc<Self>) -> impl Future<Output = ()> + Send + Sync + Unpin + 'static {
-        OwnedManualResetEventWait {
+    pub async fn wait_owned(self: Arc<Self>) {
+        let fut = OwnedManualResetEventWait {
             waiter: None,
             event: self,
-        }
+        };
+        fut.await
     }
 
     /// Polls a wait, registering `waiter_id` on the first poll that observes an unset event.

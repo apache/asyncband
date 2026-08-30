@@ -141,14 +141,10 @@ fn movable_public_types_are_send() {
 #[test]
 fn public_types_are_unpin() {
     fn assert_unpin<T: Unpin>() {}
-    fn assert_unpin_value<T: Unpin>(_: T) {}
 
     assert_unpin::<Barrier>();
     assert_unpin::<Condvar>();
     assert_unpin::<ManualResetEvent>();
-    let event = ManualResetEvent::new();
-    assert_unpin_value(event.wait());
-    assert_unpin_value(Arc::new(ManualResetEvent::new()).wait_owned());
     assert_unpin::<completion::Completer<i64>>();
     assert_unpin::<completion::Completion<i64>>();
     assert_unpin::<completion::Abandoned>();
