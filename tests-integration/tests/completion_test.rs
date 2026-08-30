@@ -194,6 +194,20 @@ fn dropping_one_observer_before_or_after_completion_does_not_affect_another() {
 }
 
 #[test]
+fn completed_payload_is_released_with_the_last_observer() {
+    let payload = Arc::new(());
+    let (completer, completion) = completion::channel();
+
+    completer.complete(payload.clone()).unwrap();
+    assert_eq!(Arc::strong_count(&payload), 2);
+
+    drop(completion);
+    assert_eq!(Arc::strong_count(&payload), 1);
+
+    drop(completer);
+}
+
+#[test]
 fn completer_drop_wakes_all_registered_waits() {
     let (completer, first) = completion::channel::<usize>();
     let second = first.clone();

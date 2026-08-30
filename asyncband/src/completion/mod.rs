@@ -57,6 +57,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::Weak;
 use std::task::Context;
 use std::task::Poll;
 
@@ -78,7 +79,7 @@ pub fn channel<T>() -> (Completer<T>, Completion<T>) {
         }),
     });
     let completer = Completer {
-        shared: shared.clone(),
+        shared: Arc::downgrade(&shared),
     };
     let completion = Completion { shared };
     (completer, completion)
@@ -107,7 +108,7 @@ enum Status {
 /// This type deliberately does not implement [`Clone`]. Dropping it before completion closes the
 /// primitive and wakes all pending observers.
 pub struct Completer<T> {
-    shared: Arc<Shared<T>>,
+    shared: Weak<Shared<T>>,
 }
 
 impl<T> fmt::Debug for Completer<T> {
@@ -121,14 +122,23 @@ impl<T> Completer<T> {
     ///
     /// The value is rejected and returned if another value has already completed the primitive or
     /// if no observers remain.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a registered waker panics while being notified. The value is committed before
+    /// notification begins, so subsequent completion attempts are rejected. Before resuming the
+    /// panic, `complete` still attempts to wake every remaining registered waker.
     pub fn complete(&self, value: T) -> Result<(), CompleteError<T>> {
+        let Some(shared) = self.shared.upgrade() else {
+            return Err(CompleteError::new(value));
+        };
         let wakers = {
-            let mut state = self.shared.state.lock();
+            let mut state = shared.state.lock();
             if state.status != Status::Pending || state.observers == 0 {
                 return Err(CompleteError::new(value));
             }
 
-            if let Err(value) = self.shared.value.set(value) {
+            if let Err(value) = shared.value.set(value) {
                 drop(state);
                 drop(value);
                 panic!("pending completion value must be unset");
@@ -145,8 +155,11 @@ impl<T> Completer<T> {
 
 impl<T> Drop for Completer<T> {
     fn drop(&mut self) {
+        let Some(shared) = self.shared.upgrade() else {
+            return;
+        };
         let wakers = {
-            let mut state = self.shared.state.lock();
+            let mut state = shared.state.lock();
             if state.status != Status::Pending {
                 return;
             }
