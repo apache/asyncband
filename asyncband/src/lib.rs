@@ -36,6 +36,7 @@
 //! Then use the selected APIs directly:
 //!
 //! ```
+//! # #[cfg(feature = "mutex")]
 //! # #[tokio::main]
 //! # async fn main() {
 //! use asyncband::mutex::Mutex;
@@ -47,6 +48,8 @@
 //! }
 //! assert_eq!(*counter.lock().await, 1);
 //! # }
+//! # #[cfg(not(feature = "mutex"))]
+//! # fn main() {}
 //! ```
 //!
 //! # API map
