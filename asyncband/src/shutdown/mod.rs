@@ -185,10 +185,7 @@ impl ShutdownGuard {
         self.latch.wait().await;
     }
 
-    /// Returns a future that resolves when shutdown is requested.
-    ///
-    /// The future can be moved into a spawned task. Like
-    /// [`shutdown_requested`](Self::shutdown_requested), this method is cancel safe.
+    /// Returns a future that can be spawned and resolves when shutdown is requested.
     pub fn shutdown_requested_owned(&self) -> impl Future<Output = ()> + 'static {
         self.latch.clone().wait_owned()
     }
