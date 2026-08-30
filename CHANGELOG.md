@@ -37,3 +37,4 @@ All notable changes to this project will be documented in this file.
 
 * Remove the `slab` dependency in favor of a focused internal waiter arena.
 * Describe disconnected channel states consistently in channel error messages.
+* Replace the legacy standard-library MPSC backend with an owned queue core and remove the receiver types' manual `Sync` implementations.
