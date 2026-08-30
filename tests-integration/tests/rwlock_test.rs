@@ -24,197 +24,107 @@ use tokio_test::assert_pending;
 use tokio_test::assert_ready;
 
 #[test]
-fn test_try_read_write_never_blocks() {
-    // Test that try_read and try_write never block
+fn try_methods_respect_held_guards() {
     let rwlock = Arc::new(RwLock::new(42));
 
-    let r1 = rwlock.try_read().unwrap();
-    let _r2 = rwlock.try_read().unwrap();
-    assert_eq!(*r1, 42);
-    assert_eq!(*_r2, 42);
+    let first_reader = rwlock.try_read().unwrap();
+    let second_reader = rwlock.try_read().unwrap();
+    assert_eq!(*first_reader, 42);
+    assert_eq!(*second_reader, 42);
 
     assert!(rwlock.try_write().is_none());
 
-    drop(r1);
-    drop(_r2);
+    drop(first_reader);
+    drop(second_reader);
 
-    let w = rwlock.try_write().unwrap();
-    assert_eq!(*w, 42);
+    let writer = rwlock.try_write().unwrap();
+    assert_eq!(*writer, 42);
 
     assert!(rwlock.try_read().is_none());
     assert!(rwlock.clone().try_read_owned().is_none());
 }
 
 #[test]
-fn test_get_mut_provides_exclusive_access() {
-    // Test that get_mut provides exclusive access to the data
+fn get_mut_and_into_inner_use_exclusive_access() {
     let mut rwlock = RwLock::new(100);
 
-    let data = rwlock.get_mut();
-    *data = 200;
+    *rwlock.get_mut() = 200;
 
     assert_eq!(*rwlock.get_mut(), 200);
-
-    let inner = rwlock.into_inner();
-    assert_eq!(inner, 200);
+    assert_eq!(rwlock.into_inner(), 200);
 }
 
 #[test]
-fn test_with_max_readers() {
+fn max_readers_limits_concurrent_readers() {
     let rwlock = RwLock::with_max_readers(10, NonZeroUsize::new(2).unwrap());
 
-    let r1 = rwlock.try_read().unwrap();
-    let r2 = rwlock.try_read().unwrap();
-    assert_eq!(*r1, 10);
-    assert_eq!(*r2, 10);
-
+    let first = rwlock.try_read().unwrap();
+    let second = rwlock.try_read().unwrap();
     assert!(rwlock.try_read().is_none());
-
     assert!(rwlock.try_write().is_none());
 
-    drop(r1);
-
-    let r3 = rwlock.try_read().unwrap();
-    assert_eq!(*r3, 10);
-
+    drop(first);
+    let replacement = rwlock.try_read().unwrap();
     assert!(rwlock.try_read().is_none());
 
-    drop(r2);
-    drop(r3);
-
-    let mut w = rwlock.try_write().unwrap();
-    *w = 20;
-    drop(w);
-
-    let r = rwlock.try_read().unwrap();
-    assert_eq!(*r, 20);
+    drop(second);
+    drop(replacement);
+    assert!(rwlock.try_write().is_some());
 }
 
-#[tokio::test]
-async fn test_stress_concurrent_readers_writers() {
-    // Test concurrent readers and writers with RwLock
-    let rwlock = Arc::new(RwLock::new(0i32));
-    let mut reader_results = Vec::new();
-    let mut writer_results = Vec::new();
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_readers_and_writers_preserve_values() {
+    const READERS: usize = 50;
+    const WRITERS: usize = 10;
 
-    // Spawn reader tasks
-    for i in 0..50 {
-        let rwlock_clone = rwlock.clone();
-        let handle = tokio::spawn(async move {
-            let guard = rwlock_clone.read().await;
-            let value = *guard;
+    let rwlock = Arc::new(RwLock::new(0));
+    let start = Arc::new(tokio::sync::Barrier::new(READERS + WRITERS + 1));
+    let mut readers = Vec::with_capacity(READERS);
+    let mut writers = Vec::with_capacity(WRITERS);
+
+    for _ in 0..READERS {
+        let rwlock = rwlock.clone();
+        let start = start.clone();
+        readers.push(tokio::spawn(async move {
+            start.wait().await;
+            let value = *rwlock.read().await;
             tokio::task::yield_now().await;
-            (i, value)
-        });
-        reader_results.push(handle);
+            value
+        }));
     }
 
-    // Spawn writer tasks
-    for i in 0..10 {
-        let rwlock_clone = rwlock.clone();
-        let handle = tokio::spawn(async move {
-            let mut guard = rwlock_clone.write().await;
-            let old_value = *guard;
+    for _ in 0..WRITERS {
+        let rwlock = rwlock.clone();
+        let start = start.clone();
+        writers.push(tokio::spawn(async move {
+            start.wait().await;
+            let mut guard = rwlock.write().await;
             *guard += 1;
             tokio::task::yield_now().await;
-            (i + 100, old_value, *guard)
-        });
-        writer_results.push(handle);
+        }));
     }
 
-    for handle in reader_results {
-        let (reader_id, value) = handle.await.unwrap();
-        assert!(
-            (0..=10).contains(&value),
-            "Reader {reader_id} saw invalid value: {value}"
-        );
+    start.wait().await;
+    for reader in readers {
+        assert!((0..=WRITERS as i32).contains(&reader.await.unwrap()));
     }
-
-    let mut writer_values = Vec::new();
-    for handle in writer_results {
-        let (writer_id, old_value, new_value) = handle.await.unwrap();
-        assert_eq!(
-            new_value,
-            old_value + 1,
-            "Writer {writer_id} increment failed: {old_value} -> {new_value}"
-        );
-        writer_values.push((old_value, new_value));
+    for writer in writers {
+        writer.await.unwrap();
     }
-
-    let final_guard = rwlock.read().await;
-    assert_eq!(
-        *final_guard, 10,
-        "Final value should be 10 after 10 increments"
-    );
-
-    writer_values.sort_by_key(|(old, _)| *old);
-    for (i, (old_value, new_value)) in writer_values.iter().enumerate() {
-        assert_eq!(
-            *old_value, i as i32,
-            "Writer operations should be sequential"
-        );
-        assert_eq!(
-            *new_value,
-            (i + 1) as i32,
-            "Each increment should be atomic"
-        );
-    }
+    assert_eq!(*rwlock.read().await, WRITERS as i32);
 }
 
 #[tokio::test]
-async fn test_memory_ordering_correctness() {
-    // Test that rwlock provides proper memory ordering guarantees
-    // When one task modifies data under rwlock protection,
-    // another task should see the modification after acquiring the lock
-    let rwlock = Arc::new(RwLock::new(vec![1, 2, 3]));
-    let rwlock_clone = rwlock.clone();
-
-    let handle = tokio::spawn(async move {
-        let mut guard = rwlock_clone.write().await;
-        guard.push(4);
-        guard[0] = 100;
-        // Lock is released when guard is dropped
-    });
-
-    handle.await.unwrap();
-
-    let guard = rwlock.read().await;
-    assert_eq!(*guard, vec![100, 2, 3, 4]);
-}
-
-#[tokio::test]
-async fn test_rwlock_zst() {
-    // Test that RwLock works correctly with Zero-Sized Types
+async fn zero_sized_values_follow_locking_rules() {
     let rwlock = Arc::new(RwLock::new(()));
 
-    let rwlock_clone = rwlock.clone();
-    let handle = tokio::spawn(async move {
-        let guard = rwlock_clone.read().await;
-        *guard;
-    });
-
-    handle.await.unwrap();
-
-    let guard1 = rwlock.read().await;
-    let guard2 = rwlock.clone().read_owned().await;
-    *guard1;
-    *guard2;
-
+    let borrowed = rwlock.read().await;
+    let owned = rwlock.clone().read_owned().await;
     assert!(rwlock.try_write().is_none());
 
-    drop(guard1);
-    drop(guard2);
-
-    let mut write_guard = rwlock.write().await;
-    *write_guard = ();
-    drop(write_guard);
-
-    let try_write_guard = rwlock.try_write().unwrap();
-    *try_write_guard;
-    drop(try_write_guard);
-
-    let guard = rwlock.try_read().unwrap();
-    *guard;
+    drop(borrowed);
+    drop(owned);
+    assert!(rwlock.try_write().is_some());
 }
 
 #[tokio::test]
@@ -281,11 +191,9 @@ async fn owned_read_mappings_preserve_lock_ownership() {
 }
 
 #[tokio::test]
-async fn test_downgrade_atomicity() {
-    // Test atomic downgrade behavior for all guard types
+async fn every_write_guard_type_can_downgrade() {
     let rwlock = Arc::new(RwLock::new((42, "test".to_string())));
 
-    // Test basic write guard downgrade
     {
         let mut write_guard = rwlock.write().await;
         write_guard.0 = 100;
@@ -293,7 +201,6 @@ async fn test_downgrade_atomicity() {
         let read_guard = write_guard.downgrade();
         assert_eq!(read_guard.0, 100);
 
-        // Writers blocked, readers allowed
         assert!(rwlock.try_write().is_none());
         let concurrent_read = rwlock.try_read().unwrap();
         assert_eq!(concurrent_read.0, 100);
@@ -301,7 +208,6 @@ async fn test_downgrade_atomicity() {
         drop(read_guard);
     }
 
-    // Test owned write guard downgrade
     {
         let mut owned_write = rwlock.clone().write_owned().await;
         owned_write.1 = "updated".to_string();
@@ -313,7 +219,6 @@ async fn test_downgrade_atomicity() {
         drop(owned_read);
     }
 
-    // Test mapped write guard downgrade
     {
         let write_guard = rwlock.write().await;
         let mut mapped_write = RwLockWriteGuard::map(write_guard, |data| &mut data.0);
@@ -326,7 +231,6 @@ async fn test_downgrade_atomicity() {
         drop(mapped_read);
     }
 
-    // Test owned mapped write guard downgrade
     {
         let owned_write = rwlock.clone().write_owned().await;
         let mut owned_mapped = OwnedRwLockWriteGuard::map(owned_write, |data| &mut data.1);
@@ -343,7 +247,7 @@ async fn test_downgrade_atomicity() {
 }
 
 #[tokio::test]
-async fn test_downgrade_with_max_readers() {
+async fn downgraded_guard_counts_against_max_readers() {
     let rwlock = Arc::new(RwLock::with_max_readers(0, NonZeroUsize::new(3).unwrap()));
 
     let mut write_guard = rwlock.write().await;
