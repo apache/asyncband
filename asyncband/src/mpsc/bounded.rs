@@ -42,6 +42,10 @@ use crate::internal::semaphore::Semaphore;
 /// A `send` on this channel will wait if the buffer of the channel is full until a
 /// `recv` is called on the receiver, which will consume the message and
 /// free up space in the buffer.
+///
+/// # Panics
+///
+/// Panics if `buffer` is zero.
 #[track_caller]
 pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     assert!(buffer > 0, "mpsc bounded channel requires buffer > 0");
@@ -110,7 +114,7 @@ impl<T> Drop for BoundedSender<T> {
 }
 
 impl<T> BoundedSender<T> {
-    /// Attempts to send a message to the associated receiver.
+    /// Sends a message to the associated receiver.
     ///
     /// This method will wait if the buffer of the channel is full until a `recv` is called on the
     /// receiver, which will consume the message and free up space in the buffer.
@@ -288,7 +292,7 @@ impl<T> BoundedReceiver<T> {
     /// no buffered messages remain. At that point, this `Receiver` can never receive another
     /// value.
     ///
-    /// If the buffer is empty while a sender remains, this method sleeps until a message is sent or
+    /// If the buffer is empty while a sender remains, this method waits until a message is sent or
     /// the final sender is dropped.
     ///
     /// # Cancel safety

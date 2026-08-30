@@ -104,7 +104,7 @@ impl<T> Drop for UnboundedSender<T> {
 }
 
 impl<T> UnboundedSender<T> {
-    /// Attempts to send a message without blocking.
+    /// Sends a message without blocking.
     ///
     /// This method is not marked async because sending a message to an unbounded channel
     /// never requires any form of waiting. Because of this, the `send` method can be
@@ -189,7 +189,7 @@ impl<T> UnboundedReceiver<T> {
     /// no buffered messages remain. At that point, this `Receiver` can never receive another
     /// value.
     ///
-    /// If the buffer is empty while a sender remains, this method sleeps until a message is sent or
+    /// If the buffer is empty while a sender remains, this method waits until a message is sent or
     /// the final sender is dropped.
     ///
     /// # Cancel safety
