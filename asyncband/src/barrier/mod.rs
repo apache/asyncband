@@ -180,6 +180,7 @@ impl Barrier {
             state: Mutex::new(BarrierState {
                 arrived: 0,
                 generation: 0,
+                // The final participant completes the generation without parking.
                 waiters: WaitSet::with_capacity((n - 1) as usize),
             }),
         }
@@ -239,8 +240,8 @@ impl Barrier {
             let generation = state.generation;
             state.arrived += 1;
 
-            // the last arriver is the leader;
-            // wake up other waiters, increment the generation, and return
+            // The final arrival completes this generation. Advance the generation while holding
+            // the state lock, then wake the drained followers after releasing it.
             if state.arrived == self.n {
                 state.arrived = 0;
                 state.generation += 1;
@@ -291,12 +292,15 @@ impl Future for BarrierWait<'_> {
             barrier,
         } = self.get_mut();
 
-        // Waker cloning may call back into the barrier, so it must happen before taking the state
-        // lock. The generation is checked afterward to close the resulting race.
+        // A follower normally parks once, so cloning first keeps its common pending path to one
+        // state-lock acquisition. Cloning may reenter and complete the barrier; checking the
+        // generation afterward closes that race. The completion poll may clone an unused waker,
+        // which is the deliberate cost of avoiding a second lock-and-recheck phase here.
         let waker = cx.waker().clone();
         let mut state = barrier.state.lock();
         if *generation < state.generation {
-            // Advancing the generation drains its registrations under this same lock.
+            // Completion advances the generation and drains its old waiters under this same lock,
+            // so no registration represented by this token remains in the wait set.
             *token = None;
             drop(state);
             drop(waker);

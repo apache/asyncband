@@ -135,6 +135,7 @@ impl<T> fmt::Debug for Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
+        // Only the final sender detaches the parked receivers; their wake callbacks run unlocked.
         let wakers = {
             let mut state = self.shared.state.lock();
             state.senders -= 1;
@@ -170,6 +171,7 @@ impl<T> Sender<T> {
             let wakers = state.waiters.drain();
             (wakers, replaced)
         };
+        // Waker callbacks and the replaced value's destructor may reenter this channel.
         wake_all(wakers);
         drop(replaced);
         Ok(())
@@ -286,8 +288,10 @@ impl<T> Future for Changed<'_, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        // A changed call normally parks once and then consumes one update. Preparing its waker
-        // before the lock avoids a second lock acquisition on that common pending path.
+        // A changed call normally parks once and then consumes one update, so cloning first keeps
+        // the common pending path to one state-lock acquisition. Checking the version and sender
+        // count afterward closes races caused by concurrent work or a reentrant clone callback.
+        // Ready and disconnected polls may consequently clone an unused waker.
         let waker = cx.waker().clone();
         let mut state = this.receiver.shared.state.lock();
         if state.version != this.receiver.seen {

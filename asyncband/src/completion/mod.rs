@@ -158,6 +158,7 @@ impl<T> Completer<T> {
                 drop(value);
                 panic!("pending completion value must be unset");
             }
+            // Publish the value before making completion observable and detaching its waiters.
             state.status = Status::Completed;
             state.waiters.drain()
         };
@@ -179,6 +180,7 @@ impl<T> Drop for Completer<T> {
             if state.status != Status::Pending {
                 return;
             }
+            // Publish abandonment and detach its waiters atomically with respect to registration.
             state.status = Status::Abandoned;
             state.waiters.drain()
         };
@@ -237,6 +239,10 @@ impl<'a, T> Future for Wait<'a, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
+        // Terminal waits require no waker, so inspect the state before cloning. If a pending wait
+        // needs a new waker, release the lock, clone, and repeat the full state check before
+        // registration. The loop executes at most twice: once to prepare a waker and once to
+        // register it or observe the intervening terminal transition.
         let mut prepared_waker = None;
         loop {
             let (poll, retired_waker) = {

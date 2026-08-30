@@ -39,9 +39,9 @@
 //! [`UnboundedReceiver::resubscribe`] to create a receiver that starts at the current tail.
 //!
 //! Messages are reclaimed once the slowest receiver moves past them, which scans one slot per
-//! receiver. Only the receiver that advances the slowest cursor pays for that scan, and the
-//! channel keeps a slot for every receiver it hands out, so the cost follows the largest number
-//! of receivers that were ever active at once rather than the number active now.
+//! receiver. Only the receiver that advances the slowest cursor pays for that scan. The channel
+//! keeps a slot for every receiver it hands out, so the cost follows the largest number of
+//! receivers that were ever active at once rather than the number active now.
 //!
 //! # Examples
 //!
@@ -188,10 +188,10 @@ const MIN_RETAINED_CAPACITY: usize = 64;
 struct Inner<T> {
     /// Messages whose versions are in the range `[head, tail)`.
     ///
-    /// Each message is held behind an `Arc` so a receive can hand the payload out of the critical
-    /// section. Cloning the `Arc` under the lock keeps `T::clone` — and, for reclaimed messages,
-    /// `T::drop` — outside it, which matters because both are arbitrary user code that may call
-    /// back into this channel.
+    /// Each message is held behind an `Arc` so the receive path can move the payload out of the
+    /// critical section. Cloning the `Arc` under the lock keeps `T::clone` — and, for reclaimed
+    /// messages, `T::drop` — outside it, which matters because both are arbitrary user code that
+    /// may call back into this channel.
     buffer: VecDeque<Arc<T>>,
     /// The version of the first message in `buffer`.
     head: u64,
@@ -728,10 +728,12 @@ impl<T: Clone> Future for Recv<'_, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self { receiver, token } = self.get_mut();
 
+        // Buffered messages and repeated polls with the same task waker require no clone. If the
+        // pending path needs a new waker, release the lock, clone, and repeat the full state check
+        // before registration. Senders publish messages and drain waiters under the same lock, so
+        // the recheck cannot miss a send, disconnection, or state change made by a reentrant clone
+        // callback. The loop executes at most twice.
         let mut prepared_waker = None;
-        // Senders append messages and drain the wait set under this same lock. If the receive is
-        // pending, clone its waker without the lock and retry the complete decision before
-        // registering it, so neither a wake-up nor a reentrant clone callback can be missed.
         let received = loop {
             let mut inner = receiver.shared.inner.lock();
 

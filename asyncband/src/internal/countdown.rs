@@ -39,28 +39,21 @@ impl CountdownState {
         }
     }
 
-    /// Performs volatile read on `state`.
-    ///
-    /// All other writes to `state` should be at least [`Ordering::Release`].
+    /// Loads the current count, acquiring state published before a transition to zero.
     pub fn state(&self) -> u32 {
         self.state.load(Ordering::Acquire)
     }
 
-    /// Performs volatile CAS on `state`.
+    /// Attempts to replace `current` with `new`, publishing the new count on success.
     ///
-    /// If the comparison succeeds, performs read-modify-write operation with [`Ordering::Relaxed`]
-    /// for read, and [`Ordering::Release`] for write; if the comparison fails, performs load
-    /// operation with [`Ordering::Relaxed`].
-    ///
-    /// @see https://doc.rust-lang.org/std/sync/atomic/struct.AtomicU32.html#method.compare_exchange_weak
-    /// @see https://en.cppreference.com/w/cpp/atomic/atomic_compare_exchange
+    /// A spurious or contended failure returns the observed count so the caller can retry.
     fn cas_state(&self, current: u32, new: u32) -> Result<(), u32> {
         self.state
             .compare_exchange_weak(current, new, Ordering::Release, Ordering::Relaxed)
             .map(|_| ())
     }
 
-    /// Drain and wake up all waiters.
+    /// Drains the waiter set under its lock, then wakes every waiter after releasing the lock.
     pub fn wake_all(&self) {
         let wakers = {
             let mut waiters = self.waiters.lock();
@@ -79,8 +72,10 @@ impl CountdownState {
             return Poll::Ready(());
         }
 
-        // Cloning a waker can invoke arbitrary user code. Do it before taking the waiter lock, then
-        // recheck the countdown so a transition made by the clone callback cannot be missed.
+        // The atomic probe keeps an already-ready poll free of both waker cloning and waiter
+        // locking. An active countdown normally parks, so eagerly clone before the waiter lock to
+        // keep that path to one acquisition. Rechecking afterward observes a zero transition made
+        // concurrently or by a reentrant clone callback.
         let waker = cx.waker().clone();
         let mut waiters = self.waiters.lock();
         if self.state() == 0 {
@@ -145,8 +140,7 @@ impl CountdownState {
         let mut cnt = self.state();
         loop {
             if cnt == 0 {
-                // the one who decrements the counter to zero should wake up all waiters, not this
-                // one
+                // Only the operation that performs the transition to zero owns waiter notification.
                 return false;
             }
 

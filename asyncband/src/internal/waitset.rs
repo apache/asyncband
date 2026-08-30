@@ -17,10 +17,11 @@
 
 //! Cancellable storage for task wakers.
 //!
-//! A `WaitSet` is protected by the state lock of its owning primitive. It only moves already owned
-//! wakers while that lock is held: cloning must happen before taking the lock, and unused, removed,
-//! or drained wakers must be dropped or woken after releasing it. This keeps arbitrary waker
-//! callbacks outside primitive critical sections.
+//! A `WaitSet` is protected by the state lock of its owning primitive, but it never invokes a
+//! [`Waker`] callback itself. It accepts owned wakers and returns every waker it stops owning, so
+//! callers can clone before locking—or unlock, clone, and recheck—and can drop or wake returned
+//! wakers after unlocking. This keeps arbitrary clone, drop, and wake callbacks outside primitive
+//! critical sections.
 
 use std::mem;
 use std::panic;
@@ -58,10 +59,11 @@ pub fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
     }
 }
 
-/// A single-owner token for a waker registered in a [`WaitSet`].
+/// An exclusive handle to one waiter slot in a [`WaitSet`].
 ///
-/// This deliberately does not implement `Clone` or `Copy`: duplicating a token could let a stale
-/// token refer to a slot reused by another waiter in the same epoch.
+/// The wait set owns the registered waker; this token only lets its future update or cancel that
+/// registration. It deliberately does not implement `Clone` or `Copy`, because duplicating the
+/// handle could let a stale token refer to a slot reused by another waiter in the same epoch.
 #[derive(Debug)]
 pub struct WakerToken {
     epoch: u64,
@@ -94,7 +96,8 @@ impl WaitSet {
     /// Drains all registered wakers as an owning iterator without waking them.
     ///
     /// A non-empty drain starts a new epoch so tokens retained by the drained futures cannot alias
-    /// slots reused by later registrations.
+    /// slots reused by later registrations. The caller must consume or drop the iterator after
+    /// releasing the lock that protects this wait set.
     #[inline]
     pub fn drain(&mut self) -> impl Iterator<Item = Waker> + 'static {
         if !self.waiters.is_empty() {
@@ -104,6 +107,9 @@ impl WaitSet {
     }
 
     /// Returns whether `token` identifies a registered waker for the same task as `waker`.
+    ///
+    /// This comparison neither clones a waker nor invokes its `RawWaker` callbacks, so callers may
+    /// use it while holding the lock that protects this wait set.
     #[inline]
     pub fn will_wake(&self, token: &Option<WakerToken>, waker: &Waker) -> bool {
         let Some(current) = token.as_ref() else {
@@ -120,8 +126,9 @@ impl WaitSet {
 
     /// Registers or updates an already cloned waker in the current wake epoch.
     ///
-    /// The caller must clone the waker before acquiring the lock that protects this wait set,
-    /// because cloning can invoke arbitrary user code.
+    /// The caller must obtain the owned waker without holding the lock that protects this wait set,
+    /// because cloning can invoke arbitrary user code. If it released that lock to clone, it must
+    /// recheck the primitive's state after reacquiring the lock and before calling this method.
     ///
     /// Any waker not retained by the wait set is returned so the caller can drop it after releasing
     /// the lock that protects this wait set.
@@ -152,6 +159,7 @@ impl WaitSet {
         if token.epoch == self.epoch {
             return Some(self.waiters.remove(token.slot));
         }
+        // A drain advanced the epoch and already took ownership of this token's waker.
         None
     }
 

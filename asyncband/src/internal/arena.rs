@@ -183,8 +183,9 @@ impl<T> Arena<T> {
 
     /// Takes every occupied value in slot order while retaining the allocation for reuse.
     ///
-    /// Every previously issued slot ID becomes invalid, including IDs for slots that were already
-    /// vacant. Consumers that retain IDs across this operation must supply their own epoch check.
+    /// After a non-empty take, every previously issued slot ID becomes invalid, including IDs for
+    /// slots that were already vacant. Consumers that retain IDs across this operation must supply
+    /// their own epoch check.
     #[inline]
     pub fn take_all(&mut self) -> impl Iterator<Item = T> + use<T> {
         let len = self.len;
@@ -193,6 +194,8 @@ impl<T> Arena<T> {
             rest: Vec::new(),
         };
         if len == 0 {
+            // Individually removed values leave vacant slots behind. Keep their free list intact
+            // instead of scanning the arena's historical high-water mark to drain no values.
             return values.into_iter();
         }
 
