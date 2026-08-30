@@ -16,7 +16,14 @@
 # under the License.
 
 [workspace]
-members = ["asyncband", "benchmarks", "examples", "tests-integration", "xtask"]
+members = [
+  "asyncband",
+  "benchmarks",
+  "examples",
+  "tests-integration",
+  "tests-integration-macros",
+  "xtask",
+]
 resolver = "3"
 
 [workspace.package]
@@ -39,11 +46,19 @@ async-broadcast = { version = "0.7.2" }
 async-channel = { version = "2.5.0" }
 cargo_metadata = { version = "0.23.1" }
 clap = { version = "4.6.5" }
+# Compio 0.17+ uses Rust features newer than the workspace MSRV.
+compio = { version = "0.16.1", default-features = false, features = [
+  "dispatcher",
+  "runtime",
+  "time",
+] }
 divan = { version = "0.1.21" }
 flume = { version = "0.12.0", default-features = false }
+futures-lite = { version = "2.6.1" }
 pollster = { version = "1.0.1" }
 semver = { version = "1.0.28" }
 serde = { version = "1.0.229" }
+smol = { version = "2.0.2" }
 tokio = { version = "1.53.1" }
 tokio-test = { version = "0.4.5" }
 ureq = { version = "3.3.0", default-features = false }

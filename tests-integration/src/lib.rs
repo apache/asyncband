@@ -24,7 +24,14 @@ use std::task::Waker;
 
 use tokio::runtime::Runtime;
 
+pub mod runtime;
+pub use tests_integration_macros::runtime_test;
+
 /// Polls a pinned future once with a no-op waker.
+///
+/// This legacy helper is useful for synchronous, manually driven tests. New
+/// cross-runtime async tests should use [`runtime::poll_once`], which polls with
+/// the current runtime's waker.
 pub fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(Waker::noop()))
 }
