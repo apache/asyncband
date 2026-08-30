@@ -113,7 +113,7 @@ impl<T> UnboundedSender<T> {
     /// If the receiver has been dropped, this function returns an error. The error includes
     /// the value passed to `send`.
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
-        // SAFETY: The sender is guaranteed to be non-null before dropped.
+        // INVARIANT: A shared borrow of the endpoint cannot overlap its destructor.
         let sender = self.sender.as_ref().unwrap();
         sender.send(value).map_err(|err| SendError::new(err.0))?;
 

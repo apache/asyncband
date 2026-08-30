@@ -193,7 +193,7 @@ impl<T> BoundedSender<T> {
     /// # }
     /// ```
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        // SAFETY: The sender is guaranteed to be non-null before dropped.
+        // INVARIANT: A shared borrow of the endpoint cannot overlap its destructor.
         let sender = self.sender.as_ref().unwrap();
         match sender.try_send(value) {
             Ok(()) => {
@@ -270,7 +270,7 @@ impl<T> BoundedReceiver<T> {
     /// # }
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        // SAFETY: The receiver is guaranteed to be non-null before dropped.
+        // INVARIANT: A mutable borrow of the endpoint cannot overlap its destructor.
         let receiver = self.receiver.as_ref().unwrap();
         match receiver.try_recv() {
             Ok(v) => {
