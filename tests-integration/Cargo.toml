@@ -31,6 +31,7 @@ asyncband = { workspace = true, features = [
   "blocking",
   "broadcast",
   "condvar",
+  "event",
   "latch",
   "lazy-cell",
   "mpsc",

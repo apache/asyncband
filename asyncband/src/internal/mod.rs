@@ -21,6 +21,7 @@ pub(crate) mod atomic_waker;
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
+    feature = "event",
     feature = "latch",
     feature = "mpsc",
     feature = "mutex",
@@ -49,6 +50,7 @@ pub(crate) mod value_cell;
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
+    feature = "event",
     feature = "latch",
     feature = "mpsc",
     feature = "mutex",
@@ -72,22 +74,28 @@ pub(crate) mod mutex;
 pub(crate) mod semaphore;
 
 #[cfg(any(
+    feature = "event",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
 ))]
+// The event and semaphore-backed primitives use different queue operations. A single-feature
+// build therefore leaves part of this shared API unused, while the all-feature build uses it.
+#[allow(dead_code)]
 pub(crate) mod waitlist;
 
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
+    feature = "event",
     feature = "latch",
     feature = "once",
     feature = "waitgroup",
     feature = "watch",
 ))]
 // `barrier` constructs a wait set with `with_capacity`, while countdown-based primitives use
-// `new`. One constructor is therefore unused in every single-primitive build.
+// `new`. One constructor is therefore unused in every single-primitive build, and `event` uses
+// only the free `wake_all` helper.
 #[allow(dead_code)]
 pub(crate) mod waitset;
