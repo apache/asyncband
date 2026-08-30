@@ -97,7 +97,7 @@ enum Status {
 
 /// The error returned by [`Completion::wait`] when the completer was dropped without a value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Abandoned;
+pub struct Abandoned(());
 
 impl fmt::Display for Abandoned {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -274,7 +274,7 @@ impl<'a, T> Future for Wait<'a, T> {
                     }
                     Status::Abandoned => {
                         let retired = state.waiters.unregister(&mut this.token);
-                        (Poll::Ready(Err(Abandoned)), retired)
+                        (Poll::Ready(Err(Abandoned(()))), retired)
                     }
                 }
             };

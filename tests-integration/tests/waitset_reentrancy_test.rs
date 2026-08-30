@@ -104,10 +104,10 @@ fn completion_clones_wakers_outside_its_state_lock() {
             let waker = waker_with_clone_callback(move || drop(completer));
             let mut wait = Box::pin(completion.wait());
 
-            assert_eq!(
+            assert!(matches!(
                 poll_with(wait.as_mut(), &waker),
-                Poll::Ready(Err(completion::Abandoned))
-            );
+                Poll::Ready(Err(_))
+            ));
         },
     );
 }
