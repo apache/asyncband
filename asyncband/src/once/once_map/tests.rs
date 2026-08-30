@@ -31,7 +31,7 @@ use crate::test_support::poll_once;
 fn entry_count<K, V, S>(map: &OnceMap<K, V, S>) -> usize {
     let ready = map.readers.read(|| {
         let mut len = 0;
-        // SAFETY: The read barrier protects every allocation visited by the trie.
+        // SAFETY: The read barrier protects the current table and every referenced entry.
         unsafe { map.ready.for_each(|_| len += 1) };
         len
     });

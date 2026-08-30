@@ -23,11 +23,11 @@ use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::RandomState;
 use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
 use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
 use hashbrown::HashTable;
@@ -38,17 +38,17 @@ use crate::once::OnceCell;
 #[cfg(test)]
 mod tests;
 
-const TRIE_BITS: u32 = 4;
-const TRIE_FANOUT: usize = 1 << TRIE_BITS;
-const TRIE_MASK: u64 = TRIE_FANOUT as u64 - 1;
+const INITIAL_READY_CAPACITY: usize = 16;
+const READY_LOAD_NUMERATOR: usize = 3;
+const READY_LOAD_DENOMINATOR: usize = 4;
 
 // Each synchronous lookup publishes the map it is reading in one thread-local record. Removal
-// blocks new lookups and waits for matching records to clear before freeing trie allocations.
-// Trie growth never frees published allocations and therefore does not need to block readers.
+// blocks new lookups and waits for matching records to clear before freeing table allocations.
+// Table growth retains previous generations and therefore does not need to block readers.
 //
 // Publication, blocking, verification, and registry scans are sequentially consistent. A reader
 // therefore either verifies before removal starts and appears in the writer's scan, or observes
-// the block and retries without dereferencing the trie.
+// the block and retries without dereferencing the ready table.
 struct ReadBarrier {
     blocked: AtomicBool,
 }
@@ -291,32 +291,23 @@ fn has_active_reader(marker: *mut ()) -> bool {
     false
 }
 
-struct ReadyTrie<K, V> {
-    root: AtomicPtr<TrieNode<K, V>>,
-    ownership: PhantomData<Box<TrieNode<K, V>>>,
+struct ReadyIndex<K, V> {
+    root: AtomicPtr<ReadyTable<K, V>>,
+    ownership: PhantomData<Box<ReadyTable<K, V>>>,
 }
 
-enum TrieNode<K, V> {
-    Leaf(TrieLeaf<K, V>),
-    Branch(TrieBranch<K, V>),
+// Ready tables use open addressing and never delete entries in place. A nonzero tag publishes the
+// pointer in the matching slot: writers store the pointer before the tag with release ordering,
+// while readers acquire the tag before dereferencing the pointer. A replacement table owns the
+// previous generation until removal can drain readers and reclaim the complete chain.
+struct ReadyTable<K, V> {
+    tags: Box<[AtomicU8]>,
+    slots: Box<[AtomicPtr<Entry<K, V>>]>,
+    owners: Mutex<Vec<Arc<Entry<K, V>>>>,
+    previous: Option<Box<ReadyTable<K, V>>>,
 }
 
-struct TrieBranch<K, V> {
-    slots: [AtomicPtr<TrieNode<K, V>>; TRIE_FANOUT],
-}
-
-struct TrieLeaf<K, V> {
-    hash: u64,
-    entries: AtomicPtr<ReadyEntry<K, V>>,
-    ownership: PhantomData<Box<ReadyEntry<K, V>>>,
-}
-
-struct ReadyEntry<K, V> {
-    entry: Arc<Entry<K, V>>,
-    next: AtomicPtr<ReadyEntry<K, V>>,
-}
-
-impl<K, V> ReadyTrie<K, V> {
+impl<K, V> ReadyIndex<K, V> {
     const fn new() -> Self {
         Self {
             root: AtomicPtr::new(ptr::null_mut()),
@@ -329,249 +320,258 @@ impl<K, V> ReadyTrie<K, V> {
     }
 
     // SAFETY: The caller must either hold the map's read barrier or serialize deletion with the
-    // map's writer lock. Growth may run concurrently because it only publishes initialized nodes.
+    // map's writer lock. Growth may run concurrently because it retains every published table.
     unsafe fn find<R>(
         &self,
         hash: u64,
         matches: impl Fn(&Entry<K, V>) -> bool,
         found: impl Fn(&Entry<K, V>) -> R,
     ) -> Option<R> {
-        let mut node = self.root.load(Ordering::Acquire);
-        let mut shift = 0;
-        while !node.is_null() {
-            // SAFETY: The caller prevents deletion, and published nodes remain allocated during
-            // concurrent growth.
-            match unsafe { &*node } {
-                TrieNode::Branch(branch) => {
-                    let index = ((hash >> shift) & TRIE_MASK) as usize;
-                    node = branch.slots[index].load(Ordering::Acquire);
-                    shift += TRIE_BITS;
-                }
-                TrieNode::Leaf(leaf) if leaf.hash == hash => {
-                    let mut current = leaf.entries.load(Ordering::Acquire);
-                    while !current.is_null() {
-                        // SAFETY: Entry links have the same lifetime as their containing leaf while
-                        // deletion is excluded.
-                        let ready = unsafe { &*current };
-                        if matches(&ready.entry) {
-                            return Some(found(&ready.entry));
-                        }
-                        current = ready.next.load(Ordering::Acquire);
-                    }
-                    return None;
-                }
-                TrieNode::Leaf(_) => return None,
-            }
+        let table = self.root.load(Ordering::Acquire);
+        if table.is_null() {
+            return None;
         }
-        None
+
+        // SAFETY: The caller protects the root generation, which owns every entry it references.
+        unsafe { (&*table).find(hash, matches, found) }
     }
 
-    // SAFETY: The caller must serialize trie writers. This operation never frees published data.
+    // SAFETY: The caller must serialize writers. This operation never frees published data.
     unsafe fn insert(&self, entry: Arc<Entry<K, V>>) {
-        let hash = entry.hash;
-        let mut owner = &self.root;
-        let mut shift = 0;
-        loop {
-            let node = owner.load(Ordering::Acquire);
-            if node.is_null() {
-                owner.store(new_leaf(entry), Ordering::Release);
-                return;
-            }
-
-            // SAFETY: Serialized writers retain ownership of every published node, and insertion
-            // never frees nodes that a reader may be traversing.
-            match unsafe { &*node } {
-                TrieNode::Branch(branch) => {
-                    let index = ((hash >> shift) & TRIE_MASK) as usize;
-                    owner = &branch.slots[index];
-                    shift += TRIE_BITS;
-                }
-                TrieNode::Leaf(leaf) if leaf.hash == hash => {
-                    let head = leaf.entries.load(Ordering::Relaxed);
-                    let ready = Box::new(ReadyEntry {
-                        entry,
-                        next: AtomicPtr::new(head),
-                    });
-                    leaf.entries.store(Box::into_raw(ready), Ordering::Release);
-                    return;
-                }
-                TrieNode::Leaf(leaf) => {
-                    let replacement = split_leaves(node, leaf.hash, new_leaf(entry), hash, shift);
-                    owner.store(replacement, Ordering::Release);
-                    return;
-                }
-            }
+        let current = self.root.load(Ordering::Acquire);
+        if current.is_null() {
+            let table = Box::new(ReadyTable::new(INITIAL_READY_CAPACITY));
+            table.insert(entry);
+            self.root.store(Box::into_raw(table), Ordering::Release);
+            return;
         }
+
+        // SAFETY: The writer lock retains the current table, and insertion cannot free it.
+        let current_table = unsafe { &*current };
+        if !current_table.needs_grow() {
+            current_table.insert(entry);
+            return;
+        }
+
+        let capacity = current_table
+            .capacity()
+            .checked_mul(2)
+            .expect("OnceMap ready table capacity overflow");
+        let mut replacement = Box::new(ReadyTable::new(capacity));
+        replacement.copy_from(current_table);
+        replacement.insert(entry);
+
+        // No operation below can unwind: transfer ownership of the current generation into its
+        // replacement, then publish the fully initialized table.
+        // SAFETY: `root` uniquely owns the current table allocation, and the replacement assumes
+        // that ownership without moving the allocation readers may still be traversing.
+        replacement.previous = Some(unsafe { Box::from_raw(current) });
+        self.root
+            .store(Box::into_raw(replacement), Ordering::Release);
     }
 
-    // SAFETY: The caller must either hold exclusive map access or serialize trie writers, block new
+    // SAFETY: The caller must either hold exclusive map access or serialize writers, block new
     // readers, and wait for active readers before calling this method.
     unsafe fn remove<Q>(&self, hash: u64, key: &Q) -> Option<Arc<Entry<K, V>>>
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        let mut owner = &self.root;
-        let mut node = owner.load(Ordering::Relaxed);
-        let mut shift = 0;
-        while !node.is_null() {
-            // SAFETY: The read barrier is blocked and the writer is serialized.
-            match unsafe { &*node } {
-                TrieNode::Branch(branch) => {
-                    let index = ((hash >> shift) & TRIE_MASK) as usize;
-                    owner = &branch.slots[index];
-                    node = owner.load(Ordering::Relaxed);
-                    shift += TRIE_BITS;
-                }
-                TrieNode::Leaf(leaf) if leaf.hash == hash => {
-                    let mut link_owner = &leaf.entries;
-                    let mut current = link_owner.load(Ordering::Relaxed);
-                    while !current.is_null() {
-                        // SAFETY: No reader or writer can access this link concurrently.
-                        let ready = unsafe { &*current };
-                        if ready.entry.key.borrow() == key {
-                            let next = ready.next.load(Ordering::Relaxed);
-                            link_owner.store(next, Ordering::Release);
-                            // SAFETY: `link_owner` transferred this link's unique ownership here.
-                            let removed = unsafe { Box::from_raw(current) };
-                            let ReadyEntry { entry, .. } = *removed;
-
-                            if leaf.entries.load(Ordering::Relaxed).is_null() {
-                                owner.store(ptr::null_mut(), Ordering::Release);
-                                // SAFETY: The parent slot transferred this now-empty leaf's unique
-                                // ownership here.
-                                drop(unsafe { Box::from_raw(node) });
-                            }
-                            return Some(entry);
-                        }
-                        link_owner = &ready.next;
-                        current = link_owner.load(Ordering::Relaxed);
-                    }
-                    return None;
-                }
-                TrieNode::Leaf(_) => return None,
-            }
+        let current = self.root.load(Ordering::Relaxed);
+        if current.is_null() {
+            return None;
         }
-        None
+
+        // SAFETY: The caller has drained readers and serialized writers.
+        let current_table = unsafe { &*current };
+        // SAFETY: The current table and all its entries remain exclusively protected.
+        let removed = unsafe { current_table.find_ptr(hash, |entry| entry.key.borrow() == key) }?;
+
+        let remaining = current_table.len() - 1;
+        let replacement = if remaining == 0 {
+            ptr::null_mut()
+        } else {
+            let replacement = Box::new(ReadyTable::new(current_table.capacity()));
+            replacement.copy_except(current_table, removed);
+            Box::into_raw(replacement)
+        };
+
+        // Keep the removed entry alive independently of all table generations before reclaiming
+        // their strong references.
+        let removed = current_table.clone_owner(removed);
+
+        self.root.store(replacement, Ordering::Release);
+        // SAFETY: Readers are drained, the root no longer exposes this allocation, and retained
+        // entries have independent references in the replacement table.
+        drop(unsafe { Box::from_raw(current) });
+        Some(removed)
     }
 
-    // SAFETY: The caller must hold the map's read barrier or serialize deletion.
-    unsafe fn for_each(&self, mut visit: impl FnMut(&Arc<Entry<K, V>>)) {
+    // SAFETY: The caller must hold the map's read barrier or serialize removal.
+    unsafe fn for_each(&self, mut visit: impl FnMut(&Entry<K, V>)) {
         let root = self.root.load(Ordering::Acquire);
         if !root.is_null() {
-            // SAFETY: The caller prevents the root from being freed during traversal.
-            unsafe { for_each_node(root, &mut visit) };
+            // SAFETY: The caller prevents the current table and its entries from being freed.
+            unsafe { (&*root).for_each(&mut visit) };
         }
     }
 }
 
-impl<K, V> Drop for ReadyTrie<K, V> {
+impl<K, V> Drop for ReadyIndex<K, V> {
     fn drop(&mut self) {
         let root = *self.root.get_mut();
         if !root.is_null() {
-            // SAFETY: Exclusive access proves that no reader remains, and the root owns the whole
-            // trie.
+            // SAFETY: Exclusive access proves that no reader remains, and the root owns every
+            // retained table generation.
             drop(unsafe { Box::from_raw(root) });
         }
     }
 }
 
-impl<K, V> TrieBranch<K, V> {
-    fn new() -> Self {
+impl<K, V> ReadyTable<K, V> {
+    fn new(capacity: usize) -> Self {
+        debug_assert!(capacity >= INITIAL_READY_CAPACITY);
+        debug_assert!(capacity.is_power_of_two());
         Self {
-            slots: std::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
+            tags: std::iter::repeat_with(|| AtomicU8::new(0))
+                .take(capacity)
+                .collect(),
+            slots: std::iter::repeat_with(|| AtomicPtr::new(ptr::null_mut()))
+                .take(capacity)
+                .collect(),
+            owners: Mutex::new(Vec::with_capacity(max_ready_len(capacity))),
+            previous: None,
         }
     }
-}
 
-impl<K, V> Drop for TrieBranch<K, V> {
-    fn drop(&mut self) {
-        for slot in &mut self.slots {
-            let node = *slot.get_mut();
-            if !node.is_null() {
-                // SAFETY: Each non-null branch slot uniquely owns its child.
-                drop(unsafe { Box::from_raw(node) });
+    fn capacity(&self) -> usize {
+        self.slots.len()
+    }
+
+    fn len(&self) -> usize {
+        self.owners.lock().len()
+    }
+
+    fn needs_grow(&self) -> bool {
+        self.len() + 1 > max_ready_len(self.capacity())
+    }
+
+    fn insert(&self, entry: Arc<Entry<K, V>>) {
+        let hash = entry.hash;
+        let index = self
+            .vacant_index(hash)
+            .expect("ready table must retain an empty slot");
+        let raw = Arc::as_ptr(&entry).cast_mut();
+        self.owners.lock().push(entry);
+        self.slots[index].store(raw, Ordering::Relaxed);
+        self.tags[index].store(hash_tag(hash), Ordering::Release);
+    }
+
+    fn vacant_index(&self, hash: u64) -> Option<usize> {
+        let mask = self.capacity() - 1;
+        let mut index = hash as usize & mask;
+        for _ in 0..self.capacity() {
+            if self.tags[index].load(Ordering::Relaxed) == 0 {
+                return Some(index);
+            }
+            index = (index + 1) & mask;
+        }
+        None
+    }
+
+    // SAFETY: The caller must protect this table and its entries from reclamation.
+    unsafe fn find<R>(
+        &self,
+        hash: u64,
+        matches: impl Fn(&Entry<K, V>) -> bool,
+        found: impl Fn(&Entry<K, V>) -> R,
+    ) -> Option<R> {
+        let entry = unsafe { self.find_ptr(hash, matches) }?;
+        // SAFETY: `find_ptr` returned an entry owned by this protected table.
+        Some(found(unsafe { &*entry }))
+    }
+
+    // SAFETY: The caller must protect this table and its entries from reclamation.
+    unsafe fn find_ptr(
+        &self,
+        hash: u64,
+        matches: impl Fn(&Entry<K, V>) -> bool,
+    ) -> Option<*mut Entry<K, V>> {
+        let mask = self.capacity() - 1;
+        let mut index = hash as usize & mask;
+        let tag = hash_tag(hash);
+        for _ in 0..self.capacity() {
+            let stored_tag = self.tags[index].load(Ordering::Acquire);
+            if stored_tag == 0 {
+                return None;
+            }
+            if stored_tag != tag {
+                index = (index + 1) & mask;
+                continue;
+            }
+            let entry = self.slots[index].load(Ordering::Relaxed);
+            debug_assert!(!entry.is_null());
+            // SAFETY: The caller protects every non-null slot from reclamation.
+            let entry_ref = unsafe { &*entry };
+            if entry_ref.hash == hash && matches(entry_ref) {
+                return Some(entry);
+            }
+            index = (index + 1) & mask;
+        }
+        None
+    }
+
+    fn copy_from(&self, source: &Self) {
+        self.copy_except(source, ptr::null_mut());
+    }
+
+    fn copy_except(&self, source: &Self, excluded: *mut Entry<K, V>) {
+        let source = source.owners.lock();
+        let mut owners = self.owners.lock();
+        for entry in source.iter() {
+            let raw = Arc::as_ptr(entry).cast_mut();
+            if raw == excluded {
+                continue;
+            }
+
+            let hash = entry.hash;
+            let index = self
+                .vacant_index(hash)
+                .expect("replacement ready table must retain an empty slot");
+            owners.push(Arc::clone(entry));
+            self.slots[index].store(raw, Ordering::Relaxed);
+            self.tags[index].store(hash_tag(hash), Ordering::Release);
+        }
+    }
+
+    fn clone_owner(&self, target: *mut Entry<K, V>) -> Arc<Entry<K, V>> {
+        self.owners
+            .lock()
+            .iter()
+            .find(|entry| Arc::as_ptr(entry).cast_mut() == target)
+            .cloned()
+            .expect("ready slot must have a table owner")
+    }
+
+    // SAFETY: The caller must protect this table and its entries from reclamation.
+    unsafe fn for_each(&self, visit: &mut impl FnMut(&Entry<K, V>)) {
+        for (tag, slot) in self.tags.iter().zip(&self.slots) {
+            if tag.load(Ordering::Acquire) != 0 {
+                let entry = slot.load(Ordering::Relaxed);
+                debug_assert!(!entry.is_null());
+                // SAFETY: The caller protects every non-null slot from reclamation.
+                visit(unsafe { &*entry });
             }
         }
     }
 }
 
-impl<K, V> Drop for TrieLeaf<K, V> {
-    fn drop(&mut self) {
-        let mut current = *self.entries.get_mut();
-        while !current.is_null() {
-            // SAFETY: The leaf uniquely owns every link in its list.
-            let ready = unsafe { Box::from_raw(current) };
-            current = ready.next.load(Ordering::Relaxed);
-            drop(ready);
-        }
-    }
+fn hash_tag(hash: u64) -> u8 {
+    ((hash >> (u64::BITS - u8::BITS)) as u8).max(1)
 }
 
-fn new_leaf<K, V>(entry: Arc<Entry<K, V>>) -> *mut TrieNode<K, V> {
-    let hash = entry.hash;
-    let ready = Box::into_raw(Box::new(ReadyEntry {
-        entry,
-        next: AtomicPtr::new(ptr::null_mut()),
-    }));
-    Box::into_raw(Box::new(TrieNode::Leaf(TrieLeaf {
-        hash,
-        entries: AtomicPtr::new(ready),
-        ownership: PhantomData,
-    })))
-}
-
-fn split_leaves<K, V>(
-    old: *mut TrieNode<K, V>,
-    old_hash: u64,
-    new: *mut TrieNode<K, V>,
-    new_hash: u64,
-    shift: u32,
-) -> *mut TrieNode<K, V> {
-    debug_assert_ne!(old_hash, new_hash);
-    debug_assert!(shift < u64::BITS);
-
-    // Until the new path is published, `old` still belongs to its current parent. Leaking an
-    // incomplete path during unwinding is safe; dropping it would free `old` through two owners.
-    let branch = ManuallyDrop::new(TrieBranch::new());
-    let old_index = ((old_hash >> shift) & TRIE_MASK) as usize;
-    let new_index = ((new_hash >> shift) & TRIE_MASK) as usize;
-    if old_index == new_index {
-        let child = split_leaves(old, old_hash, new, new_hash, shift + TRIE_BITS);
-        branch.slots[old_index].store(child, Ordering::Relaxed);
-    } else {
-        branch.slots[old_index].store(old, Ordering::Relaxed);
-        branch.slots[new_index].store(new, Ordering::Relaxed);
-    }
-    Box::into_raw(Box::new(TrieNode::Branch(ManuallyDrop::into_inner(branch))))
-}
-
-// SAFETY: `node` must remain protected for the entire recursive traversal.
-unsafe fn for_each_node<K, V>(
-    node: *mut TrieNode<K, V>,
-    visit: &mut impl FnMut(&Arc<Entry<K, V>>),
-) {
-    // SAFETY: The caller guarantees that `node` remains allocated.
-    match unsafe { &*node } {
-        TrieNode::Branch(branch) => {
-            for slot in &branch.slots {
-                let child = slot.load(Ordering::Acquire);
-                if !child.is_null() {
-                    // SAFETY: Children share the protected lifetime of their parent.
-                    unsafe { for_each_node(child, visit) };
-                }
-            }
-        }
-        TrieNode::Leaf(leaf) => {
-            let mut current = leaf.entries.load(Ordering::Acquire);
-            while !current.is_null() {
-                // SAFETY: Entry links share the protected lifetime of their leaf.
-                let ready = unsafe { &*current };
-                visit(&ready.entry);
-                current = ready.next.load(Ordering::Acquire);
-            }
-        }
-    }
+fn max_ready_len(capacity: usize) -> usize {
+    capacity / READY_LOAD_DENOMINATOR * READY_LOAD_NUMERATOR
 }
 
 struct Entry<K, V> {
@@ -594,9 +594,9 @@ enum Lookup<K, V> {
 /// Note that this always clones the value out of the underlying map. Because of this, it's common
 /// to wrap the `V` in an `Arc<V>` to make cloning cheap.
 pub struct OnceMap<K, V, S = RandomState> {
-    // Successful values live in a lazily allocated trie. The write lock protects trie mutation and
-    // the separate table of computations that have not completed yet.
-    ready: ReadyTrie<K, V>,
+    // Successful values live in a lazily allocated atomic table. The write lock protects table
+    // mutation and the separate set of computations that have not completed yet.
+    ready: ReadyIndex<K, V>,
     readers: ReadBarrier,
     write: Mutex<WriteState<K, V>>,
     hasher: S,
@@ -611,7 +611,7 @@ where
         fmt::Write::write_str(f, "OnceMap ")?;
         let mut debug_map = f.debug_map();
         self.readers.read(|| {
-            // SAFETY: The read barrier protects every allocation visited by the trie.
+            // SAFETY: The read barrier protects the current table and every referenced entry.
             unsafe {
                 self.ready.for_each(|entry| {
                     debug_map.entry(&entry.key, &entry.cell);
@@ -679,7 +679,7 @@ where
             return None;
         }
         self.readers.read(|| {
-            // SAFETY: The read barrier protects every allocation visited by the trie.
+            // SAFETY: The read barrier protects the current table and every referenced entry.
             unsafe {
                 self.ready.find(hash, matches, |entry| {
                     entry
@@ -701,7 +701,7 @@ where
             return;
         };
 
-        // SAFETY: The write lock serializes trie growth. Insertion only publishes new allocations.
+        // SAFETY: The write lock serializes table growth. Insertion only publishes new allocations.
         unsafe { self.ready.insert(stored) };
     }
 
@@ -767,7 +767,7 @@ where
         } else {
             None
         };
-        // SAFETY: Exclusive map access serializes trie growth.
+        // SAFETY: Exclusive map access serializes table growth.
         unsafe { self.ready.insert(entry) };
         drop(ready.or(pending));
     }
@@ -871,7 +871,7 @@ where
     /// Creates a new OnceMap with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
         Self {
-            ready: ReadyTrie::new(),
+            ready: ReadyIndex::new(),
             readers: ReadBarrier::new(),
             write: Mutex::new(WriteState {
                 pending: HashTable::new(),

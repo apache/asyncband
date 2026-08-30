@@ -139,7 +139,7 @@ async fn get_remove_and_discard() {
 }
 
 #[tokio::test]
-async fn discard_releases_the_removed_key_and_value() {
+async fn discard_releases_the_removed_key_and_value_after_growth() {
     struct Key {
         value: usize,
         drops: Arc<AtomicUsize>,
@@ -192,6 +192,19 @@ async fn discard_releases_the_removed_key_and_value() {
     )
     .await;
     drop(value);
+
+    let filler_key_drops = Arc::new(AtomicUsize::new(0));
+    let filler_value_drops = Arc::new(AtomicUsize::new(0));
+    for value in 2..=64 {
+        map.compute(
+            Key {
+                value,
+                drops: Arc::clone(&filler_key_drops),
+            },
+            async || Arc::new(DropCounter(Arc::clone(&filler_value_drops))),
+        )
+        .await;
+    }
 
     map.discard(&1);
 
