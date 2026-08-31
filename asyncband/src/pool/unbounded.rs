@@ -393,13 +393,11 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
         }
     }
 
-    /// Retains only the objects that pass the given predicate.
+    /// Retains idle objects for which `f` returns `true`.
     ///
-    /// Only idle objects are examined. Checked-out objects are unaffected and are neither included
-    /// in [`RetainResult::retained`] nor returned in [`RetainResult::removed`].
-    ///
-    /// The predicate runs while the idle-object lock is held and therefore must not block or call
-    /// back into the pool. Detachment hooks for removed objects run after the lock is released.
+    /// Checked-out objects are skipped and may return to the pool later. The predicate runs while
+    /// the pool is locked and must not call back into it; detachment hooks run after the lock is
+    /// released.
     ///
     /// The following example starts a background task that runs every 30 seconds and removes
     /// objects from the pool that have not been used for more than one minute. The task will
@@ -533,8 +531,8 @@ impl<T, M: ManageObject<Object = T>> Object<T, M> {
     ///
     /// This reduces the size of the pool by one.
     ///
-    /// If the pool is still alive, [`ManageObject::on_detached`] runs before the object is returned
-    /// and may mutate it.
+    /// If the pool still exists, its manager may modify the detached object in
+    /// [`ManageObject::on_detached`].
     pub fn detach(mut self) -> M::Object {
         // INVARIANT: `state` is `Some` until this object is detached or dropped.
         let mut o = self.state.take().unwrap().o;

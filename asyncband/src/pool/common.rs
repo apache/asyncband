@@ -64,13 +64,13 @@ impl ObjectStatus {
     }
 }
 
-/// The result returned by a pool's `retain` method for the idle objects it examined.
+/// The result of a pool's `retain` call.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct RetainResult<T> {
-    /// The number of idle objects kept in the pool by this call.
+    /// The number of objects retained.
     pub retained: usize,
-    /// The idle objects removed from the pool, after the manager's detachment hook has run.
+    /// The removed objects, after their detachment hooks have run.
     pub removed: Vec<T>,
 }
 
