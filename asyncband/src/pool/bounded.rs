@@ -303,6 +303,9 @@ impl<M: ManageObject> Pool<M> {
 
     /// Retains only the objects that pass the given predicate.
     ///
+    /// Only idle objects are examined. Checked-out objects are unaffected and are neither included
+    /// in [`RetainResult::retained`] nor returned in [`RetainResult::removed`].
+    ///
     /// The predicate runs while the idle-object lock is held and therefore must not block or call
     /// back into the pool. Detachment hooks for removed objects run after the lock is released.
     ///
@@ -512,6 +515,9 @@ impl<M: ManageObject> Object<M> {
     /// Detaches the object from the [`Pool`].
     ///
     /// This reduces the size of the pool by one.
+    ///
+    /// If the pool is still alive, [`ManageObject::on_detached`] runs before the object is returned
+    /// and may mutate it.
     pub fn detach(mut self) -> M::Object {
         // INVARIANT: `state` is `Some` until this object is detached or dropped.
         let mut o = self.state.take().unwrap().o;
