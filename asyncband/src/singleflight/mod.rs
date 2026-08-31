@@ -238,6 +238,11 @@ where
     ///
     /// [`forgotten`]: Self::forget
     ///
+    /// # Deadlocks
+    ///
+    /// The function must not recursively call `work` or `try_work` for the same current key because
+    /// it would wait for its own result. Work for other keys remains independent.
+    ///
     /// # Examples
     ///
     /// ```
@@ -308,6 +313,11 @@ where
     /// the group, allowing future calls with the same key to execute the function again.
     ///
     /// [`forgotten`]: Self::forget
+    ///
+    /// # Deadlocks
+    ///
+    /// The function must not recursively call `work` or `try_work` for the same current key because
+    /// it would wait for its own result. Work for other keys remains independent.
     ///
     /// # Examples
     ///
