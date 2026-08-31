@@ -18,6 +18,8 @@
 use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
@@ -195,6 +197,62 @@ fn wake_then_drop() {
         }
     }
     assert_eq!(s.available_permits(), 2);
+}
+
+#[test]
+fn release_attempts_every_waker_after_one_panics() {
+    struct PanicOnWake;
+
+    impl Wake for PanicOnWake {
+        fn wake(self: Arc<Self>) {
+            panic!("waker panicked");
+        }
+    }
+
+    struct CountWakes(AtomicUsize);
+
+    impl Wake for CountWakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let semaphore = Semaphore::new(0);
+    let mut panicking = pin!(semaphore.acquire(1));
+    let mut tracked = pin!(semaphore.acquire(1));
+    let panic_waker = Waker::from(Arc::new(PanicOnWake));
+    let wake_count = Arc::new(CountWakes(AtomicUsize::new(0)));
+    let tracked_waker = Waker::from(wake_count.clone());
+
+    assert!(
+        panicking
+            .as_mut()
+            .poll(&mut Context::from_waker(&panic_waker))
+            .is_pending()
+    );
+    assert!(
+        tracked
+            .as_mut()
+            .poll(&mut Context::from_waker(&tracked_waker))
+            .is_pending()
+    );
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| semaphore.release(2)));
+
+    assert!(result.is_err());
+    assert_eq!(wake_count.0.load(Ordering::Relaxed), 1);
+    assert!(
+        panicking
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
+    );
+    assert!(
+        tracked
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
+    );
 }
 
 #[test]

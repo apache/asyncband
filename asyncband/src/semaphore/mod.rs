@@ -146,7 +146,9 @@ impl Semaphore {
     ///
     /// # Panics
     ///
-    /// Panics if adding the permits would cause the total number of permits to overflow.
+    /// Panics if adding the permits would cause the total number of permits to overflow or if a
+    /// registered waker panics while being notified. Added permits remain committed, and every
+    /// remaining registered waker is still notified before the first panic resumes.
     ///
     /// # Examples
     ///
