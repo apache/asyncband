@@ -121,6 +121,12 @@ impl<T> BoundedSender<T> {
     ///
     /// If the receiver has been dropped, this function returns an error. The error includes
     /// the value passed to `send`.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancelling a call that is waiting for capacity removes it from the send queue and drops
+    /// `value`. A poll that returns `Pending` has not enqueued the value. Use [`Self::try_send`] if
+    /// the caller must recover an unsent value.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
         let value = match self.try_send(value) {
             Ok(()) => return Ok(()),
