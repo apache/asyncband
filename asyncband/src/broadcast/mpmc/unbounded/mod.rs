@@ -105,7 +105,7 @@ use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitset::WaitSet;
 use crate::internal::waitset::WakerToken;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
 
 #[cfg(test)]
 mod tests;

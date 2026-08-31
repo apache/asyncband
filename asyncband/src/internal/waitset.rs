@@ -22,40 +22,10 @@
 //! wake them after unlocking.
 
 use std::mem;
-use std::panic;
-use std::panic::AssertUnwindSafe;
 use std::task::Waker;
 
 use crate::internal::arena::Arena;
 use crate::internal::arena::SlotId;
-
-/// Wakes every waker while preserving the first panic.
-///
-/// If a wake callback panics, the remaining callbacks are still attempted during unwinding. Any
-/// later panic is suppressed so the first panic can continue to the caller.
-#[inline]
-pub fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
-    struct WakeRemaining<'a, I: Iterator<Item = Waker>> {
-        wakers: &'a mut I,
-    }
-
-    impl<I: Iterator<Item = Waker>> Drop for WakeRemaining<'_, I> {
-        fn drop(&mut self) {
-            // This iterator is empty after normal completion. During unwinding, attempt every
-            // callback left after the one that panicked without replacing the original panic.
-            for waker in self.wakers.by_ref() {
-                let _ = panic::catch_unwind(AssertUnwindSafe(|| waker.wake()));
-            }
-        }
-    }
-
-    let remaining = WakeRemaining {
-        wakers: &mut wakers,
-    };
-    for waker in remaining.wakers.by_ref() {
-        waker.wake();
-    }
-}
 
 /// An exclusive handle to one waiter slot in a [`WaitSet`].
 ///
@@ -159,6 +129,8 @@ impl WaitSet {
 
 #[cfg(test)]
 mod tests {
+    use std::panic;
+    use std::panic::AssertUnwindSafe;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
@@ -166,6 +138,7 @@ mod tests {
     use std::task::Wake;
 
     use super::*;
+    use crate::internal::wake_all;
 
     #[test]
     fn waker_token_preserves_the_option_niche() {

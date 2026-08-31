@@ -68,7 +68,7 @@ use std::task::Waker;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
 use crate::mutex;
 use crate::mutex::MutexGuard;
 use crate::mutex::OwnedMutexGuard;

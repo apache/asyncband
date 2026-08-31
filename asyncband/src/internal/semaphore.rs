@@ -29,7 +29,7 @@ use std::task::Waker;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
 
 /// The internal semaphore that provides low-level async primitives.
 #[derive(Debug)]

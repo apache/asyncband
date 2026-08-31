@@ -23,7 +23,7 @@ use std::task::Poll;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitset::WaitSet;
 use crate::internal::waitset::WakerToken;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
 
 #[derive(Debug)]
 pub struct CountdownState {

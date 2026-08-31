@@ -76,7 +76,7 @@ pub use self::error::SendError;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitset::WaitSet;
 use crate::internal::waitset::WakerToken;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
 
 /// Creates a watch channel with an initial value.
 ///

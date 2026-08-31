@@ -60,7 +60,7 @@ use std::task::Poll;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitset::WaitSet;
 use crate::internal::waitset::WakerToken;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
 
 /// Creates a single-use [`Completer`] and a cloneable [`Completion`] observer.
 pub fn new<T>() -> (Completer<T>, Completion<T>) {

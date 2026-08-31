@@ -15,6 +15,40 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::panic;
+use std::panic::AssertUnwindSafe;
+use std::task::Waker;
+
+/// Wakes every waker while preserving the first panic.
+///
+/// If a wake callback panics, the remaining callbacks are still attempted during unwinding. Any
+/// later panic is suppressed so the first panic can continue to the caller.
+#[inline]
+// A no-feature or blocking-only build has no primitive that fans notifications out.
+#[allow(dead_code)]
+pub(crate) fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
+    struct WakeRemaining<'a, I: Iterator<Item = Waker>> {
+        wakers: &'a mut I,
+    }
+
+    impl<I: Iterator<Item = Waker>> Drop for WakeRemaining<'_, I> {
+        fn drop(&mut self) {
+            // This iterator is empty after normal completion. During unwinding, attempt every
+            // callback left after the one that panicked without replacing the original panic.
+            for waker in self.wakers.by_ref() {
+                let _ = panic::catch_unwind(AssertUnwindSafe(|| waker.wake()));
+            }
+        }
+    }
+
+    let remaining = WakeRemaining {
+        wakers: &mut wakers,
+    };
+    for waker in remaining.wakers.by_ref() {
+        waker.wake();
+    }
+}
+
 #[cfg(feature = "mpsc")]
 pub(crate) mod atomic_waker;
 
@@ -90,20 +124,13 @@ pub(crate) mod waitlist;
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
-    feature = "condvar",
-    feature = "event",
     feature = "completion",
     feature = "latch",
-    feature = "mpsc",
-    feature = "mutex",
     feature = "once",
-    feature = "rwlock",
-    feature = "semaphore",
     feature = "waitgroup",
     feature = "watch",
 ))]
 // `barrier` constructs a wait set with `with_capacity`, while completion and countdown-based
-// primitives use `new`; `condvar`, `event`, and semaphore-backed primitives use only the free
-// `wake_all` helper. One constructor is therefore unused in every single-primitive build.
+// primitives use `new`. One constructor is therefore unused in every single-primitive build.
 #[allow(dead_code)]
 pub(crate) mod waitset;
