@@ -28,6 +28,17 @@
 //! version observed. Callers can use an [`Arc`] as the watched value when cloning the underlying
 //! state would be expensive.
 //!
+//! # Publication model
+//!
+//! Both [`Sender`] and [`Receiver`] are cloneable. Successful publications from every sender are
+//! serialized into one channel-wide order, and the last publication in that order becomes the
+//! current state. The order of concurrent calls is unspecified, so callers that need semantic
+//! writer priority or ordering should coordinate before publishing.
+//!
+//! This makes a watch channel a last-publication-wins state register, not an event log. A receiver
+//! may coalesce any number of intermediate publications and only observe the latest state. Use a
+//! queue or broadcast channel when every update must be processed.
+//!
 //! If all senders are dropped after publishing a final unseen value, each receiver can still
 //! observe that value once before [`RecvError::Disconnected`] is reported.
 //!
