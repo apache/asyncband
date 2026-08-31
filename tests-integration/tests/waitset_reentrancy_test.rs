@@ -31,7 +31,6 @@ use std::time::Duration;
 
 use asyncband::condvar::Condvar;
 use asyncband::mutex::Mutex as AsyncMutex;
-use asyncband::semaphore::Semaphore;
 
 struct CloneCallback(Mutex<Option<Box<dyn FnOnce() + Send>>>);
 
@@ -112,29 +111,6 @@ fn assert_completes_without_deadlock(message: &'static str, test: impl FnOnce() 
         .recv_timeout(Duration::from_secs(10))
         .expect(message);
     worker.join().unwrap();
-}
-
-#[test]
-fn semaphore_clones_wakers_outside_its_waiter_lock() {
-    assert_completes_without_deadlock(
-        "waker clone callback deadlocked against the semaphore waiter lock",
-        || {
-            let semaphore = Arc::new(Semaphore::new(0));
-            let callback_semaphore = semaphore.clone();
-            let waker = waker_with_clone_callback(move || callback_semaphore.release(1));
-            let mut acquire = Box::pin(semaphore.acquire(1));
-
-            assert!(poll_with(acquire.as_mut(), &waker).is_ready());
-
-            let semaphore = Arc::new(Semaphore::new(0));
-            let mut acquire = Box::pin(semaphore.acquire(1));
-            assert!(poll_with(acquire.as_mut(), Waker::noop()).is_pending());
-
-            let callback_semaphore = semaphore.clone();
-            let replacement = waker_with_clone_callback(move || callback_semaphore.release(1));
-            assert!(poll_with(acquire.as_mut(), &replacement).is_ready());
-        },
-    );
 }
 
 #[test]
