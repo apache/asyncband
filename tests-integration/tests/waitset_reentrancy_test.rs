@@ -24,6 +24,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::RawWaker;
 use std::task::RawWakerVTable;
+use std::task::Wake;
 use std::task::Waker;
 use std::thread;
 use std::time::Duration;
@@ -31,8 +32,10 @@ use std::time::Duration;
 use asyncband::barrier::Barrier;
 use asyncband::broadcast::mpmc;
 use asyncband::completion;
+use asyncband::condvar::Condvar;
 use asyncband::event::ManualResetEvent;
 use asyncband::latch::Latch;
+use asyncband::mutex::Mutex as AsyncMutex;
 use asyncband::semaphore::Semaphore;
 use asyncband::watch;
 
@@ -75,6 +78,26 @@ fn waker_with_clone_callback(callback: impl FnOnce() + Send + 'static) -> Waker 
     let raw = RawWaker::new(Arc::into_raw(callback).cast(), &CLONE_CALLBACK_VTABLE);
     // SAFETY: The vtable preserves the Arc strong count and all callbacks are thread safe.
     unsafe { Waker::from_raw(raw) }
+}
+
+struct DropCallback(Mutex<Option<Box<dyn FnOnce() + Send>>>);
+
+impl Wake for DropCallback {
+    fn wake(self: Arc<Self>) {
+        drop(self);
+    }
+}
+
+impl Drop for DropCallback {
+    fn drop(&mut self) {
+        if let Some(callback) = self.0.get_mut().unwrap().take() {
+            callback();
+        }
+    }
+}
+
+fn waker_with_drop_callback(callback: impl FnOnce() + Send + 'static) -> Waker {
+    Waker::from(Arc::new(DropCallback(Mutex::new(Some(Box::new(callback))))))
 }
 
 fn poll_with<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
@@ -177,6 +200,43 @@ fn semaphore_clones_wakers_outside_its_waiter_lock() {
             let callback_semaphore = semaphore.clone();
             let replacement = waker_with_clone_callback(move || callback_semaphore.release(1));
             assert!(poll_with(acquire.as_mut(), &replacement).is_ready());
+        },
+    );
+}
+
+#[test]
+fn condvar_runs_waker_callbacks_outside_its_waiter_lock() {
+    assert_completes_without_deadlock(
+        "waker callback deadlocked against the condvar waiter lock",
+        || {
+            let mutex = AsyncMutex::new(());
+            let condvar = Arc::new(Condvar::new());
+            let callback_condvar = condvar.clone();
+            let waker = waker_with_clone_callback(move || callback_condvar.notify_one());
+            let mut wait = Box::pin(condvar.wait(mutex.try_lock().unwrap()));
+
+            assert!(poll_with(wait.as_mut(), &waker).is_pending());
+            condvar.notify_one();
+            assert!(poll_with(wait.as_mut(), &waker).is_ready());
+
+            let mutex = AsyncMutex::new(());
+            let condvar = Arc::new(Condvar::new());
+            let mut wait = Box::pin(condvar.wait(mutex.try_lock().unwrap()));
+            assert!(poll_with(wait.as_mut(), Waker::noop()).is_pending());
+
+            let callback_condvar = condvar.clone();
+            let replacement = waker_with_clone_callback(move || callback_condvar.notify_one());
+            assert!(poll_with(wait.as_mut(), &replacement).is_ready());
+
+            let mutex = AsyncMutex::new(());
+            let condvar = Arc::new(Condvar::new());
+            let callback_condvar = condvar.clone();
+            let waker = waker_with_drop_callback(move || callback_condvar.notify_one());
+            let mut wait = Box::pin(condvar.wait(mutex.try_lock().unwrap()));
+            assert!(poll_with(wait.as_mut(), &waker).is_pending());
+
+            drop(waker);
+            drop(wait);
         },
     );
 }

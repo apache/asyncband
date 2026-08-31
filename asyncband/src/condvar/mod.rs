@@ -334,12 +334,14 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let mut waiters = this.condvar.waiters.lock();
 
-        if let Some(guard) = this.guard.take() {
+        if this.guard.is_some() {
+            let prepared_waker = cx.waker().clone();
+            let mut waiters = this.condvar.waiters.lock();
             this.index = Some(waiters.push_back(WaitNode {
-                state: WaitState::Waiting(cx.waker().clone()),
+                state: WaitState::Waiting(prepared_waker),
             }));
+            let guard = this.guard.take().unwrap();
 
             // Registration must happen before unlocking the associated mutex. A notifier that
             // acquires the mutex after this point will therefore observe this waiter.
@@ -349,20 +351,42 @@ where
         }
 
         let index = this.index.expect("wait future polled after completion");
-        let notify_one_baton = match &mut waiters.waiter_mut(index).state {
-            WaitState::Waiting(waker) => {
-                if !waker.will_wake(cx.waker()) {
-                    waker.clone_from(cx.waker());
-                }
-                return Poll::Pending;
-            }
-            WaitState::NotifiedOne => Some(NotifyOneBaton::new(this.condvar)),
-            WaitState::NotifiedAll => None,
-        };
+        let mut prepared_waker = None;
+        loop {
+            let mut waiters = this.condvar.waiters.lock();
+            match &mut waiters.waiter_mut(index).state {
+                WaitState::Waiting(waker) => {
+                    if waker.will_wake(cx.waker()) {
+                        drop(waiters);
+                        drop(prepared_waker);
+                        return Poll::Pending;
+                    }
 
-        waiters.remove_unlinked_waiter(index);
-        this.index = None;
-        Poll::Ready(notify_one_baton)
+                    let Some(new_waker) = prepared_waker.take() else {
+                        drop(waiters);
+                        prepared_waker = Some(cx.waker().clone());
+                        continue;
+                    };
+                    let old_waker = mem::replace(waker, new_waker);
+                    drop(waiters);
+                    drop(old_waker);
+                    return Poll::Pending;
+                }
+                WaitState::NotifiedOne | WaitState::NotifiedAll => {}
+            }
+
+            let notify_one_baton = match &waiters.waiter_mut(index).state {
+                WaitState::Waiting(_) => unreachable!("waiting state handled above"),
+                WaitState::NotifiedOne => Some(NotifyOneBaton::new(this.condvar)),
+                WaitState::NotifiedAll => None,
+            };
+            let waiter = waiters.remove_unlinked_waiter(index);
+            this.index = None;
+            drop(waiters);
+            drop(waiter);
+            drop(prepared_waker);
+            return Poll::Ready(notify_one_baton);
+        }
     }
 }
 
@@ -372,7 +396,7 @@ impl<G> Drop for Wait<'_, G> {
             return;
         };
 
-        let waker = {
+        let (waiter, waker) = {
             let mut waiters = self.condvar.waiters.lock();
             let mut pass_notification = false;
             waiters.unlink_waiter(index, |node| match &node.state {
@@ -383,15 +407,17 @@ impl<G> Drop for Wait<'_, G> {
                 }
                 WaitState::NotifiedAll => false,
             });
-            waiters.remove_unlinked_waiter(index);
+            let waiter = waiters.remove_unlinked_waiter(index);
 
-            if pass_notification {
+            let waker = if pass_notification {
                 notify_one_locked(&mut waiters)
             } else {
                 None
-            }
+            };
+            (waiter, waker)
         };
 
+        drop(waiter);
         if let Some(waker) = waker {
             waker.wake();
         }
