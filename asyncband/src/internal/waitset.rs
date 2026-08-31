@@ -124,6 +124,31 @@ impl WaitSet {
             .will_wake(waker)
     }
 
+    /// Registers or updates a waker in the current wake epoch.
+    ///
+    /// If an existing waker is replaced, it is returned so the caller can drop it after releasing
+    /// the lock that protects this wait set.
+    #[inline]
+    #[must_use = "drop the returned waker after releasing the wait set's state lock"]
+    pub fn register_waker(
+        &mut self,
+        token: &mut Option<WakerToken>,
+        waker: &Waker,
+    ) -> Option<Waker> {
+        if self.will_wake(token, waker) {
+            return None;
+        }
+        if let Some(current) = self.current_waker(token) {
+            return Some(mem::replace(current, waker.clone()));
+        }
+
+        *token = Some(WakerToken {
+            epoch: self.epoch,
+            slot: self.waiters.insert(waker.clone()),
+        });
+        None
+    }
+
     /// Registers or updates an already cloned waker in the current wake epoch.
     ///
     /// The caller must obtain the owned waker without holding the lock that protects this wait set,

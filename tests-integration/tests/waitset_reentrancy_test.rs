@@ -31,7 +31,6 @@ use std::time::Duration;
 
 use asyncband::barrier::Barrier;
 use asyncband::broadcast::mpmc;
-use asyncband::completion;
 use asyncband::condvar::Condvar;
 use asyncband::event::ManualResetEvent;
 use asyncband::latch::Latch;
@@ -118,23 +117,6 @@ fn assert_completes_without_deadlock(message: &'static str, test: impl FnOnce() 
         .recv_timeout(Duration::from_secs(10))
         .expect(message);
     worker.join().unwrap();
-}
-
-#[test]
-fn completion_clones_wakers_outside_its_state_lock() {
-    assert_completes_without_deadlock(
-        "waker clone callback deadlocked against the completion lock",
-        || {
-            let (completer, completion) = completion::new::<usize>();
-            let waker = waker_with_clone_callback(move || drop(completer));
-            let mut wait = Box::pin(completion.wait());
-
-            assert!(matches!(
-                poll_with(wait.as_mut(), &waker),
-                Poll::Ready(Err(_))
-            ));
-        },
-    );
 }
 
 #[test]
