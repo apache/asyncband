@@ -15,7 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Singleflight provides a duplicate function call suppression mechanism.
+//! Coalesce concurrent work that uses the same key.
+//!
+//! While work for a key is in flight, later callers wait and clone its successful value. A
+//! completed value is not cached: the entry is removed when the work succeeds, so a non-overlapping
+//! later call executes its own function.
+//!
+//! If the active call is cancelled or panics, a waiting caller may run its own function. `try_work`
+//! also lets a waiter retry after the active function returns an error. Use `OnceMap` instead when
+//! successful values should remain cached by key.
 
 use std::borrow::Borrow;
 use std::fmt;
@@ -38,8 +46,10 @@ struct Entry<K, V> {
     cell: OnceCell<V>,
 }
 
-/// Group represents a class of work and forms a namespace in which
-/// units of work can be executed with duplicate suppression.
+/// A namespace that coalesces concurrent work by key.
+///
+/// Different keys run independently. A group neither caches completed results nor limits overall
+/// concurrency.
 pub struct Group<K, V, S = RandomState> {
     // This lock protects only entry lookup, insertion, and removal.
     // User work is always run after releasing it.
