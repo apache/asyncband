@@ -64,7 +64,7 @@
 //! # }
 //! ```
 //!
-//! [`Mutex`]: crate::mutex::Mutex
+//! [`Mutex`]: https://docs.rs/asyncband/*/asyncband/mutex/struct.Mutex.html
 //! [`Deref`]: std::ops::Deref
 //! [`DerefMut`]: std::ops::DerefMut
 //! [write-preferring]: https://en.wikipedia.org/wiki/Readers%E2%80%93writer_lock#Priority_policies

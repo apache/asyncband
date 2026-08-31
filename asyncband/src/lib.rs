@@ -54,35 +54,36 @@
 //!
 //! # API map
 //!
-//! | Area                       | API                                           | Feature        | Use                                                                                                           |
-//! |----------------------------|-----------------------------------------------|----------------|---------------------------------------------------------------------------------------------------------------|
-//! | Shared state               | [`Mutex`](mutex::Mutex)                       | `mutex`        | Protect shared data with asynchronous mutual exclusion.                                                       |
-//! |                            | [`RwLock`](rwlock::RwLock)                    | `rwlock`       | Allow multiple readers or one writer.                                                                         |
-//! |                            | [`Condvar`](condvar::Condvar)                 | `condvar`      | Wait for notifications while releasing a mutex.                                                               |
-//! | Initialization and caching | [`Once`](once::Once)                          | `once`         | Complete one asynchronous initialization; cancelled or panicked attempts may be retried.                       |
-//! |                            | [`OnceCell`](once::OnceCell)                  | `once-cell`    | Store one value from an access-time initializer; failed, cancelled, or panicked attempts may be retried.       |
-//! |                            | [`LazyCell`](once::LazyCell)                  | `lazy-cell`    | Initialize one value with a stored function and resume the same in-flight future after caller cancellation.   |
-//! |                            | [`OnceMap`](once::OnceMap)                    | `once-map`     | Cache one successfully initialized value per key until explicitly removed.                                    |
-//! | Task coordination          | [`Barrier`](barrier::Barrier)                 | `barrier`      | Synchronize a fixed number of participants at a reusable rendezvous.                                          |
-//! |                            | [`Completion`](completion::Completion)       | `completion`   | Publish one shared result to any number of current and future observers.                                       |
-//! |                            | [`ManualResetEvent`](event::ManualResetEvent) | `event`        | Signal current and future waits until explicitly reset.                                                       |
-//! |                            | [`Latch`](latch::Latch)                       | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                            |
-//! |                            | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Wait until all cloned worker handles are dropped.                                                             |
-//! |                            | [`Shutdown`](shutdown::Shutdown)              | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                            |
-//! | Channels                   | [`oneshot`]                                   | `oneshot`      | Send one value from one sender to one receiver.                                                               |
-//! |                            | [`mpsc`]                                      | `mpsc`         | Send each value from multiple producers to one receiver with bounded backpressure or an unbounded queue.      |
-//! |                            | [`broadcast`]                                 | `broadcast`    | Deliver every value to receivers active at send time; retain an unbounded backlog until each consumes or drops. |
-//! |                            | [`watch`]                                     | `watch`        | Publish the latest state to independently tracked receivers and coalesce intermediate updates.                |
-//! | Resource reuse             | [`pool`]                                      | `pool`         | Reuse objects through bounded or unbounded pool variants.                                                     |
-//! | Concurrency limiting       | [`Semaphore`](semaphore::Semaphore)           | `semaphore`    | Limit concurrent work by acquiring permits.                                                                   |
-//! | Duplicate suppression      | [`Group`](singleflight::Group)                | `singleflight` | Coalesce overlapping calls for the same key without caching completed results.                                |
-//! | Sync interop               | [`FutureExt`](blocking::FutureExt)            | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                                     |
+//! | Area                       | API                                                                                              | Feature        | Use                                                                                                           |
+//! |----------------------------|--------------------------------------------------------------------------------------------------|----------------|---------------------------------------------------------------------------------------------------------------|
+//! | Shared state               | [`Mutex`](https://docs.rs/asyncband/*/asyncband/mutex/struct.Mutex.html)                         | `mutex`        | Protect shared data with asynchronous mutual exclusion.                                                       |
+//! |                            | [`RwLock`](https://docs.rs/asyncband/*/asyncband/rwlock/struct.RwLock.html)                      | `rwlock`       | Allow multiple readers or one writer.                                                                         |
+//! |                            | [`Condvar`](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html)                   | `condvar`      | Wait for notifications while releasing a mutex.                                                               |
+//! | Initialization and caching | [`Once`](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html)                            | `once`         | Complete one asynchronous initialization; cancelled or panicked attempts may be retried.                       |
+//! |                            | [`OnceCell`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html)                    | `once-cell`    | Store one value from an access-time initializer; failed, cancelled, or panicked attempts may be retried.       |
+//! |                            | [`LazyCell`](https://docs.rs/asyncband/*/asyncband/once/struct.LazyCell.html)                    | `lazy-cell`    | Initialize one value with a stored function and resume the same in-flight future after caller cancellation.   |
+//! |                            | [`OnceMap`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceMap.html)                      | `once-map`     | Cache one successfully initialized value per key until explicitly removed.                                    |
+//! | Task coordination          | [`Barrier`](https://docs.rs/asyncband/*/asyncband/barrier/struct.Barrier.html)                   | `barrier`      | Synchronize a fixed number of participants at a reusable rendezvous.                                          |
+//! |                            | [`Completion`](https://docs.rs/asyncband/*/asyncband/completion/struct.Completion.html)         | `completion`   | Publish one shared result to any number of current and future observers.                                       |
+//! |                            | [`ManualResetEvent`](https://docs.rs/asyncband/*/asyncband/event/struct.ManualResetEvent.html)   | `event`        | Signal current and future waits until explicitly reset.                                                       |
+//! |                            | [`Latch`](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html)                         | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                            |
+//! |                            | [`WaitGroup`](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html)             | `waitgroup`    | Wait until all cloned worker handles are dropped.                                                             |
+//! |                            | [`Shutdown`](https://docs.rs/asyncband/*/asyncband/shutdown/struct.Shutdown.html)                | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                            |
+//! | Channels                   | [`oneshot`](https://docs.rs/asyncband/*/asyncband/oneshot/)                                      | `oneshot`      | Send one value from one sender to one receiver.                                                               |
+//! |                            | [`mpsc`](https://docs.rs/asyncband/*/asyncband/mpsc/)                                            | `mpsc`         | Send each value from multiple producers to one receiver with bounded backpressure or an unbounded queue.      |
+//! |                            | [`broadcast`](https://docs.rs/asyncband/*/asyncband/broadcast/)                                  | `broadcast`    | Deliver every value to receivers active at send time; retain an unbounded backlog until each consumes or drops. |
+//! |                            | [`watch`](https://docs.rs/asyncband/*/asyncband/watch/)                                          | `watch`        | Publish the latest state to independently tracked receivers and coalesce intermediate updates.                |
+//! | Resource reuse             | [`pool`](https://docs.rs/asyncband/*/asyncband/pool/)                                            | `pool`         | Reuse objects through bounded or unbounded pool variants.                                                     |
+//! | Concurrency limiting       | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html)             | `semaphore`    | Limit concurrent work by acquiring permits.                                                                   |
+//! | Duplicate suppression      | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)                  | `singleflight` | Coalesce overlapping calls for the same key without caching completed results.                                |
+//! | Sync interop               | [`FutureExt`](https://docs.rs/asyncband/*/asyncband/blocking/trait.FutureExt.html)               | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                                     |
 //!
 //! # Scope and runtime model
 //!
 //! The project is not limited to small or stateless primitives. Stateful tools such as
-//! [`singleflight::Group`] and the [`pool`] module fit when they provide reusable coordination and
-//! remain independent of executor policy.
+//! [`singleflight::Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html) and
+//! the [`pool`](https://docs.rs/asyncband/*/asyncband/pool/) module fit when they provide reusable
+//! coordination and remain independent of executor policy.
 //!
 //! The async APIs do not start threads, spawn tasks, install timers, or require a runtime-specific
 //! reactor. Task placement, deadlines, retries, periodic maintenance, and lifecycle orchestration
@@ -92,9 +93,10 @@
 //! # Async first, blocking by adaptation
 //!
 //! Async and synchronous primitives have different optimization constraints. Asyncband designs its
-//! primitives for async use and provides the optional [`blocking`] module as a boundary adapter
-//! instead of duplicating synchronous methods across every type. Sync-first implementations can
-//! exploit OS- or platform-specific facilities and remain the domain of dedicated libraries.
+//! primitives for async use and provides the optional
+//! [`blocking`](https://docs.rs/asyncband/*/asyncband/blocking/) module as a boundary adapter instead
+//! of duplicating synchronous methods across every type. Sync-first implementations can exploit OS-
+//! or platform-specific facilities and remain the domain of dedicated libraries.
 //!
 //! The adapter's single-future executor parks the calling thread and resumes it through the
 //! future's waker. It is not a general-purpose async runtime, and futures that depend on a
