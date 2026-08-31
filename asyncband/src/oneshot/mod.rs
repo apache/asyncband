@@ -40,16 +40,12 @@
 //!
 //! let (tx, rx) = oneshot::channel();
 //!
-//! tokio::spawn(async move {
-//!     if let Err(_) = tx.send(3) {
-//!         println!("the receiver dropped");
-//!     }
+//! let sender = tokio::spawn(async move {
+//!     tx.send(3).unwrap();
 //! });
 //!
-//! match rx.await {
-//!     Ok(v) => println!("got = {:?}", v),
-//!     Err(_) => println!("the sender dropped"),
-//! }
+//! assert_eq!(rx.await, Ok(3));
+//! sender.await.unwrap();
 //! # }
 //! ```
 //!
@@ -62,12 +58,9 @@
 //!
 //! let (tx, rx) = oneshot::channel::<u32>();
 //!
-//! tokio::spawn(async move { drop(tx) });
+//! drop(tx);
 //!
-//! match rx.await {
-//!     Ok(_) => panic!("This doesn't happen"),
-//!     Err(_) => println!("the sender dropped"),
-//! }
+//! assert_eq!(rx.await, Err(oneshot::RecvError::Disconnected));
 //! # }
 //! ```
 //!
@@ -80,10 +73,8 @@
 //!
 //! drop(rx);
 //!
-//! match tx.send(42) {
-//!     Ok(_) => panic!("This doesn't happen"),
-//!     Err(_) => println!("the receiver dropped"),
-//! }
+//! let error = tx.send(42).unwrap_err();
+//! assert_eq!(error.into_inner(), 42);
 //! ```
 
 mod receiver;
