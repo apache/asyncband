@@ -90,6 +90,7 @@ pub(crate) mod waitlist;
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
+    feature = "condvar",
     feature = "event",
     feature = "completion",
     feature = "latch",
@@ -98,7 +99,7 @@ pub(crate) mod waitlist;
     feature = "watch",
 ))]
 // `barrier` constructs a wait set with `with_capacity`, while completion and countdown-based
-// primitives use `new`; `event` uses only the free `wake_all` helper. One constructor is therefore
-// unused in every single-primitive build.
+// primitives use `new`; `condvar` and `event` use only the free `wake_all` helper. One constructor
+// is therefore unused in every single-primitive build.
 #[allow(dead_code)]
 pub(crate) mod waitset;
