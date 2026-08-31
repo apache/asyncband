@@ -128,6 +128,7 @@ fn movable_public_types_are_send() {
 
     let (_tx, mut rx) = watch::channel(0);
     assert_send_value(rx.changed());
+    assert_send_value(rx.recv());
 
     let (_completer, completion) = completion::new::<i64>();
     assert_send_value(completion.wait());

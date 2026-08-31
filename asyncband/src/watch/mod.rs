@@ -23,10 +23,10 @@
 //! created by [`Sender::subscribe`]. Cloning a receiver preserves the source receiver's observed
 //! version and then tracks future observations independently.
 //!
-//! [`Receiver::borrow`] returns an owning [`Arc`] snapshot without marking the current version
-//! observed. [`Receiver::borrow_and_update`] and [`Receiver::changed`] explicitly mark the returned
-//! version observed. Because snapshots do not retain the channel's internal lock, they may be kept
-//! or moved independently while senders continue publishing newer values.
+//! [`Receiver::get`] returns a clone of the current value without marking its version observed.
+//! [`Receiver::recv`] waits for an unseen version, then returns an owning clone and marks that
+//! version observed. Callers can use an [`Arc`] as the watched value when cloning the underlying
+//! state would be expensive.
 //!
 //! If all senders are dropped after publishing a final unseen value, each receiver can still
 //! observe that value once before [`RecvError::Disconnected`] is reported.
@@ -42,7 +42,7 @@
 //! tx.send(1).unwrap();
 //! tx.send(2).unwrap();
 //!
-//! assert_eq!(*rx.changed().await.unwrap(), 2);
+//! assert_eq!(rx.recv().await.unwrap(), 2);
 //! assert_eq!(rx.has_changed(), Ok(false));
 //! # }
 //! ```
@@ -77,12 +77,12 @@ use crate::internal::waitset::wake_all;
 /// use asyncband::watch;
 ///
 /// let (_tx, rx) = watch::channel("ready");
-/// assert_eq!(&*rx.borrow(), &"ready");
+/// assert_eq!(rx.get(), "ready");
 /// ```
-pub fn channel<T>(initial: T) -> (Sender<T>, Receiver<T>) {
+pub fn channel<T: Clone>(initial: T) -> (Sender<T>, Receiver<T>) {
     let shared = Arc::new(Shared {
         state: Mutex::new(State {
-            value: Arc::new(initial),
+            value: initial,
             version: 0,
             senders: 1,
             receivers: 1,
@@ -101,7 +101,7 @@ struct Shared<T> {
 }
 
 struct State<T> {
-    value: Arc<T>,
+    value: T,
     version: u64,
     senders: usize,
     receivers: usize,
@@ -166,7 +166,7 @@ impl<T> Sender<T> {
                 .version
                 .checked_add(1)
                 .expect("watch channel version counter overflowed");
-            let replaced = mem::replace(&mut state.value, Arc::new(value));
+            let replaced = mem::replace(&mut state.value, value);
             state.version = version;
             let wakers = state.waiters.drain();
             (wakers, replaced)
@@ -175,6 +175,30 @@ impl<T> Sender<T> {
         wake_all(wakers);
         drop(replaced);
         Ok(())
+    }
+
+    /// Publishes a new current value and returns the previous value.
+    ///
+    /// Unlike [`Sender::send`], this method updates the retained value even when no receivers
+    /// exist. Every call creates a new version and notifies all current receivers.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal version counter overflows.
+    pub fn send_replace(&self, value: T) -> T {
+        let (wakers, replaced) = {
+            let mut state = self.shared.state.lock();
+            let version = state
+                .version
+                .checked_add(1)
+                .expect("watch channel version counter overflowed");
+            let replaced = mem::replace(&mut state.value, value);
+            state.version = version;
+            let wakers = state.waiters.drain();
+            (wakers, replaced)
+        };
+        wake_all(wakers);
+        replaced
     }
 
     /// Creates a receiver that considers the current value already observed.
@@ -231,16 +255,16 @@ impl<T> Drop for Receiver<T> {
 }
 
 impl<T> Receiver<T> {
-    /// Returns a snapshot of the current value without marking it observed.
-    pub fn borrow(&self) -> Arc<T> {
+    /// Returns a clone of the current value without marking its version observed.
+    ///
+    /// The clone is created while publication is locked. Keep `T::clone` inexpensive and avoid
+    /// reentering this channel from the clone implementation. Use `T = Arc<U>` when the underlying
+    /// state is expensive to clone.
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
         self.shared.state.lock().value.clone()
-    }
-
-    /// Returns a snapshot of the current value and marks its version observed.
-    pub fn borrow_and_update(&mut self) -> Arc<T> {
-        let state = self.shared.state.lock();
-        self.seen = state.version;
-        state.value.clone()
     }
 
     /// Returns whether a version newer than the last observed version exists.
@@ -258,16 +282,38 @@ impl<T> Receiver<T> {
         }
     }
 
-    /// Waits for a newer version and returns its latest snapshot.
+    /// Waits for a newer version and marks the latest version observed.
     ///
     /// Intermediate updates may be coalesced. This method is cancel safe: until it returns, no
-    /// version is marked observed by the call.
-    pub async fn changed(&mut self) -> Result<Arc<T>, RecvError> {
+    /// version is marked observed by the call. Use [`Receiver::recv`] instead when the value is
+    /// needed.
+    pub async fn changed(&mut self) -> Result<(), RecvError> {
         Changed {
             receiver: self,
             token: None,
         }
         .await
+    }
+
+    /// Waits for a newer version, returns a clone of its latest value, and marks it observed.
+    ///
+    /// Intermediate updates may be coalesced. The returned value and the receiver's observed
+    /// version are updated together, so a concurrent publication cannot cause the returned value
+    /// to be received twice. This method is cancel safe: until it returns, no version is marked
+    /// observed by the call.
+    ///
+    /// The clone is created while publication is locked. Keep `T::clone` inexpensive and avoid
+    /// reentering this channel from the clone implementation. Use `T = Arc<U>` when the underlying
+    /// state is expensive to clone.
+    pub async fn recv(&mut self) -> Result<T, RecvError>
+    where
+        T: Clone,
+    {
+        self.changed().await?;
+        let state = self.shared.state.lock();
+        let value = state.value.clone();
+        self.seen = state.version;
+        Ok(value)
     }
 
     /// Returns whether all senders have been dropped.
@@ -285,7 +331,7 @@ struct Changed<'a, T> {
 }
 
 impl<T> Future for Changed<'_, T> {
-    type Output = Result<Arc<T>, RecvError>;
+    type Output = Result<(), RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -298,11 +344,10 @@ impl<T> Future for Changed<'_, T> {
         if state.version != this.receiver.seen {
             let retired_waker = state.waiters.unregister(&mut this.token);
             this.receiver.seen = state.version;
-            let value = state.value.clone();
             drop(state);
             drop(retired_waker);
             drop(waker);
-            return Poll::Ready(Ok(value));
+            return Poll::Ready(Ok(()));
         }
         if state.senders == 0 {
             let retired_waker = state.waiters.unregister(&mut this.token);

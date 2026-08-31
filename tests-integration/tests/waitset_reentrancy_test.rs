@@ -191,10 +191,9 @@ fn watch_clones_wakers_outside_its_state_lock() {
             let waker = waker_with_clone_callback(move || callback_sender.send(1).unwrap());
             let mut changed = Box::pin(receiver.changed());
 
-            assert_eq!(
-                poll_with(changed.as_mut(), &waker),
-                Poll::Ready(Ok(Arc::new(1)))
-            );
+            assert_eq!(poll_with(changed.as_mut(), &waker), Poll::Ready(Ok(())));
+            drop(changed);
+            assert_eq!(receiver.get(), 1);
         },
     );
 }
