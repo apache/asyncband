@@ -299,7 +299,7 @@ impl<T> Receiver<T> {
     /// version is marked observed by the call. Use [`Receiver::recv`] instead when the value is
     /// needed.
     pub async fn changed(&mut self) -> Result<(), RecvError> {
-        let seen = WaitForChange {
+        let seen = Change {
             shared: &self.shared,
             seen: self.seen,
             token: None,
@@ -324,7 +324,7 @@ impl<T> Receiver<T> {
     where
         T: Clone,
     {
-        WaitForChange {
+        Change {
             shared: &self.shared,
             seen: self.seen,
             token: None,
@@ -345,13 +345,13 @@ impl<T> Receiver<T> {
     }
 }
 
-struct WaitForChange<'a, T> {
+struct Change<'a, T> {
     shared: &'a Shared<T>,
     seen: u64,
     token: Option<WakerToken>,
 }
 
-impl<T> Future for WaitForChange<'_, T> {
+impl<T> Future for Change<'_, T> {
     type Output = Result<u64, RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -374,7 +374,7 @@ impl<T> Future for WaitForChange<'_, T> {
     }
 }
 
-impl<T> Drop for WaitForChange<'_, T> {
+impl<T> Drop for Change<'_, T> {
     fn drop(&mut self) {
         if self.token.is_none() {
             return;
