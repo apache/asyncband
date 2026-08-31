@@ -227,11 +227,17 @@ struct CommandLint {
 
 impl CommandLint {
     fn run(self) {
+        let features = asyncband_features();
+
         run_command(make_clippy_cmd(self.fix));
         run_command(make_format_cmd(self.fix));
         run_command(make_taplo_cmd(self.fix));
         run_command(make_typos_cmd());
         run_command(make_hawkeye_cmd(self.fix));
+        run_command(make_asyncband_doc_cmd(&[]));
+        for feature in features.chunks(1) {
+            run_command(make_asyncband_doc_cmd(feature));
+        }
         run_command(make_doc_cmd());
     }
 }
@@ -451,6 +457,23 @@ fn make_doc_cmd() -> StdCommand {
         "--all-features",
         "--no-deps",
     ]);
+    cmd
+}
+
+fn make_asyncband_doc_cmd(features: &[String]) -> StdCommand {
+    let mut cmd = find_command("cargo");
+    cmd.env("RUSTDOCFLAGS", "-D warnings --cfg docsrs");
+    cmd.args([
+        "+nightly",
+        "doc",
+        "--package",
+        PACKAGE_NAME,
+        "--no-default-features",
+        "--no-deps",
+    ]);
+    for feature in features {
+        cmd.args(["--features", feature]);
+    }
     cmd
 }
 
