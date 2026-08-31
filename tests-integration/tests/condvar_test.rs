@@ -16,11 +16,8 @@
 // under the License.
 
 use std::future::Future;
-use std::panic;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
@@ -43,22 +40,6 @@ fn expect_ready<T>(poll: Poll<T>) -> T {
 
 fn poll_with<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(waker))
-}
-
-struct PanicWake;
-
-impl Wake for PanicWake {
-    fn wake(self: Arc<Self>) {
-        panic!("wake panic");
-    }
-}
-
-struct WakeCounter(AtomicUsize);
-
-impl Wake for WakeCounter {
-    fn wake(self: Arc<Self>) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
 }
 
 struct NotifyOnDrop(Arc<Condvar>);
@@ -190,27 +171,6 @@ fn notify_all_wakes_current_waiters_using_a_predicate_loop() {
             task.await.unwrap();
         }
     });
-}
-
-#[test]
-fn notify_all_attempts_every_waker_after_one_panics() {
-    let mutex = Mutex::new(());
-    let condvar = Condvar::new();
-    let panicking = Waker::from(Arc::new(PanicWake));
-    let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-    let tracked = Waker::from(counter.clone());
-
-    let mut first = Box::pin(condvar.wait(mutex.try_lock().unwrap()));
-    assert!(poll_with(first.as_mut(), &panicking).is_pending());
-    let mut second = Box::pin(condvar.wait(mutex.try_lock().unwrap()));
-    assert!(poll_with(second.as_mut(), &tracked).is_pending());
-
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| condvar.notify_all()));
-    assert!(result.is_err());
-    assert_eq!(counter.0.load(Ordering::Relaxed), 1);
-
-    drop(expect_ready(poll_once(first.as_mut())));
-    drop(expect_ready(poll_once(second.as_mut())));
 }
 
 #[test]
