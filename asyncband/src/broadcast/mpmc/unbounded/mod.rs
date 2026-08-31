@@ -27,7 +27,8 @@
 //! buffer to grow without bound, because messages are retained until every active receiver has
 //! consumed them or the receiver is dropped. Use
 //! [`UnboundedSender::retained_message_count`] to monitor the number of messages currently retained
-//! by the channel.
+//! by the channel. Use [`bounded`] instead when producers should wait for the slowest receiver
+//! rather than let the backlog grow.
 //!
 //! The buffer keeps the capacity a steady workload needs, so a channel that repeatedly fills and
 //! drains does not reallocate. Capacity grown for a one-off burst is released once a later cycle
@@ -88,11 +89,11 @@
 //! assert_eq!(tx.retained_message_count(), 0);
 //! # }
 //! ```
+//!
+//! [`bounded`]: super::bounded
 
-use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
-use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -100,10 +101,13 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::internal::arena::Arena;
+use super::common;
+use super::common::Backlog;
+use super::common::Inner;
+use super::error::RecvError;
+use super::error::TryRecvError;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::WaitSet;
 use crate::internal::waitset::WakerToken;
 use crate::internal::waitset::wake_all;
 
@@ -124,18 +128,9 @@ mod tests;
 /// assert_eq!(rx.try_recv(), Ok(10));
 /// ```
 pub fn unbounded<T: Clone>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
-    let mut receivers = Arena::new();
-    let key = receivers.insert(0);
+    let (inner, key) = Inner::with_first_subscription(Backlog::elastic());
     let shared = Arc::new(Shared {
-        inner: Mutex::new(Inner {
-            buffer: VecDeque::new(),
-            head: 0,
-            head_receivers: 1,
-            tail: 0,
-            receivers,
-            peak_len: 0,
-            waiters: WaitSet::new(),
-        }),
+        inner,
         senders: AtomicUsize::new(1),
     });
     let sender = UnboundedSender {
@@ -145,221 +140,8 @@ pub fn unbounded<T: Clone>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     (sender, receiver)
 }
 
-/// Error returned by [`UnboundedReceiver::recv`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RecvError {
-    /// All senders have been dropped, and this receiver has no remaining messages.
-    Disconnected,
-}
-
-impl fmt::Display for RecvError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RecvError::Disconnected => write!(f, "receiving on a disconnected channel"),
-        }
-    }
-}
-
-impl std::error::Error for RecvError {}
-
-/// Error returned by [`UnboundedReceiver::try_recv`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TryRecvError {
-    /// No message is currently available, but at least one sender remains.
-    Empty,
-    /// All senders have been dropped, and this receiver has no remaining messages.
-    Disconnected,
-}
-
-impl fmt::Display for TryRecvError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TryRecvError::Empty => write!(f, "receiving on an empty channel"),
-            TryRecvError::Disconnected => write!(f, "receiving on a disconnected channel"),
-        }
-    }
-}
-
-impl std::error::Error for TryRecvError {}
-
-/// Retained capacity below which the shared buffer is never shrunk back.
-const MIN_RETAINED_CAPACITY: usize = 64;
-
-struct Inner<T> {
-    /// Messages whose versions are in the range `[head, tail)`.
-    ///
-    /// Each message is held behind an `Arc` so the receive path can move the payload out of the
-    /// critical section. Cloning the `Arc` under the lock keeps `T::clone` — and, for reclaimed
-    /// messages, `T::drop` — outside it, which matters because both are arbitrary user code that
-    /// may call back into this channel.
-    buffer: VecDeque<Arc<T>>,
-    /// The version of the first message in `buffer`.
-    head: u64,
-    /// The number of active receivers whose cursor equals `head`.
-    head_receivers: usize,
-    /// The next message version to assign.
-    tail: u64,
-    /// Cursor for each active receiver.
-    receivers: Arena<u64>,
-    /// The largest backlog retained since the buffer was last empty.
-    peak_len: usize,
-    /// Receivers parked in [`UnboundedReceiver::recv`].
-    waiters: WaitSet,
-}
-
-/// Messages removed from the shared buffer and waiting to be dropped after it is unlocked.
-///
-/// Keeping the first message out of the `Vec` avoids a heap allocation on the common path where
-/// one receive reclaims exactly one message.
-struct Reclaimed<T> {
-    first: Option<Arc<T>>,
-    rest: Vec<Arc<T>>,
-}
-
-impl<T> Reclaimed<T> {
-    fn empty() -> Self {
-        Self {
-            first: None,
-            rest: vec![],
-        }
-    }
-
-    fn first(&self) -> Option<&Arc<T>> {
-        self.first.as_ref()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.first.is_none()
-    }
-
-    fn drop_messages(self) {
-        let Self { first, rest } = self;
-        drop((first, rest));
-    }
-}
-
-impl<T> Inner<T> {
-    fn insert_receiver(&mut self, head: u64) -> SlotId {
-        if head == self.head {
-            self.head_receivers += 1;
-        }
-
-        self.receivers.insert(head)
-    }
-
-    fn remove_receiver(&mut self, key: SlotId) -> Reclaimed<T> {
-        let head = self.receivers.remove(key);
-
-        if head == self.head {
-            self.release_head_receiver()
-        } else {
-            Reclaimed::empty()
-        }
-    }
-
-    fn release_head_receiver(&mut self) -> Reclaimed<T> {
-        self.head_receivers -= 1;
-
-        if self.head_receivers == 0 {
-            self.reclaim_consumed()
-        } else {
-            Reclaimed::empty()
-        }
-    }
-
-    fn receive(&mut self, key: SlotId) -> Option<(Arc<T>, Reclaimed<T>)> {
-        let head = {
-            let cursor = self
-                .receivers
-                .get_mut(key)
-                .expect("active broadcast receiver must be registered");
-            if *cursor >= self.tail {
-                return None;
-            }
-            let head = *cursor;
-            *cursor += 1;
-            head
-        };
-
-        debug_assert!(head >= self.head);
-        let offset = (head - self.head) as usize;
-        let msg = self.buffer[offset].clone();
-        let reclaimed = if head == self.head {
-            self.release_head_receiver()
-        } else {
-            Reclaimed::empty()
-        };
-        // A reclaim triggered by this receive always begins with this receiver's own message: the
-        // reclaim path runs only for a cursor sitting at `head`, so the first slot drained is
-        // `msg`. `take_msg` relies on this to recognize that it owns the payload.
-        debug_assert!(
-            reclaimed
-                .first()
-                .is_none_or(|first| Arc::ptr_eq(first, &msg))
-        );
-        Some((msg, reclaimed))
-    }
-
-    fn reclaim_consumed(&mut self) -> Reclaimed<T> {
-        let mut next_head = self.tail;
-        let mut head_receivers = 0;
-
-        for head in self.receivers.values() {
-            if *head < next_head {
-                next_head = *head;
-                head_receivers = 1;
-            } else if *head == next_head {
-                head_receivers += 1;
-            }
-        }
-
-        debug_assert!(next_head >= self.head);
-        let consumed = usize::try_from(next_head - self.head)
-            .expect("retained broadcast message count exceeds usize");
-        // Move reclaimed messages out so their Drop impls run after `inner` is unlocked. Keep the
-        // first one separate so the usual one-message reclaim does not allocate another buffer.
-        let first = if consumed == 0 {
-            None
-        } else {
-            self.buffer.pop_front()
-        };
-        let rest = self.buffer.drain(..consumed.saturating_sub(1)).collect();
-        let reclaimed = Reclaimed { first, rest };
-
-        self.head = next_head;
-        self.head_receivers = head_receivers;
-        self.shrink_buffer();
-        reclaimed
-    }
-
-    /// Returns the allocation grown for a stalled receiver once that backlog is behind us.
-    ///
-    /// Without this, a single burst pins its peak allocation for the lifetime of the channel.
-    /// The decision is deliberately made only when the buffer drains completely, and against the
-    /// peak of the cycle that just ended rather than the current length: a channel that repeatedly
-    /// fills and drains keeps a peak as large as its bursts, so it holds its allocation instead of
-    /// reallocating on every cycle. Only once a full cycle stays small does the buffer give the
-    /// memory back.
-    fn shrink_buffer(&mut self) {
-        if !self.buffer.is_empty() {
-            return;
-        }
-
-        let peak = mem::take(&mut self.peak_len);
-        let capacity = self.buffer.capacity();
-        if capacity > MIN_RETAINED_CAPACITY && peak <= capacity / 4 {
-            self.buffer.shrink_to(MIN_RETAINED_CAPACITY.max(peak * 2));
-        }
-    }
-}
-
 struct Shared<T> {
     /// Buffer, receiver cursors, and parked receivers, all under a single lock.
-    ///
-    /// The wait set lives here rather than beside it so that publishing a message and draining the
-    /// waiters happen in one critical section. That is what makes the park path race-free: a
-    /// receiver that finds no message and then registers still holds this lock, so a concurrent
-    /// `send` cannot slip between the two steps and skip the wake-up.
     inner: Mutex<Inner<T>>,
     /// Number of active senders.
     senders: AtomicUsize,
@@ -394,14 +176,7 @@ impl<T> fmt::Debug for UnboundedSender<T> {
 impl<T> Drop for UnboundedSender<T> {
     fn drop(&mut self) {
         match self.shared.senders.fetch_sub(1, Ordering::AcqRel) {
-            1 => {
-                // Wake every parked receiver so it can observe the channel's disconnected state.
-                let wakers = {
-                    let mut inner = self.shared.inner.lock();
-                    inner.waiters.drain()
-                };
-                wake_all(wakers);
-            }
+            1 => common::disconnect(&self.shared.inner),
             _ => {
                 // there are still other senders left, do nothing
             }
@@ -437,32 +212,17 @@ impl<T> UnboundedSender<T> {
 
         // Publishing and draining the wait set share one critical section, so a receiver can never
         // observe an empty buffer and park after this message became visible.
-        let wakers = {
+        let (unretained, wakers) = {
             let mut inner = self.shared.inner.lock();
-            inner.tail = inner
-                .tail
-                .checked_add(1)
-                .expect("broadcast channel version counter overflowed");
-
-            if inner.receivers.is_empty() {
-                // No receivers means no one will read this message; advance `head` so the
-                // invariant that `buffer` covers versions `[head, tail)` still holds without
-                // buffering anything. The buffer is already drained when the last receiver was
-                // dropped, so there is nothing to clear here.
-                debug_assert!(inner.buffer.is_empty());
-                debug_assert_eq!(inner.head_receivers, 0);
-                inner.head = inner.tail;
-            } else {
-                inner.buffer.push_back(msg);
-                inner.peak_len = inner.peak_len.max(inner.buffer.len());
-            }
-
-            inner.waiters.drain()
+            let unretained = inner.log.publish(msg);
+            let wakers = inner.waiters.drain();
+            (unretained, wakers)
         };
 
         // Notify all waiting receivers. An unsent message is dropped here too, once the lock is
         // released.
         wake_all(wakers);
+        drop(unretained);
     }
 
     /// Returns the number of messages currently retained by the channel.
@@ -486,7 +246,7 @@ impl<T> UnboundedSender<T> {
     /// assert_eq!(tx.retained_message_count(), 0);
     /// ```
     pub fn retained_message_count(&self) -> usize {
-        self.shared.inner.lock().buffer.len()
+        self.shared.inner.lock().log.retained()
     }
 
     /// Creates a new receiver that starts receiving messages from the current tail of the channel.
@@ -509,11 +269,11 @@ impl<T> UnboundedSender<T> {
     /// # }
     /// ```
     pub fn subscribe(&self) -> UnboundedReceiver<T> {
-        let mut inner = self.shared.inner.lock();
-        let head = inner.tail;
-        let key = inner.insert_receiver(head);
-        let shared = self.shared.clone();
-        UnboundedReceiver { shared, key }
+        let key = self.shared.inner.lock().log.subscribe();
+        UnboundedReceiver {
+            shared: self.shared.clone(),
+            key,
+        }
     }
 }
 
@@ -535,7 +295,7 @@ impl<T> Drop for UnboundedReceiver<T> {
     fn drop(&mut self) {
         let reclaimed = {
             let mut inner = self.shared.inner.lock();
-            inner.remove_receiver(self.key)
+            inner.log.remove_receiver(self.key)
         };
         drop(reclaimed);
     }
@@ -595,50 +355,13 @@ impl<T: Clone> UnboundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Ok(10));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let (msg, reclaimed) = self.try_recv_shared()?;
-        Ok(take_msg(msg, reclaimed))
+        let (msg, reclaimed) =
+            common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
+        Ok(common::take_msg(msg, reclaimed))
     }
-}
-
-/// Drops the reclaimed backlog, then yields the received message, both with the channel unlocked.
-///
-/// A non-empty backlog means this receive drained `msg` from the buffer, so once the backlog is
-/// dropped this receive holds the only reference and the payload can be moved out instead of
-/// cloned. A channel with a single receiver therefore never clones a payload.
-///
-/// Ownership is decided from that bookkeeping rather than by probing the reference count. An
-/// [`Arc::try_unwrap`] on every receive would fail under fan-out, and its failed compare-exchange
-/// writes to a cache line that every receiver draining the message shares.
-fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Reclaimed<T>) -> T {
-    let sole_owner = !reclaimed.is_empty();
-    reclaimed.drop_messages();
-
-    if !sole_owner {
-        return (*msg).clone();
-    }
-
-    // Another receiver can still hold an in-flight reference to the same message, so the clone
-    // remains the fallback.
-    Arc::try_unwrap(msg).unwrap_or_else(|msg| (*msg).clone())
 }
 
 impl<T> UnboundedReceiver<T> {
-    fn try_recv_shared(&mut self) -> Result<(Arc<T>, Reclaimed<T>), TryRecvError> {
-        // Check this receiver's cursor while holding `inner` before observing `senders`. Senders
-        // append messages under the same lock before they can be dropped, so an empty result here
-        // means this receiver has no unread buffered message.
-        let mut inner = self.shared.inner.lock();
-        if let Some(received) = inner.receive(self.key) {
-            return Ok(received);
-        }
-
-        if self.shared.senders.load(Ordering::Acquire) == 0 {
-            Err(TryRecvError::Disconnected)
-        } else {
-            Err(TryRecvError::Empty)
-        }
-    }
-
     /// Re-subscribes to the channel, returning a new receiver that starts receiving messages from
     /// the *current* tail of the channel.
     ///
@@ -661,11 +384,11 @@ impl<T> UnboundedReceiver<T> {
     /// assert_eq!(rx2.try_recv(), Ok(3));
     /// ```
     pub fn resubscribe(&self) -> Self {
-        let mut inner = self.shared.inner.lock();
-        let head = inner.tail;
-        let key = inner.insert_receiver(head);
-        let shared = self.shared.clone();
-        Self { shared, key }
+        let key = self.shared.inner.lock().log.subscribe();
+        Self {
+            shared: self.shared.clone(),
+            key,
+        }
     }
 
     /// Returns the number of messages this receiver can still read.
@@ -693,12 +416,7 @@ impl<T> UnboundedReceiver<T> {
     /// assert_eq!(rx.unread_message_count(), 1);
     /// ```
     pub fn unread_message_count(&self) -> usize {
-        let inner = self.shared.inner.lock();
-        let head = *inner
-            .receivers
-            .get(self.key)
-            .expect("active broadcast receiver must be registered");
-        usize::try_from(inner.tail - head).expect("unread broadcast message count exceeds usize")
+        self.shared.inner.lock().log.unread(self.key)
     }
 }
 
@@ -714,11 +432,7 @@ impl<T> Drop for Recv<'_, T> {
             return;
         }
 
-        let waker = {
-            let mut inner = self.receiver.shared.inner.lock();
-            inner.waiters.unregister(&mut self.token)
-        };
-        drop(waker);
+        common::unregister(&self.receiver.shared.inner, &mut self.token);
     }
 }
 
@@ -728,44 +442,18 @@ impl<T: Clone> Future for Recv<'_, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self { receiver, token } = self.get_mut();
 
-        // Buffered messages and repeated polls with the same task waker require no clone. If the
-        // pending path needs a new waker, release the lock, clone, and repeat the full state check
-        // before registration. Senders publish messages and drain waiters under the same lock, so
-        // the recheck cannot miss a send, disconnection, or state change made by a reentrant clone
-        // callback. The loop executes at most twice.
-        let mut prepared_waker = None;
-        let received = loop {
-            let mut inner = receiver.shared.inner.lock();
-
-            match inner.receive(receiver.key) {
-                Some(received) => break received,
-                None => {
-                    if receiver.shared.senders.load(Ordering::Acquire) == 0 {
-                        *token = None;
-                        drop(inner);
-                        drop(prepared_waker);
-                        return Poll::Ready(Err(RecvError::Disconnected));
-                    }
-
-                    if prepared_waker.is_none() && inner.waiters.will_wake(token, cx.waker()) {
-                        return Poll::Pending;
-                    }
-                    let Some(waker) = prepared_waker.take() else {
-                        drop(inner);
-                        prepared_waker = Some(cx.waker().clone());
-                        continue;
-                    };
-                    let retired_waker = inner.waiters.register(token, waker);
-                    drop(inner);
-                    drop(retired_waker);
-                    return Poll::Pending;
-                }
-            }
+        let (msg, reclaimed) = match common::poll_receive(
+            &receiver.shared.inner,
+            &receiver.shared.senders,
+            receiver.key,
+            token,
+            cx,
+        ) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+            Poll::Ready(Ok(received)) => received,
         };
-        drop(prepared_waker);
 
-        let (msg, reclaimed) = received;
-        *token = None;
-        Poll::Ready(Ok(take_msg(msg, reclaimed)))
+        Poll::Ready(Ok(common::take_msg(msg, reclaimed)))
     }
 }

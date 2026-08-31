@@ -64,18 +64,21 @@ pub(crate) mod value_cell;
 pub(crate) mod mutex;
 
 #[cfg(any(
+    feature = "broadcast",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
 ))]
-// `mpsc` uses `poll_acquire`, `release_if_nonempty`, and `notify_all`; mutexes and rwlocks use
-// `acquire`, `try_acquire`, and `release`; the public semaphore also uses the accounting methods.
-// Each single-primitive build intentionally leaves the other groups unused.
+// `broadcast` and `mpsc` park blocked producers with `poll_acquire`, `release_if_nonempty`, and
+// `notify_all`; mutexes and rwlocks use `acquire`, `try_acquire`, and `release`; the public
+// semaphore also uses the accounting methods. Each single-primitive build intentionally leaves the
+// other groups unused.
 #[allow(dead_code)]
 pub(crate) mod semaphore;
 
 #[cfg(any(
+    feature = "broadcast",
     feature = "event",
     feature = "mpsc",
     feature = "mutex",
