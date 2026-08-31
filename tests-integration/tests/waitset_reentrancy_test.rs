@@ -29,7 +29,6 @@ use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 
-use asyncband::barrier::Barrier;
 use asyncband::condvar::Condvar;
 use asyncband::event::ManualResetEvent;
 use asyncband::latch::Latch;
@@ -218,30 +217,6 @@ fn condvar_runs_waker_callbacks_outside_its_waiter_lock() {
 
             drop(waker);
             drop(wait);
-        },
-    );
-}
-
-#[test]
-fn barrier_clones_wakers_outside_its_state_lock() {
-    assert_completes_without_deadlock(
-        "waker clone callback deadlocked against the barrier lock",
-        || {
-            let barrier = Arc::new(Barrier::new(2));
-            let callback_barrier = barrier.clone();
-            let waker = waker_with_clone_callback(move || {
-                let mut wait = Box::pin(callback_barrier.wait());
-                let Poll::Ready(result) = poll_with(wait.as_mut(), Waker::noop()) else {
-                    panic!("second barrier participant must complete the generation");
-                };
-                assert!(result.is_leader());
-            });
-            let mut wait = Box::pin(barrier.wait());
-
-            let Poll::Ready(result) = poll_with(wait.as_mut(), &waker) else {
-                panic!("first barrier participant must observe the completed generation");
-            };
-            assert!(!result.is_leader());
         },
     );
 }

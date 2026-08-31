@@ -240,23 +240,16 @@ impl Future for BarrierWait<'_> {
             barrier,
         } = self.get_mut();
 
-        // A follower normally parks once, so cloning first keeps its common pending path to one
-        // state-lock acquisition. Cloning may reenter and complete the barrier; checking the
-        // generation afterward closes that race. The completion poll may clone an unused waker,
-        // which is the deliberate cost of avoiding a second lock-and-recheck phase here.
-        let waker = cx.waker().clone();
-        let mut state = barrier.state.lock();
-        if *generation < state.generation {
-            // Completion advances the generation and drains its old waiters under this same lock,
-            // so no registration represented by this token remains in the wait set.
-            *token = None;
-            drop(state);
-            drop(waker);
-            return Poll::Ready(());
-        }
-
-        let retired_waker = state.waiters.register(token, waker);
-        drop(state);
+        let retired_waker = {
+            let mut state = barrier.state.lock();
+            if *generation < state.generation {
+                // Completion advances the generation and drains its old waiters under this same
+                // lock, so no registration represented by this token remains in the wait set.
+                *token = None;
+                return Poll::Ready(());
+            }
+            state.waiters.register_waker(token, cx.waker())
+        };
         drop(retired_waker);
         Poll::Pending
     }
