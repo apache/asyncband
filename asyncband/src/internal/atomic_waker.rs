@@ -20,6 +20,8 @@
 
 use std::cell::UnsafeCell;
 use std::panic::AssertUnwindSafe;
+use std::panic::RefUnwindSafe;
+use std::panic::UnwindSafe;
 use std::panic::catch_unwind;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -70,6 +72,11 @@ pub struct AtomicWaker {
 // SAFETY: `state` grants exclusive access to `waker`, and losing concurrent registrations do not
 // touch the slot. `Waker` itself is `Send + Sync`.
 unsafe impl Sync for AtomicWaker {}
+
+// Task waker cloning follows the executor contract and is treated as infallible. Wake and drop
+// callbacks run only after the operation has returned the state machine to WAITING.
+impl RefUnwindSafe for AtomicWaker {}
+impl UnwindSafe for AtomicWaker {}
 
 impl AtomicWaker {
     #[inline]
