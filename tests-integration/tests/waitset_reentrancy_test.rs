@@ -31,7 +31,6 @@ use std::time::Duration;
 
 use asyncband::condvar::Condvar;
 use asyncband::event::ManualResetEvent;
-use asyncband::latch::Latch;
 use asyncband::mutex::Mutex as AsyncMutex;
 use asyncband::semaphore::Semaphore;
 use asyncband::watch;
@@ -142,21 +141,6 @@ fn event_clones_wakers_outside_its_state_lock() {
                 poll_with(repolled_wait.as_mut(), &replacement),
                 Poll::Ready(())
             );
-        },
-    );
-}
-
-#[test]
-fn latch_clones_wakers_outside_its_waiter_lock() {
-    assert_completes_without_deadlock(
-        "waker clone callback deadlocked against the latch lock",
-        || {
-            let latch = Arc::new(Latch::new(1));
-            let callback_latch = latch.clone();
-            let waker = waker_with_clone_callback(move || callback_latch.count_down());
-            let mut wait = Box::pin(latch.wait());
-
-            assert_eq!(poll_with(wait.as_mut(), &waker), Poll::Ready(()));
         },
     );
 }

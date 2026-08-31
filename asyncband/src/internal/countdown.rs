@@ -72,22 +72,15 @@ impl CountdownState {
             return Poll::Ready(());
         }
 
-        // The atomic probe keeps an already-ready poll free of both waker cloning and waiter
-        // locking. An active countdown normally parks, so eagerly clone before the waiter lock to
-        // keep that path to one acquisition. Rechecking afterward observes a zero transition made
-        // concurrently or by a reentrant clone callback.
-        let waker = cx.waker().clone();
-        let mut waiters = self.waiters.lock();
-        if self.state() == 0 {
-            // A concurrent zero transition will drain after this lock is released.
-            *token = None;
-            drop(waiters);
-            drop(waker);
-            return Poll::Ready(());
-        }
-
-        let retired_waker = waiters.register(token, waker);
-        drop(waiters);
+        let retired_waker = {
+            let mut waiters = self.waiters.lock();
+            if self.state() == 0 {
+                // A concurrent zero transition will drain after this lock is released.
+                *token = None;
+                return Poll::Ready(());
+            }
+            waiters.register_waker(token, cx.waker())
+        };
         drop(retired_waker);
         Poll::Pending
     }
