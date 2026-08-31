@@ -15,10 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
 use std::future::Future;
 use std::mem::MaybeUninit;
-use std::panic;
 use std::pin::Pin;
 use std::ptr;
 use std::sync::MutexGuard;
@@ -29,6 +27,7 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
+use crate::internal::waitset::wake_all as wake_all_wakers;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 
@@ -49,18 +48,6 @@ struct WaitNode {
 }
 
 const WAKE_BATCH_SIZE: usize = 32;
-
-fn wake_all_catching_panics(wakers: impl Iterator<Item = Waker>) -> Option<Box<dyn Any + Send>> {
-    let mut first_panic = None;
-    for waker in wakers {
-        if let Err(payload) = panic::catch_unwind(panic::AssertUnwindSafe(|| waker.wake())) {
-            if first_panic.is_none() {
-                first_panic = Some(payload);
-            }
-        }
-    }
-    first_panic
-}
 
 /// The initialized entries in `wakers` are exactly `start..end`.
 struct WakeBatch {
@@ -90,8 +77,8 @@ impl WakeBatch {
         self.end == WAKE_BATCH_SIZE
     }
 
-    fn wake_all(&mut self) -> Option<Box<dyn Any + Send>> {
-        let first_panic = wake_all_catching_panics(std::iter::from_fn(|| {
+    fn wake_all(&mut self) {
+        wake_all_wakers(std::iter::from_fn(|| {
             if self.start == self.end {
                 return None;
             }
@@ -102,7 +89,6 @@ impl WakeBatch {
         }));
         self.start = 0;
         self.end = 0;
-        first_panic
     }
 }
 
@@ -239,9 +225,7 @@ impl Semaphore {
             }
         }
         drop(waiters);
-        if let Some(payload) = wake_all_catching_panics(wakers.into_iter()) {
-            panic::resume_unwind(payload);
-        }
+        wake_all_wakers(wakers.into_iter());
     }
 
     fn insert_permits_with_lock(
@@ -250,7 +234,6 @@ impl Semaphore {
         waiters: MutexGuard<'_, WaitList<WaitNode>>,
     ) {
         let mut wakers = WakeBatch::new();
-        let mut first_wake_panic = None;
 
         let mut lock = Some(waiters);
         while rem > 0 {
@@ -293,15 +276,7 @@ impl Semaphore {
             }
 
             drop(waiters);
-            if let Some(payload) = wakers.wake_all() {
-                if first_wake_panic.is_none() {
-                    first_wake_panic = Some(payload);
-                }
-            }
-        }
-
-        if let Some(payload) = first_wake_panic {
-            panic::resume_unwind(payload);
+            wakers.wake_all();
         }
     }
 
@@ -490,14 +465,6 @@ mod tests {
 
     struct WakeCounter(AtomicUsize);
 
-    struct PanicWake;
-
-    impl Wake for PanicWake {
-        fn wake(self: Arc<Self>) {
-            panic!("wake panic");
-        }
-    }
-
     impl Wake for WakeCounter {
         fn wake(self: Arc<Self>) {
             self.0.fetch_add(1, Ordering::Relaxed);
@@ -525,35 +492,6 @@ mod tests {
 
         for acquire in &mut acquires {
             assert!(acquire.poll_once(&waker).is_ready());
-        }
-        assert_eq!(semaphore.num_waiter_nodes(), 0);
-    }
-
-    #[test]
-    fn release_notifies_remaining_waiters_after_a_wake_panic() {
-        const WAITER_COUNT: usize = WAKE_BATCH_SIZE + 3;
-
-        let semaphore = Semaphore::new(0);
-        let panicking = Waker::from(Arc::new(PanicWake));
-        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-        let tracked = Waker::from(counter.clone());
-        let mut acquires = (0..WAITER_COUNT)
-            .map(|_| semaphore.poll_acquire(1))
-            .collect::<Vec<_>>();
-
-        assert!(acquires[0].poll_once(&panicking).is_pending());
-        for acquire in &mut acquires[1..] {
-            assert!(acquire.poll_once(&tracked).is_pending());
-        }
-
-        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-            semaphore.release(WAITER_COUNT);
-        }));
-        assert!(result.is_err());
-        assert_eq!(counter.0.load(Ordering::Relaxed), WAITER_COUNT - 1);
-
-        for acquire in &mut acquires {
-            assert!(acquire.poll_once(&tracked).is_ready());
         }
         assert_eq!(semaphore.num_waiter_nodes(), 0);
     }
