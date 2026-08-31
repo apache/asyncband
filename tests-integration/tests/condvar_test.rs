@@ -45,7 +45,9 @@ fn poll_with<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
 struct NotifyOnDrop(Arc<Condvar>);
 
 impl Wake for NotifyOnDrop {
-    fn wake(self: Arc<Self>) {}
+    fn wake(self: Arc<Self>) {
+        self.0.notify_one();
+    }
 }
 
 impl Drop for NotifyOnDrop {
