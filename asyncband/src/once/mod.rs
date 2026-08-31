@@ -41,14 +41,10 @@ mod once_cell;
 mod once_map;
 
 #[cfg(feature = "lazy-cell")]
-#[cfg_attr(docsrs, doc(cfg(feature = "lazy-cell")))]
 pub use self::lazy_cell::LazyCell;
 #[cfg(feature = "once")]
-#[cfg_attr(docsrs, doc(cfg(feature = "once")))]
 pub use self::once::Once;
 #[cfg(feature = "once-cell")]
-#[cfg_attr(docsrs, doc(cfg(feature = "once-cell")))]
 pub use self::once_cell::OnceCell;
 #[cfg(feature = "once-map")]
-#[cfg_attr(docsrs, doc(cfg(feature = "once-map")))]
 pub use self::once_map::OnceMap;
