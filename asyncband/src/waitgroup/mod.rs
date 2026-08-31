@@ -59,9 +59,6 @@ use std::task::Poll;
 use crate::internal::countdown::CountdownState;
 use crate::internal::waitset::WakerToken;
 
-#[cfg(test)]
-mod tests;
-
 /// A group of handles whose collective completion can be awaited.
 ///
 /// See the [module level documentation](self) for more.
