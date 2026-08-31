@@ -167,7 +167,7 @@ async fn test_multiple_map_operations() {
 #[tokio::test]
 async fn test_stress() {
     let mutex = Arc::new(Mutex::new(0));
-    let mut handles = Vec::new();
+    let mut handles = vec![];
 
     // Create many concurrent tasks
     for i in 0..1000 {

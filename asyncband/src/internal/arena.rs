@@ -88,7 +88,7 @@ enum Slot<T> {
 impl<T> Arena<T> {
     pub const fn new() -> Self {
         Self {
-            slots: Vec::new(),
+            slots: vec![],
             next_vacant: 0,
             len: 0,
         }
@@ -191,7 +191,7 @@ impl<T> Arena<T> {
         let len = self.len;
         let mut values = ArenaValues {
             first: None,
-            rest: Vec::new(),
+            rest: vec![],
         };
         if len == 0 {
             // Individually removed values leave vacant slots behind. Keep their free list intact

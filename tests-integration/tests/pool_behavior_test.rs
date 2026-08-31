@@ -113,7 +113,7 @@ async fn retain_invokes_detachment_hook_once_per_removed_object() {
         },
     );
 
-    let mut objects = Vec::new();
+    let mut objects = vec![];
     for _ in 0..4 {
         objects.push(pool.get().await.unwrap());
     }

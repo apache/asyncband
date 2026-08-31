@@ -31,7 +31,7 @@
 //! async fn do_work() {}
 //!
 //! let group = WaitGroup::new();
-//! let mut tasks = Vec::new();
+//! let mut tasks = vec![];
 //!
 //! for _ in 0..3 {
 //!     let worker = group.clone();

@@ -293,7 +293,7 @@ impl Semaphore {
     /// use asyncband::semaphore::Semaphore;
     ///
     /// let sem = Arc::new(Semaphore::new(3));
-    /// let mut join_handles = Vec::new();
+    /// let mut join_handles = vec![];
     ///
     /// for _ in 0..5 {
     ///     let permit = sem.clone().acquire_owned(1).await;

@@ -32,7 +32,7 @@
 //! use asyncband::latch::Latch;
 //!
 //! let latch = Arc::new(Latch::new(3));
-//! let mut tasks = Vec::new();
+//! let mut tasks = vec![];
 //!
 //! for _ in 0..3 {
 //!     let latch = latch.clone();

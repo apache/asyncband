@@ -23,7 +23,7 @@ use tests_integration::poll_once;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn waits_for_all_worker_handles() {
     let wg = WaitGroup::new();
-    let mut tasks = Vec::new();
+    let mut tasks = vec![];
     for _ in 0..100 {
         let worker = wg.clone();
         tasks.push(tokio::spawn(async move {

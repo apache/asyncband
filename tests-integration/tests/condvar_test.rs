@@ -113,7 +113,7 @@ fn notify_all_wakes_current_waiters_using_a_predicate_loop() {
         }
 
         let pair = Arc::new((Mutex::new(State::default()), Condvar::new()));
-        let mut tasks: Vec<JoinHandle<()>> = Vec::new();
+        let mut tasks: Vec<JoinHandle<()>> = vec![];
 
         for _ in 0..WAITERS {
             let pair = pair.clone();

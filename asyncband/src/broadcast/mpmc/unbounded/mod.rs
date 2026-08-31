@@ -220,7 +220,7 @@ impl<T> Reclaimed<T> {
     fn empty() -> Self {
         Self {
             first: None,
-            rest: Vec::new(),
+            rest: vec![],
         }
     }
 

@@ -202,7 +202,7 @@ impl Semaphore {
     /// Adds as many permits until there is no waiter.
     pub fn notify_all(&self) {
         let mut waiters = self.waiters.lock();
-        let mut wakers = Vec::new();
+        let mut wakers = vec![];
         loop {
             match waiters.unlink_first_waiter(|node| {
                 node.permits = 0;

@@ -157,7 +157,7 @@ impl Condvar {
     pub fn notify_all(&self) {
         let wakers = {
             let mut waiters = self.waiters.lock();
-            let mut wakers = Vec::new();
+            let mut wakers = vec![];
 
             while waiters
                 .unlink_first_waiter(|node| {

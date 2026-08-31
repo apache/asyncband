@@ -62,7 +62,7 @@ async fn concurrent_compute_runs_once() {
     });
 
     started_rx.await.unwrap();
-    let mut waiters = Vec::new();
+    let mut waiters = vec![];
     for _ in 0..9 {
         let map = map.clone();
         let count = count.clone();
@@ -86,7 +86,7 @@ async fn concurrent_compute_runs_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_growth_keeps_every_entry() {
     let map = Arc::new(OnceMap::new());
-    let mut workers = Vec::new();
+    let mut workers = vec![];
     for worker in 0..8 {
         let map = Arc::clone(&map);
         workers.push(tokio::spawn(async move {
