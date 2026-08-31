@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use asyncband::mutex::*;
+use tests_integration::poll_once;
 
 #[test]
 fn test_try_lock_never_blocks() {
@@ -141,40 +142,19 @@ async fn test_multiple_map_operations() {
     assert_eq!(guard[1][0], 3);
 }
 
-#[tokio::test]
-async fn test_guard_prevents_concurrent_access() {
-    // Test that holding a guard prevents other tasks from acquiring the lock
-    let mutex = Arc::new(Mutex::new(0));
-    let mutex_clone = mutex.clone();
+#[test]
+fn test_guard_prevents_concurrent_access() {
+    let mutex = Mutex::new(0);
+    let guard = mutex.try_lock().unwrap();
+    let mut waiting = std::pin::pin!(mutex.lock());
 
-    let guard = mutex.lock().await;
-
-    assert!(
-        mutex.try_lock().is_none(),
-        "Lock should be held by the first guard"
-    );
-
-    let handle = tokio::spawn(async move {
-        let _guard2 = mutex_clone.lock().await;
-        123
-    });
-
-    tokio::task::yield_now().await;
-
-    assert!(
-        mutex.try_lock().is_none(),
-        "Lock should still be held after yielding"
-    );
-
+    assert!(poll_once(waiting.as_mut()).is_pending());
     drop(guard);
 
-    let result = handle.await.unwrap();
-    assert_eq!(result, 123);
-
-    assert!(
-        mutex.try_lock().is_some(),
-        "Lock should be available after all guards are dropped"
-    );
+    let std::task::Poll::Ready(second_guard) = poll_once(waiting.as_mut()) else {
+        panic!("queued lock should complete after the active guard drops");
+    };
+    assert_eq!(*second_guard, 0);
 }
 
 #[test]
