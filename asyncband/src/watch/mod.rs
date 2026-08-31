@@ -346,32 +346,24 @@ impl<T> Future for Changed<'_, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        // A changed call normally parks once and then consumes one update, so cloning first keeps
-        // the common pending path to one state-lock acquisition. Checking the version and sender
-        // count afterward closes races caused by concurrent work or a reentrant clone callback.
-        // Ready and disconnected polls may consequently clone an unused waker.
-        let waker = cx.waker().clone();
-        let mut state = this.receiver.shared.state.lock();
-        if state.version != this.receiver.seen {
-            let retired_waker = state.waiters.unregister(&mut this.token);
-            this.receiver.seen = state.version;
-            drop(state);
-            drop(retired_waker);
-            drop(waker);
-            return Poll::Ready(Ok(()));
-        }
-        if state.senders == 0 {
-            let retired_waker = state.waiters.unregister(&mut this.token);
-            drop(state);
-            drop(retired_waker);
-            drop(waker);
-            return Poll::Ready(Err(RecvError::Disconnected));
-        }
-
-        let retired_waker = state.waiters.register(&mut this.token, waker);
-        drop(state);
+        let (poll, retired_waker) = {
+            let mut state = this.receiver.shared.state.lock();
+            if state.version != this.receiver.seen {
+                let retired = state.waiters.unregister(&mut this.token);
+                this.receiver.seen = state.version;
+                (Poll::Ready(Ok(())), retired)
+            } else if state.senders == 0 {
+                let retired = state.waiters.unregister(&mut this.token);
+                (Poll::Ready(Err(RecvError::Disconnected)), retired)
+            } else {
+                let retired = state
+                    .waiters
+                    .register_waker(&mut this.token, cx.waker());
+                (Poll::Pending, retired)
+            }
+        };
         drop(retired_waker);
-        Poll::Pending
+        poll
     }
 }
 

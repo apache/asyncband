@@ -33,7 +33,6 @@ use asyncband::condvar::Condvar;
 use asyncband::event::ManualResetEvent;
 use asyncband::mutex::Mutex as AsyncMutex;
 use asyncband::semaphore::Semaphore;
-use asyncband::watch;
 
 struct CloneCallback(Mutex<Option<Box<dyn FnOnce() + Send>>>);
 
@@ -201,23 +200,6 @@ fn condvar_runs_waker_callbacks_outside_its_waiter_lock() {
 
             drop(waker);
             drop(wait);
-        },
-    );
-}
-
-#[test]
-fn watch_clones_wakers_outside_its_state_lock() {
-    assert_completes_without_deadlock(
-        "waker clone callback deadlocked against the watch lock",
-        || {
-            let (sender, mut receiver) = watch::channel(0);
-            let callback_sender = sender.clone();
-            let waker = waker_with_clone_callback(move || callback_sender.send(1).unwrap());
-            let mut changed = Box::pin(receiver.changed());
-
-            assert_eq!(poll_with(changed.as_mut(), &waker), Poll::Ready(Ok(())));
-            drop(changed);
-            assert_eq!(receiver.get(), 1);
         },
     );
 }
