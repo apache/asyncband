@@ -70,26 +70,6 @@ impl<K, V, S> fmt::Debug for OnceMap<K, V, S> {
     }
 }
 
-impl<K, V, S> OnceMap<K, V, S> {
-    /// Returns the number of keys currently tracked by the map.
-    ///
-    /// This count includes keys whose computation is still in flight. It is a snapshot and may be
-    /// outdated as soon as another task computes, removes, or discards an entry.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.entries.lock().len()
-    }
-
-    /// Returns `true` if the map currently tracks no keys.
-    ///
-    /// A key whose computation is still in flight makes the map non-empty. This result is a
-    /// snapshot and may be outdated as soon as another task changes the map.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.entries.lock().is_empty()
-    }
-}
-
 impl<K, V, S> OnceMap<K, V, S>
 where
     K: Eq + Hash,

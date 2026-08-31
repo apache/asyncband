@@ -37,6 +37,5 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
-* Add `OnceMap::len` and `OnceMap::is_empty` for observing both cached and in-flight entries.
 * Remove the `slab` dependency in favor of a focused internal waiter arena.
 * Describe disconnected channel states consistently in channel error messages.
