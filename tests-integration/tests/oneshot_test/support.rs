@@ -20,6 +20,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::task::RawWaker;
+use std::task::RawWakerVTable;
 use std::task::Wake;
 use std::task::Waker;
 use std::time::Duration;
@@ -83,6 +85,21 @@ impl Wake for WakerProbe {
     fn wake_by_ref(self: &Arc<Self>) {
         self.wake_count.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+unsafe fn panic_on_clone(_data: *const ()) -> RawWaker {
+    panic!("waker clone panic");
+}
+
+unsafe fn no_op_wake(_data: *const ()) {}
+
+static PANIC_ON_CLONE_VTABLE: RawWakerVTable =
+    RawWakerVTable::new(panic_on_clone, no_op_wake, no_op_wake, no_op_wake);
+
+pub(super) fn waker_that_panics_on_clone() -> Waker {
+    let raw = RawWaker::new(std::ptr::null(), &PANIC_ON_CLONE_VTABLE);
+    // SAFETY: The vtable owns no data, and its wake and drop callbacks therefore need no cleanup.
+    unsafe { Waker::from_raw(raw) }
 }
 
 pub(super) fn spawn_named<F, T>(name: &str, f: F) -> std::thread::JoinHandle<T>

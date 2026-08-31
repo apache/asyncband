@@ -232,6 +232,10 @@ impl<T> Future for Recv<T> {
             // We were polled again while waiting for the sender. Replace the waker with the new
             // one.
             RECEIVING => {
+                // Clone before reclaiming the stored waker. If cloning panics, RECEIVING continues
+                // to describe that initialized waker and `Recv::drop` can still reclaim it.
+                let waker = cx.waker().clone();
+
                 // ORDERING: On success, Acquire synchronizes with the Release that published the
                 // stored waker before this poll reclaims it. Failure does not access that waker.
                 match channel.state.compare_exchange(
@@ -242,8 +246,6 @@ impl<T> Future for Recv<T> {
                 ) {
                     // The state is EMPTY again.
                     Ok(_) => {
-                        let waker = cx.waker().clone();
-
                         // SAFETY: The successful exchange makes the state EMPTY, so the sender
                         // cannot take the stored waker. The acquire ordering synchronizes with the
                         // waker write.
