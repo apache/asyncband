@@ -30,6 +30,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug fixes
 
+* Reject semaphore permit merges whose combined count exceeds `usize::MAX` instead of wrapping and losing permits.
 * Release cancelled wait registrations promptly and reclaim fulfilled `Semaphore::reduce_permits` debt nodes.
 * Preserve fan-out notifications when one registered waker panics.
 * Clone task wakers outside primitive state locks so reentrant clone callbacks cannot deadlock wait registration.

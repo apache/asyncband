@@ -366,8 +366,8 @@ impl SemaphorePermit<'_> {
     ///
     /// # Panics
     ///
-    /// This function panics if permits from different [`Semaphore`] instances
-    /// are merged.
+    /// This function panics if permits from different [`Semaphore`] instances are merged or if
+    /// their combined permit count exceeds `usize::MAX`.
     ///
     /// # Examples
     ///
@@ -398,7 +398,10 @@ impl SemaphorePermit<'_> {
             std::ptr::eq(self.sem, other.sem),
             "merging permits from different semaphore instances"
         );
-        self.permits += other.permits;
+        self.permits = self
+            .permits
+            .checked_add(other.permits)
+            .expect("merged permit count would overflow usize::MAX");
         other.permits = 0;
     }
 
@@ -504,8 +507,8 @@ impl OwnedSemaphorePermit {
     ///
     /// # Panics
     ///
-    /// This function panics if permits from different [`Semaphore`] instances
-    /// are merged.
+    /// This function panics if permits from different [`Semaphore`] instances are merged or if
+    /// their combined permit count exceeds `usize::MAX`.
     ///
     /// # Examples
     ///
@@ -536,7 +539,10 @@ impl OwnedSemaphorePermit {
             Arc::ptr_eq(&self.sem, &other.sem),
             "merging permits from different semaphore instances"
         );
-        self.permits += other.permits;
+        self.permits = self
+            .permits
+            .checked_add(other.permits)
+            .expect("merged permit count would overflow usize::MAX");
         other.permits = 0;
     }
 

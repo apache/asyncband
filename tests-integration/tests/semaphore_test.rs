@@ -108,6 +108,40 @@ fn release_overflow_preserves_permits() {
 }
 
 #[test]
+fn merge_overflow_panics_without_losing_borrowed_permits() {
+    let s = Semaphore::new(usize::MAX);
+    let mut first = s.try_acquire(usize::MAX).unwrap();
+    s.release(1);
+    let second = s.try_acquire(1).unwrap();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        first.merge(second);
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(first.permits(), usize::MAX);
+    assert_eq!(s.available_permits(), 1);
+    first.forget();
+}
+
+#[test]
+fn merge_overflow_panics_without_losing_owned_permits() {
+    let s = Arc::new(Semaphore::new(usize::MAX));
+    let mut first = s.clone().try_acquire_owned(usize::MAX).unwrap();
+    s.release(1);
+    let second = s.clone().try_acquire_owned(1).unwrap();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        first.merge(second);
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(first.permits(), usize::MAX);
+    assert_eq!(s.available_permits(), 1);
+    first.forget();
+}
+
+#[test]
 fn no_panic_at_max_permits() {
     let _ = Semaphore::new(usize::MAX);
     let s = Semaphore::new(usize::MAX - 1);
