@@ -25,6 +25,7 @@ use std::panic::AssertUnwindSafe;
 use std::panic::RefUnwindSafe;
 use std::panic::UnwindSafe;
 use std::panic::catch_unwind;
+use std::panic::resume_unwind;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Waker;
@@ -74,18 +75,6 @@ pub struct AtomicWaker {
 // SAFETY: `state` grants exclusive access to `waker`, and losing concurrent registrations do not
 // touch the slot. `Waker` itself is `Send + Sync`.
 unsafe impl Sync for AtomicWaker {}
-
-struct RegisterGuard<'a>(&'a AtomicWaker);
-
-impl Drop for RegisterGuard<'_> {
-    fn drop(&mut self) {
-        // SAFETY: this guard exists only while `register_locked` owns the REGISTERING state. It is
-        // forgotten as soon as cloning succeeds, so Drop runs only while unwinding from clone.
-        if let Some(waker) = unsafe { self.0.finish_registration() } {
-            let _ = catch_unwind(AssertUnwindSafe(|| waker.wake()));
-        }
-    }
-}
 
 // `Waker` callbacks may unwind, but no panic leaves a state bit owned by the unwinding operation. A
 // failed clone leaves the old slot intact and completes any raced wake, while wake and drop
@@ -150,19 +139,50 @@ impl AtomicWaker {
             None => true,
         };
 
+        let mut clone_panic = None;
         let old_waker = if needs_replacement {
-            let guard = RegisterGuard(self);
-            let new_waker = waker.clone();
-            std::mem::forget(guard);
-
-            // SAFETY: the caller owns the REGISTERING state and is the only slot accessor.
-            unsafe { (*self.waker.get()).replace(new_waker) }
+            match catch_unwind(AssertUnwindSafe(|| waker.clone())) {
+                Ok(new_waker) => unsafe { (*self.waker.get()).replace(new_waker) },
+                Err(payload) => {
+                    clone_panic = Some(payload);
+                    None
+                }
+            }
         } else {
             None
         };
 
-        // SAFETY: the caller owns the REGISTERING state and is the only slot accessor.
-        let concurrent_wake = unsafe { self.finish_registration() };
+        // ORDERING: Release publishes a newly registered waker when the CAS succeeds. If it fails,
+        // Acquire receives the concurrent notifier's Release publication before the wake is
+        // completed below. AcqRel is the weakest success ordering that permits an Acquire failure
+        // ordering, although its Acquire half is not otherwise relied upon on the success path.
+        let concurrent_wake = match self.state.compare_exchange(
+            REGISTERING,
+            WAITING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => None,
+            Err(state) => {
+                debug_assert_eq!(state, REGISTERING | WAKING);
+
+                // SAFETY: REGISTERING remains set, so this thread still owns the waker slot.
+                let registered = unsafe { (*self.waker.get()).take() };
+
+                // ORDERING: Acquire receives all coalesced wake publications. Release publishes
+                // the empty slot and makes it available to the next register or wake operation.
+                self.state.swap(WAITING, Ordering::AcqRel);
+                registered
+            }
+        };
+
+        if let Some(payload) = clone_panic {
+            // Preserve the original clone panic while still completing a wake that raced with it.
+            if let Some(waker) = concurrent_wake {
+                let _ = catch_unwind(AssertUnwindSafe(|| waker.wake()));
+            }
+            resume_unwind(payload);
+        }
 
         // User waker code runs only after the state machine is back in WAITING, so a panic cannot
         // leave the cell locked. If the wake raced with a replacement, notify both tasks: the
@@ -176,36 +196,6 @@ impl AtomicWaker {
         } else {
             // Drop a replaced waker only after releasing the state lock.
             drop(old_waker);
-        }
-    }
-
-    /// Returns the registered waker when a wake raced with registration and otherwise returns none.
-    ///
-    /// # Safety
-    ///
-    /// The caller must own the REGISTERING state and be the only thread accessing `waker`.
-    #[inline]
-    unsafe fn finish_registration(&self) -> Option<Waker> {
-        // ORDERING: Release publishes a newly registered waker when the CAS succeeds. If it fails,
-        // Acquire receives the concurrent notifier's Release publication before the wake is
-        // completed below. AcqRel is the weakest success ordering that permits an Acquire failure
-        // ordering, although its Acquire half is not otherwise relied upon on the success path.
-        match self
-            .state
-            .compare_exchange(REGISTERING, WAITING, Ordering::AcqRel, Ordering::Acquire)
-        {
-            Ok(_) => None,
-            Err(state) => {
-                debug_assert_eq!(state, REGISTERING | WAKING);
-
-                // SAFETY: REGISTERING remains set, so this thread still owns the waker slot.
-                let registered = unsafe { (*self.waker.get()).take() };
-
-                // ORDERING: Acquire receives all coalesced wake publications. Release publishes
-                // the empty slot and makes it available to the next register or wake operation.
-                self.state.swap(WAITING, Ordering::AcqRel);
-                registered
-            }
         }
     }
 
