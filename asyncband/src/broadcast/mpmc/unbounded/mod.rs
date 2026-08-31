@@ -730,41 +730,23 @@ impl<T: Clone> Future for Recv<'_, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self { receiver, token } = self.get_mut();
 
-        // Buffered messages and repeated polls with the same task waker require no clone. If the
-        // pending path needs a new waker, release the lock, clone, and repeat the full state check
-        // before registration. Senders publish messages and drain waiters under the same lock, so
-        // the recheck cannot miss a send, disconnection, or state change made by a reentrant clone
-        // callback. The loop executes at most twice.
-        let mut prepared_waker = None;
-        let received = loop {
+        let received = {
             let mut inner = receiver.shared.inner.lock();
-
             match inner.receive(receiver.key) {
-                Some(received) => break received,
+                Some(received) => received,
                 None => {
                     if receiver.shared.senders.load(Ordering::Acquire) == 0 {
                         *token = None;
-                        drop(inner);
-                        drop(prepared_waker);
                         return Poll::Ready(Err(RecvError::Disconnected));
                     }
 
-                    if prepared_waker.is_none() && inner.waiters.will_wake(token, cx.waker()) {
-                        return Poll::Pending;
-                    }
-                    let Some(waker) = prepared_waker.take() else {
-                        drop(inner);
-                        prepared_waker = Some(cx.waker().clone());
-                        continue;
-                    };
-                    let retired_waker = inner.waiters.register(token, waker);
+                    let retired_waker = inner.waiters.register_waker(token, cx.waker());
                     drop(inner);
                     drop(retired_waker);
                     return Poll::Pending;
                 }
             }
         };
-        drop(prepared_waker);
 
         let (msg, reclaimed) = received;
         *token = None;

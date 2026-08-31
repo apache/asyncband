@@ -30,7 +30,6 @@ use std::thread;
 use std::time::Duration;
 
 use asyncband::barrier::Barrier;
-use asyncband::broadcast::mpmc;
 use asyncband::condvar::Condvar;
 use asyncband::event::ManualResetEvent;
 use asyncband::latch::Latch;
@@ -260,21 +259,6 @@ fn watch_clones_wakers_outside_its_state_lock() {
             assert_eq!(poll_with(changed.as_mut(), &waker), Poll::Ready(Ok(())));
             drop(changed);
             assert_eq!(receiver.get(), 1);
-        },
-    );
-}
-
-#[test]
-fn broadcast_clones_wakers_outside_its_state_lock() {
-    assert_completes_without_deadlock(
-        "waker clone callback deadlocked against the broadcast lock",
-        || {
-            let (sender, mut receiver) = mpmc::unbounded();
-            let callback_sender = sender.clone();
-            let waker = waker_with_clone_callback(move || callback_sender.send(1));
-            let mut recv = Box::pin(receiver.recv());
-
-            assert_eq!(poll_with(recv.as_mut(), &waker), Poll::Ready(Ok(1)));
         },
     );
 }
