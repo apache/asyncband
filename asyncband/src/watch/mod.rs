@@ -356,9 +356,7 @@ impl<T> Future for Changed<'_, T> {
                 let retired = state.waiters.unregister(&mut this.token);
                 (Poll::Ready(Err(RecvError::Disconnected)), retired)
             } else {
-                let retired = state
-                    .waiters
-                    .register(&mut this.token, cx.waker());
+                let retired = state.waiters.register(&mut this.token, cx.waker());
                 (Poll::Pending, retired)
             }
         };

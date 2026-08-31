@@ -17,7 +17,9 @@
 
 //! Cancellable storage for task wakers.
 //!
-//! A `WaitSet` is protected by the state lock of its owning primitive. Registration clones a borrowed [`Waker`], while replacement and removal return owned wakers so callers can drop or wake them after unlocking.
+//! A `WaitSet` is protected by the state lock of its owning primitive. Registration clones a
+//! borrowed [`Waker`], while replacement and removal return owned wakers so callers can drop or
+//! wake them after unlocking.
 
 use std::mem;
 use std::panic;

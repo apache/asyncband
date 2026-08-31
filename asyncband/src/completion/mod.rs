@@ -243,9 +243,7 @@ impl<'a, T> Future for Wait<'a, T> {
             let mut state = this.completion.shared.state.lock();
             match state.status {
                 Status::Pending => {
-                    let retired = state
-                        .waiters
-                        .register(&mut this.token, cx.waker());
+                    let retired = state.waiters.register(&mut this.token, cx.waker());
                     (Poll::Pending, retired)
                 }
                 Status::Completed => {

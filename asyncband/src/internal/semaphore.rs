@@ -27,9 +27,9 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::wake_all as wake_all_wakers;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
+use crate::internal::waitset::wake_all as wake_all_wakers;
 
 /// The internal semaphore that provides low-level async primitives.
 #[derive(Debug)]

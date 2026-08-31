@@ -361,9 +361,7 @@ mod tests {
         let atomic_waker = AtomicWaker::new();
         atomic_waker.register(&old_waker);
 
-        assert!(
-            catch_unwind(AssertUnwindSafe(|| atomic_waker.register(&new_waker))).is_err()
-        );
+        assert!(catch_unwind(AssertUnwindSafe(|| atomic_waker.register(&new_waker))).is_err());
 
         atomic_waker.wake();
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);
