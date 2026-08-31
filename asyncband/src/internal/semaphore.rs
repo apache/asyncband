@@ -221,8 +221,8 @@ impl Semaphore {
             }
         }
         drop(waiters);
-        for waker in wakers.drain(..) {
-            waker.wake();
+        for w in wakers.drain(..) {
+            w.wake();
         }
     }
 
