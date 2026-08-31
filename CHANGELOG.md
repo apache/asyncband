@@ -32,7 +32,8 @@ All notable changes to this project will be documented in this file.
 
 * Reject semaphore permit merges whose combined count exceeds `usize::MAX` instead of wrapping and losing permits.
 * Release cancelled wait registrations promptly and reclaim fulfilled `Semaphore::reduce_permits` debt nodes.
-* Preserve fan-out notifications when one registered waker panics.
+* Preserve fan-out notifications, including semaphore permit grants, when one registered waker panics.
+* Leave a watch update unseen when cloning its value panics so the receiver can retry.
 
 ### Improvements
 
