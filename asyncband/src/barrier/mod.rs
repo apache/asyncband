@@ -248,7 +248,7 @@ impl Future for BarrierWait<'_> {
                 *token = None;
                 return Poll::Ready(());
             }
-            state.waiters.register_waker(token, cx.waker())
+            state.waiters.register(token, cx.waker())
         };
         drop(retired_waker);
         Poll::Pending

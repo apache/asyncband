@@ -245,7 +245,7 @@ impl<'a, T> Future for Wait<'a, T> {
                 Status::Pending => {
                     let retired = state
                         .waiters
-                        .register_waker(&mut this.token, cx.waker());
+                        .register(&mut this.token, cx.waker());
                     (Poll::Pending, retired)
                 }
                 Status::Completed => {

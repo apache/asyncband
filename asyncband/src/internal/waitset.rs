@@ -17,11 +17,7 @@
 
 //! Cancellable storage for task wakers.
 //!
-//! A `WaitSet` is protected by the state lock of its owning primitive, but it never invokes a
-//! [`Waker`] callback itself. It accepts owned wakers and returns every waker it stops owning, so
-//! callers can clone before locking—or unlock, clone, and recheck—and can drop or wake returned
-//! wakers after unlocking. This keeps arbitrary clone, drop, and wake callbacks outside primitive
-//! critical sections.
+//! A `WaitSet` is protected by the state lock of its owning primitive. Registration clones a borrowed [`Waker`], while replacement and removal return owned wakers so callers can drop or wake them after unlocking.
 
 use std::mem;
 use std::panic;
@@ -106,70 +102,23 @@ impl WaitSet {
         self.waiters.take_all()
     }
 
-    /// Returns whether `token` identifies a registered waker for the same task as `waker`.
-    ///
-    /// This comparison neither clones a waker nor invokes its `RawWaker` callbacks, so callers may
-    /// use it while holding the lock that protects this wait set.
-    #[inline]
-    pub fn will_wake(&self, token: &Option<WakerToken>, waker: &Waker) -> bool {
-        let Some(current) = token.as_ref() else {
-            return false;
-        };
-        if current.epoch != self.epoch {
-            return false;
-        }
-        self.waiters
-            .get(current.slot)
-            .expect("current waker token must refer to an occupied slot")
-            .will_wake(waker)
-    }
-
     /// Registers or updates a waker in the current wake epoch.
     ///
     /// If an existing waker is replaced, it is returned so the caller can drop it after releasing
     /// the lock that protects this wait set.
     #[inline]
     #[must_use = "drop the returned waker after releasing the wait set's state lock"]
-    pub fn register_waker(
-        &mut self,
-        token: &mut Option<WakerToken>,
-        waker: &Waker,
-    ) -> Option<Waker> {
-        if self.will_wake(token, waker) {
-            return None;
-        }
+    pub fn register(&mut self, token: &mut Option<WakerToken>, waker: &Waker) -> Option<Waker> {
         if let Some(current) = self.current_waker(token) {
+            if current.will_wake(waker) {
+                return None;
+            }
             return Some(mem::replace(current, waker.clone()));
         }
 
         *token = Some(WakerToken {
             epoch: self.epoch,
             slot: self.waiters.insert(waker.clone()),
-        });
-        None
-    }
-
-    /// Registers or updates an already cloned waker in the current wake epoch.
-    ///
-    /// The caller must obtain the owned waker without holding the lock that protects this wait set,
-    /// because cloning can invoke arbitrary user code. If it released that lock to clone, it must
-    /// recheck the primitive's state after reacquiring the lock and before calling this method.
-    ///
-    /// Any waker not retained by the wait set is returned so the caller can drop it after releasing
-    /// the lock that protects this wait set.
-    #[inline]
-    #[must_use = "drop the returned waker after releasing the wait set's state lock"]
-    pub fn register(&mut self, token: &mut Option<WakerToken>, waker: Waker) -> Option<Waker> {
-        if let Some(current) = self.current_waker(token) {
-            if !current.will_wake(&waker) {
-                return Some(mem::replace(current, waker));
-            }
-            return Some(waker);
-        }
-
-        *token = Some(WakerToken {
-            epoch: self.epoch,
-            slot: self.waiters.insert(waker),
         });
         None
     }
@@ -263,14 +212,6 @@ mod tests {
         (waker, dropped)
     }
 
-    fn register(
-        waiters: &mut WaitSet,
-        token: &mut Option<WakerToken>,
-        waker: &Waker,
-    ) -> Option<Waker> {
-        waiters.register(token, waker.clone())
-    }
-
     #[test]
     fn stale_token_does_not_alias_a_reused_slot() {
         let mut waiters = WaitSet::new();
@@ -281,11 +222,11 @@ mod tests {
         let mut first_token = None;
         let mut second_token = None;
 
-        register(&mut waiters, &mut first_token, &first_waker);
+        drop(waiters.register(&mut first_token, &first_waker));
         assert_eq!(waiters.drain().count(), 1);
 
-        register(&mut waiters, &mut second_token, &second_waker);
-        register(&mut waiters, &mut first_token, &first_waker);
+        drop(waiters.register(&mut second_token, &second_waker));
+        drop(waiters.register(&mut first_token, &first_waker));
 
         let registered = waiters.drain().collect::<Vec<_>>();
         assert_eq!(registered.len(), 2);
@@ -304,9 +245,9 @@ mod tests {
         let mut second = None;
         let mut third = None;
 
-        register(&mut waiters, &mut first, &panicking);
-        register(&mut waiters, &mut second, &panicking);
-        register(&mut waiters, &mut third, &tracked);
+        drop(waiters.register(&mut first, &panicking));
+        drop(waiters.register(&mut second, &panicking));
+        drop(waiters.register(&mut third, &tracked));
 
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
             wake_all(waiters.drain());
@@ -321,7 +262,7 @@ mod tests {
         let (waker, dropped) = drop_waker();
         let mut token = None;
 
-        register(&mut waiters, &mut token, &waker);
+        drop(waiters.register(&mut token, &waker));
         drop(waker);
 
         let removed = waiters.unregister(&mut token);
@@ -339,10 +280,10 @@ mod tests {
         let new_waker = Waker::from(Arc::new(TrackWake(AtomicUsize::new(0))));
         let mut token = None;
 
-        assert!(register(&mut waiters, &mut token, &old_waker).is_none());
+        assert!(waiters.register(&mut token, &old_waker).is_none());
         drop(old_waker);
 
-        let replaced = register(&mut waiters, &mut token, &new_waker);
+        let replaced = waiters.register(&mut token, &new_waker);
         assert!(!dropped.load(Ordering::Relaxed));
 
         drop(replaced);

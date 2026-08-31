@@ -79,7 +79,7 @@ impl CountdownState {
                 *token = None;
                 return Poll::Ready(());
             }
-            waiters.register_waker(token, cx.waker())
+            waiters.register(token, cx.waker())
         };
         drop(retired_waker);
         Poll::Pending

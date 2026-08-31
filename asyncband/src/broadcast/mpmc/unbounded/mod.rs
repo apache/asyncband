@@ -740,7 +740,7 @@ impl<T: Clone> Future for Recv<'_, T> {
                         return Poll::Ready(Err(RecvError::Disconnected));
                     }
 
-                    let retired_waker = inner.waiters.register_waker(token, cx.waker());
+                    let retired_waker = inner.waiters.register(token, cx.waker());
                     drop(inner);
                     drop(retired_waker);
                     return Poll::Pending;

@@ -358,7 +358,7 @@ impl<T> Future for Changed<'_, T> {
             } else {
                 let retired = state
                     .waiters
-                    .register_waker(&mut this.token, cx.waker());
+                    .register(&mut this.token, cx.waker());
                 (Poll::Pending, retired)
             }
         };
