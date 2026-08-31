@@ -236,10 +236,13 @@ async fn remove_while_computing_allows_a_new_generation() {
 }
 
 #[tokio::test]
-async fn get_returns_none_while_computing() {
+async fn occupancy_includes_in_flight_computations() {
     let map = Arc::new(OnceMap::new());
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+
+    assert!(map.is_empty());
+    assert_eq!(map.len(), 0);
 
     let map_clone = map.clone();
     let task = tokio::spawn(async move {
@@ -253,11 +256,18 @@ async fn get_returns_none_while_computing() {
     });
 
     started_rx.await.unwrap();
+    assert!(!map.is_empty());
+    assert_eq!(map.len(), 1);
     assert_eq!(map.get("key"), None);
     release_tx.send(()).unwrap();
 
     assert_eq!(task.await.unwrap(), 1);
+    assert_eq!(map.len(), 1);
     assert_eq!(map.get("key"), Some(1));
+
+    map.discard("key");
+    assert!(map.is_empty());
+    assert_eq!(map.len(), 0);
 }
 
 #[test]
