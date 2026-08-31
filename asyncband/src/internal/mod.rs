@@ -94,16 +94,12 @@ pub(crate) mod waitlist;
     feature = "event",
     feature = "completion",
     feature = "latch",
-    feature = "mpsc",
-    feature = "mutex",
     feature = "once",
-    feature = "rwlock",
-    feature = "semaphore",
     feature = "waitgroup",
     feature = "watch",
 ))]
 // `barrier` constructs a wait set with `with_capacity`, while completion and countdown-based
-// primitives use `new`; `condvar`, `event`, and semaphore-backed primitives use only the free
-// `wake_all` helper. One constructor is therefore unused in every single-primitive build.
+// primitives use `new`; `condvar` and `event` use only the free `wake_all` helper. One constructor
+// is therefore unused in every single-primitive build.
 #[allow(dead_code)]
 pub(crate) mod waitset;

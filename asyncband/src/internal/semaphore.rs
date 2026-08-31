@@ -29,7 +29,6 @@ use std::task::Waker;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
-use crate::internal::waitset::wake_all as wake_all_wakers;
 
 /// The internal semaphore that provides low-level async primitives.
 #[derive(Debug)]
@@ -78,15 +77,12 @@ impl WakeBatch {
     }
 
     fn wake_all(&mut self) {
-        wake_all_wakers(std::iter::from_fn(|| {
-            if self.start == self.end {
-                return None;
-            }
+        while self.start < self.end {
             let index = self.start;
             self.start += 1;
             // SAFETY: `index` was within the initialized range before advancing `start`.
-            Some(unsafe { self.wakers[index].assume_init_read() })
-        }));
+            unsafe { self.wakers[index].assume_init_read() }.wake();
+        }
         self.start = 0;
         self.end = 0;
     }
@@ -225,7 +221,9 @@ impl Semaphore {
             }
         }
         drop(waiters);
-        wake_all_wakers(wakers.into_iter());
+        for waker in wakers {
+            waker.wake();
+        }
     }
 
     fn insert_permits_with_lock(
