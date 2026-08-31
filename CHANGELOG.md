@@ -21,6 +21,7 @@ All notable changes to this project will be documented in this file.
 ### New features
 
 * Implement `broadcast::mpmc::unbounded`, an unbounded broadcast channel that retains messages until all active receivers consume them or are dropped.
+* Implement `broadcast::mpmc::bounded`, a lossless bounded broadcast channel that retains at most the requested capacity and makes producers wait for the slowest active receiver.
 * Add an opt-in latest-state channel under `asyncband::watch`.
 * Add opt-in `asyncband::event::ManualResetEvent`, a reusable level-triggered signal that releases registered waits and remains ready for future waits until explicitly reset.
 * Add an opt-in shared one-shot completion primitive under `asyncband::completion` with a single-use completer, cloneable observers, a retained borrowed result, and observable abandonment.

@@ -16,13 +16,14 @@
 // under the License.
 
 use super::*;
+use crate::broadcast::mpmc::common::MIN_RETAINED_CAPACITY;
 
 #[test]
 #[should_panic(expected = "broadcast channel version counter overflowed")]
 fn send_panics_on_version_overflow() {
     // The receiver is dropped right away: the doctored counter would make its own drop overflow.
     let (tx, _) = unbounded();
-    tx.shared.inner.lock().tail = u64::MAX;
+    tx.shared.inner.lock().log.set_tail(u64::MAX);
     tx.send(());
 }
 
@@ -34,7 +35,7 @@ fn one_off_burst_allocation_is_returned_once_it_is_behind_us() {
     for i in 0..burst {
         tx.send(i);
     }
-    assert!(tx.shared.inner.lock().buffer.capacity() >= burst);
+    assert!(tx.shared.inner.lock().log.buffer_capacity() >= burst);
 
     for i in 0..burst {
         assert_eq!(rx.try_recv(), Ok(i));
@@ -42,12 +43,12 @@ fn one_off_burst_allocation_is_returned_once_it_is_behind_us() {
 
     // Draining evaluates the cycle that just peaked, so the burst allocation is still held.
     assert_eq!(tx.retained_message_count(), 0);
-    assert!(tx.shared.inner.lock().buffer.capacity() >= burst);
+    assert!(tx.shared.inner.lock().log.buffer_capacity() >= burst);
 
     // The next cycle stays small, which is what releases the memory.
     tx.send(0);
     assert_eq!(rx.try_recv(), Ok(0));
-    assert!(tx.shared.inner.lock().buffer.capacity() < burst);
+    assert!(tx.shared.inner.lock().log.buffer_capacity() < burst);
 }
 
 #[test]
@@ -65,5 +66,5 @@ fn repeated_bursts_keep_their_allocation() {
     }
 
     // Every cycle peaks at the same size, so the buffer must not rebuild its allocation each time.
-    assert!(tx.shared.inner.lock().buffer.capacity() >= burst);
+    assert!(tx.shared.inner.lock().log.buffer_capacity() >= burst);
 }

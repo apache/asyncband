@@ -96,8 +96,11 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<RwLockWriteGuard<'_, i64>>();
     assert_send_and_sync::<broadcast::mpmc::UnboundedSender<i64>>();
     assert_send_and_sync::<broadcast::mpmc::UnboundedReceiver<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::BoundedSender<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::BoundedReceiver<i64>>();
     assert_send_and_sync::<broadcast::mpmc::RecvError>();
     assert_send_and_sync::<broadcast::mpmc::TryRecvError>();
+    assert_send_and_sync::<broadcast::mpmc::TrySendError<i64>>();
     assert_send_and_sync::<oneshot::SendError<i64>>();
     assert_send_and_sync::<oneshot::Sender<i64>>();
     assert_send_and_sync::<pool::bounded::Pool<PoolManager>>();
@@ -162,8 +165,11 @@ fn public_types_are_unpin() {
     assert_unpin::<RwLockWriteGuard<'_, i64>>();
     assert_unpin::<broadcast::mpmc::UnboundedSender<i64>>();
     assert_unpin::<broadcast::mpmc::UnboundedReceiver<i64>>();
+    assert_unpin::<broadcast::mpmc::BoundedSender<i64>>();
+    assert_unpin::<broadcast::mpmc::BoundedReceiver<i64>>();
     assert_unpin::<broadcast::mpmc::RecvError>();
     assert_unpin::<broadcast::mpmc::TryRecvError>();
+    assert_unpin::<broadcast::mpmc::TrySendError<i64>>();
     assert_unpin::<oneshot::Sender<i64>>();
     assert_unpin::<oneshot::SendError<i64>>();
     assert_unpin::<oneshot::Receiver<i64>>();

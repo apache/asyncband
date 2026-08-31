@@ -16,11 +16,24 @@
 // under the License.
 
 //! Multi-producer, multi-consumer broadcast channels.
+//!
+//! Both channels are lossless: every value a channel accepts stays readable by every subscription
+//! that was active when it was accepted, so a receive never reports lag. They differ in what a
+//! producer does when the slowest subscription stops reclaiming. [`bounded`] retains at most the
+//! capacity it was built with and makes producers wait for that subscription. [`unbounded`] never
+//! waits to send and lets the retained backlog grow instead.
 
+mod bounded;
+mod common;
+mod error;
 mod unbounded;
 
-pub use self::unbounded::RecvError;
-pub use self::unbounded::TryRecvError;
+pub use self::bounded::BoundedReceiver;
+pub use self::bounded::BoundedSender;
+pub use self::bounded::bounded;
+pub use self::error::RecvError;
+pub use self::error::TryRecvError;
+pub use self::error::TrySendError;
 pub use self::unbounded::UnboundedReceiver;
 pub use self::unbounded::UnboundedSender;
 pub use self::unbounded::unbounded;

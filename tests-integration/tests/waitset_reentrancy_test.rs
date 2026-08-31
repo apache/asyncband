@@ -213,3 +213,20 @@ fn broadcast_clones_wakers_outside_its_state_lock() {
         },
     );
 }
+
+#[test]
+fn bounded_broadcast_clones_wakers_outside_its_state_lock() {
+    assert_completes_without_deadlock(
+        "waker clone callback deadlocked against the bounded broadcast lock",
+        || {
+            let (sender, mut receiver) = mpmc::bounded(1);
+            let callback_sender = sender.clone();
+            let waker = waker_with_clone_callback(move || {
+                callback_sender.try_send(1).expect("channel has room");
+            });
+            let mut recv = Box::pin(receiver.recv());
+
+            assert_eq!(poll_with(recv.as_mut(), &waker), Poll::Ready(Ok(1)));
+        },
+    );
+}
