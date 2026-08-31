@@ -326,44 +326,60 @@ impl Acquire<'_> {
             return Poll::Ready(());
         }
 
-        let mut old_waker = None;
         match index {
             Some(idx) => {
-                let mut waiters = semaphore.waiters.lock();
-                let ready = {
+                let mut prepared_waker = None;
+                loop {
+                    let mut waiters = semaphore.waiters.lock();
                     let node = waiters.waiter_mut(*idx);
-                    if node.permits > 0 {
-                        let update_waker = node
-                            .waker
-                            .as_ref()
-                            .is_none_or(|current| !current.will_wake(waker));
-                        if update_waker {
-                            old_waker = node.waker.replace(waker.clone());
-                        }
-                        false
-                    } else {
-                        true
+
+                    if node.permits == 0 {
+                        waiters.remove_unlinked_waiter(*idx);
+                        drop(waiters);
+                        drop(prepared_waker);
+                        *index = None;
+                        *done = true;
+                        return Poll::Ready(());
                     }
-                };
-                if ready {
-                    waiters.remove_unlinked_waiter(*idx);
-                    *index = None;
-                    *done = true;
-                    return Poll::Ready(());
+
+                    if node
+                        .waker
+                        .as_ref()
+                        .is_some_and(|current| current.will_wake(waker))
+                    {
+                        drop(waiters);
+                        drop(prepared_waker);
+                        return Poll::Pending;
+                    }
+
+                    let Some(new_waker) = prepared_waker.take() else {
+                        drop(waiters);
+                        prepared_waker = Some(waker.clone());
+                        continue;
+                    };
+                    let old_waker = node.waker.replace(new_waker);
+                    drop(waiters);
+                    drop(old_waker);
+                    return Poll::Pending;
                 }
             }
             None => {
                 // not yet enqueued
                 let needed = *permits;
 
-                if acquired_or_enqueue(semaphore, needed, Some(index), Some(waker), true) {
+                if semaphore.try_acquire(needed) {
+                    *done = true;
+                    return Poll::Ready(());
+                }
+
+                let prepared_waker = waker.clone();
+                if acquired_or_enqueue(semaphore, needed, Some(index), Some(prepared_waker), true) {
                     *done = true;
                     return Poll::Ready(());
                 }
             }
         };
 
-        drop(old_waker);
         Poll::Pending
     }
 }
@@ -382,7 +398,7 @@ fn acquired_or_enqueue(
     sem: &Semaphore,
     needed: usize,
     index: Option<&mut Option<WaiterId>>,
-    waker: Option<&Waker>,
+    mut waker: Option<Waker>,
     enqueue_last: bool,
 ) -> bool {
     assert_eq!(
@@ -422,6 +438,8 @@ fn acquired_or_enqueue(
 
         // all needed permits were acquired
         if remaining == 0 {
+            drop(lock);
+            drop(waker);
             return true;
         }
 
@@ -434,7 +452,7 @@ fn acquired_or_enqueue(
 
         let node = WaitNode {
             permits: remaining,
-            waker: waker.cloned(),
+            waker: waker.take(),
         };
         let id = if enqueue_last {
             waiters.push_back(node)

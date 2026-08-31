@@ -33,6 +33,7 @@ use asyncband::broadcast::mpmc;
 use asyncband::completion;
 use asyncband::event::ManualResetEvent;
 use asyncband::latch::Latch;
+use asyncband::semaphore::Semaphore;
 use asyncband::watch;
 
 struct CloneCallback(Mutex<Option<Box<dyn FnOnce() + Send>>>);
@@ -153,6 +154,29 @@ fn latch_clones_wakers_outside_its_waiter_lock() {
             let mut wait = Box::pin(latch.wait());
 
             assert_eq!(poll_with(wait.as_mut(), &waker), Poll::Ready(()));
+        },
+    );
+}
+
+#[test]
+fn semaphore_clones_wakers_outside_its_waiter_lock() {
+    assert_completes_without_deadlock(
+        "waker clone callback deadlocked against the semaphore waiter lock",
+        || {
+            let semaphore = Arc::new(Semaphore::new(0));
+            let callback_semaphore = semaphore.clone();
+            let waker = waker_with_clone_callback(move || callback_semaphore.release(1));
+            let mut acquire = Box::pin(semaphore.acquire(1));
+
+            assert!(poll_with(acquire.as_mut(), &waker).is_ready());
+
+            let semaphore = Arc::new(Semaphore::new(0));
+            let mut acquire = Box::pin(semaphore.acquire(1));
+            assert!(poll_with(acquire.as_mut(), Waker::noop()).is_pending());
+
+            let callback_semaphore = semaphore.clone();
+            let replacement = waker_with_clone_callback(move || callback_semaphore.release(1));
+            assert!(poll_with(acquire.as_mut(), &replacement).is_ready());
         },
     );
 }
