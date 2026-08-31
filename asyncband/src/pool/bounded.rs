@@ -116,12 +116,14 @@ impl PoolConfig {
     }
 
     /// Returns a new [`PoolConfig`] with the specified queue strategy.
+    #[must_use = "this method returns the updated pool configuration"]
     pub fn with_queue_strategy(mut self, queue_strategy: QueueStrategy) -> Self {
         self.queue_strategy = queue_strategy;
         self
     }
 
     /// Returns a new [`PoolConfig`] with the specified recycle cancelled strategy.
+    #[must_use = "this method returns the updated pool configuration"]
     pub fn with_recycle_cancelled_strategy(
         mut self,
         recycle_cancelled_strategy: RecycleCancelledStrategy,
