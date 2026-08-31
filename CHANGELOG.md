@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## v0.7.0 (2026-09-01)
+
 ### Breaking changes
 
 * Gate all exported primitives behind opt-in Cargo features and enable no features by default; downstream dependencies must explicitly enable the APIs they use.
@@ -36,5 +38,7 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
-* Remove the `slab` dependency in favor of a focused internal waiter arena.
+* Reduce MPSC receiver registration and wake latency by storing receiver wakers inline instead of allocating them on the heap.
+* Reduce semaphore and mutex hot-path overhead by avoiding wake-buffer allocation when no tasks are queued and batching queued wakes on the stack.
+* Allocate `OnceMap` and `singleflight::Group` registries lazily to reduce construction overhead.
 * Describe disconnected channel states consistently in channel error messages.
