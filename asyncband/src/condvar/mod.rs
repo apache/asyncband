@@ -335,10 +335,9 @@ where
         let this = self.get_mut();
 
         if this.guard.is_some() {
-            let prepared_waker = cx.waker().clone();
             let mut waiters = this.condvar.waiters.lock();
             this.index = Some(waiters.push_back(WaitNode {
-                state: WaitState::Waiting(prepared_waker),
+                state: WaitState::Waiting(cx.waker().clone()),
             }));
             let guard = this.guard.take().unwrap();
 
@@ -350,42 +349,26 @@ where
         }
 
         let index = this.index.expect("wait future polled after completion");
-        let mut prepared_waker = None;
-        loop {
-            let mut waiters = this.condvar.waiters.lock();
-            match &mut waiters.waiter_mut(index).state {
-                WaitState::Waiting(waker) => {
-                    if waker.will_wake(cx.waker()) {
-                        drop(waiters);
-                        drop(prepared_waker);
-                        return Poll::Pending;
-                    }
-
-                    let Some(new_waker) = prepared_waker.take() else {
-                        drop(waiters);
-                        prepared_waker = Some(cx.waker().clone());
-                        continue;
-                    };
-                    let old_waker = mem::replace(waker, new_waker);
-                    drop(waiters);
-                    drop(old_waker);
-                    return Poll::Pending;
+        let mut waiters = this.condvar.waiters.lock();
+        let mut old_waker = None;
+        let notify_one_baton = match &mut waiters.waiter_mut(index).state {
+            WaitState::Waiting(waker) => {
+                if !waker.will_wake(cx.waker()) {
+                    old_waker = Some(mem::replace(waker, cx.waker().clone()));
                 }
-                WaitState::NotifiedOne | WaitState::NotifiedAll => {}
+                drop(waiters);
+                drop(old_waker);
+                return Poll::Pending;
             }
+            WaitState::NotifiedOne => Some(NotifyOneBaton::new(this.condvar)),
+            WaitState::NotifiedAll => None,
+        };
 
-            let notify_one_baton = match &waiters.waiter_mut(index).state {
-                WaitState::Waiting(_) => unreachable!("waiting state handled above"),
-                WaitState::NotifiedOne => Some(NotifyOneBaton::new(this.condvar)),
-                WaitState::NotifiedAll => None,
-            };
-            let waiter = waiters.remove_unlinked_waiter(index);
-            this.index = None;
-            drop(waiters);
-            drop(waiter);
-            drop(prepared_waker);
-            return Poll::Ready(notify_one_baton);
-        }
+        let waiter = waiters.remove_unlinked_waiter(index);
+        this.index = None;
+        drop(waiters);
+        drop(waiter);
+        Poll::Ready(notify_one_baton)
     }
 }
 

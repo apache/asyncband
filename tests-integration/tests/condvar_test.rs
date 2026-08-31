@@ -25,6 +25,8 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
+use std::thread;
+use std::time::Duration;
 
 use asyncband::condvar::Condvar;
 use asyncband::mutex::Mutex;
@@ -56,6 +58,18 @@ struct WakeCounter(AtomicUsize);
 impl Wake for WakeCounter {
     fn wake(self: Arc<Self>) {
         self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+struct NotifyOnDrop(Arc<Condvar>);
+
+impl Wake for NotifyOnDrop {
+    fn wake(self: Arc<Self>) {}
+}
+
+impl Drop for NotifyOnDrop {
+    fn drop(&mut self) {
+        self.0.notify_one();
     }
 }
 
@@ -197,6 +211,27 @@ fn notify_all_attempts_every_waker_after_one_panics() {
 
     drop(expect_ready(poll_once(first.as_mut())));
     drop(expect_ready(poll_once(second.as_mut())));
+}
+
+#[test]
+fn cancelling_waiter_drops_its_waker_outside_the_waiter_lock() {
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || {
+        let mutex = Mutex::new(());
+        let condvar = Arc::new(Condvar::new());
+        let waker = Waker::from(Arc::new(NotifyOnDrop(condvar.clone())));
+        let mut wait = Box::pin(condvar.wait(mutex.try_lock().unwrap()));
+
+        assert!(poll_with(wait.as_mut(), &waker).is_pending());
+        drop(waker);
+        drop(wait);
+        finished_tx.send(()).unwrap();
+    });
+
+    finished_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("dropping a cancelled waiter deadlocked against the condvar waiter lock");
+    worker.join().unwrap();
 }
 
 #[test]
