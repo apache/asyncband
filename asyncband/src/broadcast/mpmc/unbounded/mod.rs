@@ -508,6 +508,7 @@ impl<T> UnboundedSender<T> {
     /// assert_eq!(rx.recv().await, Ok(20));
     /// # }
     /// ```
+    #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn subscribe(&self) -> UnboundedReceiver<T> {
         let mut inner = self.shared.inner.lock();
         let head = inner.tail;
@@ -660,6 +661,7 @@ impl<T> UnboundedReceiver<T> {
     ///
     /// assert_eq!(rx2.try_recv(), Ok(3));
     /// ```
+    #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn resubscribe(&self) -> Self {
         let mut inner = self.shared.inner.lock();
         let head = inner.tail;

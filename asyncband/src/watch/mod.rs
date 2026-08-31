@@ -178,6 +178,7 @@ impl<T> Sender<T> {
     }
 
     /// Creates a receiver that considers the current value already observed.
+    #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn subscribe(&self) -> Receiver<T> {
         let mut state = self.shared.state.lock();
         state.receivers = state
