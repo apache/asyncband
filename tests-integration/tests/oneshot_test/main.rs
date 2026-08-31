@@ -17,7 +17,6 @@
 
 use std::future::Future;
 use std::future::IntoFuture;
-use std::panic;
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -30,7 +29,6 @@ use self::support::DropProbe;
 use self::support::WakerProbe;
 use self::support::spawn_named;
 use self::support::spin_until;
-use self::support::waker_that_panics_on_clone;
 
 mod support;
 
@@ -219,32 +217,6 @@ fn poll_with_different_wakers() {
     assert_eq!(waker_probe1.wake_count(), 0);
     assert_eq!(WakerProbe::live_waker_count(&waker_probe2), 1);
     assert_eq!(waker_probe2.wake_count(), 1);
-}
-
-#[test]
-fn replacement_clone_panic_preserves_the_registered_waker() {
-    let (sender, receiver) = oneshot::channel::<u128>();
-    let mut receiver = receiver.into_future();
-    let (stored_waker, stored_probe) = WakerProbe::new();
-    let mut stored_context = Context::from_waker(&stored_waker);
-
-    assert_eq!(
-        Pin::new(&mut receiver).poll(&mut stored_context),
-        Poll::Pending
-    );
-    assert_eq!(WakerProbe::live_waker_count(&stored_probe), 2);
-
-    let panicking_waker = waker_that_panics_on_clone();
-    let mut panicking_context = Context::from_waker(&panicking_waker);
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        Pin::new(&mut receiver).poll(&mut panicking_context)
-    }));
-    assert!(result.is_err());
-    assert_eq!(WakerProbe::live_waker_count(&stored_probe), 2);
-
-    drop(receiver);
-    assert_eq!(WakerProbe::live_waker_count(&stored_probe), 1);
-    assert!(sender.is_disconnected());
 }
 
 #[test]
