@@ -299,11 +299,14 @@ impl<T> Receiver<T> {
     /// version is marked observed by the call. Use [`Receiver::recv`] instead when the value is
     /// needed.
     pub async fn changed(&mut self) -> Result<(), RecvError> {
-        Changed {
-            receiver: self,
+        let seen = WaitForChange {
+            shared: &self.shared,
+            seen: self.seen,
             token: None,
         }
-        .await
+        .await?;
+        self.seen = seen;
+        Ok(())
     }
 
     /// Waits for a newer version, returns a clone of its latest value, and marks it observed.
@@ -315,12 +318,18 @@ impl<T> Receiver<T> {
     ///
     /// The clone is created while publication is locked. Keep `T::clone` inexpensive and avoid
     /// reentering this channel from the clone implementation. Use `T = Arc<U>` when the underlying
-    /// state is expensive to clone.
+    /// state is expensive to clone. If cloning panics, the version remains unseen and may be
+    /// received by a later call.
     pub async fn recv(&mut self) -> Result<T, RecvError>
     where
         T: Clone,
     {
-        self.changed().await?;
+        WaitForChange {
+            shared: &self.shared,
+            seen: self.seen,
+            token: None,
+        }
+        .await?;
         let state = self.shared.state.lock();
         let value = state.value.clone();
         self.seen = state.version;
@@ -336,22 +345,22 @@ impl<T> Receiver<T> {
     }
 }
 
-struct Changed<'a, T> {
-    receiver: &'a mut Receiver<T>,
+struct WaitForChange<'a, T> {
+    shared: &'a Shared<T>,
+    seen: u64,
     token: Option<WakerToken>,
 }
 
-impl<T> Future for Changed<'_, T> {
-    type Output = Result<(), RecvError>;
+impl<T> Future for WaitForChange<'_, T> {
+    type Output = Result<u64, RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let (poll, retired_waker) = {
-            let mut state = this.receiver.shared.state.lock();
-            if state.version != this.receiver.seen {
+            let mut state = this.shared.state.lock();
+            if state.version != this.seen {
                 let retired = state.waiters.unregister(&mut this.token);
-                this.receiver.seen = state.version;
-                (Poll::Ready(Ok(())), retired)
+                (Poll::Ready(Ok(state.version)), retired)
             } else if state.senders == 0 {
                 let retired = state.waiters.unregister(&mut this.token);
                 (Poll::Ready(Err(RecvError::Disconnected)), retired)
@@ -365,14 +374,14 @@ impl<T> Future for Changed<'_, T> {
     }
 }
 
-impl<T> Drop for Changed<'_, T> {
+impl<T> Drop for WaitForChange<'_, T> {
     fn drop(&mut self) {
         if self.token.is_none() {
             return;
         }
 
         let waker = {
-            let mut state = self.receiver.shared.state.lock();
+            let mut state = self.shared.state.lock();
             state.waiters.unregister(&mut self.token)
         };
         drop(waker);

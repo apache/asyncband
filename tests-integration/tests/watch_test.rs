@@ -19,6 +19,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -84,6 +85,24 @@ impl Drop for ReentrantDrop {
     }
 }
 
+struct PanicOnceClone {
+    value: usize,
+    panic_next: Arc<AtomicBool>,
+}
+
+impl Clone for PanicOnceClone {
+    fn clone(&self) -> Self {
+        assert!(
+            !self.panic_next.swap(false, Ordering::Relaxed),
+            "clone failed"
+        );
+        Self {
+            value: self.value,
+            panic_next: self.panic_next.clone(),
+        }
+    }
+}
+
 fn poll_with<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(waker))
 }
@@ -122,6 +141,29 @@ fn get_does_not_consume_but_recv_does() {
     assert_eq!(rx.has_changed(), Ok(true));
     assert_eq!(pollster::block_on(rx.recv()).unwrap(), 1);
     assert_eq!(rx.has_changed(), Ok(false));
+}
+
+#[test]
+fn panicking_clone_leaves_the_update_unseen() {
+    let panic_next = Arc::new(AtomicBool::new(false));
+    let (tx, mut rx) = watch::channel(PanicOnceClone {
+        value: 0,
+        panic_next: panic_next.clone(),
+    });
+    tx.send(PanicOnceClone {
+        value: 1,
+        panic_next: panic_next.clone(),
+    })
+    .unwrap();
+    panic_next.store(true, Ordering::Relaxed);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pollster::block_on(rx.recv())
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(rx.has_changed(), Ok(true));
+    assert_eq!(pollster::block_on(rx.recv()).unwrap().value, 1);
 }
 
 #[test]
