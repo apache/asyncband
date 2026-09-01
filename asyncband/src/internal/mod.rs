@@ -60,6 +60,7 @@ pub(crate) mod atomic_waker;
     feature = "event",
     feature = "completion",
     feature = "latch",
+    feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
@@ -90,6 +91,7 @@ pub(crate) mod value_cell;
     feature = "event",
     feature = "completion",
     feature = "latch",
+    feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
@@ -101,14 +103,20 @@ pub(crate) mod value_cell;
 #[allow(dead_code)]
 pub(crate) mod mutex;
 
-#[cfg(any(feature = "mutex", feature = "rwlock", feature = "semaphore"))]
-// Mutexes and rwlocks use the acquire/release operations; the public semaphore also exposes
-// permit accounting. Each single-primitive build leaves part of this shared API unused.
+#[cfg(any(
+    feature = "mpmc",
+    feature = "mutex",
+    feature = "rwlock",
+    feature = "semaphore",
+))]
+// MPMC uses waiter notifications; mutexes and rwlocks use acquire/release operations; the public
+// semaphore also exposes permit accounting. Single-primitive builds leave part of this API unused.
 #[allow(dead_code)]
 pub(crate) mod semaphore;
 
 #[cfg(any(
     feature = "event",
+    feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
@@ -125,6 +133,7 @@ pub(crate) mod waitlist;
     feature = "event",
     feature = "completion",
     feature = "latch",
+    feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "once",

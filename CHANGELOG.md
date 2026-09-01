@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### New features
+
+* Add opt-in bounded and unbounded `asyncband::mpmc` queues with cloneable producers and competing consumers, delivering each accepted value to exactly one receiver while a receiver remains.
+
 ### Bug fixes
 
 * Release MPSC receiver wakers when the receiver is dropped, avoiding retained tasks and ownership cycles when a waker holds a sender.

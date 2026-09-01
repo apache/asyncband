@@ -72,6 +72,7 @@
 //! |                            | [`Group`](singleflight::Group)                | `singleflight` | Coalesce overlapping work per key without retaining completed values.                                         |
 //! | Communication              | [`Completion`](completion::Completion)       | `completion`   | Publish one shared result to any number of current and future observers.                                       |
 //! |                            | [`oneshot`]                                   | `oneshot`      | Send one value from one sender to one receiver.                                                               |
+//! |                            | [`mpmc`]                                      | `mpmc`         | Distribute each value to exactly one of multiple competing receivers.      |
 //! |                            | [`mpsc`]                                      | `mpsc`         | Send each value from multiple producers to one receiver with bounded backpressure or an unbounded queue.      |
 //! |                            | [`broadcast`]                                 | `broadcast`    | Deliver every value to receivers active at send time; retain an unbounded backlog until each consumes or drops. |
 //! |                            | [`watch`]                                     | `watch`        | Publish cloneable latest state from one or more senders; receivers independently coalesce intermediate updates. |
@@ -132,6 +133,8 @@ pub mod condvar;
 pub mod event;
 #[cfg(feature = "latch")]
 pub mod latch;
+#[cfg(feature = "mpmc")]
+pub mod mpmc;
 #[cfg(feature = "mpsc")]
 pub mod mpsc;
 #[cfg(feature = "mutex")]
