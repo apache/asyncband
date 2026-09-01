@@ -19,5 +19,4 @@
 builtin = "Apache-2.0-ASF"
 
 [files]
-excludes = ["target/**"]
 includes = ["**/*.proto", "**/*.rs", "**/*.yml", "**/*.yaml", "**/*.toml"]
