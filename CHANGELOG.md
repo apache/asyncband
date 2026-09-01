@@ -1,10 +1,14 @@
 # Changelog
 
-> Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Please read the [DISCLAIMER](DISCLAIMER).
-
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+
+### New features
+
+* Add opt-in bounded and unbounded `asyncband::mpmc` queues with cloneable producers and competing consumers, delivering each accepted value to exactly one receiver while a receiver remains.
+
+## v0.7.0
 
 ### Breaking changes
 
@@ -14,6 +18,7 @@ All notable changes to this project will be documented in this file.
 * Remove the `asyncband::atomicbox` module and its `AtomicBox` and `AtomicOptionBox` types from the public API.
 * Remove the lossy `broadcast::overflow` channel; use the new lossless `broadcast::mpmc::unbounded` channel instead.
 * Remove `OnceMap::with_capacity` and `OnceMap::with_capacity_and_hasher`; use `OnceMap::new` or `OnceMap::with_hasher`, which allocate the backing table lazily.
+* Remove the unconstructible `LatchWait` and `OwnedLatchWait` types from the public API; `Latch::wait` and `Latch::wait_owned` continue to return anonymous futures through their `async fn` signatures.
 * Rename `oneshot::Sender::is_closed` and `oneshot::Receiver::is_closed` to `is_disconnected`.
 * Remove `Semaphore::try_acquire_and_forget`, `Semaphore::acquire_and_forget`, `Semaphore::try_acquire_owned_and_forget`, and `Semaphore::acquire_owned_and_forget`; acquire a permit and call its `forget` method instead.
 * Replace `Semaphore::forget` with `Semaphore::drain_permits` and `Semaphore::forget_exact` with `Semaphore::reduce_permits`; permit-level `forget` methods are unchanged.
@@ -22,7 +27,8 @@ All notable changes to this project will be documented in this file.
 ### New features
 
 * Implement `broadcast::mpmc::unbounded`, an unbounded broadcast channel that retains messages until all active receivers consume them or are dropped.
-* Add an opt-in latest-state channel under `asyncband::watch`.
+* Add an opt-in clone-based latest-state channel under `asyncband::watch`, including retained replacement updates through `Sender::send_replace`.
+* Add opt-in `asyncband::event::ManualResetEvent`, a reusable level-triggered signal that releases registered waits and remains ready for future waits until explicitly reset.
 * Add an opt-in shared one-shot completion primitive under `asyncband::completion` with a single-use completer, cloneable observers, a retained borrowed result, and observable abandonment.
 * Add opt-in `asyncband::once::LazyCell` for values that own one asynchronous initializer and preserve its in-flight future across caller cancellation.
 * Add opt-in bounded and unbounded runtime-agnostic object pools under `asyncband::pool`.
@@ -30,10 +36,13 @@ All notable changes to this project will be documented in this file.
 
 ### Bug fixes
 
+* Reject semaphore permit merges whose combined count exceeds `usize::MAX` instead of wrapping and losing permits.
 * Release cancelled wait registrations promptly and reclaim fulfilled `Semaphore::reduce_permits` debt nodes.
-* Preserve fan-out notifications when one registered waker panics.
+* Preserve fan-out notifications, including semaphore permit grants, when one registered waker panics.
 
 ### Improvements
 
-* Remove the `slab` dependency in favor of a focused internal waiter arena.
+* Reduce MPSC receiver registration and wake latency by storing receiver wakers inline instead of allocating them on the heap.
+* Reduce semaphore and mutex hot-path overhead by avoiding wake-buffer allocation when no tasks are queued and batching queued wakes on the stack.
+* Allocate `OnceMap` and `singleflight::Group` registries lazily to reduce construction overhead.
 * Describe disconnected channel states consistently in channel error messages.

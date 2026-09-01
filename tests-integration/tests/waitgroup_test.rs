@@ -16,69 +16,50 @@
 // under the License.
 
 use std::future::IntoFuture;
-use std::time::Duration;
 
 use asyncband::waitgroup::WaitGroup;
-use tests_integration::test_runtime;
+use tests_integration::poll_once;
 
-#[test]
-fn test_wait_group_drop() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn waits_for_all_worker_handles() {
     let wg = WaitGroup::new();
-    for _i in 0..100 {
-        let w = wg.clone();
-        test_runtime().spawn(async move {
-            drop(w);
-        });
+    let mut tasks = vec![];
+    for _ in 0..100 {
+        let worker = wg.clone();
+        tasks.push(tokio::spawn(async move {
+            drop(worker);
+        }));
     }
-    pollster::block_on(wg.into_future());
-}
 
-#[test]
-fn test_wait_group_await() {
-    let wg = WaitGroup::new();
-    for _i in 0..100 {
-        let w = wg.clone();
-        test_runtime().spawn(async move {
-            w.await;
-        });
+    wg.await;
+    for task in tasks {
+        task.await.unwrap();
     }
-    pollster::block_on(wg.into_future());
 }
 
 #[test]
-fn test_wait_group_timeout() {
+fn wait_is_pending_until_the_last_handle_drops() {
     let wg = WaitGroup::new();
-    let _wg_clone = wg.clone();
-    let timeout = test_runtime().block_on(async move {
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(50)) => true ,
-            _ = wg => false,
-        }
-    });
-    assert!(timeout);
+    let worker = wg.clone();
+    let mut wait = Box::pin(wg.into_future());
+
+    assert!(poll_once(wait.as_mut()).is_pending());
+    drop(worker);
+    assert!(poll_once(wait.as_mut()).is_ready());
 }
 
 #[test]
-fn test_wait_group_cancel() {
+fn cancelling_one_wait_does_not_cancel_another() {
     let wg = WaitGroup::new();
-    let wg_clone = wg.clone().into_future();
-    let wg_clone_2 = wg.clone().into_future();
-    test_runtime().block_on(async move {
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::ZERO) => {},
-            _ = wg_clone => {}
-        }
-    });
-    let fut = test_runtime().spawn(async move {
-        wg_clone_2.await;
-    });
-    std::thread::sleep(Duration::from_millis(50));
-    drop(wg);
-    let timeout = test_runtime().block_on(async move {
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(60)) => true ,
-            _ = fut => false,
-        }
-    });
-    assert!(!timeout);
+    let worker = wg.clone();
+    let first = wg.into_future();
+    let mut second = Box::pin(first.clone());
+    let mut first = Box::pin(first);
+
+    assert!(poll_once(first.as_mut()).is_pending());
+    assert!(poll_once(second.as_mut()).is_pending());
+    drop(first);
+
+    drop(worker);
+    assert!(poll_once(second.as_mut()).is_ready());
 }

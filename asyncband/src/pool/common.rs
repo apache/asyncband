@@ -64,13 +64,13 @@ impl ObjectStatus {
     }
 }
 
-/// The result returned by a pool's `retain` method.
+/// The result of a pool's `retain` call.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct RetainResult<T> {
-    /// The number of retained objects.
+    /// The number of objects retained.
     pub retained: usize,
-    /// The objects removed from the pool, after the manager's detachment hook has run.
+    /// The removed objects, after their detachment hooks have run.
     pub removed: Vec<T>,
 }
 

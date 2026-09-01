@@ -257,6 +257,18 @@ mod tests {
         }
     }
 
+    #[cfg(panic = "unwind")]
+    fn clone_panicking_waker() -> Waker {
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(
+            |_| panic!("clone failed"),
+            |_| unreachable!(),
+            |_| unreachable!(),
+            |_| {},
+        );
+
+        unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) }
+    }
+
     #[test]
     fn wake_notifies_once() {
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
@@ -352,19 +364,11 @@ mod tests {
     #[cfg(panic = "unwind")]
     #[test]
     fn clone_panic_does_not_poison_state() {
-        static PANICKING_VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| panic!("clone failed"),
-            |_| unreachable!(),
-            |_| unreachable!(),
-            |_| {},
-        );
-
-        let panicking = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &PANICKING_VTABLE)) };
         let atomic_waker = AtomicWaker::new();
 
         assert!(
             catch_unwind(|| {
-                atomic_waker.register(&panicking);
+                atomic_waker.register(&clone_panicking_waker());
             })
             .is_err()
         );
@@ -378,14 +382,6 @@ mod tests {
     #[cfg(panic = "unwind")]
     #[test]
     fn clone_panic_completes_concurrent_wake() {
-        static PANICKING_VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| panic!("clone failed"),
-            |_| unreachable!(),
-            |_| unreachable!(),
-            |_| {},
-        );
-
-        let panicking = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &PANICKING_VTABLE)) };
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
         let atomic_waker = AtomicWaker::new();
         atomic_waker.register(&Waker::from(counter.clone()));
@@ -405,7 +401,7 @@ mod tests {
         // the state. Calling the helper completes the interrupted registration.
         assert!(
             catch_unwind(|| unsafe {
-                atomic_waker.register_locked(&panicking);
+                atomic_waker.register_locked(&clone_panicking_waker());
             })
             .is_err()
         );
@@ -455,7 +451,7 @@ mod tests {
         let atomic_waker = AtomicWaker::new();
         atomic_waker.register(&old_waker);
 
-        assert!(catch_unwind(|| atomic_waker.register(&new_waker)).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| atomic_waker.register(&new_waker))).is_err());
 
         atomic_waker.wake();
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);

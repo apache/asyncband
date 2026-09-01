@@ -118,7 +118,7 @@ impl<T> PoolState<T> {
         }
 
         let removed = if current == retained {
-            Vec::new()
+            vec![]
         } else {
             self.idle
                 .split_off(retained)

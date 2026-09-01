@@ -30,7 +30,7 @@ const EMPTY: usize = 0;
 const PARKED: usize = 1;
 const NOTIFIED: usize = 2;
 
-pub(super) struct Parker {
+pub struct Parker {
     state: Arc<ParkerState>,
     // This marker keeps the single-waiter Parker !Sync while its waker state remains Sync.
     single_waiter: PhantomData<Cell<()>>,
@@ -43,7 +43,7 @@ struct ParkerState {
 }
 
 impl Parker {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             state: Arc::new(ParkerState {
                 state: AtomicUsize::new(EMPTY),
@@ -54,15 +54,15 @@ impl Parker {
         }
     }
 
-    pub(super) fn park(&self) {
+    pub fn park(&self) {
         self.state.park(None);
     }
 
-    pub(super) fn park_timeout(&self, timeout: Duration) {
+    pub fn park_timeout(&self, timeout: Duration) {
         self.state.park(Some(timeout));
     }
 
-    pub(super) fn waker(&self) -> Waker {
+    pub fn waker(&self) -> Waker {
         Waker::from(self.state.clone())
     }
 }

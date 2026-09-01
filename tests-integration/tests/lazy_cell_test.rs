@@ -67,7 +67,7 @@ async fn concurrent_force_runs_initializer_once() {
         }
     }));
 
-    let mut tasks = Vec::new();
+    let mut tasks = vec![];
     for _ in 0..32 {
         let lazy = lazy.clone();
         tasks.push(tokio::spawn(async move { *LazyCell::force(&lazy).await }));

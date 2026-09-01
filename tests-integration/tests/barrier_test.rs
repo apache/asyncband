@@ -87,7 +87,7 @@ fn lots() {
     let b = Barrier::new(100);
 
     for _ in 0..10 {
-        let mut wait = Vec::new();
+        let mut wait = vec![];
         for _ in 0..99 {
             let mut f = spawn(b.wait());
             assert_pending!(f.poll());

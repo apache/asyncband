@@ -39,9 +39,9 @@
 //! [`UnboundedReceiver::resubscribe`] to create a receiver that starts at the current tail.
 //!
 //! Messages are reclaimed once the slowest receiver moves past them, which scans one slot per
-//! receiver. Only the receiver that advances the slowest cursor pays for that scan, and the
-//! channel keeps a slot for every receiver it hands out, so the cost follows the largest number
-//! of receivers that were ever active at once rather than the number active now.
+//! receiver. Only the receiver that advances the slowest cursor pays for that scan. The channel
+//! keeps a slot for every receiver it hands out, so the cost follows the largest number of
+//! receivers that were ever active at once rather than the number active now.
 //!
 //! # Examples
 //!
@@ -105,7 +105,7 @@ use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitset::WaitSet;
 use crate::internal::waitset::WakerToken;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
 
 #[cfg(test)]
 mod tests;
@@ -188,10 +188,10 @@ const MIN_RETAINED_CAPACITY: usize = 64;
 struct Inner<T> {
     /// Messages whose versions are in the range `[head, tail)`.
     ///
-    /// Each message is held behind an `Arc` so a receive can hand the payload out of the critical
-    /// section. Cloning the `Arc` under the lock keeps `T::clone` — and, for reclaimed messages,
-    /// `T::drop` — outside it, which matters because both are arbitrary user code that may call
-    /// back into this channel.
+    /// Each message is held behind an `Arc` so the receive path can move the payload out of the
+    /// critical section. Cloning the `Arc` under the lock keeps `T::clone` — and, for reclaimed
+    /// messages, `T::drop` — outside it, which matters because both are arbitrary user code that
+    /// may call back into this channel.
     buffer: VecDeque<Arc<T>>,
     /// The version of the first message in `buffer`.
     head: u64,
@@ -220,7 +220,7 @@ impl<T> Reclaimed<T> {
     fn empty() -> Self {
         Self {
             first: None,
-            rest: Vec::new(),
+            rest: vec![],
         }
     }
 
@@ -396,7 +396,10 @@ impl<T> Drop for UnboundedSender<T> {
         match self.shared.senders.fetch_sub(1, Ordering::AcqRel) {
             1 => {
                 // Wake every parked receiver so it can observe the channel's disconnected state.
-                let wakers = self.shared.inner.lock().waiters.take_wakers();
+                let wakers = {
+                    let mut inner = self.shared.inner.lock();
+                    inner.waiters.drain()
+                };
                 wake_all(wakers);
             }
             _ => {
@@ -454,7 +457,7 @@ impl<T> UnboundedSender<T> {
                 inner.peak_len = inner.peak_len.max(inner.buffer.len());
             }
 
-            inner.waiters.take_wakers()
+            inner.waiters.drain()
         };
 
         // Notify all waiting receivers. An unsent message is dropped here too, once the lock is
@@ -505,6 +508,7 @@ impl<T> UnboundedSender<T> {
     /// assert_eq!(rx.recv().await, Ok(20));
     /// # }
     /// ```
+    #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn subscribe(&self) -> UnboundedReceiver<T> {
         let mut inner = self.shared.inner.lock();
         let head = inner.tail;
@@ -568,7 +572,7 @@ impl<T: Clone> UnboundedReceiver<T> {
     pub async fn recv(&mut self) -> Result<T, RecvError> {
         Recv {
             receiver: self,
-            registration: None,
+            token: None,
         }
         .await
     }
@@ -657,6 +661,7 @@ impl<T> UnboundedReceiver<T> {
     ///
     /// assert_eq!(rx2.try_recv(), Ok(3));
     /// ```
+    #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn resubscribe(&self) -> Self {
         let mut inner = self.shared.inner.lock();
         let head = inner.tail;
@@ -701,19 +706,19 @@ impl<T> UnboundedReceiver<T> {
 
 struct Recv<'a, T> {
     receiver: &'a mut UnboundedReceiver<T>,
-    registration: Option<WakerToken>,
+    token: Option<WakerToken>,
 }
 
 impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
-        // Ready paths clear the registration, so only a cancelled pending receive takes this lock.
-        if self.registration.is_none() {
+        // Ready paths clear the token, so only a cancelled pending receive takes this lock.
+        if self.token.is_none() {
             return;
         }
 
         let waker = {
             let mut inner = self.receiver.shared.inner.lock();
-            inner.waiters.unregister_waker(&mut self.registration)
+            inner.waiters.unregister(&mut self.token)
         };
         drop(waker);
     }
@@ -723,35 +728,28 @@ impl<T: Clone> Future for Recv<'_, T> {
     type Output = Result<T, RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self {
-            receiver,
-            registration,
-        } = self.get_mut();
+        let Self { receiver, token } = self.get_mut();
 
-        // One critical section decides between all three outcomes. Senders append messages and
-        // drain the wait set under this same lock, so registering here cannot miss a wake-up and
-        // cannot report disconnection while a message remains for this receiver.
         let received = {
             let mut inner = receiver.shared.inner.lock();
-
             match inner.receive(receiver.key) {
                 Some(received) => received,
                 None => {
                     if receiver.shared.senders.load(Ordering::Acquire) == 0 {
-                        *registration = None;
+                        *token = None;
                         return Poll::Ready(Err(RecvError::Disconnected));
                     }
 
-                    let waker = inner.waiters.register_waker(registration, cx);
+                    let retired_waker = inner.waiters.register(token, cx.waker());
                     drop(inner);
-                    drop(waker);
+                    drop(retired_waker);
                     return Poll::Pending;
                 }
             }
         };
 
         let (msg, reclaimed) = received;
-        *registration = None;
+        *token = None;
         Poll::Ready(Ok(take_msg(msg, reclaimed)))
     }
 }

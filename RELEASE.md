@@ -56,7 +56,7 @@ The `release` environment in `.asf.yaml` limits deployments to version tags and 
 Start from current `main` and choose `VERSION` from the changes since the latest crates.io release.
 
 1. Change `version` in `asyncband/Cargo.toml` and refresh `Cargo.lock` with Cargo.
-2. Move the entries under `Unreleased` in `CHANGELOG.md` into a dated `VERSION` section, then restore an empty `Unreleased` section. Keep user-impacting sections ordered as breaking changes, new features, bug fixes, and improvements.
+2. Move the entries under `Unreleased` in `CHANGELOG.md` into an undated `v${VERSION}` section immediately below it, then restore an empty `Unreleased` section. Keep user-impacting sections ordered as breaking changes, new features, bug fixes, and improvements; add the actual release date only after publication.
 3. Verify `LICENSE`, `NOTICE`, `DISCLAIMER`, source headers, and bundled dependencies.
 4. Run the release checks:
 
@@ -85,7 +85,9 @@ Fetch `RELEASE_COMMIT`, inspect the detached worktree, and create a signed annot
 RC_TAG="v${VERSION}-rc.${RC}"
 git fetch https://github.com/apache/asyncband.git main
 git switch --detach "${RELEASE_COMMIT}"
-git status --short
+git grep -F "version = \"${VERSION}\"" -- asyncband/Cargo.toml Cargo.lock
+git grep -Fx "## v${VERSION}" -- CHANGELOG.md
+test -z "$(git status --porcelain)"
 git tag --sign "${RC_TAG}" \
   --message "Apache Asyncband ${VERSION} release candidate ${RC}" \
   "${RELEASE_COMMIT}"
@@ -201,8 +203,9 @@ After publication:
 
 1. Verify the version and metadata on crates.io and docs.rs.
 2. After ASF distribution syncs, verify the source archive, checksum, and signature under `https://downloads.apache.org/incubator/asyncband/${VERSION}/` and the project `KEYS` file at `https://downloads.apache.org/incubator/asyncband/KEYS`.
-3. Announce the release on `dev@asyncband.apache.org` and other appropriate channels as Apache Asyncband (Incubating).
-4. Remove superseded releases from `dist/release`; ASF retains them in the archive.
+3. Submit a post-release pull request that adds the actual publication date to the `v${VERSION}` changelog heading.
+4. Announce the release on `dev@asyncband.apache.org` and other appropriate channels as Apache Asyncband (Incubating).
+5. Remove superseded releases from `dist/release`; ASF retains them in the archive.
 
 ## Recover from failures
 

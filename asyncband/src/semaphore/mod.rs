@@ -15,20 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! An async counting semaphore for controlling access to a set of resources.
+//! Limit concurrent access with a set of permits.
 //!
-//! A semaphore maintains a set of permits. Permits are used to synchronize access
-//! to a pool of resources. Each [`acquire`] call blocks until a permit is available,
-//! and then takes one permit. Each [`release`] call adds a new permit, potentially
-//! releasing a blocked acquirer.
-//!
-//! Semaphores are often used to restrict the number of tasks that can access some
-//! (physical or logical) resource. For example, here is a class that uses a
-//! semaphore to control access to a pool of connections:
+//! [`Semaphore::acquire`] waits for the requested number of permits and returns a guard that puts
+//! them back when dropped. [`Semaphore::try_acquire`] performs the same operation without waiting,
+//! while [`Semaphore::release`] adds permits that were not represented by a guard.
 //!
 //! # Examples
-//!
-//! ## Basic usage
 //!
 //! ```
 //! # #[tokio::main]
@@ -43,43 +36,11 @@
 //!
 //! let permit_attempt = semaphore.try_acquire(1);
 //! assert!(permit_attempt.is_none());
+//!
+//! drop(a_permit);
+//! assert_eq!(semaphore.available_permits(), 1);
 //! # }
 //! ```
-//!
-//! ## Limit the number of simultaneously opened files in your program
-//!
-//! Most operating systems have limits on the number of open file
-//! handles. Even in systems without explicit limits, resource constraints
-//! implicitly set an upper bound on the number of open files. If your
-//! program attempts to open a large number of files and exceeds this
-//! limit, it will result in an error.
-//!
-//! This example uses a Semaphore with 100 permits. By acquiring a permit from
-//! the Semaphore before accessing a file, you ensure that your program opens
-//! no more than 100 files at a time. When trying to open the 101st
-//! file, the program will wait until a permit becomes available before
-//! proceeding to open another file.
-//!
-//! ```
-//! use std::fs::File;
-//! use std::io::Result;
-//! use std::io::Write;
-//! use std::sync::LazyLock;
-//!
-//! use asyncband::semaphore::Semaphore;
-//!
-//! static PERMITS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(100));
-//!
-//! async fn write_to_file(message: &[u8]) -> Result<()> {
-//!     let _permit = PERMITS.acquire(1).await;
-//!     let mut buffer = File::create("example.txt")?;
-//!     buffer.write_all(message)?;
-//!     Ok(()) // Permit goes out of scope here, and is available again for acquisition
-//! }
-//! ```
-//!
-//! [`acquire`]: Semaphore::acquire
-//! [`release`]: Semaphore::release
 
 use std::sync::Arc;
 
@@ -185,7 +146,9 @@ impl Semaphore {
     ///
     /// # Panics
     ///
-    /// Panics if adding the permits would cause the total number of permits to overflow.
+    /// Panics if adding the permits would cause the total number of permits to overflow or if a
+    /// registered waker panics while being notified. Added permits remain committed, and every
+    /// remaining registered waker is still notified before the first panic resumes.
     ///
     /// # Examples
     ///
@@ -332,7 +295,7 @@ impl Semaphore {
     /// use asyncband::semaphore::Semaphore;
     ///
     /// let sem = Arc::new(Semaphore::new(3));
-    /// let mut join_handles = Vec::new();
+    /// let mut join_handles = vec![];
     ///
     /// for _ in 0..5 {
     ///     let permit = sem.clone().acquire_owned(1).await;
@@ -405,8 +368,8 @@ impl SemaphorePermit<'_> {
     ///
     /// # Panics
     ///
-    /// This function panics if permits from different [`Semaphore`] instances
-    /// are merged.
+    /// This function panics if permits from different [`Semaphore`] instances are merged or if
+    /// their combined permit count exceeds `usize::MAX`.
     ///
     /// # Examples
     ///
@@ -437,7 +400,10 @@ impl SemaphorePermit<'_> {
             std::ptr::eq(self.sem, other.sem),
             "merging permits from different semaphore instances"
         );
-        self.permits += other.permits;
+        self.permits = self
+            .permits
+            .checked_add(other.permits)
+            .expect("merged permit count would overflow usize::MAX");
         other.permits = 0;
     }
 
@@ -536,15 +502,15 @@ impl OwnedSemaphorePermit {
         self.permits = 0;
     }
 
-    /// Merge two [`SemaphorePermit`] instances together, consuming `other`
+    /// Merge two [`OwnedSemaphorePermit`] instances together, consuming `other`
     /// without releasing the permits it holds.
     ///
     /// Permits held by both `self` and `other` are released when `self` drops.
     ///
     /// # Panics
     ///
-    /// This function panics if permits from different [`Semaphore`] instances
-    /// are merged.
+    /// This function panics if permits from different [`Semaphore`] instances are merged or if
+    /// their combined permit count exceeds `usize::MAX`.
     ///
     /// # Examples
     ///
@@ -554,10 +520,10 @@ impl OwnedSemaphorePermit {
     /// use asyncband::semaphore::Semaphore;
     ///
     /// let sem = Arc::new(Semaphore::new(10));
-    /// let mut permit = sem.try_acquire(1).unwrap();
+    /// let mut permit = sem.clone().try_acquire_owned(1).unwrap();
     ///
     /// for _ in 0..9 {
-    ///     let new_permit = sem.try_acquire(1).unwrap();
+    ///     let new_permit = sem.clone().try_acquire_owned(1).unwrap();
     ///     // Merge individual permits into a single one.
     ///     permit.merge(new_permit)
     /// }
@@ -575,7 +541,10 @@ impl OwnedSemaphorePermit {
             Arc::ptr_eq(&self.sem, &other.sem),
             "merging permits from different semaphore instances"
         );
-        self.permits += other.permits;
+        self.permits = self
+            .permits
+            .checked_add(other.permits)
+            .expect("merged permit count would overflow usize::MAX");
         other.permits = 0;
     }
 
@@ -621,10 +590,12 @@ impl OwnedSemaphorePermit {
     /// # Examples
     ///
     /// ```
+    /// use std::sync::Arc;
+    ///
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Semaphore::new(5);
-    /// let permit = sem.try_acquire(3).unwrap();
+    /// let sem = Arc::new(Semaphore::new(5));
+    /// let permit = sem.try_acquire_owned(3).unwrap();
     /// assert_eq!(permit.permits(), 3);
     /// ```
     pub fn permits(&self) -> usize {

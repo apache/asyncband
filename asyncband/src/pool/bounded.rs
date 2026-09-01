@@ -91,7 +91,7 @@ use crate::semaphore::Semaphore;
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct PoolConfig {
-    /// Maximum size of the [`Pool`].
+    /// Maximum size of the [`Pool`]. Must be greater than zero.
     pub max_size: usize,
 
     /// Queue strategy of the [`Pool`].
@@ -104,7 +104,9 @@ pub struct PoolConfig {
 }
 
 impl PoolConfig {
-    /// Creates a new [`PoolConfig`].
+    /// Creates a new [`PoolConfig`] for a pool with the given maximum size.
+    ///
+    /// [`Pool::new`] panics if `max_size` is zero.
     pub fn new(max_size: usize) -> Self {
         Self {
             max_size,
@@ -114,12 +116,14 @@ impl PoolConfig {
     }
 
     /// Returns a new [`PoolConfig`] with the specified queue strategy.
+    #[must_use = "this method returns the updated pool configuration"]
     pub fn with_queue_strategy(mut self, queue_strategy: QueueStrategy) -> Self {
         self.queue_strategy = queue_strategy;
         self
     }
 
     /// Returns a new [`PoolConfig`] with the specified recycle cancelled strategy.
+    #[must_use = "this method returns the updated pool configuration"]
     pub fn with_recycle_cancelled_strategy(
         mut self,
         recycle_cancelled_strategy: RecycleCancelledStrategy,
@@ -174,7 +178,16 @@ where
 
 impl<M: ManageObject> Pool<M> {
     /// Creates a new [`Pool`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `config.max_size` is zero.
     pub fn new(config: PoolConfig, manager: M) -> Arc<Self> {
+        assert!(
+            config.max_size > 0,
+            "bounded pool max_size must be greater than zero"
+        );
+
         let permits = Arc::new(Semaphore::new(config.max_size));
         let slots = Mutex::new(PoolState::new());
 
@@ -288,10 +301,11 @@ impl<M: ManageObject> Pool<M> {
         Ok(object)
     }
 
-    /// Retains only the objects that pass the given predicate.
+    /// Retains idle objects for which `f` returns `true`.
     ///
-    /// The predicate runs while the idle-object lock is held and therefore must not block or call
-    /// back into the pool. Detachment hooks for removed objects run after the lock is released.
+    /// Checked-out objects are skipped and may return to the pool later. The predicate runs while
+    /// the pool is locked and must not call back into it; detachment hooks run after the lock is
+    /// released.
     ///
     /// The following example starts a background task that runs every 30 seconds and removes
     /// objects from the pool that have not been used for more than one minute. The task will
@@ -471,14 +485,14 @@ impl<M: ManageObject> Drop for Object<M> {
 impl<M: ManageObject> Deref for Object<M> {
     type Target = M::Object;
     fn deref(&self) -> &M::Object {
-        // SAFETY: `state` is always `Some` when `Object` is owned.
+        // INVARIANT: `state` is `Some` until this object is detached or dropped.
         &self.state.as_ref().unwrap().o
     }
 }
 
 impl<M: ManageObject> DerefMut for Object<M> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: `state` is always `Some` when `Object` is owned.
+        // INVARIANT: `state` is `Some` until this object is detached or dropped.
         &mut self.state.as_mut().unwrap().o
     }
 }
@@ -499,8 +513,11 @@ impl<M: ManageObject> Object<M> {
     /// Detaches the object from the [`Pool`].
     ///
     /// This reduces the size of the pool by one.
+    ///
+    /// If the pool still exists, its manager may modify the detached object in
+    /// [`ManageObject::on_detached`].
     pub fn detach(mut self) -> M::Object {
-        // SAFETY: `state` is always `Some` when `Object` is owned.
+        // INVARIANT: `state` is `Some` until this object is detached or dropped.
         let mut o = self.state.take().unwrap().o;
         if let Some(pool) = self.pool.upgrade() {
             pool.detach_object(&mut o);
@@ -510,7 +527,7 @@ impl<M: ManageObject> Object<M> {
 
     /// Returns the status of the object.
     pub fn status(&self) -> ObjectStatus {
-        // SAFETY: `state` is always `Some` when `Object` is owned.
+        // INVARIANT: `state` is `Some` until this object is detached or dropped.
         self.state.as_ref().unwrap().status
     }
 }
@@ -546,7 +563,7 @@ impl<M: ManageObject> Drop for UnreadyObject<M> {
 
 impl<M: ManageObject> UnreadyObject<M> {
     fn ready(mut self, permit: OwnedSemaphorePermit) -> Object<M> {
-        // SAFETY: `state` is always `Some` when `UnreadyObject` is owned.
+        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
         let state = Some(self.state.take().unwrap());
         let pool = self.pool.clone();
         Object {
@@ -565,7 +582,7 @@ impl<M: ManageObject> UnreadyObject<M> {
     }
 
     fn state(&mut self) -> &mut ObjectState<M::Object> {
-        // SAFETY: `state` is always `Some` when `UnreadyObject` is owned.
+        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
         self.state.as_mut().unwrap()
     }
 }

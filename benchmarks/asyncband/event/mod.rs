@@ -15,19 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
-
-use super::WaitGroup;
-use crate::internal::countdown::CountdownState;
-
-// This test stays next to the implementation because it inspects private state.
-
-#[test]
-#[should_panic(expected = "WaitGroup counter overflow")]
-fn clone_panics_on_counter_overflow() {
-    let wg = WaitGroup {
-        state: Arc::new(CountdownState::new(u32::MAX)),
-    };
-
-    let _ = wg.clone();
-}
+mod wait;

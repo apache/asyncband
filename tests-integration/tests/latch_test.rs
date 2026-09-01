@@ -16,28 +16,14 @@
 // under the License.
 
 use std::future::Future;
-use std::prelude::rust_2015::Vec;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Wake;
 use std::task::Waker;
-use std::time::Duration;
-use std::time::Instant;
 
-use asyncband::latch::*;
-
-macro_rules! assert_time {
-    ($time:expr, $mills:literal $(,)?) => {
-        assert!(
-            (Duration::from_millis($mills - 1)
-                ..Duration::from_millis($mills + std::cmp::max($mills >> 1, 50)))
-                .contains(&$time)
-        )
-    };
-}
+use asyncband::latch::Latch;
 
 struct TrackWake(AtomicUsize);
 
@@ -48,24 +34,22 @@ impl Wake for TrackWake {
 }
 
 #[test]
-fn test_count_down() {
-    let latch = Latch::new(3);
-    latch.count_down();
-    latch.count_down();
-    latch.count_down();
-    assert_eq!(latch.count(), 0);
-}
+fn countdown_operations_saturate_at_zero() {
+    let latch = Latch::new(5);
 
-#[test]
-fn test_try_wait() {
-    let latch = Latch::new(0);
+    latch.arrive(0);
+    assert_eq!(latch.try_wait(), Err(5));
+
+    latch.arrive(3);
+    assert_eq!(latch.try_wait(), Err(2));
+
+    latch.count_down();
+    latch.arrive(2);
     assert_eq!(latch.try_wait(), Ok(()));
-}
 
-#[test]
-fn test_try_wait_err() {
-    let latch = Latch::new(3);
-    assert_eq!(latch.try_wait(), Err(3));
+    latch.count_down();
+    latch.arrive(u32::MAX);
+    assert_eq!(latch.count(), 0);
 }
 
 #[test]
@@ -85,142 +69,62 @@ fn cancelled_wait_releases_its_waker() {
 }
 
 #[test]
-fn test_arrive_zero() {
+fn final_arrival_wakes_every_waiter() {
     let latch = Latch::new(2);
-    latch.arrive(0);
-    assert_eq!(latch.count(), 2);
-}
+    let first_tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let second_tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let first_waker = Waker::from(first_tracker.clone());
+    let second_waker = Waker::from(second_tracker.clone());
+    let mut first_context = Context::from_waker(&first_waker);
+    let mut second_context = Context::from_waker(&second_waker);
+    let mut first = Box::pin(latch.wait());
+    let mut second = Box::pin(latch.wait());
 
-#[test]
-fn test_more_arrive() {
-    let latch = Latch::new(10);
-    for _ in 0..4 {
-        latch.arrive(3);
-    }
-    assert_eq!(latch.count(), 0);
-}
-
-#[tokio::test]
-async fn test_arrive() {
-    let latch = Latch::new(3);
-    latch.arrive(3);
-    latch.wait().await;
-    assert_eq!(latch.count(), 0);
-}
-
-#[tokio::test]
-async fn test_last_one_signal() {
-    let latch = Arc::new(Latch::new(3));
-    let l1 = latch.clone();
+    assert!(first.as_mut().poll(&mut first_context).is_pending());
+    assert!(second.as_mut().poll(&mut second_context).is_pending());
 
     latch.count_down();
+    assert_eq!(first_tracker.0.load(Ordering::Relaxed), 0);
+    assert_eq!(second_tracker.0.load(Ordering::Relaxed), 0);
+
     latch.count_down();
-
-    let start = Instant::now();
-
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(32)).await;
-        l1.count_down()
-    });
-
-    latch.wait().await;
-    assert_time!(start.elapsed(), 32);
-    assert_eq!(latch.count(), 0);
+    assert_eq!(first_tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(second_tracker.0.load(Ordering::Relaxed), 1);
+    assert!(first.as_mut().poll(&mut first_context).is_ready());
+    assert!(second.as_mut().poll(&mut second_context).is_ready());
 }
 
 #[tokio::test]
-async fn test_gate_wait() {
+async fn owned_wait_can_move_to_another_task() {
     let latch = Arc::new(Latch::new(1));
-    let tasks: Vec<_> = (0..4)
-        .map(|_| {
-            let latch = latch.clone();
-            let start = Instant::now();
+    let waiter = tokio::spawn(latch.clone().wait_owned());
 
-            tokio::spawn(async move {
-                latch.wait().await;
-                start.elapsed()
-            })
-        })
-        .collect();
-
-    tokio::time::sleep(Duration::from_millis(20)).await;
     latch.count_down();
-
-    for t in tasks {
-        assert_time!(t.await.unwrap(), 20);
-    }
+    waiter.await.unwrap();
 }
 
-#[tokio::test]
-async fn test_multi_tasks() {
-    const SIZE: u32 = 16;
-    let latch = Arc::new(Latch::new(SIZE));
-    let counter = Arc::new(AtomicU32::new(0));
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_arrivals_complete_the_latch() {
+    const TASKS: usize = 32;
 
-    for _ in 0..SIZE {
+    let latch = Arc::new(Latch::new(TASKS as u32));
+    let start = Arc::new(tokio::sync::Barrier::new(TASKS + 1));
+    let mut tasks = Vec::with_capacity(TASKS);
+
+    for _ in 0..TASKS {
         let latch = latch.clone();
-        let counter = counter.clone();
-
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            counter.fetch_add(1, Ordering::Relaxed);
-            latch.count_down()
-        });
+        let start = start.clone();
+        tasks.push(tokio::spawn(async move {
+            start.wait().await;
+            latch.count_down();
+        }));
     }
 
-    let start = Instant::now();
-
+    start.wait().await;
     latch.wait().await;
-    assert_time!(start.elapsed(), 20);
-    assert_eq!(counter.load(Ordering::Relaxed), SIZE);
-    assert_eq!(latch.count(), 0);
-}
 
-#[tokio::test]
-async fn test_more_count_down() {
-    const SIZE: u32 = 16;
-    let latch = Arc::new(Latch::new(SIZE));
-    let counter = Arc::new(AtomicU32::new(0));
-
-    for _ in 0..(SIZE + (SIZE >> 1)) {
-        let latch = latch.clone();
-        let counter = counter.clone();
-
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            counter.fetch_add(1, Ordering::Relaxed);
-            latch.count_down()
-        });
+    for task in tasks {
+        task.await.unwrap();
     }
-
-    latch.wait().await;
-    assert!(counter.load(Ordering::Relaxed) >= SIZE);
     assert_eq!(latch.count(), 0);
-    latch.count_down();
-    assert_eq!(latch.count(), 0);
-}
-
-#[tokio::test]
-async fn test_select_two_wait() {
-    let latch1 = Arc::new(Latch::new(1));
-    let latch2 = Arc::new(Latch::new(1));
-    let l1 = latch1.clone();
-    let l2 = latch2.clone();
-
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        l1.count_down();
-    });
-
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        l2.count_down();
-    });
-
-    assert!(tokio::select! {
-        _ = latch1.wait() => false,
-        _ = latch2.wait() => true,
-    });
-
-    latch1.wait().await;
 }

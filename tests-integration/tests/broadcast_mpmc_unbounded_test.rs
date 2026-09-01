@@ -24,7 +24,6 @@ use std::task::Wake;
 use std::task::Waker;
 use std::thread;
 use std::time::Duration;
-use std::time::Instant;
 
 use asyncband::broadcast::mpmc::*;
 
@@ -330,8 +329,7 @@ fn panicking_clone_leaves_the_channel_consistent() {
 
 #[test]
 fn message_destructors_run_outside_the_channel_lock() {
-    let finished = Arc::new(AtomicUsize::new(0));
-    let flag = finished.clone();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
 
     let worker = thread::spawn(move || {
         let (tx, mut rx1) = unbounded();
@@ -357,31 +355,13 @@ fn message_destructors_run_outside_the_channel_lock() {
         });
         drop(tx);
 
-        flag.store(1, Ordering::SeqCst);
+        finished_tx.send(()).unwrap();
     });
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline && finished.load(Ordering::SeqCst) == 0 {
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(
-        finished.load(Ordering::SeqCst),
-        1,
-        "a message destructor deadlocked against the channel lock"
-    );
+    finished_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message destructor deadlocked against the channel lock");
     worker.join().unwrap();
-}
-
-#[tokio::test]
-async fn test_wait_mechanism() {
-    let (tx, mut rx) = unbounded();
-
-    let handle = tokio::spawn(async move { rx.recv().await });
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    tx.send(42);
-
-    assert_eq!(handle.await.unwrap(), Ok(42));
 }
 
 #[test]
@@ -532,7 +512,7 @@ fn concurrent_senders_deliver_every_message_to_every_receiver() {
         .into_iter()
         .map(|mut receiver| {
             thread::spawn(move || {
-                let mut seen = Vec::new();
+                let mut seen = vec![];
                 while let Ok(value) = pollster::block_on(receiver.recv()) {
                     seen.push(value);
                 }

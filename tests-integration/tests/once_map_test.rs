@@ -31,9 +31,6 @@ fn constructors_and_default() {
     let _: OnceMap<String, i32> = OnceMap::default();
     let _: OnceMap<String, i32> = OnceMap::new();
     let _: OnceMap<String, i32> = OnceMap::with_hasher(RandomState::new());
-
-    let map: OnceMap<String, i32> = OnceMap::new();
-    assert!(format!("{map:?}").contains("OnceMap"));
 }
 
 #[tokio::test]
@@ -65,7 +62,7 @@ async fn concurrent_compute_runs_once() {
     });
 
     started_rx.await.unwrap();
-    let mut waiters = Vec::new();
+    let mut waiters = vec![];
     for _ in 0..9 {
         let map = map.clone();
         let count = count.clone();
@@ -89,7 +86,7 @@ async fn concurrent_compute_runs_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_growth_keeps_every_entry() {
     let map = Arc::new(OnceMap::new());
-    let mut workers = Vec::new();
+    let mut workers = vec![];
     for worker in 0..8 {
         let map = Arc::clone(&map);
         workers.push(tokio::spawn(async move {

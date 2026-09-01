@@ -35,7 +35,7 @@
 //! use asyncband::mutex::Mutex;
 //!
 //! let mutex = Arc::new(Mutex::new(0));
-//! let mut handles = Vec::new();
+//! let mut handles = vec![];
 //!
 //! for i in 0..3 {
 //!     let mutex = mutex.clone();

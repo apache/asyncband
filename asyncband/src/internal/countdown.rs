@@ -23,7 +23,7 @@ use std::task::Poll;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitset::WaitSet;
 use crate::internal::waitset::WakerToken;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
 
 #[derive(Debug)]
 pub struct CountdownState {
@@ -39,32 +39,25 @@ impl CountdownState {
         }
     }
 
-    /// Performs volatile read on `state`.
-    ///
-    /// All other writes to `state` should be at least [`Ordering::Release`].
+    /// Loads the current count, acquiring state published before a transition to zero.
     pub fn state(&self) -> u32 {
         self.state.load(Ordering::Acquire)
     }
 
-    /// Performs volatile CAS on `state`.
+    /// Attempts to replace `current` with `new`, publishing the new count on success.
     ///
-    /// If the comparison succeeds, performs read-modify-write operation with [`Ordering::Relaxed`]
-    /// for read, and [`Ordering::Release`] for write; if the comparison fails, performs load
-    /// operation with [`Ordering::Relaxed`].
-    ///
-    /// @see https://doc.rust-lang.org/std/sync/atomic/struct.AtomicU32.html#method.compare_exchange_weak
-    /// @see https://en.cppreference.com/w/cpp/atomic/atomic_compare_exchange
+    /// A spurious or contended failure returns the observed count so the caller can retry.
     fn cas_state(&self, current: u32, new: u32) -> Result<(), u32> {
         self.state
             .compare_exchange_weak(current, new, Ordering::Release, Ordering::Relaxed)
             .map(|_| ())
     }
 
-    /// Drain and wake up all waiters.
+    /// Drains the waiter set under its lock, then wakes every waiter after releasing the lock.
     pub fn wake_all(&self) {
         let wakers = {
             let mut waiters = self.waiters.lock();
-            waiters.take_wakers()
+            waiters.drain()
         };
 
         wake_all(wakers);
@@ -79,25 +72,25 @@ impl CountdownState {
             return Poll::Ready(());
         }
 
-        let replaced_waker = {
+        let retired_waker = {
             let mut waiters = self.waiters.lock();
             if self.state() == 0 {
                 // A concurrent zero transition will drain after this lock is released.
                 *token = None;
                 return Poll::Ready(());
             }
-            waiters.register_waker(token, cx)
+            waiters.register(token, cx.waker())
         };
-        drop(replaced_waker);
+        drop(retired_waker);
         Poll::Pending
     }
 
     #[inline]
-    pub fn unregister_waker(&self, token: &mut Option<WakerToken>) {
+    pub fn unregister(&self, token: &mut Option<WakerToken>) {
         if token.is_some() {
             let removed_waker = {
                 let mut waiters = self.waiters.lock();
-                waiters.unregister_waker(token)
+                waiters.unregister(token)
             };
             drop(removed_waker);
         }
@@ -140,8 +133,7 @@ impl CountdownState {
         let mut cnt = self.state();
         loop {
             if cnt == 0 {
-                // the one who decrements the counter to zero should wake up all waiters, not this
-                // one
+                // Only the operation that performs the transition to zero owns waiter notification.
                 return false;
             }
 

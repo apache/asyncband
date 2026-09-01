@@ -88,7 +88,7 @@ enum Slot<T> {
 impl<T> Arena<T> {
     pub const fn new() -> Self {
         Self {
-            slots: Vec::new(),
+            slots: vec![],
             next_vacant: 0,
             len: 0,
         }
@@ -183,15 +183,22 @@ impl<T> Arena<T> {
 
     /// Takes every occupied value in slot order while retaining the allocation for reuse.
     ///
-    /// Every previously issued slot ID becomes invalid, including IDs for slots that were already
-    /// vacant. Consumers that retain IDs across this operation must supply their own epoch check.
+    /// After a non-empty take, every previously issued slot ID becomes invalid, including IDs for
+    /// slots that were already vacant. Consumers that retain IDs across this operation must supply
+    /// their own epoch check.
     #[inline]
     pub fn take_all(&mut self) -> impl Iterator<Item = T> + use<T> {
         let len = self.len;
         let mut values = ArenaValues {
             first: None,
-            rest: Vec::new(),
+            rest: vec![],
         };
+        if len == 0 {
+            // Individually removed values leave vacant slots behind. Keep their free list intact
+            // instead of scanning the arena's historical high-water mark to drain no values.
+            return values.into_iter();
+        }
+
         for slot in self.slots.drain(..) {
             if let Slot::Occupied(value) = slot {
                 if values.first.is_none() {
