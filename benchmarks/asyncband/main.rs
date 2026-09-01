@@ -21,6 +21,7 @@ mod broadcast;
 mod completion;
 mod condvar;
 mod latch;
+mod mpmc;
 mod mpsc;
 mod mutex;
 mod once;

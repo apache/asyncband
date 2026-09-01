@@ -15,15 +15,28 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod broadcast;
-mod mpmc;
-mod mpsc;
-mod watch;
+use divan::Bencher;
+use divan::counter::ItemsCount;
 
-#[allow(dead_code)]
-#[path = "../asyncband/support.rs"]
-mod support;
+use super::adapters::AsyncChannel;
+use super::adapters::Asyncband;
+use super::adapters::BoundedMpmc;
+use super::adapters::Flume;
+use super::support::BATCH_MESSAGES;
+use super::support::BOUNDED_CAPACITY;
+use super::support::ConcurrentBatch;
+use super::support::TOPOLOGIES;
+use super::support::Topology;
 
-fn main() {
-    divan::main();
+#[divan::bench(
+    types = [Asyncband, AsyncChannel, Flume],
+    args = TOPOLOGIES,
+    sample_count = 20,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn concurrent<C: BoundedMpmc>(bencher: Bencher, topology: Topology) {
+    bencher
+        .with_inputs(|| ConcurrentBatch::new_bounded::<C>(BOUNDED_CAPACITY, topology))
+        .bench_local_refs(|batch| batch.run());
 }

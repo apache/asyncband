@@ -23,6 +23,7 @@ pub(crate) mod atomic_waker;
     feature = "broadcast",
     feature = "completion",
     feature = "latch",
+    feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
@@ -52,6 +53,7 @@ pub(crate) mod value_cell;
     feature = "broadcast",
     feature = "completion",
     feature = "latch",
+    feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
@@ -62,18 +64,20 @@ pub(crate) mod value_cell;
 pub(crate) mod mutex;
 
 #[cfg(any(
+    feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
 ))]
-// `mpsc` uses `poll_acquire`, `release_if_nonempty`, and `notify_all`; mutexes and rwlocks use
-// `acquire`, `try_acquire`, and `release`; the public semaphore also uses the accounting methods.
-// Each single-primitive build intentionally leaves the other groups unused.
+// Queue channels use `poll_acquire`, `release_if_nonempty`, and `notify_all`; mutexes and rwlocks
+// use `acquire`, `try_acquire`, and `release`; the public semaphore also uses the accounting
+// methods. Each single-primitive build intentionally leaves the other groups unused.
 #[allow(dead_code)]
 pub(crate) mod semaphore;
 
 #[cfg(any(
+    feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",

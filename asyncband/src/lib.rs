@@ -66,6 +66,7 @@
 //! |                       | [`WaitGroup`](waitgroup::WaitGroup) | `waitgroup`    | Wait for a dynamic group of tasks to finish.                                                           |
 //! |                       | [`Shutdown`](shutdown::Shutdown)    | `shutdown`     | Coordinate shutdown signals and completion.                                                            |
 //! | Channels              | [`oneshot`]                         | `oneshot`      | Send one value from one sender to one receiver.                                                         |
+//! |                       | [`mpmc`]                            | `mpmc`         | Distribute each value to exactly one of multiple competing receivers.                                   |
 //! |                       | [`mpsc`]                            | `mpsc`         | Send each value from multiple producers to one receiver through a bounded or unbounded queue.           |
 //! |                       | [`broadcast`]                       | `broadcast`    | Broadcast values from one or more producers and retain them until every active receiver consumes them. |
 //! |                       | [`watch`]                           | `watch`        | Publish the latest state to independently tracked receivers and coalesce intermediate updates.          |
@@ -127,6 +128,8 @@ pub mod completion;
 pub mod condvar;
 #[cfg(feature = "latch")]
 pub mod latch;
+#[cfg(feature = "mpmc")]
+pub mod mpmc;
 #[cfg(feature = "mpsc")]
 pub mod mpsc;
 #[cfg(feature = "mutex")]

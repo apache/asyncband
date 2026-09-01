@@ -22,6 +22,7 @@ use asyncband::broadcast;
 use asyncband::completion;
 use asyncband::condvar::Condvar;
 use asyncband::latch::Latch;
+use asyncband::mpmc;
 use asyncband::mpsc;
 use asyncband::mutex::Mutex;
 use asyncband::mutex::MutexGuard;
@@ -108,6 +109,15 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<mpsc::UnboundedReceiver<i64>>();
     assert_send_and_sync::<mpsc::BoundedSender<i64>>();
     assert_send_and_sync::<mpsc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<mpmc::SendError<i64>>();
+    assert_send_and_sync::<mpmc::UnboundedSender<i64>>();
+    assert_send_and_sync::<mpmc::UnboundedReceiver<i64>>();
+    assert_send_and_sync::<mpmc::BoundedSender<i64>>();
+    assert_send_and_sync::<mpmc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<mpmc::UnboundedSender<Cell<u8>>>();
+    assert_send_and_sync::<mpmc::UnboundedReceiver<Cell<u8>>>();
+    assert_send_and_sync::<mpmc::BoundedSender<Cell<u8>>>();
+    assert_send_and_sync::<mpmc::BoundedReceiver<Cell<u8>>>();
     assert_send_and_sync::<watch::Sender<i64>>();
     assert_send_and_sync::<watch::Receiver<i64>>();
     assert_send_and_sync::<watch::SendError<i64>>();
@@ -129,6 +139,14 @@ fn movable_public_types_are_send() {
 
     let (_completer, completion) = completion::new::<i64>();
     assert_send_value(completion.wait());
+
+    let (unbounded_sender, unbounded_receiver) = mpmc::unbounded::<Cell<u8>>();
+    assert_send_value(unbounded_receiver.recv());
+    drop(unbounded_sender);
+
+    let (bounded_sender, bounded_receiver) = mpmc::bounded::<Cell<u8>>(1);
+    assert_send_value(bounded_sender.send(Cell::new(0)));
+    assert_send_value(bounded_receiver.recv());
 }
 
 #[test]
@@ -174,6 +192,11 @@ fn public_types_are_unpin() {
     assert_unpin::<mpsc::UnboundedReceiver<i64>>();
     assert_unpin::<mpsc::BoundedSender<i64>>();
     assert_unpin::<mpsc::BoundedReceiver<i64>>();
+    assert_unpin::<mpmc::SendError<i64>>();
+    assert_unpin::<mpmc::UnboundedSender<i64>>();
+    assert_unpin::<mpmc::UnboundedReceiver<i64>>();
+    assert_unpin::<mpmc::BoundedSender<i64>>();
+    assert_unpin::<mpmc::BoundedReceiver<i64>>();
     assert_unpin::<watch::Sender<i64>>();
     assert_unpin::<watch::Receiver<i64>>();
     assert_unpin::<watch::SendError<i64>>();
