@@ -18,11 +18,12 @@
 use std::mem;
 use std::num::NonZeroUsize;
 
-/// Identifies a reusable slot while that slot is occupied.
+/// Identifies a slot in an arena.
 ///
 /// The non-zero representation lets wrappers such as `WaiterId` retain a niche when stored in an
-/// `Option`. Slot IDs deliberately carry no generation: each consumer supplies the cheaper
-/// lifecycle rule that matches its waiter storage.
+/// `Option`. An ID issued to a consumer remains valid only while its slot is occupied. Slot IDs
+/// deliberately carry no generation: each consumer supplies the cheaper lifecycle rule that
+/// matches its waiter storage.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct SlotId(NonZeroUsize);
 
@@ -49,27 +50,27 @@ impl std::fmt::Debug for SlotId {
 /// Minimal reusable storage for internal waiter state.
 ///
 /// The occupied length equals the number of `Occupied` slots. Every `Vacant` slot appears exactly
-/// once in the singly linked vacant list, which starts at `next_vacant` and terminates at
-/// `slots.len()`. Removing a value makes its slot ID available for immediate reuse.
+/// once in the singly linked vacant list starting at `vacant_head`. Removing a value makes its slot
+/// ID available for immediate reuse.
 #[derive(Debug)]
 pub struct Arena<T> {
     slots: Vec<Slot<T>>,
-    /// The next reusable slot, or `slots.len()` when every slot is occupied.
-    next_vacant: usize,
+    /// The head of the vacant list, or `None` when every slot is occupied.
+    vacant_head: Option<SlotId>,
     len: usize,
 }
 
 #[derive(Debug)]
 enum Slot<T> {
     Occupied(T),
-    Vacant { next: usize },
+    Vacant { next: Option<SlotId> },
 }
 
 impl<T> Arena<T> {
     pub const fn new() -> Self {
         Self {
             slots: vec![],
-            next_vacant: 0,
+            vacant_head: None,
             len: 0,
         }
     }
@@ -77,29 +78,33 @@ impl<T> Arena<T> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             slots: Vec::with_capacity(capacity),
-            next_vacant: 0,
+            vacant_head: None,
             len: 0,
         }
     }
 
     pub fn insert(&mut self, value: T) -> SlotId {
-        let index = self.next_vacant;
-        self.len += 1;
-
-        if index == self.slots.len() {
-            self.slots.push(Slot::Occupied(value));
-            self.next_vacant = index + 1;
-        } else {
-            self.next_vacant = match self.slots.get(index) {
-                Some(Slot::Vacant { next }) => *next,
-                Some(Slot::Occupied(_)) | None => {
+        let id = if let Some(id) = self.vacant_head {
+            let slot = self
+                .slots
+                .get_mut(id.index())
+                .expect("arena free list must point to a slot");
+            self.vacant_head = match slot {
+                Slot::Vacant { next } => *next,
+                Slot::Occupied(_) => {
                     unreachable!("arena free list must point to a vacant slot")
                 }
             };
-            self.slots[index] = Slot::Occupied(value);
-        }
+            *slot = Slot::Occupied(value);
+            id
+        } else {
+            let id = SlotId::from_index(self.slots.len());
+            self.slots.push(Slot::Occupied(value));
+            id
+        };
 
-        SlotId::from_index(index)
+        self.len += 1;
+        id
     }
 
     pub fn get(&self, id: SlotId) -> Option<&T> {
@@ -147,7 +152,7 @@ impl<T> Arena<T> {
         let value = match mem::replace(
             slot,
             Slot::Vacant {
-                next: self.next_vacant,
+                next: self.vacant_head,
             },
         ) {
             Slot::Occupied(value) => value,
@@ -157,7 +162,7 @@ impl<T> Arena<T> {
             }
         };
         self.len -= 1;
-        self.next_vacant = index;
+        self.vacant_head = Some(id);
         value
     }
 
@@ -168,7 +173,7 @@ impl<T> Arena<T> {
     /// their own epoch check.
     #[inline]
     pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
-        self.next_vacant = 0;
+        self.vacant_head = None;
         self.len = 0;
         self.slots.drain(..).filter_map(|slot| match slot {
             Slot::Occupied(value) => Some(value),
@@ -179,7 +184,7 @@ impl<T> Arena<T> {
     /// Takes every occupied value and the backing allocation in slot order.
     #[inline]
     pub fn take_all(&mut self) -> impl Iterator<Item = T> + use<T> {
-        self.next_vacant = 0;
+        self.vacant_head = None;
         self.len = 0;
         mem::take(&mut self.slots)
             .into_iter()
