@@ -16,6 +16,9 @@
 // under the License.
 
 use std::cell::Cell;
+use std::marker::PhantomPinned;
+use std::panic::RefUnwindSafe;
+use std::panic::UnwindSafe;
 
 use asyncband::barrier::Barrier;
 use asyncband::broadcast;
@@ -178,6 +181,40 @@ fn public_types_are_unpin() {
     assert_unpin::<watch::Receiver<i64>>();
     assert_unpin::<watch::SendError<i64>>();
     assert_unpin::<watch::RecvError>();
+}
+
+#[test]
+fn mpsc_endpoints_keep_legacy_traits_regardless_of_payload() {
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+    fn assert_unpin<T: Unpin>() {}
+    fn assert_unwind_safe<T: UnwindSafe>() {}
+    fn assert_ref_unwind_safe<T: RefUnwindSafe>() {}
+
+    macro_rules! assert_endpoint_traits {
+        ($endpoint:ident, $payload:ty) => {
+            assert_send::<mpsc::$endpoint<$payload>>();
+            assert_sync::<mpsc::$endpoint<$payload>>();
+            assert_unpin::<mpsc::$endpoint<$payload>>();
+            assert_unwind_safe::<mpsc::$endpoint<$payload>>();
+            assert_ref_unwind_safe::<mpsc::$endpoint<$payload>>();
+        };
+    }
+
+    macro_rules! assert_payload_traits {
+        ($endpoint:ident) => {
+            assert_endpoint_traits!($endpoint, i32);
+            assert_endpoint_traits!($endpoint, Cell<u8>);
+            assert_endpoint_traits!($endpoint, &'static mut i32);
+            assert_endpoint_traits!($endpoint, PhantomPinned);
+        };
+    }
+
+    // Four endpoint types × four payloads × five traits = 80 compile-time assertions.
+    assert_payload_traits!(BoundedSender);
+    assert_payload_traits!(BoundedReceiver);
+    assert_payload_traits!(UnboundedSender);
+    assert_payload_traits!(UnboundedReceiver);
 }
 
 #[test]

@@ -41,6 +41,9 @@ pub(super) struct UnboundedConsumer<T> {
     local: Mutex<VecDeque<T>>,
 }
 
+// The consumer never relies on a pinned location for its local queue or queued values.
+impl<T> Unpin for UnboundedConsumer<T> {}
+
 pub(super) enum PushError<T> {
     Full(T),
     Disconnected(T),
@@ -122,6 +125,11 @@ struct Slot<T> {
 // initializes the value before publishing the next stamp with Release ordering. The single
 // consumer reads only after acquiring that stamp and publishes the following lap before reuse.
 unsafe impl<T: Send> Sync for Slot<T> {}
+
+// The ownership transition finishes before user code can unwind, and no stored-value reference is
+// exposed.
+impl<T> std::panic::UnwindSafe for Slot<T> {}
+impl<T> std::panic::RefUnwindSafe for Slot<T> {}
 
 impl<T> BoundedQueue<T> {
     pub(super) fn new(capacity: usize) -> Self {
@@ -273,6 +281,8 @@ impl<T> Drop for BoundedQueue<T> {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::thread;
 
     use super::BoundedQueue;
@@ -335,6 +345,65 @@ mod tests {
         }
         values.sort_unstable();
         assert_eq!(values, (0..64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn bounded_queue_discards_wrapped_values_once_after_receiver_disconnect() {
+        // This has no owning fields, so a buggy second drop remains observable as count == 2
+        // instead of invalidating the tracker first.
+        struct DropSpy<'a>(&'a AtomicUsize);
+
+        impl<'a> Drop for DropSpy<'a> {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        // Declare this before `queue` so the counters outlive values held by the queue.
+        let drops = [
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+        ];
+        let queue = BoundedQueue::new(3);
+
+        // Positions: 0, 1, 2 (then tail wraps to 8).
+        for counter in &drops[..3] {
+            assert!(queue.try_push(DropSpy(counter)).is_ok());
+        }
+
+        // Free slot 0, then reuse it on the next lap at position 8.
+        let popped = queue.pop();
+        assert!(popped.is_some());
+        drop(popped);
+        assert_eq!(drops[0].load(Ordering::Relaxed), 1);
+        assert!(queue.try_push(DropSpy(&drops[3])).is_ok());
+
+        // The pending range is positions 1 -> 2 -> 8 -> 9, not a contiguous integer range.
+        assert_eq!(queue.head.load(Ordering::Relaxed), 1);
+        assert_eq!(queue.tail.load(Ordering::Relaxed), queue.one_lap + 1);
+
+        queue.disconnect_receiver();
+
+        // `discard_until` must dispose every value exactly once, including position 8.
+        for (value, counter) in drops.iter().enumerate() {
+            assert_eq!(
+                counter.load(Ordering::Relaxed),
+                1,
+                "value {value} was dropped an unexpected number of times"
+            );
+        }
+
+        // Queue Drop calls discard_until again; it must see head == tail and not redrop.
+        drop(queue);
+        for (value, counter) in drops.iter().enumerate() {
+            assert_eq!(
+                counter.load(Ordering::Relaxed),
+                1,
+                "value {value} was dropped more than once"
+            );
+        }
     }
 
     #[test]
