@@ -59,26 +59,6 @@ pub struct Arena<T> {
     len: usize,
 }
 
-/// Values extracted from an [`Arena`], storing the common single-value case inline.
-///
-/// This is the specialized subset of a small-vector abstraction needed here: keep one value inline,
-/// store additional values in a `Vec`, and support consuming iteration. Keeping that representation
-/// focused avoids a general unsafe collection implementation for a single internal operation.
-#[derive(Debug)]
-struct ArenaValues<T> {
-    first: Option<T>,
-    rest: Vec<T>,
-}
-
-impl<T> IntoIterator for ArenaValues<T> {
-    type Item = T;
-    type IntoIter = std::iter::Chain<std::option::IntoIter<T>, std::vec::IntoIter<T>>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.first.into_iter().chain(self.rest)
-    }
-}
-
 #[derive(Debug)]
 enum Slot<T> {
     Occupied(T),
@@ -181,40 +161,27 @@ impl<T> Arena<T> {
         value
     }
 
-    /// Takes every occupied value in slot order while retaining the allocation for reuse.
+    /// Drains every occupied value in slot order while retaining the allocation for reuse.
     ///
-    /// After a non-empty take, every previously issued slot ID becomes invalid, including IDs for
+    /// After a non-empty drain, every previously issued slot ID becomes invalid, including IDs for
     /// slots that were already vacant. Consumers that retain IDs across this operation must supply
     /// their own epoch check.
     #[inline]
-    pub fn take_all(&mut self) -> impl Iterator<Item = T> + use<T> {
-        let len = self.len;
-        let mut values = ArenaValues {
-            first: None,
-            rest: vec![],
-        };
-        if len == 0 {
-            // Individually removed values leave vacant slots behind. Keep their free list intact
-            // instead of scanning the arena's historical high-water mark to drain no values.
-            return values.into_iter();
-        }
-
-        for slot in self.slots.drain(..) {
-            if let Slot::Occupied(value) = slot {
-                if values.first.is_none() {
-                    values.first = Some(value);
-                } else {
-                    if values.rest.is_empty() {
-                        values.rest.reserve(len - 1);
-                    }
-                    values.rest.push(value);
-                }
-            }
-        }
-
+    pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
         self.next_vacant = 0;
         self.len = 0;
-        values.into_iter()
+        self.slots.drain(..).filter_map(|slot| match slot {
+            Slot::Occupied(value) => Some(value),
+            Slot::Vacant { .. } => None,
+        })
+    }
+
+    /// Consumes the arena and returns every occupied value in slot order.
+    pub fn into_values(self) -> impl Iterator<Item = T> {
+        self.slots.into_iter().filter_map(|slot| match slot {
+            Slot::Occupied(value) => Some(value),
+            Slot::Vacant { .. } => None,
+        })
     }
 }
 
@@ -242,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn take_all_restarts_slot_id_allocation() {
+    fn drain_restarts_slot_id_allocation() {
         let mut arena = Arena::with_capacity(3);
         let first = arena.insert(1);
         let second = arena.insert(2);
@@ -250,11 +217,22 @@ mod tests {
         let capacity = arena.slots.capacity();
         arena.remove(second);
 
-        assert_eq!(arena.take_all().collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(arena.drain().collect::<Vec<_>>(), vec![1, 3]);
         assert_eq!(arena.len(), 0);
         assert_eq!(arena.slots.capacity(), capacity);
 
         let slot_ids = [arena.insert(4), arena.insert(5), arena.insert(6)];
         assert_eq!(slot_ids, [first, second, third]);
+    }
+
+    #[test]
+    fn into_values_consumes_the_arena() {
+        let mut arena = Arena::new();
+        arena.insert(1);
+        let removed = arena.insert(2);
+        arena.insert(3);
+        arena.remove(removed);
+
+        assert_eq!(arena.into_values().collect::<Vec<_>>(), vec![1, 3]);
     }
 }

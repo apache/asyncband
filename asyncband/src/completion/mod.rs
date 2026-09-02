@@ -160,7 +160,7 @@ impl<T> Completer<T> {
             }
             // Publish the value before making completion observable and detaching its waiters.
             state.status = Status::Completed;
-            state.waiters.drain()
+            state.waiters.take_all()
         };
         // `complete` consumes the only completer. Disarm its destructor before invoking arbitrary
         // wake callbacks; the completed state no longer needs abandonment handling.
@@ -182,7 +182,7 @@ impl<T> Drop for Completer<T> {
             }
             // Publish abandonment and detach its waiters atomically with respect to registration.
             state.status = Status::Abandoned;
-            state.waiters.drain()
+            state.waiters.take_all()
         };
         wake_all(wakers);
     }

@@ -124,6 +124,25 @@ pub(crate) mod waitlist;
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
+    feature = "event",
+    feature = "completion",
+    feature = "latch",
+    feature = "mpsc",
+    feature = "mutex",
+    feature = "once",
+    feature = "rwlock",
+    feature = "semaphore",
+    feature = "waitgroup",
+    feature = "watch",
+))]
+// Wait-set primitives know the exact batch capacity, while linked-list primitives use the
+// allocation-free constructor. Each constructor is therefore unused in some feature subsets.
+#[allow(dead_code)]
+pub(crate) mod waker_batch;
+
+#[cfg(any(
+    feature = "barrier",
+    feature = "broadcast",
     feature = "completion",
     feature = "latch",
     feature = "once",

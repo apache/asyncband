@@ -153,7 +153,7 @@ impl<T> Drop for Sender<T> {
             if state.senders != 0 {
                 return;
             }
-            state.waiters.drain()
+            state.waiters.take_all()
         };
         wake_all(wakers);
     }

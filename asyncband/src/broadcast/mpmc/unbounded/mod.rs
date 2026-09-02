@@ -398,7 +398,7 @@ impl<T> Drop for UnboundedSender<T> {
                 // Wake every parked receiver so it can observe the channel's disconnected state.
                 let wakers = {
                     let mut inner = self.shared.inner.lock();
-                    inner.waiters.drain()
+                    inner.waiters.take_all()
                 };
                 wake_all(wakers);
             }

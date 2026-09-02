@@ -26,6 +26,7 @@ use std::task::Waker;
 
 use crate::internal::arena::Arena;
 use crate::internal::arena::SlotId;
+use crate::internal::waker_batch::WakerBatch;
 
 /// An exclusive handle to one waiter slot in a [`WaitSet`].
 ///
@@ -68,10 +69,26 @@ impl WaitSet {
     /// releasing the lock that protects this wait set.
     #[inline]
     pub fn drain(&mut self) -> impl Iterator<Item = Waker> + 'static {
-        if !self.waiters.is_empty() {
-            self.epoch = self.epoch.checked_add(1).expect("wait set epoch overflow");
+        let mut wakers = WakerBatch::with_capacity(self.waiters.len());
+        if self.waiters.is_empty() {
+            return wakers.into_iter();
         }
-        self.waiters.take_all()
+        self.advance_epoch();
+        wakers.extend(self.waiters.drain());
+        wakers.into_iter()
+    }
+
+    /// Takes all registered wakers and the wait set's backing allocation without waking them.
+    ///
+    /// This is intended for terminal state transitions where the current allocation cannot be
+    /// reused. The caller must consume or drop the iterator after releasing the lock that protects
+    /// this wait set.
+    #[inline]
+    pub fn take_all(&mut self) -> impl Iterator<Item = Waker> + 'static {
+        if !self.waiters.is_empty() {
+            self.advance_epoch();
+        }
+        mem::replace(&mut self.waiters, Arena::new()).into_values()
     }
 
     /// Registers or updates a waker in the current wake epoch.
@@ -119,6 +136,10 @@ impl WaitSet {
                 .get_mut(current.slot)
                 .expect("current waker token must refer to an occupied slot"),
         )
+    }
+
+    fn advance_epoch(&mut self) {
+        self.epoch = self.epoch.checked_add(1).expect("wait set epoch overflow");
     }
 
     #[cfg(test)]
@@ -204,6 +225,29 @@ mod tests {
         drop(waiters.register(&mut first_token, &first_waker));
 
         let registered = waiters.drain().collect::<Vec<_>>();
+        assert_eq!(registered.len(), 2);
+        wake_all(registered.into_iter());
+        assert_eq!(first_task.0.load(Ordering::Relaxed), 1);
+        assert_eq!(second_task.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn take_all_invalidates_existing_tokens() {
+        let mut waiters = WaitSet::new();
+        let first_task = Arc::new(TrackWake(AtomicUsize::new(0)));
+        let first_waker = Waker::from(first_task.clone());
+        let second_task = Arc::new(TrackWake(AtomicUsize::new(0)));
+        let second_waker = Waker::from(second_task.clone());
+        let mut first_token = None;
+        let mut second_token = None;
+
+        drop(waiters.register(&mut first_token, &first_waker));
+        assert_eq!(waiters.take_all().count(), 1);
+
+        drop(waiters.register(&mut second_token, &second_waker));
+        drop(waiters.register(&mut first_token, &first_waker));
+
+        let registered = waiters.take_all().collect::<Vec<_>>();
         assert_eq!(registered.len(), 2);
         wake_all(registered.into_iter());
         assert_eq!(first_task.0.load(Ordering::Relaxed), 1);

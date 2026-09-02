@@ -30,6 +30,7 @@ use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::wake_all;
+use crate::internal::waker_batch::WakerBatch;
 
 /// The internal semaphore that provides low-level async primitives.
 #[derive(Debug)]
@@ -207,7 +208,7 @@ impl Semaphore {
     /// Adds as many permits until there is no waiter.
     pub fn notify_all(&self) {
         let mut waiters = self.waiters.lock();
-        let mut wakers = vec![];
+        let mut wakers = WakerBatch::new();
         loop {
             match waiters.unlink_first_waiter(|node| {
                 node.permits = 0;

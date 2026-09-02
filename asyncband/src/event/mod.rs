@@ -63,6 +63,7 @@ use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::wake_all;
+use crate::internal::waker_batch::WakerBatch;
 
 /// A reusable event that remains set until explicitly reset.
 ///
@@ -171,7 +172,7 @@ impl ManualResetEvent {
             state.is_set = true;
             // Detach the complete cohort before invoking any waker. A wake callback may reset the
             // event and register a new wait, which must belong to the state current at that point.
-            let mut wakers = vec![];
+            let mut wakers = WakerBatch::new();
             while let Some((_id, waiter)) = state.waiters.unlink_first_waiter(|waiter| {
                 waiter.notified = true;
                 true

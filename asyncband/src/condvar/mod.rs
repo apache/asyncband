@@ -69,6 +69,7 @@ use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::wake_all;
+use crate::internal::waker_batch::WakerBatch;
 use crate::mutex;
 use crate::mutex::MutexGuard;
 use crate::mutex::OwnedMutexGuard;
@@ -158,7 +159,7 @@ impl Condvar {
     pub fn notify_all(&self) {
         let wakers = {
             let mut waiters = self.waiters.lock();
-            let mut wakers = vec![];
+            let mut wakers = WakerBatch::new();
 
             while waiters
                 .unlink_first_waiter(|node| {
