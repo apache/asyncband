@@ -18,6 +18,8 @@
 use std::mem;
 use std::num::NonZeroUsize;
 
+const NO_VACANT_SLOT: usize = usize::MAX;
+
 /// Identifies a reusable slot while that slot is occupied.
 ///
 /// The non-zero representation lets wrappers such as `WaiterId` retain a niche when stored in an
@@ -50,11 +52,13 @@ impl std::fmt::Debug for SlotId {
 ///
 /// The occupied length equals the number of `Occupied` slots. Every `Vacant` slot appears exactly
 /// once in the singly linked vacant list, which starts at `next_vacant` and terminates at
-/// `slots.len()`. Removing a value makes its slot ID available for immediate reuse.
+/// [`NO_VACANT_SLOT`]. Removing a value makes its slot ID available for immediate reuse. Vacant
+/// slots at the logical tail are removed when they are reachable from the head of the vacant list;
+/// this shortens later scans without releasing the vector's allocation.
 #[derive(Debug)]
 pub struct Arena<T> {
     slots: Vec<Slot<T>>,
-    /// The next reusable slot, or `slots.len()` when every slot is occupied.
+    /// The next reusable slot, or [`NO_VACANT_SLOT`] when every slot is occupied.
     next_vacant: usize,
     len: usize,
 }
@@ -69,7 +73,7 @@ impl<T> Arena<T> {
     pub const fn new() -> Self {
         Self {
             slots: vec![],
-            next_vacant: 0,
+            next_vacant: NO_VACANT_SLOT,
             len: 0,
         }
     }
@@ -77,19 +81,20 @@ impl<T> Arena<T> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             slots: Vec::with_capacity(capacity),
-            next_vacant: 0,
+            next_vacant: NO_VACANT_SLOT,
             len: 0,
         }
     }
 
     pub fn insert(&mut self, value: T) -> SlotId {
-        let index = self.next_vacant;
         self.len += 1;
 
-        if index == self.slots.len() {
+        let index = if self.next_vacant == NO_VACANT_SLOT {
+            let index = self.slots.len();
             self.slots.push(Slot::Occupied(value));
-            self.next_vacant = index + 1;
+            index
         } else {
+            let index = self.next_vacant;
             self.next_vacant = match self.slots.get(index) {
                 Some(Slot::Vacant { next }) => *next,
                 Some(Slot::Occupied(_)) | None => {
@@ -97,7 +102,8 @@ impl<T> Arena<T> {
                 }
             };
             self.slots[index] = Slot::Occupied(value);
-        }
+            index
+        };
 
         SlotId::from_index(index)
     }
@@ -140,6 +146,19 @@ impl<T> Arena<T> {
     #[track_caller]
     pub fn remove(&mut self, id: SlotId) -> T {
         let index = id.index();
+        if index + 1 == self.slots.len() {
+            let value = match self.slots.pop().expect("arena slot ID must be in bounds") {
+                Slot::Occupied(value) => value,
+                vacant @ Slot::Vacant { .. } => {
+                    self.slots.push(vacant);
+                    panic!("arena slot ID must be occupied");
+                }
+            };
+            self.len -= 1;
+            self.trim_vacant_tail();
+            return value;
+        }
+
         let slot = self
             .slots
             .get_mut(index)
@@ -161,6 +180,19 @@ impl<T> Arena<T> {
         value
     }
 
+    fn trim_vacant_tail(&mut self) {
+        while self.next_vacant != NO_VACANT_SLOT && self.next_vacant + 1 == self.slots.len() {
+            let Slot::Vacant { next } = self
+                .slots
+                .pop()
+                .expect("vacant-list head must refer to a slot")
+            else {
+                unreachable!("arena free list must point to a vacant slot")
+            };
+            self.next_vacant = next;
+        }
+    }
+
     /// Drains every occupied value in slot order while retaining the allocation for reuse.
     ///
     /// After a non-empty drain, every previously issued slot ID becomes invalid, including IDs for
@@ -168,7 +200,7 @@ impl<T> Arena<T> {
     /// their own epoch check.
     #[inline]
     pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
-        self.next_vacant = 0;
+        self.next_vacant = NO_VACANT_SLOT;
         self.len = 0;
         self.slots.drain(..).filter_map(|slot| match slot {
             Slot::Occupied(value) => Some(value),
@@ -179,7 +211,7 @@ impl<T> Arena<T> {
     /// Takes every occupied value and the backing allocation in slot order.
     #[inline]
     pub fn take_all(&mut self) -> impl Iterator<Item = T> + use<T> {
-        self.next_vacant = 0;
+        self.next_vacant = NO_VACANT_SLOT;
         self.len = 0;
         mem::take(&mut self.slots)
             .into_iter()
@@ -211,6 +243,47 @@ mod tests {
         assert_eq!(replacement, first);
         assert_eq!(arena.get(replacement), Some(&"replacement"));
         assert_eq!(arena.get(second), Some(&"second"));
+    }
+
+    #[test]
+    fn removing_tail_slots_shortens_the_logical_storage() {
+        let mut arena = Arena::with_capacity(4);
+        let ids = [
+            arena.insert(0),
+            arena.insert(1),
+            arena.insert(2),
+            arena.insert(3),
+        ];
+        let capacity = arena.slots.capacity();
+
+        arena.remove(ids[2]);
+        assert_eq!(arena.slots.len(), 4);
+        arena.remove(ids[3]);
+
+        assert_eq!(arena.slots.len(), 2);
+        assert_eq!(arena.slots.capacity(), capacity);
+        assert_eq!(arena.values().copied().collect::<Vec<_>>(), vec![0, 1]);
+    }
+
+    #[test]
+    fn tail_trimming_preserves_the_remaining_vacant_list() {
+        let mut arena = Arena::new();
+        let ids = [
+            arena.insert(0),
+            arena.insert(1),
+            arena.insert(2),
+            arena.insert(3),
+            arena.insert(4),
+            arena.insert(5),
+        ];
+
+        arena.remove(ids[4]);
+        arena.remove(ids[2]);
+        arena.remove(ids[5]);
+
+        assert_eq!(arena.insert(20), ids[2]);
+        assert_eq!(arena.insert(40), ids[4]);
+        assert_eq!(arena.insert(50), ids[5]);
     }
 
     #[test]

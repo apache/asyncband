@@ -40,9 +40,8 @@ const CONCURRENT_BATCH_SIZE: usize = 4096;
 
 /// A channel that peaked at `peak` receivers and currently has `live` of them.
 ///
-/// The two are measured separately because a dropped receiver leaves its slot behind: the reclaim
-/// scan walks every slot the channel ever handed out, so a channel that shed receivers keeps
-/// paying for the peak. Pairing each peak with a drained arena is what makes that visible.
+/// The two are measured separately to verify that dropping a tail cohort shortens later reclaim
+/// scans instead of making a channel that shed receivers keep paying for its historical peak.
 #[derive(Clone, Copy)]
 struct Fanout {
     peak: usize,
@@ -257,7 +256,7 @@ fn send_and_try_recv_owned_shared(bencher: Bencher) {
 }
 
 // Measures the reclaim scan, which runs when the slowest cursor advances. Comparing a peak against
-// the same peak drained down to fewer receivers shows what the slots left behind still cost.
+// the same peak drained down to fewer receivers shows whether tail slot trimming tracks live state.
 #[divan::bench(args = RECLAIM_FANOUTS)]
 fn drain_with_receivers(bencher: Bencher, fanout: Fanout) {
     let (sender, receiver) = mpmc::unbounded();
