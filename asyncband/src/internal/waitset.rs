@@ -88,7 +88,7 @@ impl WaitSet {
         if !self.waiters.is_empty() {
             self.advance_epoch();
         }
-        mem::replace(&mut self.waiters, Arena::new()).into_values()
+        self.waiters.take_all()
     }
 
     /// Registers or updates a waker in the current wake epoch.

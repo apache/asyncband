@@ -176,12 +176,17 @@ impl<T> Arena<T> {
         })
     }
 
-    /// Consumes the arena and returns every occupied value in slot order.
-    pub fn into_values(self) -> impl Iterator<Item = T> {
-        self.slots.into_iter().filter_map(|slot| match slot {
-            Slot::Occupied(value) => Some(value),
-            Slot::Vacant { .. } => None,
-        })
+    /// Takes every occupied value and the backing allocation in slot order.
+    #[inline]
+    pub fn take_all(&mut self) -> impl Iterator<Item = T> + use<T> {
+        self.next_vacant = 0;
+        self.len = 0;
+        mem::take(&mut self.slots)
+            .into_iter()
+            .filter_map(|slot| match slot {
+                Slot::Occupied(value) => Some(value),
+                Slot::Vacant { .. } => None,
+            })
     }
 }
 
@@ -226,13 +231,15 @@ mod tests {
     }
 
     #[test]
-    fn into_values_consumes_the_arena() {
+    fn take_all_releases_the_backing_allocation() {
         let mut arena = Arena::new();
         arena.insert(1);
         let removed = arena.insert(2);
         arena.insert(3);
         arena.remove(removed);
 
-        assert_eq!(arena.into_values().collect::<Vec<_>>(), vec![1, 3]);
+        let values = arena.take_all();
+        assert_eq!(arena.slots.capacity(), 0);
+        assert_eq!(values.collect::<Vec<_>>(), vec![1, 3]);
     }
 }
