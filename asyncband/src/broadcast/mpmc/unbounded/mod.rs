@@ -103,9 +103,9 @@ use std::task::Poll;
 use crate::internal::arena::Arena;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::WaitSet;
-use crate::internal::waitset::WakerToken;
 use crate::internal::wake_all;
+use crate::internal::wakerset::WakerSet;
+use crate::internal::wakerset::WakerToken;
 
 #[cfg(test)]
 mod tests;
@@ -134,7 +134,7 @@ pub fn unbounded<T: Clone>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
             tail: 0,
             receivers,
             peak_len: 0,
-            waiters: WaitSet::new(),
+            waiters: WakerSet::new(),
         }),
         senders: AtomicUsize::new(1),
     });
@@ -204,7 +204,7 @@ struct Inner<T> {
     /// The largest backlog retained since the buffer was last empty.
     peak_len: usize,
     /// Receivers parked in [`UnboundedReceiver::recv`].
-    waiters: WaitSet,
+    waiters: WakerSet,
 }
 
 /// Messages removed from the shared buffer and waiting to be dropped after it is unlocked.
@@ -718,7 +718,18 @@ impl<T> Drop for Recv<'_, T> {
 
         let waker = {
             let mut inner = self.receiver.shared.inner.lock();
-            inner.waiters.unregister(&mut self.token)
+            let cursor = *inner
+                .receivers
+                .get(self.receiver.key)
+                .expect("active broadcast receiver must be registered");
+            if cursor == inner.tail && self.receiver.shared.senders.load(Ordering::Acquire) != 0 {
+                inner.waiters.unregister(&mut self.token)
+            } else {
+                // A publisher or the final sender owns this registration or has already detached
+                // it under the channel lock.
+                self.token = None;
+                None
+            }
         };
         drop(waker);
     }
