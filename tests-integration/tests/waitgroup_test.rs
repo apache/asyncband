@@ -15,10 +15,25 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::future::Future;
 use std::future::IntoFuture;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Wake;
+use std::task::Waker;
 
 use asyncband::waitgroup::WaitGroup;
 use tests_integration::poll_once;
+
+struct WakeCount(AtomicUsize);
+
+impl Wake for WakeCount {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn waits_for_all_worker_handles() {
@@ -97,4 +112,41 @@ fn a_consumed_initial_handle_is_immediately_ready() {
     let mut wait = Box::pin(WaitGroup::new().into_future());
 
     assert!(poll_once(wait.as_mut()).is_ready());
+}
+
+#[test]
+fn a_completed_wait_can_be_cancelled_before_it_is_polled_again() {
+    let wg = WaitGroup::new();
+    let worker = wg.clone();
+    let mut wait = Box::pin(wg.into_future());
+
+    assert!(poll_once(wait.as_mut()).is_pending());
+    drop(worker);
+    drop(wait);
+}
+
+#[test]
+fn repolling_replaces_the_registered_waker() {
+    let wg = WaitGroup::new();
+    let worker = wg.clone();
+    let mut wait = Box::pin(wg.into_future());
+    let first = Arc::new(WakeCount(AtomicUsize::new(0)));
+    let second = Arc::new(WakeCount(AtomicUsize::new(0)));
+    let first_waker = Waker::from(first.clone());
+    let second_waker = Waker::from(second.clone());
+
+    assert!(
+        wait.as_mut()
+            .poll(&mut Context::from_waker(&first_waker))
+            .is_pending()
+    );
+    assert!(
+        wait.as_mut()
+            .poll(&mut Context::from_waker(&second_waker))
+            .is_pending()
+    );
+    drop(worker);
+
+    assert_eq!(first.0.load(Ordering::Relaxed), 0);
+    assert_eq!(second.0.load(Ordering::Relaxed), 1);
 }

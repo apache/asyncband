@@ -70,9 +70,8 @@ pub(crate) mod atomic_waker;
 #[allow(dead_code)]
 pub(crate) mod arena;
 
-#[cfg(any(feature = "latch", feature = "once", feature = "waitgroup"))]
-// `waitgroup` increments and decrements the countdown, while `latch` and `once` only decrement it.
-// Consequently, `increment` is unused when either of the latter features is built alone.
+#[cfg(any(feature = "latch", feature = "once"))]
+// `increment` is unused because latch and once only decrement the countdown.
 #[allow(dead_code)]
 pub(crate) mod countdown;
 
@@ -132,7 +131,6 @@ pub(crate) mod waitlist;
     feature = "once",
     feature = "rwlock",
     feature = "semaphore",
-    feature = "waitgroup",
     feature = "watch",
 ))]
 // Wait-set primitives know the exact batch capacity, while linked-list primitives use the
@@ -146,7 +144,6 @@ pub(crate) mod waker_batch;
     feature = "completion",
     feature = "latch",
     feature = "once",
-    feature = "waitgroup",
     feature = "watch",
 ))]
 // `barrier` constructs a wait set with `with_capacity`, while completion and countdown-based
