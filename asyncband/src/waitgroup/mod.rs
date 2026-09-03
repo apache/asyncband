@@ -83,7 +83,7 @@ impl State {
         }
     }
 
-    fn add_handle(&self) {
+    fn register_handle(&self) {
         // The borrowed source handle keeps the count above zero. Registration publishes no data,
         // so it does not need to synchronize with completion.
         // Like Arc, reserve half of the address space so concurrent increments cannot wrap the
@@ -211,7 +211,7 @@ impl Clone for WaitGroup {
             .state
             .as_ref()
             .expect("a live WaitGroup owns its state");
-        state.add_handle();
+        state.register_handle();
         Self {
             state: Some(state.clone()),
         }

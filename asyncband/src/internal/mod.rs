@@ -71,8 +71,6 @@ pub(crate) mod atomic_waker;
 pub(crate) mod arena;
 
 #[cfg(any(feature = "latch", feature = "once"))]
-// `increment` is unused because latch and once only decrement the countdown.
-#[allow(dead_code)]
 pub(crate) mod countdown;
 
 #[cfg(any(feature = "lazy-cell", feature = "once-cell"))]

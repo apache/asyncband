@@ -104,22 +104,6 @@ impl CountdownState {
         }
     }
 
-    /// Increments the counter by `n`.
-    ///
-    /// Returns `true` without changing the counter if the operation would overflow.
-    pub fn increment(&self, n: u32) -> bool {
-        let mut cnt = self.state();
-        loop {
-            let Some(new_cnt) = cnt.checked_add(n) else {
-                return true;
-            };
-            match self.cas_state(cnt, new_cnt) {
-                Ok(_) => return false,
-                Err(x) => cnt = x,
-            }
-        }
-    }
-
     /// Decrements the counter by `n`, returning whether the caller should wake up all waiters.
     pub fn decrement(&self, n: u32) -> bool {
         let mut cnt = self.state();
@@ -135,18 +119,5 @@ impl CountdownState {
                 Err(x) => cnt = x,
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn increment_reports_overflow_without_changing_state() {
-        let state = CountdownState::new(u32::MAX);
-
-        assert!(state.increment(1));
-        assert_eq!(state.state(), u32::MAX);
     }
 }
