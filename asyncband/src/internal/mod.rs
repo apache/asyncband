@@ -65,7 +65,7 @@ pub(crate) mod atomic_waker;
     feature = "waitgroup",
     feature = "watch",
 ))]
-// `WaitList` and `WaitSet` use different `Arena` operations. A single-primitive build therefore
+// `WaitList` and `WakerSet` use different `Arena` operations. A single-primitive build therefore
 // leaves part of this shared API unused, while the all-feature build uses it.
 #[allow(dead_code)]
 pub(crate) mod arena;
@@ -132,7 +132,7 @@ pub(crate) mod waitlist;
     feature = "waitgroup",
     feature = "watch",
 ))]
-// Wait-set primitives know the exact batch capacity, while linked-list primitives use the
+// Waker-set primitives know the exact batch capacity, while linked-list primitives use the
 // allocation-free constructor. Each constructor is therefore unused in some feature subsets.
 #[allow(dead_code)]
 pub(crate) mod waker_batch;
@@ -143,23 +143,10 @@ pub(crate) mod waker_batch;
     feature = "completion",
     feature = "latch",
     feature = "once",
-    feature = "watch",
-))]
-// `barrier` constructs a wait set with `with_capacity`, while completion and countdown-based
-// primitives use `new`. One constructor is therefore unused in every single-primitive build.
-#[allow(dead_code)]
-pub(crate) mod waitset;
-
-#[cfg(any(
-    feature = "barrier",
-    feature = "broadcast",
-    feature = "completion",
-    feature = "latch",
-    feature = "once",
     feature = "waitgroup",
     feature = "watch",
 ))]
-// Reusable wait sets and terminal primitives use different lifecycle policies, so some feature
+// Reusable waker sets and terminal primitives use different lifecycle policies, so some feature
 // subsets leave one constructor or detach operation unused.
 #[allow(dead_code)]
 pub(crate) mod wakerset;
