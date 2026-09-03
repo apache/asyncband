@@ -72,35 +72,36 @@ impl CountdownState {
             return Poll::Ready(());
         }
 
-        let retired_waker = {
-            let mut waiters = self.waiters.lock();
-            if self.state() == 0 {
-                // A concurrent zero transition will drain after this lock is released.
-                *token = None;
-                return Poll::Ready(());
-            }
-            waiters.register(token, cx.waker())
-        };
+        let mut waiters = self.waiters.lock();
+        if self.state() == 0 {
+            // A concurrent zero transition will drain after this lock is released.
+            *token = None;
+            return Poll::Ready(());
+        }
+
+        let retired_waker = waiters.register(token, cx.waker());
+        drop(waiters);
         drop(retired_waker);
         Poll::Pending
     }
 
     #[inline]
     pub fn unregister(&self, token: &mut Option<WakerToken>) {
-        if token.is_some() {
-            let removed_waker = {
-                let mut waiters = self.waiters.lock();
-                if self.state() == 0 {
-                    // The terminal zero transition owns this registration or has already detached
-                    // it. No later countdown generation can reuse its slot.
-                    *token = None;
-                    None
-                } else {
-                    waiters.unregister(token)
-                }
-            };
-            drop(removed_waker);
+        if token.is_none() {
+            return;
         }
+
+        let mut waiters = self.waiters.lock();
+        if self.state() == 0 {
+            // The terminal zero transition owns this registration or has already detached it. No
+            // later countdown generation can reuse its slot.
+            *token = None;
+            return;
+        }
+
+        let removed_waker = waiters.unregister(token);
+        drop(waiters);
+        drop(removed_waker);
     }
 
     /// Returns `Ok(())` if the counter is zero, otherwise returns the current counter value.

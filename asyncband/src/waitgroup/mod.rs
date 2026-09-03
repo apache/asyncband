@@ -110,15 +110,14 @@ impl State {
             return Poll::Ready(());
         }
 
-        let retired_waker = {
-            let mut waiters = self.waiters.lock();
-            if self.handles.load(Ordering::Acquire) == 0 {
-                *token = None;
-                return Poll::Ready(());
-            }
+        let mut waiters = self.waiters.lock();
+        if self.handles.load(Ordering::Acquire) == 0 {
+            *token = None;
+            return Poll::Ready(());
+        }
 
-            waiters.register(token, cx.waker())
-        };
+        let retired_waker = waiters.register(token, cx.waker());
+        drop(waiters);
         drop(retired_waker);
         Poll::Pending
     }
@@ -128,18 +127,17 @@ impl State {
             return;
         }
 
-        let removed_waker = {
-            let mut waiters = self.waiters.lock();
-            // Reaching zero is terminal, so the zero transition either owns this waker or has
-            // already taken it. Unlike reusable wait sets, no epoch is needed to disambiguate a
-            // later registration.
-            if self.handles.load(Ordering::Acquire) == 0 {
-                *token = None;
-                None
-            } else {
-                waiters.unregister(token)
-            }
-        };
+        let mut waiters = self.waiters.lock();
+        // Reaching zero is terminal, so the zero transition either owns this waker or has already
+        // taken it. Unlike reusable waker sets, no epoch is needed to disambiguate a later
+        // registration.
+        if self.handles.load(Ordering::Acquire) == 0 {
+            *token = None;
+            return;
+        }
+
+        let removed_waker = waiters.unregister(token);
+        drop(waiters);
         drop(removed_waker);
     }
 }

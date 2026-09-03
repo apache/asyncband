@@ -239,32 +239,31 @@ impl<'a, T> Future for Wait<'a, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let (poll, retired_waker) = {
-            let mut state = this.completion.shared.state.lock();
-            match state.status {
-                Status::Pending => {
-                    let retired = state.waiters.register(&mut this.token, cx.waker());
-                    (Poll::Pending, retired)
-                }
-                Status::Completed => {
-                    // Completion detaches every registration under this same lock before another
-                    // poll can observe the terminal status.
-                    this.token = None;
-                    let completion: &'a Completion<T> = this.completion;
-                    let value = completion
-                        .shared
-                        .value
-                        .get()
-                        .expect("completed value must be initialized");
-                    (Poll::Ready(Ok(value)), None)
-                }
-                Status::Abandoned => {
-                    // Abandonment uses the same terminal detach protocol as completion.
-                    this.token = None;
-                    (Poll::Ready(Err(Abandoned(()))), None)
-                }
+        let mut state = this.completion.shared.state.lock();
+        let (poll, retired_waker) = match state.status {
+            Status::Pending => {
+                let retired = state.waiters.register(&mut this.token, cx.waker());
+                (Poll::Pending, retired)
+            }
+            Status::Completed => {
+                // Completion detaches every registration under this same lock before another poll
+                // can observe the terminal status.
+                this.token = None;
+                let completion: &'a Completion<T> = this.completion;
+                let value = completion
+                    .shared
+                    .value
+                    .get()
+                    .expect("completed value must be initialized");
+                (Poll::Ready(Ok(value)), None)
+            }
+            Status::Abandoned => {
+                // Abandonment uses the same terminal detach protocol as completion.
+                this.token = None;
+                (Poll::Ready(Err(Abandoned(()))), None)
             }
         };
+        drop(state);
         drop(retired_waker);
         poll
     }
@@ -276,16 +275,15 @@ impl<T> Drop for Wait<'_, T> {
             return;
         }
 
-        let waker = {
-            let mut state = self.completion.shared.state.lock();
-            if state.status == Status::Pending {
-                state.waiters.unregister(&mut self.token)
-            } else {
-                // The terminal transition already detached this registration.
-                self.token = None;
-                None
-            }
-        };
+        let mut state = self.completion.shared.state.lock();
+        if state.status != Status::Pending {
+            // The terminal transition already detached this registration.
+            self.token = None;
+            return;
+        }
+
+        let waker = state.waiters.unregister(&mut self.token);
+        drop(state);
         drop(waker);
     }
 }

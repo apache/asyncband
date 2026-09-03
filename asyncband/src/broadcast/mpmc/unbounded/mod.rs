@@ -716,21 +716,20 @@ impl<T> Drop for Recv<'_, T> {
             return;
         }
 
-        let waker = {
-            let mut inner = self.receiver.shared.inner.lock();
-            let cursor = *inner
-                .receivers
-                .get(self.receiver.key)
-                .expect("active broadcast receiver must be registered");
-            if cursor == inner.tail && self.receiver.shared.senders.load(Ordering::Acquire) != 0 {
-                inner.waiters.unregister(&mut self.token)
-            } else {
-                // A publisher or the final sender owns this registration or has already detached
-                // it under the channel lock.
-                self.token = None;
-                None
-            }
-        };
+        let mut inner = self.receiver.shared.inner.lock();
+        let cursor = *inner
+            .receivers
+            .get(self.receiver.key)
+            .expect("active broadcast receiver must be registered");
+        if cursor != inner.tail || self.receiver.shared.senders.load(Ordering::Acquire) == 0 {
+            // A publisher or the final sender owns this registration or has already detached it
+            // under the channel lock.
+            self.token = None;
+            return;
+        }
+
+        let waker = inner.waiters.unregister(&mut self.token);
+        drop(inner);
         drop(waker);
     }
 }

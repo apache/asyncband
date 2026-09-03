@@ -356,21 +356,20 @@ impl<T> Future for Change<'_, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let (poll, retired_waker) = {
-            let mut state = this.shared.state.lock();
-            if state.version != this.seen {
-                // Publishing a newer version detached this registration under the same lock.
-                this.token = None;
-                (Poll::Ready(Ok(state.version)), None)
-            } else if state.senders == 0 {
-                // The final sender detached all registrations before releasing this state lock.
-                this.token = None;
-                (Poll::Ready(Err(RecvError::Disconnected)), None)
-            } else {
-                let retired = state.waiters.register(&mut this.token, cx.waker());
-                (Poll::Pending, retired)
-            }
+        let mut state = this.shared.state.lock();
+        let (poll, retired_waker) = if state.version != this.seen {
+            // Publishing a newer version detached this registration under the same lock.
+            this.token = None;
+            (Poll::Ready(Ok(state.version)), None)
+        } else if state.senders == 0 {
+            // The final sender detached all registrations before releasing this state lock.
+            this.token = None;
+            (Poll::Ready(Err(RecvError::Disconnected)), None)
+        } else {
+            let retired = state.waiters.register(&mut this.token, cx.waker());
+            (Poll::Pending, retired)
         };
+        drop(state);
         drop(retired_waker);
         poll
     }
@@ -382,16 +381,15 @@ impl<T> Drop for Change<'_, T> {
             return;
         }
 
-        let waker = {
-            let mut state = self.shared.state.lock();
-            if state.version == self.seen && state.senders != 0 {
-                state.waiters.unregister(&mut self.token)
-            } else {
-                // A publication or terminal sender drop already detached this registration.
-                self.token = None;
-                None
-            }
-        };
+        let mut state = self.shared.state.lock();
+        if state.version != self.seen || state.senders == 0 {
+            // A publication or terminal sender drop already detached this registration.
+            self.token = None;
+            return;
+        }
+
+        let waker = state.waiters.unregister(&mut self.token);
+        drop(state);
         drop(waker);
     }
 }
