@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::future::IntoFuture;
+
 use asyncband::waitgroup::WaitGroup;
 use tests_integration::poll_once;
 
@@ -23,7 +25,7 @@ async fn waits_for_all_worker_handles() {
     let wg = WaitGroup::new();
     let mut tasks = vec![];
     for _ in 0..100 {
-        let worker = wg.worker();
+        let worker = wg.clone();
         tasks.push(tokio::spawn(async move {
             drop(worker);
         }));
@@ -38,8 +40,8 @@ async fn waits_for_all_worker_handles() {
 #[test]
 fn wait_is_pending_until_the_last_handle_drops() {
     let wg = WaitGroup::new();
-    let worker = wg.worker();
-    let mut wait = Box::pin(wg.wait());
+    let worker = wg.clone();
+    let mut wait = Box::pin(wg.into_future());
 
     assert!(poll_once(wait.as_mut()).is_pending());
     drop(worker);
@@ -49,8 +51,8 @@ fn wait_is_pending_until_the_last_handle_drops() {
 #[test]
 fn cancelling_one_wait_does_not_cancel_another() {
     let wg = WaitGroup::new();
-    let worker = wg.worker();
-    let first = wg.wait();
+    let worker = wg.clone();
+    let first = wg.into_future();
     let mut second = Box::pin(first.clone());
     let mut first = Box::pin(first);
 
@@ -63,11 +65,26 @@ fn cancelling_one_wait_does_not_cancel_another() {
 }
 
 #[test]
-fn worker_clones_register_nested_work() {
+fn multiple_handles_can_wait_for_the_same_completion() {
     let wg = WaitGroup::new();
-    let worker = wg.worker();
+    let worker = wg.clone();
+    let mut first = Box::pin(wg.clone().into_future());
+    let mut second = Box::pin(wg.into_future());
+
+    assert!(poll_once(first.as_mut()).is_pending());
+    assert!(poll_once(second.as_mut()).is_pending());
+
+    drop(worker);
+    assert!(poll_once(first.as_mut()).is_ready());
+    assert!(poll_once(second.as_mut()).is_ready());
+}
+
+#[test]
+fn handle_clones_register_nested_work() {
+    let wg = WaitGroup::new();
+    let worker = wg.clone();
     let nested = worker.clone();
-    let mut wait = Box::pin(wg.wait());
+    let mut wait = Box::pin(wg.into_future());
 
     drop(worker);
     assert!(poll_once(wait.as_mut()).is_pending());
@@ -76,8 +93,8 @@ fn worker_clones_register_nested_work() {
 }
 
 #[test]
-fn empty_group_is_immediately_ready() {
-    let mut wait = Box::pin(WaitGroup::new().wait());
+fn a_consumed_initial_handle_is_immediately_ready() {
+    let mut wait = Box::pin(WaitGroup::new().into_future());
 
     assert!(poll_once(wait.as_mut()).is_ready());
 }

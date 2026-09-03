@@ -120,6 +120,26 @@ impl CountdownState {
         }
     }
 
+    /// Adds one balanced RAII handle using a single relaxed atomic operation.
+    ///
+    /// A conservative logical maximum leaves enough physical counter space for concurrent failed
+    /// additions to roll themselves back without wrapping the counter.
+    pub fn add_handle(&self) -> bool {
+        const MAX_HANDLES: u32 = u32::MAX / 2;
+        if self.state.fetch_add(1, Ordering::Relaxed) >= MAX_HANDLES {
+            self.state.fetch_sub(1, Ordering::Relaxed);
+            return true;
+        }
+        false
+    }
+
+    /// Releases one balanced RAII handle and reports whether it was the last one.
+    pub fn release_handle(&self) -> bool {
+        let previous = self.state.fetch_sub(1, Ordering::Release);
+        debug_assert!(previous > 0, "a live handle must own one count");
+        previous == 1
+    }
+
     /// Decrements the counter by `n`, returning whether the caller should wake up all waiters.
     pub fn decrement(&self, n: u32) -> bool {
         let mut cnt = self.state();
@@ -148,5 +168,13 @@ mod tests {
 
         assert!(state.increment(1));
         assert_eq!(state.state(), u32::MAX);
+    }
+
+    #[test]
+    fn add_handle_reports_logical_overflow_without_changing_state() {
+        let state = CountdownState::new(u32::MAX / 2);
+
+        assert!(state.add_handle());
+        assert_eq!(state.state(), u32::MAX / 2);
     }
 }

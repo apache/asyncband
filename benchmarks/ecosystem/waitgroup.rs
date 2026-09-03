@@ -16,6 +16,7 @@
 // under the License.
 
 use std::future::Future;
+use std::future::IntoFuture;
 use std::pin::pin;
 
 use divan::Bencher;
@@ -42,7 +43,7 @@ trait WaitGroup {
 
 impl WaitGroup for Asyncband {
     type Group = asyncband::waitgroup::WaitGroup;
-    type Worker = asyncband::waitgroup::Worker;
+    type Worker = asyncband::waitgroup::WaitGroup;
     type Wait = asyncband::waitgroup::Wait;
 
     fn new() -> Self::Group {
@@ -50,11 +51,11 @@ impl WaitGroup for Asyncband {
     }
 
     fn worker(group: &Self::Group) -> Self::Worker {
-        group.worker()
+        group.clone()
     }
 
     fn wait(group: Self::Group) -> Self::Wait {
-        group.wait()
+        group.into_future()
     }
 }
 
