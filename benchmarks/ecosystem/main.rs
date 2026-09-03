@@ -16,6 +16,7 @@
 // under the License.
 
 mod broadcast;
+mod mpmc;
 mod mpsc;
 mod watch;
 

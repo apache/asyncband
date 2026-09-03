@@ -58,6 +58,7 @@ pub(crate) mod atomic_waker;
     feature = "event",
     feature = "completion",
     feature = "latch",
+    feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
@@ -88,6 +89,7 @@ pub(crate) mod value_cell;
     feature = "event",
     feature = "completion",
     feature = "latch",
+    feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
@@ -98,26 +100,28 @@ pub(crate) mod value_cell;
 pub(crate) mod mutex;
 
 #[cfg(any(
+    feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
 ))]
-// `mpsc` uses `poll_acquire`, `release_if_nonempty`, and `notify_all`; mutexes and rwlocks use
-// `acquire`, `try_acquire`, and `release`; the public semaphore also uses the accounting methods.
-// Each single-primitive build intentionally leaves the other groups unused.
+// Queue channels use `poll_acquire`, `release_if_nonempty`, and `notify_all`; mutexes and rwlocks
+// use `acquire`, `try_acquire`, and `release`; the public semaphore also uses the accounting
+// methods. Each single-primitive build intentionally leaves the other groups unused.
 #[allow(dead_code)]
 pub(crate) mod semaphore;
 
 #[cfg(any(
+    feature = "mpmc",
     feature = "event",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
 ))]
-// The event and semaphore-backed primitives use different queue operations. A single-feature
-// build therefore leaves part of this shared API unused, while the all-feature build uses it.
+// Event and queue primitives use different `WaitList` operations. A single-feature build
+// therefore leaves part of this shared API unused, while the all-feature build uses it.
 #[allow(dead_code)]
 pub(crate) mod waitlist;
 

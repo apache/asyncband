@@ -70,6 +70,7 @@
 //! |                            | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Wait until all cloned worker handles are dropped.                                                             |
 //! |                            | [`Shutdown`](shutdown::Shutdown)              | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                            |
 //! | Channels                   | [`oneshot`]                                   | `oneshot`      | Send one value from one sender to one receiver.                                                               |
+//! |                            | [`mpmc`]                                      | `mpmc`         | Deliver each value to exactly one of multiple competing receivers with bounded or unbounded queues.           |
 //! |                            | [`mpsc`]                                      | `mpsc`         | Send each value from multiple producers to one receiver with bounded backpressure or an unbounded queue.      |
 //! |                            | [`broadcast`]                                 | `broadcast`    | Deliver every value to receivers active at send time; retain an unbounded backlog until each consumes or drops. |
 //! |                            | [`watch`]                                     | `watch`        | Publish the latest state to independently tracked receivers and coalesce intermediate updates.                |
@@ -133,6 +134,8 @@ pub mod condvar;
 pub mod event;
 #[cfg(feature = "latch")]
 pub mod latch;
+#[cfg(feature = "mpmc")]
+pub mod mpmc;
 #[cfg(feature = "mpsc")]
 pub mod mpsc;
 #[cfg(feature = "mutex")]

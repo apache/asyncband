@@ -15,28 +15,28 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod barrier;
-mod blocking;
-mod broadcast;
-mod completion;
-mod condvar;
-mod event;
-mod latch;
-mod mpmc;
-mod mpsc;
-mod mutex;
-mod once;
-mod once_map;
-mod oneshot;
-mod pool;
-mod rwlock;
-mod semaphore;
-mod shutdown;
-mod singleflight;
-mod support;
-mod waitgroup;
-mod watch;
+use divan::Bencher;
+use divan::counter::ItemsCount;
 
-fn main() {
-    divan::main();
+use super::adapters::AsyncChannel;
+use super::adapters::Asyncband;
+use super::adapters::BoundedMpmc;
+use super::adapters::Flume;
+use super::support::BATCH_MESSAGES;
+use super::support::BOUNDED_CAPACITY;
+use super::support::ConcurrentBatch;
+use super::support::TOPOLOGIES;
+use super::support::Topology;
+
+#[divan::bench(
+    types = [Asyncband, AsyncChannel, Flume],
+    args = TOPOLOGIES,
+    sample_count = 20,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn concurrent<C: BoundedMpmc>(bencher: Bencher, topology: Topology) {
+    bencher
+        .with_inputs(|| ConcurrentBatch::new_bounded::<C>(BOUNDED_CAPACITY, topology))
+        .bench_local_refs(|batch| batch.run());
 }
