@@ -86,13 +86,7 @@ impl State {
     fn register_handle(&self) {
         // The borrowed source handle keeps the count above zero. Registration publishes no data,
         // so it does not need to synchronize with completion.
-        // Like Arc, reserve half of the address space so concurrent increments cannot wrap the
-        // counter before callers that crossed the limit roll their increments back.
-        const MAX_HANDLES: usize = usize::MAX / 2;
-        if self.handles.fetch_add(1, Ordering::Relaxed) >= MAX_HANDLES {
-            self.handles.fetch_sub(1, Ordering::Relaxed);
-            panic!("WaitGroup handle count overflow");
-        }
+        self.handles.fetch_add(1, Ordering::Relaxed);
     }
 
     fn release_handle(&self) {
@@ -202,19 +196,16 @@ impl Clone for WaitGroup {
     ///
     /// The group completes after this handle and every other handle have been dropped or consumed
     /// by a wait.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the WaitGroup handle count would overflow.
     fn clone(&self) -> Self {
         let state = self
             .state
             .as_ref()
-            .expect("a live WaitGroup owns its state");
+            .expect("a live WaitGroup owns its state")
+            .clone();
+        // Every handle owns one strong reference, while Wait observers may own additional ones.
+        // Arc's own overflow guard therefore fires before this equally wide counter can wrap.
         state.register_handle();
-        Self {
-            state: Some(state.clone()),
-        }
+        Self { state: Some(state) }
     }
 }
 
