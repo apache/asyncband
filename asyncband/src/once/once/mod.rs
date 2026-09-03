@@ -21,7 +21,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::countdown::CountdownState;
-use crate::internal::waitset::WakerToken;
+use crate::internal::wakerset::WakerToken;
 use crate::semaphore::Semaphore;
 
 /// A synchronization primitive which can be used to run a one-time async initialization.

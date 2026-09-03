@@ -21,21 +21,21 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::WaitSet;
-use crate::internal::waitset::WakerToken;
 use crate::internal::wake_all;
+use crate::internal::wakerset::WakerSet;
+use crate::internal::wakerset::WakerToken;
 
 #[derive(Debug)]
 pub struct CountdownState {
     state: AtomicU32,
-    waiters: Mutex<WaitSet>,
+    waiters: Mutex<WakerSet>,
 }
 
 impl CountdownState {
     pub const fn new(count: u32) -> Self {
         Self {
             state: AtomicU32::new(count),
-            waiters: Mutex::new(WaitSet::new()),
+            waiters: Mutex::new(WakerSet::new()),
         }
     }
 
@@ -66,7 +66,7 @@ impl CountdownState {
     /// Polls for zero, registering the current waker if the countdown is still active.
     pub fn poll_wait(&self, token: &mut Option<WakerToken>, cx: &mut Context<'_>) -> Poll<()> {
         if self.try_wait().is_ok() {
-            // The zero transition owns draining this wake epoch. Avoid taking the waiter lock
+            // The zero transition owns detaching every registration. Avoid taking the waiter lock
             // again when the completed future is dropped.
             *token = None;
             return Poll::Ready(());
@@ -90,7 +90,14 @@ impl CountdownState {
         if token.is_some() {
             let removed_waker = {
                 let mut waiters = self.waiters.lock();
-                waiters.unregister(token)
+                if self.state() == 0 {
+                    // The terminal zero transition owns this registration or has already detached
+                    // it. No later countdown generation can reuse its slot.
+                    *token = None;
+                    None
+                } else {
+                    waiters.unregister(token)
+                }
             };
             drop(removed_waker);
         }

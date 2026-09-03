@@ -55,7 +55,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::countdown::CountdownState;
-use crate::internal::waitset::WakerToken;
+use crate::internal::wakerset::WakerToken;
 
 /// A one-shot countdown that can wake any number of waiting tasks.
 ///
