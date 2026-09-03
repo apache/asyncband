@@ -83,6 +83,24 @@ fn cancelled_wait_still_counts_as_arrival() {
 }
 
 #[test]
+fn dropping_a_woken_wait_keeps_the_next_generation_registered() {
+    let b = Barrier::new(2);
+
+    let mut old = spawn(b.wait());
+    assert_pending!(old.poll());
+    let mut old_leader = spawn(b.wait());
+    assert!(assert_ready!(old_leader.poll()).is_leader());
+
+    let mut next = spawn(b.wait());
+    assert_pending!(next.poll());
+    drop(old);
+
+    let mut next_leader = spawn(b.wait());
+    assert!(assert_ready!(next_leader.poll()).is_leader());
+    assert!(!assert_ready!(next.poll()).is_leader());
+}
+
+#[test]
 fn lots() {
     let b = Barrier::new(100);
 

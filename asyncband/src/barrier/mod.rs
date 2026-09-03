@@ -54,9 +54,9 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::WaitSet;
-use crate::internal::waitset::WakerToken;
 use crate::internal::wake_all;
+use crate::internal::wakerset::WakerSet;
+use crate::internal::wakerset::WakerToken;
 
 /// A synchronization primitive for multiple tasks that need to wait for each other.
 ///
@@ -70,7 +70,7 @@ pub struct Barrier {
 struct BarrierState {
     arrived: u32,
     generation: usize,
-    waiters: WaitSet,
+    waiters: WakerSet,
 }
 
 impl fmt::Debug for BarrierState {
@@ -145,7 +145,7 @@ impl Barrier {
                 arrived: 0,
                 generation: 0,
                 // The final participant completes the generation without parking.
-                waiters: WaitSet::with_capacity((n - 1) as usize),
+                waiters: WakerSet::with_capacity((n - 1) as usize),
             }),
         }
     }
@@ -260,7 +260,14 @@ impl Drop for BarrierWait<'_> {
         if self.token.is_some() {
             let removed_waker = {
                 let mut state = self.barrier.state.lock();
-                state.waiters.unregister(&mut self.token)
+                if self.generation == state.generation {
+                    state.waiters.unregister(&mut self.token)
+                } else {
+                    // Advancing the generation detached this registration before making the new
+                    // generation visible under the same lock.
+                    self.token = None;
+                    None
+                }
             };
             drop(removed_waker);
         }
