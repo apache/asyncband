@@ -129,6 +129,7 @@ pub(crate) mod waitlist;
     feature = "once",
     feature = "rwlock",
     feature = "semaphore",
+    feature = "waitgroup",
     feature = "watch",
 ))]
 // Wait-set primitives know the exact batch capacity, while linked-list primitives use the
@@ -148,3 +149,17 @@ pub(crate) mod waker_batch;
 // primitives use `new`. One constructor is therefore unused in every single-primitive build.
 #[allow(dead_code)]
 pub(crate) mod waitset;
+
+#[cfg(any(
+    feature = "barrier",
+    feature = "broadcast",
+    feature = "completion",
+    feature = "latch",
+    feature = "once",
+    feature = "waitgroup",
+    feature = "watch",
+))]
+// Reusable wait sets and terminal primitives use different lifecycle policies, so some feature
+// subsets leave one constructor or detach operation unused.
+#[allow(dead_code)]
+pub(crate) mod wakerset;

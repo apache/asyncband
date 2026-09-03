@@ -21,12 +21,10 @@
 //! borrowed [`Waker`], while replacement and removal return owned wakers so callers can drop or
 //! wake them after unlocking.
 
-use std::mem;
 use std::task::Waker;
 
-use crate::internal::arena::Arena;
-use crate::internal::arena::SlotId;
-use crate::internal::waker_batch::WakerBatch;
+use crate::internal::wakerset;
+use crate::internal::wakerset::WakerSet;
 
 /// An exclusive handle to one waiter slot in a [`WaitSet`].
 ///
@@ -36,13 +34,13 @@ use crate::internal::waker_batch::WakerBatch;
 #[derive(Debug)]
 pub struct WakerToken {
     epoch: u64,
-    slot: SlotId,
+    token: wakerset::WakerToken,
 }
 
 #[derive(Debug)]
 pub struct WaitSet {
     epoch: u64,
-    waiters: Arena<Waker>,
+    wakers: WakerSet,
 }
 
 impl WaitSet {
@@ -50,7 +48,7 @@ impl WaitSet {
     pub const fn new() -> Self {
         Self {
             epoch: 0,
-            waiters: Arena::new(),
+            wakers: WakerSet::new(),
         }
     }
 
@@ -58,7 +56,7 @@ impl WaitSet {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             epoch: 0,
-            waiters: Arena::with_capacity(capacity),
+            wakers: WakerSet::with_capacity(capacity),
         }
     }
 
@@ -69,13 +67,11 @@ impl WaitSet {
     /// releasing the lock that protects this wait set.
     #[inline]
     pub fn drain(&mut self) -> impl Iterator<Item = Waker> + 'static {
-        let mut wakers = WakerBatch::with_capacity(self.waiters.len());
-        if self.waiters.is_empty() {
-            return wakers.into_iter();
+        if self.wakers.is_empty() {
+            return self.wakers.drain();
         }
         self.advance_epoch();
-        wakers.extend(self.waiters.drain());
-        wakers.into_iter()
+        self.wakers.drain()
     }
 
     /// Takes all registered wakers and the wait set's backing allocation without waking them.
@@ -85,10 +81,10 @@ impl WaitSet {
     /// this wait set.
     #[inline]
     pub fn take_all(&mut self) -> impl Iterator<Item = Waker> + 'static {
-        if !self.waiters.is_empty() {
+        if !self.wakers.is_empty() {
             self.advance_epoch();
         }
-        self.waiters.take_all()
+        self.wakers.take_all()
     }
 
     /// Registers or updates a waker in the current wake epoch.
@@ -98,18 +94,16 @@ impl WaitSet {
     #[inline]
     #[must_use = "drop the returned waker after releasing the wait set's state lock"]
     pub fn register(&mut self, token: &mut Option<WakerToken>, waker: &Waker) -> Option<Waker> {
-        if let Some(current) = self.current_waker(token) {
-            if current.will_wake(waker) {
-                return None;
-            }
-            return Some(mem::replace(current, waker.clone()));
-        }
-
-        *token = Some(WakerToken {
+        let mut current = match token.take() {
+            Some(token) if token.epoch == self.epoch => Some(token.token),
+            _ => None,
+        };
+        let retired = self.wakers.register(&mut current, waker);
+        *token = current.map(|token| WakerToken {
             epoch: self.epoch,
-            slot: self.waiters.insert(waker.clone()),
+            token,
         });
-        None
+        retired
     }
 
     /// Removes the waker identified by `token` if it still belongs to the current wake epoch.
@@ -119,23 +113,12 @@ impl WaitSet {
     #[must_use = "drop the returned waker after releasing the wait set's state lock"]
     pub fn unregister(&mut self, token: &mut Option<WakerToken>) -> Option<Waker> {
         let token = token.take()?;
-        if token.epoch == self.epoch {
-            return Some(self.waiters.remove(token.slot));
-        }
-        // A drain advanced the epoch and already took ownership of this token's waker.
-        None
-    }
-
-    fn current_waker(&mut self, token: &Option<WakerToken>) -> Option<&mut Waker> {
-        let current = token.as_ref()?;
-        if current.epoch != self.epoch {
+        if token.epoch != self.epoch {
+            // A drain advanced the epoch and already took ownership of this token's waker.
             return None;
         }
-        Some(
-            self.waiters
-                .get_mut(current.slot)
-                .expect("current waker token must refer to an occupied slot"),
-        )
+        let mut current = Some(token.token);
+        self.wakers.unregister(&mut current)
     }
 
     fn advance_epoch(&mut self) {
@@ -144,7 +127,7 @@ impl WaitSet {
 
     #[cfg(test)]
     fn registered_len(&self) -> usize {
-        self.waiters.len()
+        self.wakers.registered_len()
     }
 }
 
