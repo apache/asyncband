@@ -153,7 +153,7 @@ impl Latch {
     /// assert_eq!(latch.try_wait(), Ok(()));
     /// ```
     pub fn try_wait(&self) -> Result<(), u32> {
-        self.state.spin_wait(0)
+        self.state.try_wait()
     }
 
     /// Returns a future that will complete when the latch count reaches zero.

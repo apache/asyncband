@@ -39,6 +39,7 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
+* Avoid fixed CPU spinning before pending latch, once, and wait-group waits register their wakers.
 * Reduce fan-out notification overhead by avoiding heap allocation for a single waiter and transferring terminal waiter storage out of state locks.
 * Reduce MPSC receiver registration and wake latency by storing receiver wakers inline instead of allocating them on the heap.
 * Reduce semaphore and mutex hot-path overhead by avoiding wake-buffer allocation when no tasks are queued and batching queued wakes on the stack.
