@@ -125,7 +125,7 @@ impl Once {
     /// # }
     /// ```
     pub fn is_completed(&self) -> bool {
-        self.done.spin_wait(0).is_ok()
+        self.done.try_wait().is_ok()
     }
 
     /// Calls the given async closure if this is the first time `call_once` has been called

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Improvements
+
+* Avoid fixed CPU spinning before registering `WaitGroup`, `Latch`, and `Once` waiters.
+
 ## v0.7.0
 
 ### Breaking changes

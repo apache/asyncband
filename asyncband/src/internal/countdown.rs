@@ -65,7 +65,7 @@ impl CountdownState {
 
     /// Polls for zero, registering the current waker if the countdown is still active.
     pub fn poll_wait(&self, token: &mut Option<WakerToken>, cx: &mut Context<'_>) -> Poll<()> {
-        if self.spin_wait(16).is_ok() {
+        if self.try_wait().is_ok() {
             // The zero transition owns draining this wake epoch. Avoid taking the waiter lock
             // again when the completed future is dropped.
             *token = None;
@@ -96,16 +96,8 @@ impl CountdownState {
         }
     }
 
-    /// Returns `Ok(())` if the counter is zero, otherwise returns `Err(s)` where `s` is the current
-    /// counter value.
-    pub fn spin_wait(&self, n: usize) -> Result<(), u32> {
-        for _ in 0..n {
-            if self.state() == 0 {
-                return Ok(());
-            }
-            std::hint::spin_loop();
-        }
-
+    /// Returns `Ok(())` if the counter is zero, otherwise returns the current counter value.
+    pub fn try_wait(&self) -> Result<(), u32> {
         match self.state() {
             0 => Ok(()),
             s => Err(s),
