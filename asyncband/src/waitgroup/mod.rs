@@ -17,9 +17,16 @@
 
 //! Wait for a set of worker handles to be dropped.
 //!
-//! A [`WaitGroup`] starts with one coordinator handle. Clone that handle once for each unit of work
-//! and move the clones into their workers. Dropping a worker handle marks that worker as complete.
-//! Awaiting the coordinator consumes it and waits until every remaining handle has been dropped.
+//! A [`WaitGroup`] coordinates completion without itself representing unfinished work. Call
+//! [`WaitGroup::worker`] once for each unit of work and move the returned [`Worker`] into that
+//! work. Workers may be cloned for nested work. Dropping the last worker completes the group.
+//!
+//! Awaiting the coordinator consumes it, preventing new top-level workers from being registered
+//! after waiting begins. A worker cannot be awaited, so accidentally waiting from inside a worker
+//! does not remove that worker from the group.
+//!
+//! Completion acquires the state published before every worker was dropped, so work performed by
+//! those workers is visible after the wait returns.
 //!
 //! # Examples
 //!
@@ -34,7 +41,7 @@
 //! let mut tasks = vec![];
 //!
 //! for _ in 0..3 {
-//!     let worker = group.clone();
+//!     let worker = group.worker();
 //!     tasks.push(tokio::spawn(async move {
 //!         do_work().await;
 //!         drop(worker); // Signals completion. This would also happen at the end of the task.
@@ -59,7 +66,7 @@ use std::task::Poll;
 use crate::internal::countdown::CountdownState;
 use crate::internal::waitset::WakerToken;
 
-/// A group of handles whose collective completion can be awaited.
+/// Coordinates a set of [`Worker`] handles whose completion can be awaited.
 ///
 /// See the [module level documentation](self) for more.
 pub struct WaitGroup {
@@ -79,45 +86,40 @@ impl Default for WaitGroup {
 }
 
 impl WaitGroup {
-    /// Creates a new `WaitGroup`.
+    /// Creates an empty `WaitGroup`.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::waitgroup::WaitGroup;
     ///
-    /// let wg = WaitGroup::new();
+    /// let group = WaitGroup::new();
     /// ```
     pub fn new() -> Self {
         Self {
-            state: Arc::new(CountdownState::new(1)),
+            state: Arc::new(CountdownState::new(0)),
         }
     }
-}
 
-impl Clone for WaitGroup {
-    /// Creates a new worker handle for the wait group.
+    /// Creates a handle representing one unfinished unit of work.
     ///
-    /// This increments the WaitGroup counter. The counter will be decremented
-    /// when the new handle is dropped.
+    /// Clone the returned worker to register nested work. The group completes after every worker
+    /// has been dropped.
     ///
     /// # Panics
     ///
-    /// Panics if the WaitGroup counter would overflow.
-    fn clone(&self) -> Self {
-        let sync = self.state.clone();
-        if sync.increment(1) {
-            panic!("WaitGroup counter overflow");
+    /// Panics if the worker count would overflow.
+    pub fn worker(&self) -> Worker {
+        let state = self.state.clone();
+        if state.increment(1) {
+            panic!("WaitGroup worker count overflow");
         }
-        Self { state: sync }
+        Worker { state }
     }
-}
 
-impl Drop for WaitGroup {
-    fn drop(&mut self) {
-        if self.state.decrement(1) {
-            self.state.wake_all();
-        }
+    /// Consumes this coordinator and returns a future that waits for all workers to be dropped.
+    pub fn wait(self) -> Wait {
+        self.into_future()
     }
 }
 
@@ -125,18 +127,56 @@ impl IntoFuture for WaitGroup {
     type Output = ();
     type IntoFuture = Wait;
 
-    /// Consumes this handle and waits for all other handles to be dropped.
+    /// Consumes this coordinator and waits for all workers to be dropped.
     fn into_future(self) -> Self::IntoFuture {
-        let state = self.state.clone();
-        drop(self);
-        Wait { token: None, state }
+        Wait {
+            token: None,
+            state: self.state,
+        }
     }
 }
 
-/// A future that completes when every [`WaitGroup`] handle has been dropped.
+/// Keeps a [`WaitGroup`] pending until this handle and all of its clones are dropped.
 ///
-/// Awaiting a [`WaitGroup`] creates this future. Cloning a `Wait` creates another observer without
-/// adding a worker to the group.
+/// A worker may be cloned to represent nested work. Workers deliberately cannot be awaited; only
+/// the coordinating [`WaitGroup`] can begin a wait.
+pub struct Worker {
+    state: Arc<CountdownState>,
+}
+
+impl Clone for Worker {
+    /// Creates a handle representing another unfinished unit of work.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the worker count would overflow.
+    fn clone(&self) -> Self {
+        let state = self.state.clone();
+        if state.increment(1) {
+            panic!("WaitGroup worker count overflow");
+        }
+        Worker { state }
+    }
+}
+
+impl fmt::Debug for Worker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Worker").finish_non_exhaustive()
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        if self.state.decrement(1) {
+            self.state.wake_all();
+        }
+    }
+}
+
+/// A future that completes when every [`Worker`] has been dropped.
+///
+/// Awaiting or calling [`WaitGroup::wait`] creates this future. Cloning a `Wait` creates another
+/// observer without adding a worker to the group.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Wait {
     token: Option<WakerToken>,
@@ -144,9 +184,9 @@ pub struct Wait {
 }
 
 impl Clone for Wait {
-    /// Creates a new future that also completes when the WaitGroup counter reaches zero.
+    /// Creates a new future that observes the same group completion.
     ///
-    /// This does not increment the WaitGroup counter.
+    /// This does not add a worker to the group.
     fn clone(&self) -> Self {
         Wait {
             token: None,

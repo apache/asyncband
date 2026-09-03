@@ -67,7 +67,7 @@
 //! |                            | [`Completion`](completion::Completion)       | `completion`   | Publish one shared result to any number of current and future observers.                                       |
 //! |                            | [`ManualResetEvent`](event::ManualResetEvent) | `event`        | Signal current and future waits until explicitly reset.                                                       |
 //! |                            | [`Latch`](latch::Latch)                       | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                            |
-//! |                            | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Wait until all cloned worker handles are dropped.                                                             |
+//! |                            | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Create explicit worker handles and wait until all are dropped.                                                |
 //! |                            | [`Shutdown`](shutdown::Shutdown)              | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                            |
 //! | Channels                   | [`oneshot`]                                   | `oneshot`      | Send one value from one sender to one receiver.                                                               |
 //! |                            | [`mpsc`]                                      | `mpsc`         | Send each value from multiple producers to one receiver with bounded backpressure or an unbounded queue.      |

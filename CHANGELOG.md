@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file.
 * Remove the lossy `broadcast::overflow` channel; use the new lossless `broadcast::mpmc::unbounded` channel instead.
 * Remove `OnceMap::with_capacity` and `OnceMap::with_capacity_and_hasher`; use `OnceMap::new` or `OnceMap::with_hasher`, which allocate the backing table lazily.
 * Remove the unconstructible `LatchWait` and `OwnedLatchWait` types from the public API; `Latch::wait` and `Latch::wait_owned` continue to return anonymous futures through their `async fn` signatures.
+* Redesign `waitgroup::WaitGroup` as a non-cloneable coordinator with explicit `Worker` handles: replace `WaitGroup::clone` with `WaitGroup::worker`, clone workers for nested work, and await or call `WaitGroup::wait` only from the coordinator.
 * Rename `oneshot::Sender::is_closed` and `oneshot::Receiver::is_closed` to `is_disconnected`.
 * Remove `Semaphore::try_acquire_and_forget`, `Semaphore::acquire_and_forget`, `Semaphore::try_acquire_owned_and_forget`, and `Semaphore::acquire_owned_and_forget`; acquire a permit and call its `forget` method instead.
 * Replace `Semaphore::forget` with `Semaphore::drain_permits` and `Semaphore::forget_exact` with `Semaphore::reduce_permits`; permit-level `forget` methods are unchanged.

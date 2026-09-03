@@ -45,6 +45,7 @@ use asyncband::shutdown::ShutdownWatch;
 use asyncband::singleflight;
 use asyncband::waitgroup::Wait;
 use asyncband::waitgroup::WaitGroup;
+use asyncband::waitgroup::Worker;
 use asyncband::watch;
 
 struct PoolManager;
@@ -88,6 +89,7 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<ShutdownGuard>();
     assert_send_and_sync::<ShutdownWatch>();
     assert_send_and_sync::<WaitGroup>();
+    assert_send_and_sync::<Worker>();
     assert_send_and_sync::<Mutex<i64>>();
     assert_send_and_sync::<MutexGuard<'_, i64>>();
     assert_send_and_sync::<RwLock<i64>>();
@@ -155,6 +157,7 @@ fn public_types_are_unpin() {
     assert_unpin::<ShutdownGuard>();
     assert_unpin::<ShutdownWatch>();
     assert_unpin::<WaitGroup>();
+    assert_unpin::<Worker>();
     assert_unpin::<Wait>();
     assert_unpin::<Mutex<i64>>();
     assert_unpin::<MutexGuard<'_, i64>>();

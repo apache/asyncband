@@ -61,7 +61,6 @@
 //! ```
 
 use std::future::Future;
-use std::future::IntoFuture;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -70,20 +69,21 @@ use std::task::Poll;
 use crate::latch::Latch;
 use crate::waitgroup::Wait;
 use crate::waitgroup::WaitGroup;
+use crate::waitgroup::Worker;
 
 /// Creates a graceful shutdown coordinator and an initial completion guard.
 ///
 /// See the [module level documentation](self) for more.
 pub fn new() -> (Shutdown, ShutdownGuard) {
     let latch = Arc::new(Latch::new(1));
-    let wg = WaitGroup::new();
-    let shutdown = Shutdown {
-        latch: latch.clone(),
-        wait: wg.clone().into_future(),
-    };
+    let group = WaitGroup::new();
     let guard = ShutdownGuard {
+        latch: latch.clone(),
+        worker: group.worker(),
+    };
+    let shutdown = Shutdown {
         latch,
-        wait_group: wg,
+        wait: group.wait(),
     };
     (shutdown, guard)
 }
@@ -155,7 +155,7 @@ pub struct ShutdownGuard {
         dead_code,
         reason = "keeps shutdown completion pending until this guard is dropped"
     )]
-    wait_group: WaitGroup,
+    worker: Worker,
 }
 
 impl ShutdownGuard {

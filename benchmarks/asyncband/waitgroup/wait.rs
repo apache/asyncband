@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::IntoFuture;
 use std::pin::pin;
 
 use asyncband::waitgroup::WaitGroup;
@@ -34,9 +33,9 @@ fn cancel_pending(bencher: Bencher) {
 
     bencher.bench_local(|| {
         let root = WaitGroup::new();
-        let worker = root.clone();
+        let worker = root.worker();
         {
-            let mut wait = pin!(root.into_future());
+            let mut wait = pin!(root.wait());
             poll_pending(wait.as_mut(), &mut context);
         }
         drop(worker);
@@ -50,8 +49,8 @@ fn complete_waiter(bencher: Bencher) {
 
     bencher.bench_local(|| {
         let root = WaitGroup::new();
-        let worker = root.clone();
-        let mut wait = pin!(root.into_future());
+        let worker = root.worker();
+        let mut wait = pin!(root.wait());
         poll_pending(wait.as_mut(), &mut context);
 
         drop(worker);
@@ -66,8 +65,8 @@ fn complete_worker_batch(bencher: Bencher, worker_count: usize) {
 
     bencher.bench_local(|| {
         let root = WaitGroup::new();
-        let workers = (0..worker_count).map(|_| root.clone()).collect::<Vec<_>>();
-        let mut wait = pin!(root.into_future());
+        let workers = (0..worker_count).map(|_| root.worker()).collect::<Vec<_>>();
+        let mut wait = pin!(root.wait());
         poll_pending(wait.as_mut(), &mut context);
 
         drop(workers);
@@ -82,8 +81,8 @@ fn complete_waiter_batch(bencher: Bencher, waiter_count: usize) {
 
     bencher.bench_local(|| {
         let root = WaitGroup::new();
-        let worker = root.clone();
-        let wait = root.into_future();
+        let worker = root.worker();
+        let wait = root.wait();
         let mut waiters = (0..waiter_count)
             .map(|_| Box::pin(wait.clone()))
             .collect::<Vec<_>>();

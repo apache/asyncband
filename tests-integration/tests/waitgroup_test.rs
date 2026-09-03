@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::IntoFuture;
-
 use asyncband::waitgroup::WaitGroup;
 use tests_integration::poll_once;
 
@@ -25,7 +23,7 @@ async fn waits_for_all_worker_handles() {
     let wg = WaitGroup::new();
     let mut tasks = vec![];
     for _ in 0..100 {
-        let worker = wg.clone();
+        let worker = wg.worker();
         tasks.push(tokio::spawn(async move {
             drop(worker);
         }));
@@ -40,8 +38,8 @@ async fn waits_for_all_worker_handles() {
 #[test]
 fn wait_is_pending_until_the_last_handle_drops() {
     let wg = WaitGroup::new();
-    let worker = wg.clone();
-    let mut wait = Box::pin(wg.into_future());
+    let worker = wg.worker();
+    let mut wait = Box::pin(wg.wait());
 
     assert!(poll_once(wait.as_mut()).is_pending());
     drop(worker);
@@ -51,8 +49,8 @@ fn wait_is_pending_until_the_last_handle_drops() {
 #[test]
 fn cancelling_one_wait_does_not_cancel_another() {
     let wg = WaitGroup::new();
-    let worker = wg.clone();
-    let first = wg.into_future();
+    let worker = wg.worker();
+    let first = wg.wait();
     let mut second = Box::pin(first.clone());
     let mut first = Box::pin(first);
 
@@ -62,4 +60,24 @@ fn cancelling_one_wait_does_not_cancel_another() {
 
     drop(worker);
     assert!(poll_once(second.as_mut()).is_ready());
+}
+
+#[test]
+fn worker_clones_register_nested_work() {
+    let wg = WaitGroup::new();
+    let worker = wg.worker();
+    let nested = worker.clone();
+    let mut wait = Box::pin(wg.wait());
+
+    drop(worker);
+    assert!(poll_once(wait.as_mut()).is_pending());
+    drop(nested);
+    assert!(poll_once(wait.as_mut()).is_ready());
+}
+
+#[test]
+fn empty_group_is_immediately_ready() {
+    let mut wait = Box::pin(WaitGroup::new().wait());
+
+    assert!(poll_once(wait.as_mut()).is_ready());
 }
