@@ -272,14 +272,16 @@ The oneshot crate is available from https://github.com/faern/oneshot and is
 licensed under Apache-2.0 or MIT.
 
 Portions of asyncband/src/internal/atomic_waker.rs are derived from futures-rs
-0.3.34, available from https://github.com/rust-lang/futures-rs and licensed
-under Apache-2.0 or MIT:
+0.3.34 at commit 705e6b5c0f06535b1aac1cb1989a172b3d45be8c, available from
+https://github.com/rust-lang/futures-rs and licensed under Apache-2.0 or MIT:
 
   Copyright (c) 2016 Alex Crichton
   Copyright (c) 2017 The Tokio Authors
 
-Portions of asyncband/src/blocking/mod.rs are adapted from Pollster 1.0.1 at
-commit 6a1a148208326e9c5b231b16f199f5227c550774 and futures-lite 2.6.1.
+The polling loop in asyncband/src/blocking/mod.rs is adapted from Pollster 1.0.1
+at commit 6a1a148208326e9c5b231b16f199f5227c550774. Its reuse of a thread-local
+Parker/Waker pair, with a fresh pair for recursive calls, is adapted from
+futures-lite 2.6.1 at commit 226ce18976d8714d6bd9700b61dcc81d7200bc9a.
 Pollster is available from https://github.com/zesterer/pollster and is
 licensed under Apache-2.0 or MIT:
 
@@ -288,14 +290,14 @@ licensed under Apache-2.0 or MIT:
 futures-lite is available from https://github.com/smol-rs/futures-lite and is
 licensed under Apache-2.0 or MIT.
 
-Portions of asyncband/src/blocking/parker.rs are adapted from parking 2.2.1,
-available from https://github.com/smol-rs/parking and licensed under
-Apache-2.0 or MIT:
+Portions of asyncband/src/blocking/parker.rs are adapted from parking 2.2.1 at
+commit 0ece32dbfd6cd1bc1510ede6ed56acb772edf83f, available from
+https://github.com/smol-rs/parking and licensed under Apache-2.0 or MIT:
 
   Copyright 2014-2020 The Rust Project Developers
 
 Portions of the following files are ported from Fastpool 1.1.1 at commit
-e4c65f1:
+e4c65f1ed38395abc58d68eda8bd09925c13028e:
 
   asyncband/src/pool/bounded.rs
   asyncband/src/pool/common.rs

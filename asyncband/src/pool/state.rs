@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Portions ported from Fastpool 1.1.1 at commit e4c65f1:
+// Portions ported from Fastpool 1.1.1 at commit e4c65f1ed38395abc58d68eda8bd09925c13028e:
 // Copyright 2025 FastLabs Developers
-// https://github.com/fast/fastpool/tree/e4c65f1
+// https://github.com/fast/fastpool/tree/e4c65f1ed38395abc58d68eda8bd09925c13028e
 
 use std::collections::VecDeque;
 
