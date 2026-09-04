@@ -17,7 +17,7 @@
 
 [package]
 name = "asyncband"
-version = "0.7.0"
+version = "0.7.1"
 
 categories = ["asynchronous", "concurrency"]
 description = "Composable, runtime-agnostic concurrency building blocks for async Rust."

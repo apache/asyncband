@@ -4,6 +4,14 @@ This runbook is for release managers. Follow the current [ASF Release Policy](ht
 
 The signed source archive approved by the Apache Incubator PMC and published through ASF distribution is the official Apache release. The crates.io package is a convenience distribution from the same approved commit. A signed `vX.Y.Z-rc.N` tag identifies the candidate; after the PPMC and IPMC votes pass, the voted artifacts move to the release distribution area and a signed `vX.Y.Z` tag on the same commit triggers crates.io publication.
 
+## Interim non-ASF 0.7.1 release
+
+Version 0.7.1 is a one-time interim non-ASF release. It is not approved by the Apache Incubator PMC, is not an act of the ASF, and must not be staged or published through ASF release infrastructure.
+
+Prepare 0.7.1 on `main`, retain `DISCLAIMER-WIP` in the Cargo package, and run the normal release checks against the exact release commit. Create and push a signed `v0.7.1` tag whose message identifies it as a non-ASF release; the release workflow validates the package but intentionally skips its crates.io publishing job for this tag. After that validation passes, publish the crate manually from a maintainer-controlled environment and verify crates.io and docs.rs. Do not upload 0.7.1 artifacts to ASF distribution or announce it as an Apache release.
+
+The next ASF release starts from a later version and follows the remainder of this runbook, including a fresh candidate and both release votes.
+
 ## Conventions
 
 - `VERSION` is the proposed final version, for example `0.7.0`.
@@ -57,7 +65,7 @@ Start from current `main` and choose `VERSION` from the changes since the latest
 
 1. Change `version` in `asyncband/Cargo.toml` and refresh `Cargo.lock` with Cargo.
 2. Move the entries under `Unreleased` in `CHANGELOG.md` into an undated `v${VERSION}` section immediately below it, then restore an empty `Unreleased` section. Keep user-impacting sections ordered as breaking changes, new features, bug fixes, and improvements; add the actual release date only after publication.
-3. Verify `LICENSE`, `NOTICE`, `DISCLAIMER`, source headers, and bundled dependencies.
+3. Verify `LICENSE`, `NOTICE`, the applicable `DISCLAIMER` or `DISCLAIMER-WIP`, source headers, and bundled dependencies.
 4. Run the release checks:
 
 ```shell

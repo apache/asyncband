@@ -1,0 +1,8 @@
+Apache Asyncband is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF.
+
+Some of the incubating project's releases may not be fully compliant with ASF policy. The following issues are known for version 0.7.1:
+
+- Version 0.7.1 is an interim non-ASF release. It has not been approved by the Apache Incubator PMC and is not an act of the ASF.
+- The third-party provenance and source-header corrections included in version 0.7.1 have not been reviewed or approved through an ASF release vote.
+
+If you are planning to incorporate this work into your product or project, please conduct a thorough licensing review to determine the overall implications of including it. For the current status of Apache Asyncband in the Apache Incubator, visit https://incubator.apache.org/projects/asyncband.html.

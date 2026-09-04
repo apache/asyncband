@@ -24,6 +24,11 @@
 //! reuse, and workload control without choosing an executor for the application. Its async APIs use
 //! standard futures and wakers, so they can run on Tokio, async-std, smol, or a custom executor.
 //!
+//! # Release status
+//!
+//! Version 0.7.1 is an interim non-ASF release. It has not been approved by the Apache Incubator
+//! PMC and is not an act of the Apache Software Foundation.
+//!
 //! # Getting started
 //!
 //! Public APIs are enabled through opt-in Cargo features, and no features are enabled by default.

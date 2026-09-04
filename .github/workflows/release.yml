@@ -92,7 +92,11 @@ jobs:
 
   publish:
     name: Publish to crates.io
-    if: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name == format('v{0}', needs.check.outputs.version) }}
+    # v0.7.1 is an interim non-ASF release published outside ASF release infrastructure.
+    if: >-
+      ${{ startsWith(github.ref, 'refs/tags/') &&
+          github.ref_name == format('v{0}', needs.check.outputs.version) &&
+          github.ref_name != 'v0.7.1' }}
     needs: check
     runs-on: ubuntu-24.04
     timeout-minutes: 30

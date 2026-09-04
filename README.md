@@ -20,7 +20,9 @@
 >
 > Apache Asyncband (incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC.
 >
-> Please read the [DISCLAIMER](DISCLAIMER) and a full explanation of ["incubating"](https://incubator.apache.org/policy/incubation.html).
+> **Version 0.7.1 is an interim non-ASF release.** It has not been approved by the Apache Incubator PMC and is not an act of the ASF.
+>
+> Please read the [work-in-progress disclaimer](DISCLAIMER-WIP) and a full explanation of ["incubating"](https://incubator.apache.org/policy/incubation.html).
 >
 > **Asyncband was formerly published as MEA.** The `mea` crate is deprecated and receives no further development. See the [migration guide](MIGRATE.md) for migration instructions and details about the rename.
 
