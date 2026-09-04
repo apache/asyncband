@@ -8,7 +8,7 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
-* Preserve applicable third-party licensing and copyright notices on derived source files, and record exact provenance mappings and design acknowledgements in `LICENSE` and source comments.
+* Preserve applicable third-party licensing and copyright notices on derived source files, and record exact provenance mappings in `LICENSE` and source comments.
 
 ## v0.7.1
 

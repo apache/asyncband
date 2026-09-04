@@ -208,8 +208,7 @@ source paths. Modifications made for Apache Asyncband are licensed under the
 Apache License, Version 2.0, unless otherwise noted.
 
 In this section, "derived", "adapted", and "ported" identify incorporated
-source code. "Inspired" and "informed" identify independent implementations
-that draw on external designs or APIs.
+source code.
 
 Tokio
 
@@ -313,11 +312,6 @@ outside the waiter lock.
 The standard ASF source headers on these four files apply to the substantial
 modifications contributed to Apache Asyncband. They do not replace the Tokio
 copyright notice or MIT License applicable to the incorporated portions.
-
-The panic-recovery behavior in asyncband/src/internal/atomic_waker.rs was
-informed by Tokio's AtomicWaker implementation at:
-
-  https://github.com/tokio-rs/tokio/blob/75fef53d0a8590c2d1dbb63672aa7b7d1ef51155/tokio/src/sync/task/atomic_waker.rs
 
 Tokio is licensed under the MIT License:
 
@@ -454,54 +448,3 @@ composition. Fastpool is licensed under Apache-2.0, and its source carries the
 following copyright notice:
 
   Copyright 2025 FastLabs Developers
-
-DESIGN PROVENANCE WITHOUT INCORPORATED THIRD-PARTY SOURCE
-
-The following implementations were informed by external designs or APIs but
-do not incorporate source from those projects. They remain licensed under
-Apache-2.0.
-
-barrier::Barrier is inspired by std::sync::Barrier and tokio::sync::Barrier:
-
-  https://doc.rust-lang.org/std/sync/struct.Barrier.html
-  https://docs.rs/tokio/latest/tokio/sync/struct.Barrier.html
-
-Asyncband uses a separate implementation based on its internal WaitSet
-primitive.
-
-condvar::Condvar is inspired by std::sync::Condvar and
-async_std::sync::Condvar:
-
-  https://doc.rust-lang.org/std/sync/struct.Condvar.html
-  https://docs.rs/async-std/latest/async_std/sync/struct.Condvar.html
-
-Asyncband uses a fair FIFO waiter queue and standard non-buffered notification
-semantics.
-
-latch::Latch is inspired by latches:
-
-  https://github.com/mirromutth/latches
-
-Asyncband uses a separate implementation based on its internal CountdownState
-primitive.
-
-mpsc channels are inspired by std::sync::mpsc and tokio::sync::mpsc:
-
-  https://doc.rust-lang.org/std/sync/mpsc/index.html
-  https://docs.rs/tokio/latest/tokio/sync/mpsc/index.html
-
-Asyncband uses the standard library channels for storage and supplies its own
-asynchronous wakeup and bounded-backpressure coordination.
-
-once::OnceMap is inspired by uv-once-map:
-
-  https://github.com/astral-sh/uv/tree/936e6cdc42f44365e087a4ba7148238afc090b0b/crates/uv-once-map
-
-Asyncband redesigns both the interface and implementation.
-
-waitgroup::WaitGroup is inspired by waitgroup-rs:
-
-  https://github.com/laizy/waitgroup-rs
-
-Asyncband treats every cloned handle as an RAII participant and supports
-cancellable multi-observer waits.
