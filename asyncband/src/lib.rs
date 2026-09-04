@@ -56,26 +56,26 @@
 //!
 //! | Area                       | API                                           | Feature        | Use                                                                                                           |
 //! |----------------------------|-----------------------------------------------|----------------|---------------------------------------------------------------------------------------------------------------|
-//! | Locks and conditions       | [`Mutex`](mutex::Mutex)                       | `mutex`        | Protect shared data with asynchronous mutual exclusion.                                                       |
+//! | Synchronization            | [`Mutex`](mutex::Mutex)                       | `mutex`        | Protect shared data with asynchronous mutual exclusion.                                                       |
 //! |                            | [`RwLock`](rwlock::RwLock)                    | `rwlock`       | Allow multiple readers or one writer.                                                                         |
 //! |                            | [`Condvar`](condvar::Condvar)                 | `condvar`      | Wait for notifications while releasing a mutex.                                                               |
-//! | Initialization and caching | [`Once`](once::Once)                          | `once`         | Complete one asynchronous initialization; cancelled or panicked attempts may be retried.                       |
-//! |                            | [`OnceCell`](once::OnceCell)                  | `once-cell`    | Store one value from an access-time initializer; failed, cancelled, or panicked attempts may be retried.       |
-//! |                            | [`LazyCell`](once::LazyCell)                  | `lazy-cell`    | Initialize one value with a stored function and resume the same in-flight future after caller cancellation.   |
-//! |                            | [`OnceMap`](once::OnceMap)                    | `once-map`     | Cache one successfully initialized value per key until explicitly removed.                                    |
-//! | Signals and completion     | [`Completion`](completion::Completion)       | `completion`   | Publish one shared result to any number of current and future observers.                                       |
+//! |                            | [`Semaphore`](semaphore::Semaphore)           | `semaphore`    | Limit concurrent work by acquiring permits.                                                                   |
+//! |                            | [`Barrier`](barrier::Barrier)                 | `barrier`      | Synchronize a fixed number of participants at a reusable rendezvous.                                          |
 //! |                            | [`ManualResetEvent`](event::ManualResetEvent) | `event`        | Signal current and future waits until explicitly reset.                                                       |
-//! | Task coordination          | [`Barrier`](barrier::Barrier)                 | `barrier`      | Synchronize a fixed number of participants at a reusable rendezvous.                                          |
 //! |                            | [`Latch`](latch::Latch)                       | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                            |
 //! |                            | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Dynamically register participants and wait until all have completed.                                          |
 //! |                            | [`Shutdown`](shutdown::Shutdown)              | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                            |
-//! | Message passing            | [`oneshot`]                                   | `oneshot`      | Send one value from one sender to one receiver.                                                               |
+//! | Initialization and sharing | [`Once`](once::Once)                          | `once`         | Complete one asynchronous initialization; cancelled or panicked attempts may be retried.                       |
+//! |                            | [`OnceCell`](once::OnceCell)                  | `once-cell`    | Store one value from an access-time initializer; failed, cancelled, or panicked attempts may be retried.       |
+//! |                            | [`LazyCell`](once::LazyCell)                  | `lazy-cell`    | Initialize one value with a stored function and resume the same in-flight future after caller cancellation.   |
+//! |                            | [`OnceMap`](once::OnceMap)                    | `once-map`     | Cache one successfully initialized value per key until explicitly removed.                                    |
+//! |                            | [`Group`](singleflight::Group)                | `singleflight` | Coalesce overlapping calls for the same key without caching completed results.                                |
+//! | Communication              | [`Completion`](completion::Completion)       | `completion`   | Publish one shared result to any number of current and future observers.                                       |
+//! |                            | [`oneshot`]                                   | `oneshot`      | Send one value from one sender to one receiver.                                                               |
 //! |                            | [`mpsc`]                                      | `mpsc`         | Send each value from multiple producers to one receiver with bounded backpressure or an unbounded queue.      |
 //! |                            | [`broadcast`]                                 | `broadcast`    | Deliver every value to receivers active at send time; retain an unbounded backlog until each consumes or drops. |
-//! | State propagation          | [`watch`]                                     | `watch`        | Publish cloneable latest state from one or more senders; receivers independently coalesce intermediate updates. |
-//! | Concurrency limiting       | [`Semaphore`](semaphore::Semaphore)           | `semaphore`    | Limit concurrent work by acquiring permits.                                                                   |
-//! | Object pooling             | [`pool`]                                      | `pool`         | Reuse objects through bounded or unbounded pool variants.                                                     |
-//! | Duplicate suppression      | [`Group`](singleflight::Group)                | `singleflight` | Coalesce overlapping calls for the same key without caching completed results.                                |
+//! |                            | [`watch`]                                     | `watch`        | Publish cloneable latest state from one or more senders; receivers independently coalesce intermediate updates. |
+//! | Object reuse               | [`pool`]                                      | `pool`         | Reuse objects through bounded or unbounded pool variants.                                                     |
 //! | Sync interop               | [`FutureExt`](blocking::FutureExt)            | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                                     |
 //!
 //! # Scope and runtime model
