@@ -32,7 +32,7 @@
 //! use asyncband::latch::Latch;
 //!
 //! let latch = Arc::new(Latch::new(3));
-//! let mut tasks = Vec::new();
+//! let mut tasks = vec![];
 //!
 //! for _ in 0..3 {
 //!     let latch = latch.clone();
@@ -55,7 +55,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::countdown::CountdownState;
-use crate::internal::waitset::WakerToken;
+use crate::internal::wakerset::WakerToken;
 
 /// A one-shot countdown that can wake any number of waiting tasks.
 ///
@@ -153,7 +153,7 @@ impl Latch {
     /// assert_eq!(latch.try_wait(), Ok(()));
     /// ```
     pub fn try_wait(&self) -> Result<(), u32> {
-        self.state.spin_wait(0)
+        self.state.try_wait()
     }
 
     /// Returns a future that will complete when the latch count reaches zero.

@@ -18,13 +18,13 @@
 use std::any::type_name;
 use std::fmt;
 
-/// An error returned when trying to send on a disconnected channel.
+/// A send failed because the receiving endpoint has been dropped.
 ///
 /// Returned from [`UnboundedSender::send`] or [`BoundedSender::send`] if the
 /// corresponding [`UnboundedReceiver`] or [`BoundedReceiver`] has already been
 /// dropped.
 ///
-/// The message that could not be sent can be retrieved again with
+/// The rejected message remains available through [`SendError::as_inner`] or
 /// [`SendError::into_inner`].
 ///
 /// [`UnboundedSender::send`]: crate::mpsc::UnboundedSender::send
@@ -65,7 +65,7 @@ impl<T> fmt::Debug for SendError<T> {
 
 impl<T> std::error::Error for SendError<T> {}
 
-/// Error returned by `try_send`.
+/// A non-blocking send could not accept its message.
 #[derive(Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
     /// The channel is full, so the message cannot be sent without waiting for capacity.
@@ -111,7 +111,7 @@ impl<T> fmt::Debug for TrySendError<T> {
 
 impl<T> std::error::Error for TrySendError<T> {}
 
-/// Error returned by `recv`.
+/// A receive operation cannot produce another value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecvError {
     /// All senders have been dropped, and no buffered messages remain.
@@ -126,7 +126,7 @@ impl fmt::Display for RecvError {
 
 impl std::error::Error for RecvError {}
 
-/// Error returned by `try_recv`.
+/// A non-blocking receive did not produce a value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TryRecvError {
     /// No message is currently available, but at least one sender remains.

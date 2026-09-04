@@ -18,6 +18,8 @@
 use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
@@ -108,6 +110,40 @@ fn release_overflow_preserves_permits() {
 }
 
 #[test]
+fn merge_overflow_panics_without_losing_borrowed_permits() {
+    let s = Semaphore::new(usize::MAX);
+    let mut first = s.try_acquire(usize::MAX).unwrap();
+    s.release(1);
+    let second = s.try_acquire(1).unwrap();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        first.merge(second);
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(first.permits(), usize::MAX);
+    assert_eq!(s.available_permits(), 1);
+    first.forget();
+}
+
+#[test]
+fn merge_overflow_panics_without_losing_owned_permits() {
+    let s = Arc::new(Semaphore::new(usize::MAX));
+    let mut first = s.clone().try_acquire_owned(usize::MAX).unwrap();
+    s.release(1);
+    let second = s.clone().try_acquire_owned(1).unwrap();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        first.merge(second);
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(first.permits(), usize::MAX);
+    assert_eq!(s.available_permits(), 1);
+    first.forget();
+}
+
+#[test]
 fn no_panic_at_max_permits() {
     let _ = Semaphore::new(usize::MAX);
     let s = Semaphore::new(usize::MAX - 1);
@@ -161,6 +197,62 @@ fn wake_then_drop() {
         }
     }
     assert_eq!(s.available_permits(), 2);
+}
+
+#[test]
+fn release_attempts_every_waker_after_one_panics() {
+    struct PanicOnWake;
+
+    impl Wake for PanicOnWake {
+        fn wake(self: Arc<Self>) {
+            panic!("waker panicked");
+        }
+    }
+
+    struct CountWakes(AtomicUsize);
+
+    impl Wake for CountWakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let semaphore = Semaphore::new(0);
+    let mut panicking = pin!(semaphore.acquire(1));
+    let mut tracked = pin!(semaphore.acquire(1));
+    let panic_waker = Waker::from(Arc::new(PanicOnWake));
+    let wake_count = Arc::new(CountWakes(AtomicUsize::new(0)));
+    let tracked_waker = Waker::from(wake_count.clone());
+
+    assert!(
+        panicking
+            .as_mut()
+            .poll(&mut Context::from_waker(&panic_waker))
+            .is_pending()
+    );
+    assert!(
+        tracked
+            .as_mut()
+            .poll(&mut Context::from_waker(&tracked_waker))
+            .is_pending()
+    );
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| semaphore.release(2)));
+
+    assert!(result.is_err());
+    assert_eq!(wake_count.0.load(Ordering::Relaxed), 1);
+    assert!(
+        panicking
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
+    );
+    assert!(
+        tracked
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
+    );
 }
 
 #[test]

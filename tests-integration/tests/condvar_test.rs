@@ -15,8 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
+use std::thread;
+use std::time::Duration;
 
 use asyncband::condvar::Condvar;
 use asyncband::mutex::Mutex;
@@ -28,6 +35,24 @@ fn expect_ready<T>(poll: Poll<T>) -> T {
     match poll {
         Poll::Ready(value) => value,
         Poll::Pending => panic!("future should be ready"),
+    }
+}
+
+fn poll_with<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
+    future.poll(&mut Context::from_waker(waker))
+}
+
+struct NotifyOnDrop(Arc<Condvar>);
+
+impl Wake for NotifyOnDrop {
+    fn wake(self: Arc<Self>) {
+        self.0.notify_one();
+    }
+}
+
+impl Drop for NotifyOnDrop {
+    fn drop(&mut self) {
+        self.0.notify_one();
     }
 }
 
@@ -113,7 +138,7 @@ fn notify_all_wakes_current_waiters_using_a_predicate_loop() {
         }
 
         let pair = Arc::new((Mutex::new(State::default()), Condvar::new()));
-        let mut tasks: Vec<JoinHandle<()>> = Vec::new();
+        let mut tasks: Vec<JoinHandle<()>> = vec![];
 
         for _ in 0..WAITERS {
             let pair = pair.clone();
@@ -148,6 +173,27 @@ fn notify_all_wakes_current_waiters_using_a_predicate_loop() {
             task.await.unwrap();
         }
     });
+}
+
+#[test]
+fn cancelling_waiter_drops_its_waker_outside_the_waiter_lock() {
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || {
+        let mutex = Mutex::new(());
+        let condvar = Arc::new(Condvar::new());
+        let waker = Waker::from(Arc::new(NotifyOnDrop(condvar.clone())));
+        let mut wait = Box::pin(condvar.wait(mutex.try_lock().unwrap()));
+
+        assert!(poll_with(wait.as_mut(), &waker).is_pending());
+        drop(waker);
+        drop(wait);
+        finished_tx.send(()).unwrap();
+    });
+
+    finished_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("dropping a cancelled waiter deadlocked against the condvar waiter lock");
+    worker.join().unwrap();
 }
 
 #[test]

@@ -1,41 +1,21 @@
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
+// This file contains code derived from Tokio 1.42.0.
+// Copyright (c) Tokio Contributors
+// The derived code remains licensed under the MIT License.
+// The incorporated code has been modified for use in Apache Asyncband.
+// Upstream source:
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock.rs
 
-//! A reader-writer lock that allows multiple readers or a single writer at a time.
+//! Shared read access or exclusive write access to a value.
 //!
-//! This type of lock allows a number of readers or at most one writer at any point in time. The
-//! write portion of this lock typically allows modification of the underlying data (exclusive
-//! access) and the read portion of this lock typically allows for read-only access (shared access).
+//! Any number of readers may hold the lock together. A writer waits for existing readers and then
+//! holds the lock alone, allowing it to modify the protected value.
 //!
-//! In comparison, a [`Mutex`] does not distinguish between readers or writers that acquire the
-//! lock, therefore causing any tasks waiting for the lock to become available to yield. An RwLock
-//! will allow any number of readers to acquire the lock as long as a writer is not holding the
-//! lock.
+//! Requests are considered in arrival order. Once a writer is waiting ahead of a reader, that
+//! reader waits until the writer has acquired and released the lock. This prevents a steady stream
+//! of readers from starving writers.
 //!
-//! The priority policy of this read-write lock is fair (or [write-preferring]), ensuring that
-//! readers cannot starve writers. Fairness is maintained using a first-in, first-out queue for
-//! tasks awaiting the lock. If a writer reaches the head of the queue, readers will not acquire
-//! the lock until that writer has acquired and released it. In contrast, the priority policy of
-//! the Rust standard library's `std::sync::RwLock` depends on the operating system.
-//!
-//! The type parameter `T` represents the data that this lock protects. It is required that `T`
-//! satisfies [`Send`] to be shared across threads. The RAII guards returned from the locking
-//! methods implement [`Deref`] (and [`DerefMut`] for the `write` method) to allow access to the
-//! content of the lock.
+//! Read guards dereference to `&T`; write guards dereference to `&mut T`. Dropping a guard releases
+//! its access. The mapping APIs can narrow a guard to one component without unlocking in between.
 //!
 //! # Examples
 //!
@@ -63,11 +43,6 @@
 //!
 //! # }
 //! ```
-//!
-//! [`Mutex`]: crate::mutex::Mutex
-//! [`Deref`]: std::ops::Deref
-//! [`DerefMut`]: std::ops::DerefMut
-//! [write-preferring]: https://en.wikipedia.org/wiki/Readers%E2%80%93writer_lock#Priority_policies
 
 use std::cell::UnsafeCell;
 use std::fmt;
@@ -204,4 +179,63 @@ impl<T: ?Sized> RwLock<T> {
     pub fn get_mut(&mut self) -> &mut T {
         self.c.get_mut()
     }
+}
+
+#[cfg(doctest)]
+mod compile_fail_tests {
+    /// ```compile_fail
+    /// use asyncband::rwlock::RwLockWriteGuard;
+    ///
+    /// fn shorten<'lock, 'short: 'lock>(
+    ///     guard: RwLockWriteGuard<'lock, &'static str>,
+    ///     value: &'short str,
+    /// ) -> RwLockWriteGuard<'lock, &'short str> {
+    ///     let mut guard: RwLockWriteGuard<'lock, &'short str> = guard;
+    ///     *guard = value;
+    ///     guard
+    /// }
+    /// ```
+    struct RwLockWriteGuardIsInvariant;
+
+    /// ```compile_fail
+    /// use asyncband::rwlock::OwnedRwLockWriteGuard;
+    ///
+    /// fn shorten<'short>(
+    ///     guard: OwnedRwLockWriteGuard<&'static str>,
+    ///     value: &'short str,
+    /// ) -> OwnedRwLockWriteGuard<&'short str> {
+    ///     let mut guard: OwnedRwLockWriteGuard<&'short str> = guard;
+    ///     *guard = value;
+    ///     guard
+    /// }
+    /// ```
+    struct OwnedRwLockWriteGuardIsInvariant;
+
+    /// ```compile_fail
+    /// use asyncband::rwlock::MappedRwLockWriteGuard;
+    ///
+    /// fn shorten<'lock, 'short: 'lock>(
+    ///     guard: MappedRwLockWriteGuard<'lock, &'static str>,
+    ///     value: &'short str,
+    /// ) -> MappedRwLockWriteGuard<'lock, &'short str> {
+    ///     let mut guard: MappedRwLockWriteGuard<'lock, &'short str> = guard;
+    ///     *guard = value;
+    ///     guard
+    /// }
+    /// ```
+    struct MappedRwLockWriteGuardIsInvariant;
+
+    /// ```compile_fail
+    /// use asyncband::rwlock::OwnedMappedRwLockWriteGuard;
+    ///
+    /// fn shorten<'short>(
+    ///     guard: OwnedMappedRwLockWriteGuard<(), &'static str>,
+    ///     value: &'short str,
+    /// ) -> OwnedMappedRwLockWriteGuard<(), &'short str> {
+    ///     let mut guard: OwnedMappedRwLockWriteGuard<(), &'short str> = guard;
+    ///     *guard = value;
+    ///     guard
+    /// }
+    /// ```
+    struct OwnedMappedRwLockWriteGuardIsInvariant;
 }

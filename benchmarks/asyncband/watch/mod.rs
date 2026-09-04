@@ -29,27 +29,28 @@ use crate::support::poll_ready;
 const RECEIVER_COUNTS: &[usize] = &[1, 2, 4, 8, 32];
 
 #[divan::bench]
-fn borrow_current(bencher: Bencher) {
+fn get_current(bencher: Bencher) {
     let (sender, receiver) = watch::channel(1usize);
-    bencher.bench_local(|| black_box(*receiver.borrow()));
+    bencher.bench_local(|| black_box(receiver.get()));
     black_box(sender);
 }
 
 #[divan::bench]
-fn send_and_borrow(bencher: Bencher) {
+fn send_and_get(bencher: Bencher) {
     let (sender, receiver) = watch::channel(0usize);
     bencher.bench_local(|| {
         sender.send(black_box(1usize)).unwrap();
-        black_box(*receiver.borrow())
+        black_box(receiver.get())
     });
 }
 
 #[divan::bench]
-fn send_and_borrow_and_update(bencher: Bencher) {
+fn ready_recv(bencher: Bencher) {
+    let mut context = bench_context();
     let (sender, mut receiver) = watch::channel(0usize);
     bencher.bench_local(|| {
         sender.send(black_box(1usize)).unwrap();
-        black_box(*receiver.borrow_and_update())
+        black_box(poll_ready(receiver.recv(), &mut context).unwrap())
     });
 }
 
@@ -59,7 +60,7 @@ fn ready_changed(bencher: Bencher) {
     let (sender, mut receiver) = watch::channel(0usize);
     bencher.bench_local(|| {
         sender.send(black_box(1usize)).unwrap();
-        black_box(*poll_ready(receiver.changed(), &mut context).unwrap())
+        poll_ready(receiver.changed(), &mut context).unwrap();
     });
 }
 
@@ -71,7 +72,7 @@ fn notify_pending(bencher: Bencher) {
         let mut changed = pin!(receiver.changed());
         poll_pending(changed.as_mut(), &mut context);
         sender.send(black_box(1usize)).unwrap();
-        black_box(*poll_pinned_ready(changed.as_mut(), &mut context).unwrap())
+        poll_pinned_ready(changed.as_mut(), &mut context).unwrap();
     });
 }
 
@@ -94,7 +95,7 @@ fn notify_pending_fanout(bencher: Bencher, receiver_count: usize) {
 
         sender.send(black_box(1usize)).unwrap();
         for mut future in changed {
-            black_box(*poll_pinned_ready(future.as_mut(), &mut context).unwrap());
+            poll_pinned_ready(future.as_mut(), &mut context).unwrap();
         }
     });
 }

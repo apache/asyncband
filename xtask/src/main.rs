@@ -117,10 +117,6 @@ impl CommandMiri {
             "tests-integration",
             &["--test", "unsafe_paths_test"],
         ));
-        run_command(make_miri_cmd(
-            "tests-integration",
-            &["--test", "waitset_reentrancy_test"],
-        ));
     }
 }
 

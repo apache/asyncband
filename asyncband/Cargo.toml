@@ -17,7 +17,7 @@
 
 [package]
 name = "asyncband"
-version = "0.6.7"
+version = "0.7.2"
 
 categories = ["asynchronous", "concurrency"]
 description = "Composable, runtime-agnostic concurrency building blocks for async Rust."
@@ -49,6 +49,7 @@ blocking = []
 broadcast = []
 completion = []
 condvar = ["mutex"]
+event = []
 latch = []
 lazy-cell = ["mutex"]
 mpsc = []

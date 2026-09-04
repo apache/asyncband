@@ -31,7 +31,7 @@
 //! use asyncband::barrier::Barrier;
 //!
 //! let barrier = Arc::new(Barrier::new(3));
-//! let mut tasks = Vec::new();
+//! let mut tasks = vec![];
 //!
 //! for _ in 0..3 {
 //!     let barrier = barrier.clone();
@@ -54,9 +54,9 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::WaitSet;
-use crate::internal::waitset::WakerToken;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
+use crate::internal::wakerset::WakerSet;
+use crate::internal::wakerset::WakerToken;
 
 /// A synchronization primitive for multiple tasks that need to wait for each other.
 ///
@@ -70,7 +70,7 @@ pub struct Barrier {
 struct BarrierState {
     arrived: u32,
     generation: usize,
-    waiters: WaitSet,
+    waiters: WakerSet,
 }
 
 impl fmt::Debug for BarrierState {
@@ -118,25 +118,20 @@ impl BarrierWaitResult {
 }
 
 impl Barrier {
-    /// Creates a new barrier that can block the specified number of tasks.
+    /// Creates a barrier for `n` participants.
     ///
-    /// A barrier will block `n-1` tasks and release them all at once when the `n`th task arrives.
-    ///
-    /// # Arguments
-    ///
-    /// * `n`: The number of tasks to wait for. If `n` is 0, it will be treated as 1.
+    /// Each generation completes when `n` calls to [`wait`](Self::wait) have arrived. Passing zero
+    /// selects the same immediately completing behavior as passing one.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::barrier::Barrier;
     ///
-    /// let barrier = Barrier::new(3); // Creates a barrier for 3 tasks
+    /// let barrier = Barrier::new(3);
     /// ```
     pub fn new(n: u32) -> Self {
-        // If n is 0, it's not clear what behavior the user wants.
-        // std::sync::Barrier works with n = 0 the same as n = 1,
-        // where every .wait() immediately unblocks, so we adopt that here as well.
+        // Normalize an empty group to one participant so every wait completes its own generation.
         let n = if n > 0 { n } else { 1 };
 
         Self {
@@ -145,7 +140,7 @@ impl Barrier {
                 arrived: 0,
                 generation: 0,
                 // The final participant completes the generation without parking.
-                waiters: WaitSet::with_capacity((n - 1) as usize),
+                waiters: WakerSet::with_capacity((n - 1) as usize),
             }),
         }
     }
@@ -240,22 +235,15 @@ impl Future for BarrierWait<'_> {
             barrier,
         } = self.get_mut();
 
-        // A follower normally parks once, so cloning first keeps its common pending path to one
-        // state-lock acquisition. Cloning may reenter and complete the barrier; checking the
-        // generation afterward closes that race. The completion poll may clone an unused waker,
-        // which is the deliberate cost of avoiding a second lock-and-recheck phase here.
-        let waker = cx.waker().clone();
         let mut state = barrier.state.lock();
         if *generation < state.generation {
             // Completion advances the generation and drains its old waiters under this same lock,
-            // so no registration represented by this token remains in the wait set.
+            // so no registration represented by this token remains in the waker set.
             *token = None;
-            drop(state);
-            drop(waker);
             return Poll::Ready(());
         }
 
-        let retired_waker = state.waiters.register(token, waker);
+        let retired_waker = state.waiters.register(token, cx.waker());
         drop(state);
         drop(retired_waker);
         Poll::Pending
@@ -264,12 +252,20 @@ impl Future for BarrierWait<'_> {
 
 impl Drop for BarrierWait<'_> {
     fn drop(&mut self) {
-        if self.token.is_some() {
-            let removed_waker = {
-                let mut state = self.barrier.state.lock();
-                state.waiters.unregister(&mut self.token)
-            };
-            drop(removed_waker);
+        if self.token.is_none() {
+            return;
         }
+
+        let mut state = self.barrier.state.lock();
+        if self.generation != state.generation {
+            // Advancing the generation detached this registration before making the new generation
+            // visible under the same lock.
+            self.token = None;
+            return;
+        }
+
+        let removed_waker = state.waiters.unregister(&mut self.token);
+        drop(state);
+        drop(removed_waker);
     }
 }

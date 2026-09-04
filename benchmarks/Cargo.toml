@@ -31,6 +31,7 @@ asyncband = { workspace = true, features = [
   "broadcast",
   "completion",
   "condvar",
+  "event",
   "latch",
   "mpsc",
   "mutex",
@@ -50,6 +51,7 @@ divan = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 pollster = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
+waitgroup = { workspace = true }
 
 [[bench]]
 harness = false

@@ -23,10 +23,21 @@
 //! created by [`Sender::subscribe`]. Cloning a receiver preserves the source receiver's observed
 //! version and then tracks future observations independently.
 //!
-//! [`Receiver::borrow`] returns an owning [`Arc`] snapshot without marking the current version
-//! observed. [`Receiver::borrow_and_update`] and [`Receiver::changed`] explicitly mark the returned
-//! version observed. Because snapshots do not retain the channel's internal lock, they may be kept
-//! or moved independently while senders continue publishing newer values.
+//! [`Receiver::get`] returns a clone of the current value without marking its version observed.
+//! [`Receiver::recv`] waits for an unseen version, then returns an owning clone and marks that
+//! version observed. Callers can use an [`Arc`] as the watched value when cloning the underlying
+//! state would be expensive.
+//!
+//! # Publication model
+//!
+//! Both [`Sender`] and [`Receiver`] are cloneable. Successful publications from every sender are
+//! serialized into one channel-wide order, and the last publication in that order becomes the
+//! current state. The order of concurrent calls is unspecified, so callers that need semantic
+//! writer priority or ordering should coordinate before publishing.
+//!
+//! This makes a watch channel a last-publication-wins state register, not an event log. A receiver
+//! may coalesce any number of intermediate publications and only observe the latest state. Use a
+//! queue or broadcast channel when every update must be processed.
 //!
 //! If all senders are dropped after publishing a final unseen value, each receiver can still
 //! observe that value once before [`RecvError::Disconnected`] is reported.
@@ -42,7 +53,7 @@
 //! tx.send(1).unwrap();
 //! tx.send(2).unwrap();
 //!
-//! assert_eq!(*rx.changed().await.unwrap(), 2);
+//! assert_eq!(rx.recv().await.unwrap(), 2);
 //! assert_eq!(rx.has_changed(), Ok(false));
 //! # }
 //! ```
@@ -63,9 +74,9 @@ use std::task::Poll;
 pub use self::error::RecvError;
 pub use self::error::SendError;
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::WaitSet;
-use crate::internal::waitset::WakerToken;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
+use crate::internal::wakerset::WakerSet;
+use crate::internal::wakerset::WakerToken;
 
 /// Creates a watch channel with an initial value.
 ///
@@ -77,16 +88,16 @@ use crate::internal::waitset::wake_all;
 /// use asyncband::watch;
 ///
 /// let (_tx, rx) = watch::channel("ready");
-/// assert_eq!(&*rx.borrow(), &"ready");
+/// assert_eq!(rx.get(), "ready");
 /// ```
-pub fn channel<T>(initial: T) -> (Sender<T>, Receiver<T>) {
+pub fn channel<T: Clone>(initial: T) -> (Sender<T>, Receiver<T>) {
     let shared = Arc::new(Shared {
         state: Mutex::new(State {
-            value: Arc::new(initial),
+            value: initial,
             version: 0,
             senders: 1,
             receivers: 1,
-            waiters: WaitSet::new(),
+            waiters: WakerSet::new(),
         }),
     });
     let sender = Sender {
@@ -101,11 +112,11 @@ struct Shared<T> {
 }
 
 struct State<T> {
-    value: Arc<T>,
+    value: T,
     version: u64,
     senders: usize,
     receivers: usize,
-    waiters: WaitSet,
+    waiters: WakerSet,
 }
 
 /// The sending side of a watch channel.
@@ -142,7 +153,7 @@ impl<T> Drop for Sender<T> {
             if state.senders != 0 {
                 return;
             }
-            state.waiters.drain()
+            state.waiters.take_all()
         };
         wake_all(wakers);
     }
@@ -155,7 +166,7 @@ impl<T> Sender<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the internal version counter overflows.
+    /// Panics if the channel has already published `u64::MAX` updates.
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
         let (wakers, replaced) = {
             let mut state = self.shared.state.lock();
@@ -166,7 +177,7 @@ impl<T> Sender<T> {
                 .version
                 .checked_add(1)
                 .expect("watch channel version counter overflowed");
-            let replaced = mem::replace(&mut state.value, Arc::new(value));
+            let replaced = mem::replace(&mut state.value, value);
             state.version = version;
             let wakers = state.waiters.drain();
             (wakers, replaced)
@@ -177,7 +188,32 @@ impl<T> Sender<T> {
         Ok(())
     }
 
+    /// Publishes a new current value and returns the previous value.
+    ///
+    /// Unlike [`Sender::send`], this method updates the retained value even when no receivers
+    /// exist. Every call creates a new version and notifies all current receivers.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the channel has already published `u64::MAX` updates.
+    pub fn send_replace(&self, value: T) -> T {
+        let (wakers, replaced) = {
+            let mut state = self.shared.state.lock();
+            let version = state
+                .version
+                .checked_add(1)
+                .expect("watch channel version counter overflowed");
+            let replaced = mem::replace(&mut state.value, value);
+            state.version = version;
+            let wakers = state.waiters.drain();
+            (wakers, replaced)
+        };
+        wake_all(wakers);
+        replaced
+    }
+
     /// Creates a receiver that considers the current value already observed.
+    #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn subscribe(&self) -> Receiver<T> {
         let mut state = self.shared.state.lock();
         state.receivers = state
@@ -230,16 +266,16 @@ impl<T> Drop for Receiver<T> {
 }
 
 impl<T> Receiver<T> {
-    /// Returns a snapshot of the current value without marking it observed.
-    pub fn borrow(&self) -> Arc<T> {
+    /// Returns a clone of the current value without marking its version observed.
+    ///
+    /// The clone is created while publication is locked. Keep `T::clone` inexpensive and avoid
+    /// reentering this channel from the clone implementation. Use `T = Arc<U>` when the underlying
+    /// state is expensive to clone.
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
         self.shared.state.lock().value.clone()
-    }
-
-    /// Returns a snapshot of the current value and marks its version observed.
-    pub fn borrow_and_update(&mut self) -> Arc<T> {
-        let state = self.shared.state.lock();
-        self.seen = state.version;
-        state.value.clone()
     }
 
     /// Returns whether a version newer than the last observed version exists.
@@ -257,16 +293,47 @@ impl<T> Receiver<T> {
         }
     }
 
-    /// Waits for a newer version and returns its latest snapshot.
+    /// Waits for a newer version and marks the latest version observed.
     ///
     /// Intermediate updates may be coalesced. This method is cancel safe: until it returns, no
-    /// version is marked observed by the call.
-    pub async fn changed(&mut self) -> Result<Arc<T>, RecvError> {
-        Changed {
-            receiver: self,
+    /// version is marked observed by the call. Use [`Receiver::recv`] instead when the value is
+    /// needed.
+    pub async fn changed(&mut self) -> Result<(), RecvError> {
+        let seen = Change {
+            shared: &self.shared,
+            seen: self.seen,
             token: None,
         }
-        .await
+        .await?;
+        self.seen = seen;
+        Ok(())
+    }
+
+    /// Waits for a newer version, returns a clone of its latest value, and marks it observed.
+    ///
+    /// Intermediate updates may be coalesced. The returned value and the receiver's observed
+    /// version are updated together, so a concurrent publication cannot cause the returned value
+    /// to be received twice. This method is cancel safe: until it returns, no version is marked
+    /// observed by the call.
+    ///
+    /// The clone is created while publication is locked. Keep `T::clone` inexpensive and avoid
+    /// reentering this channel from the clone implementation. Use `T = Arc<U>` when the underlying
+    /// state is expensive to clone. If cloning panics, the version remains unseen and may be
+    /// received by a later call.
+    pub async fn recv(&mut self) -> Result<T, RecvError>
+    where
+        T: Clone,
+    {
+        Change {
+            shared: &self.shared,
+            seen: self.seen,
+            token: None,
+        }
+        .await?;
+        let state = self.shared.state.lock();
+        let value = state.value.clone();
+        self.seen = state.version;
+        Ok(value)
     }
 
     /// Returns whether all senders have been dropped.
@@ -278,56 +345,51 @@ impl<T> Receiver<T> {
     }
 }
 
-struct Changed<'a, T> {
-    receiver: &'a mut Receiver<T>,
+struct Change<'a, T> {
+    shared: &'a Shared<T>,
+    seen: u64,
     token: Option<WakerToken>,
 }
 
-impl<T> Future for Changed<'_, T> {
-    type Output = Result<Arc<T>, RecvError>;
+impl<T> Future for Change<'_, T> {
+    type Output = Result<u64, RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        // A changed call normally parks once and then consumes one update, so cloning first keeps
-        // the common pending path to one state-lock acquisition. Checking the version and sender
-        // count afterward closes races caused by concurrent work or a reentrant clone callback.
-        // Ready and disconnected polls may consequently clone an unused waker.
-        let waker = cx.waker().clone();
-        let mut state = this.receiver.shared.state.lock();
-        if state.version != this.receiver.seen {
-            let retired_waker = state.waiters.unregister(&mut this.token);
-            this.receiver.seen = state.version;
-            let value = state.value.clone();
-            drop(state);
-            drop(retired_waker);
-            drop(waker);
-            return Poll::Ready(Ok(value));
-        }
-        if state.senders == 0 {
-            let retired_waker = state.waiters.unregister(&mut this.token);
-            drop(state);
-            drop(retired_waker);
-            drop(waker);
-            return Poll::Ready(Err(RecvError::Disconnected));
-        }
-
-        let retired_waker = state.waiters.register(&mut this.token, waker);
+        let mut state = this.shared.state.lock();
+        let (poll, retired_waker) = if state.version != this.seen {
+            // Publishing a newer version detached this registration under the same lock.
+            this.token = None;
+            (Poll::Ready(Ok(state.version)), None)
+        } else if state.senders == 0 {
+            // The final sender detached all registrations before releasing this state lock.
+            this.token = None;
+            (Poll::Ready(Err(RecvError::Disconnected)), None)
+        } else {
+            let retired = state.waiters.register(&mut this.token, cx.waker());
+            (Poll::Pending, retired)
+        };
         drop(state);
         drop(retired_waker);
-        Poll::Pending
+        poll
     }
 }
 
-impl<T> Drop for Changed<'_, T> {
+impl<T> Drop for Change<'_, T> {
     fn drop(&mut self) {
         if self.token.is_none() {
             return;
         }
 
-        let waker = {
-            let mut state = self.receiver.shared.state.lock();
-            state.waiters.unregister(&mut self.token)
-        };
+        let mut state = self.shared.state.lock();
+        if state.version != self.seen || state.senders == 0 {
+            // A publication or terminal sender drop already detached this registration.
+            self.token = None;
+            return;
+        }
+
+        let waker = state.waiters.unregister(&mut self.token);
+        drop(state);
         drop(waker);
     }
 }

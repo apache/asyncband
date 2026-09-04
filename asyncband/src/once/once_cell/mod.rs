@@ -15,6 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Portions of this file originated from Tokio 1.47.0's OnceCell implementation.
+// Copyright (c) Tokio Contributors
+// The Tokio-derived portions remain licensed under the MIT License.
+// Asyncband substantially changed the synchronization model: initialization does not close the
+// semaphore, the cell can be emptied and initialized again, and value storage is delegated to a
+// reusable ValueCell shared with LazyCell.
+// Upstream source:
+// https://github.com/tokio-rs/tokio/blob/3911cb8523f190142f61c64b66881c07c0d3e7be/tokio/src/sync/once_cell.rs
+
 use std::convert::Infallible;
 use std::fmt;
 
@@ -76,7 +85,7 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Returns whether the internal value is set.
+    /// Returns whether the cell contains a value.
     // `OnceMap` and `singleflight` inspect this state, while a standalone `OnceCell` build does
     // not need the internal helper.
     #[allow(dead_code)]
@@ -84,12 +93,12 @@ impl<T> OnceCell<T> {
         self.value.is_initialized()
     }
 
-    /// Returns whether the internal value is set.
+    /// Returns whether the cell contains a value.
     pub(crate) fn initialized_mut(&mut self) -> bool {
         self.value.is_initialized_mut()
     }
 
-    /// Gets the reference to the underlying value.
+    /// Returns the stored value.
     ///
     /// Returns `None` if the cell is uninitialized, or being initialized.
     ///
@@ -98,7 +107,7 @@ impl<T> OnceCell<T> {
         self.value.get()
     }
 
-    /// Gets the mutable reference to the underlying value.
+    /// Returns mutable access to the stored value.
     ///
     /// Returns `None` if the cell is uninitialized.
     ///
@@ -108,8 +117,7 @@ impl<T> OnceCell<T> {
         self.value.get_mut()
     }
 
-    /// Gets the reference to the internal value, initializing it with the provided asynchronous
-    /// function if it is not set yet.
+    /// Returns the value, initializing an empty cell with the provided asynchronous function.
     ///
     /// If some other task is currently working on initializing the `OnceCell`, this call will wait
     /// for that other task to finish, then return the value that the other task produced.
@@ -131,8 +139,8 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Gets the reference to the internal value, initializing it with the provided asynchronous
-    /// function if it is not set yet.
+    /// Returns the value, initializing an empty cell with the provided fallible asynchronous
+    /// function.
     ///
     /// If some other task is currently working on initializing the `OnceCell`, this call will wait
     /// for that other task to finish, then return the value that the other task produced.
@@ -162,8 +170,7 @@ impl<T> OnceCell<T> {
         Ok(self.set_value(value, permit))
     }
 
-    /// Gets a mutable reference to the internal value, initializing it with the provided
-    /// asynchronous function if it is not set yet.
+    /// Returns mutable access to the value, initializing an empty cell asynchronously.
     ///
     /// This method never blocks other tasks because it takes `&mut self`, which guarantees
     /// exclusive access to the `OnceCell` and thus no concurrent initialization can be in
@@ -198,8 +205,8 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Gets a mutable reference to the internal value, initializing it with the provided
-    /// asynchronous function that may fail if it is not set yet.
+    /// Returns mutable access to the value, initializing an empty cell with a fallible asynchronous
+    /// function.
     ///
     /// This method never blocks other tasks because it takes `&mut self`, which guarantees
     /// exclusive access to the `OnceCell` and thus no concurrent initialization can be in

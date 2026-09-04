@@ -19,4 +19,26 @@
 builtin = "Apache-2.0-ASF"
 
 [files]
+# These third-party-derived files use the applicable upstream license and copyright notices instead
+# of the standard ASF source header.
+excludes = [
+  "asyncband/src/blocking/executor.rs",
+  "asyncband/src/blocking/parker.rs",
+  "asyncband/src/pool/bounded.rs",
+  "asyncband/src/pool/common.rs",
+  "asyncband/src/pool/mod.rs",
+  "asyncband/src/pool/state.rs",
+  "asyncband/src/pool/unbounded.rs",
+  "asyncband/src/rwlock/mapped_read_guard.rs",
+  "asyncband/src/rwlock/mapped_write_guard.rs",
+  "asyncband/src/rwlock/mod.rs",
+  "asyncband/src/rwlock/owned_mapped_read_guard.rs",
+  "asyncband/src/rwlock/owned_mapped_write_guard.rs",
+  "asyncband/src/rwlock/owned_read_guard.rs",
+  "asyncband/src/rwlock/owned_write_guard.rs",
+  "asyncband/src/rwlock/read_guard.rs",
+  "asyncband/src/rwlock/write_guard.rs",
+  "tests-integration/tests/pool_recycle_cancelled_test.rs",
+  "tests-integration/tests/pool_replenish_test.rs",
+]
 includes = ["**/*.proto", "**/*.rs", "**/*.yml", "**/*.yaml", "**/*.toml"]

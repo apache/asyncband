@@ -6,7 +6,7 @@ The signed source archive approved by the Apache Incubator PMC and published thr
 
 ## Conventions
 
-- `VERSION` is the proposed final version, for example `0.7.0`.
+- `VERSION` is the proposed final version, for example `0.7.2`.
 - `RC` is the positive candidate number, for example `1`.
 - `RELEASE_COMMIT` is the merged release pull request commit used for every candidate artifact and release tag.
 - The source archive is `apache-asyncband-${VERSION}-incubating-src.tar.gz`; the RC number appears in the staging directory and tag.
@@ -56,7 +56,7 @@ The `release` environment in `.asf.yaml` limits deployments to version tags and 
 Start from current `main` and choose `VERSION` from the changes since the latest crates.io release.
 
 1. Change `version` in `asyncband/Cargo.toml` and refresh `Cargo.lock` with Cargo.
-2. Move the entries under `Unreleased` in `CHANGELOG.md` into a dated `VERSION` section, then restore an empty `Unreleased` section. Keep user-impacting sections ordered as breaking changes, new features, bug fixes, and improvements.
+2. Move the entries under `Unreleased` in `CHANGELOG.md` into an undated `v${VERSION}` section immediately below it, then restore an empty `Unreleased` section. Keep user-impacting sections ordered as breaking changes, new features, bug fixes, and improvements; add the actual release date only after publication.
 3. Verify `LICENSE`, `NOTICE`, `DISCLAIMER`, source headers, and bundled dependencies.
 4. Run the release checks:
 
@@ -85,14 +85,16 @@ Fetch `RELEASE_COMMIT`, inspect the detached worktree, and create a signed annot
 RC_TAG="v${VERSION}-rc.${RC}"
 git fetch https://github.com/apache/asyncband.git main
 git switch --detach "${RELEASE_COMMIT}"
-git status --short
+git grep -F "version = \"${VERSION}\"" -- asyncband/Cargo.toml Cargo.lock
+git grep -Fx "## v${VERSION}" -- CHANGELOG.md
+test -z "$(git status --porcelain)"
 git tag --sign "${RC_TAG}" \
   --message "Apache Asyncband ${VERSION} release candidate ${RC}" \
   "${RELEASE_COMMIT}"
 git push https://github.com/apache/asyncband.git "${RC_TAG}"
 ```
 
-Wait for the `Release` GitHub Actions workflow to pass. An RC tag runs package validation and skips the crates.io publishing job. A candidate that needs a code change gets a new release pull request, merge commit, RC number, and signed tag.
+Wait for the `Release` GitHub Actions workflow to pass. The workflow validates the RC tag and runs `cargo publish --dry-run` against the unchanged `${VERSION}` package; it skips the crates.io publish job for RC tags. A candidate that needs a code change gets a new release pull request, merge commit, RC number, and signed tag.
 
 ## 3. Build and verify the source archive
 
@@ -131,7 +133,7 @@ VERIFY_DIR="$(mktemp -d)"
 rm -rf "${VERIFY_DIR}"
 ```
 
-Inspect the archive for unexpected binary files, verify `LICENSE`, `NOTICE`, and `DISCLAIMER`, and compare its contents with the RC tag.
+Inspect the archive for unexpected binary files and compare its contents with the RC tag. Read `LICENSE` and `NOTICE` against the bundled and derived third-party works and their source-file notices; the presence of those files and a successful automated header scan are not sufficient verification.
 
 ## 4. Stage the candidate on ASF infrastructure
 
@@ -201,8 +203,9 @@ After publication:
 
 1. Verify the version and metadata on crates.io and docs.rs.
 2. After ASF distribution syncs, verify the source archive, checksum, and signature under `https://downloads.apache.org/incubator/asyncband/${VERSION}/` and the project `KEYS` file at `https://downloads.apache.org/incubator/asyncband/KEYS`.
-3. Announce the release on `dev@asyncband.apache.org` and other appropriate channels as Apache Asyncband (Incubating).
-4. Remove superseded releases from `dist/release`; ASF retains them in the archive.
+3. Submit a post-release pull request that adds the actual publication date to the `v${VERSION}` changelog heading.
+4. Announce the release on `dev@asyncband.apache.org` and other appropriate channels as Apache Asyncband (Incubating).
+5. Remove superseded releases from `dist/release`; ASF retains them in the archive.
 
 ## Recover from failures
 

@@ -68,6 +68,8 @@ use std::task::Waker;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
+use crate::internal::wake_all;
+use crate::internal::waker_batch::WakerBatch;
 use crate::mutex;
 use crate::mutex::MutexGuard;
 use crate::mutex::OwnedMutexGuard;
@@ -157,7 +159,7 @@ impl Condvar {
     pub fn notify_all(&self) {
         let wakers = {
             let mut waiters = self.waiters.lock();
-            let mut wakers = Vec::new();
+            let mut wakers = WakerBatch::new();
 
             while waiters
                 .unlink_first_waiter(|node| {
@@ -175,9 +177,7 @@ impl Condvar {
             wakers
         };
 
-        for waker in wakers {
-            waker.wake();
-        }
+        wake_all(wakers.into_iter());
     }
 
     /// Waits for a notification, atomically releasing and then reacquiring the mutex.
@@ -191,7 +191,7 @@ impl Condvar {
     ///
     /// # Cancel safety
     ///
-    /// Cancelling this wait removes the task from the wait queue. If the task was selected by
+    /// Cancelling this wait removes it from the current waiters. If the task was selected by
     /// [`notify_one`](Self::notify_one) but has not yet reacquired the mutex, the notification is
     /// passed to another task that is waiting at that point, if one exists. It is never buffered
     /// for a future waiter.
@@ -260,6 +260,11 @@ impl Condvar {
     /// notifier.await.unwrap();
     /// # }
     /// ```
+    ///
+    /// # Cancel safety
+    ///
+    /// Each wait iteration has the same cancellation semantics as [`wait`](Self::wait). Cancelling
+    /// drops the mutex guard; mutations already made by `condition` are not rolled back.
     pub async fn wait_while<'a, T, F>(
         &self,
         mut guard: MutexGuard<'a, T>,
@@ -305,6 +310,12 @@ impl Condvar {
     /// notifier.await.unwrap();
     /// # }
     /// ```
+    ///
+    /// # Cancel safety
+    ///
+    /// Each wait iteration has the same cancellation semantics as
+    /// [`wait_owned`](Self::wait_owned). Cancelling drops the owned mutex guard; mutations already
+    /// made by `condition` are not rolled back.
     pub async fn wait_while_owned<T, F>(
         &self,
         mut guard: OwnedMutexGuard<T>,
@@ -334,12 +345,13 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let mut waiters = this.condvar.waiters.lock();
 
-        if let Some(guard) = this.guard.take() {
+        if this.guard.is_some() {
+            let mut waiters = this.condvar.waiters.lock();
             this.index = Some(waiters.push_back(WaitNode {
                 state: WaitState::Waiting(cx.waker().clone()),
             }));
+            let guard = this.guard.take().unwrap();
 
             // Registration must happen before unlocking the associated mutex. A notifier that
             // acquires the mutex after this point will therefore observe this waiter.
@@ -349,19 +361,25 @@ where
         }
 
         let index = this.index.expect("wait future polled after completion");
+        let mut waiters = this.condvar.waiters.lock();
+        let mut old_waker = None;
         let notify_one_baton = match &mut waiters.waiter_mut(index).state {
             WaitState::Waiting(waker) => {
                 if !waker.will_wake(cx.waker()) {
-                    waker.clone_from(cx.waker());
+                    old_waker = Some(mem::replace(waker, cx.waker().clone()));
                 }
+                drop(waiters);
+                drop(old_waker);
                 return Poll::Pending;
             }
             WaitState::NotifiedOne => Some(NotifyOneBaton::new(this.condvar)),
             WaitState::NotifiedAll => None,
         };
 
-        waiters.remove_unlinked_waiter(index);
+        let waiter = waiters.remove_unlinked_waiter(index);
         this.index = None;
+        drop(waiters);
+        drop(waiter);
         Poll::Ready(notify_one_baton)
     }
 }
@@ -372,7 +390,7 @@ impl<G> Drop for Wait<'_, G> {
             return;
         };
 
-        let waker = {
+        let (waiter, waker) = {
             let mut waiters = self.condvar.waiters.lock();
             let mut pass_notification = false;
             waiters.unlink_waiter(index, |node| match &node.state {
@@ -383,15 +401,17 @@ impl<G> Drop for Wait<'_, G> {
                 }
                 WaitState::NotifiedAll => false,
             });
-            waiters.remove_unlinked_waiter(index);
+            let waiter = waiters.remove_unlinked_waiter(index);
 
-            if pass_notification {
+            let waker = if pass_notification {
                 notify_one_locked(&mut waiters)
             } else {
                 None
-            }
+            };
+            (waiter, waker)
         };
 
+        drop(waiter);
         if let Some(waker) = waker {
             waker.wake();
         }

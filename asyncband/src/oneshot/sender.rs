@@ -15,6 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// This file contains code derived from the oneshot crate.
+// Asyncband uses the upstream crate's Apache-2.0 license option for that code.
+// The incorporated code has been modified for use in Apache Asyncband.
+// Upstream sources (oneshot v0.1.11, before its channel code was split into modules):
+// https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/src/lib.rs
+// https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/src/errors.rs
+
 use std::any::type_name;
 use std::fmt;
 use std::mem::ManuallyDrop;

@@ -1,10 +1,30 @@
 # Changelog
 
-> Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Please read the [DISCLAIMER](DISCLAIMER).
-
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+
+### Improvements
+
+* Reduce unbounded MPSC queue contention by receiving messages in local batches while preserving FIFO ordering and endpoint compatibility.
+
+## v0.7.2
+
+### Improvements
+
+* Preserve applicable third-party licensing and copyright notices on derived source files, and record exact provenance mappings in `LICENSE` and source comments.
+
+## v0.7.1 (2026-09-04)
+
+This is an interim non-ASF release. It has not been approved by the Apache Incubator PMC and is not an act of the Apache Software Foundation.
+
+### Bug fixes
+
+* Correct source-header treatment and make third-party derivation and test provenance records more precise in source distributions.
+
+## v0.7.0 (2026-09-04)
+
+This non-ASF release was not approved by the Apache Incubator PMC, is not an act of the Apache Software Foundation, and has been yanked from crates.io.
 
 ### Breaking changes
 
@@ -23,7 +43,8 @@ All notable changes to this project will be documented in this file.
 ### New features
 
 * Implement `broadcast::mpmc::unbounded`, an unbounded broadcast channel that retains messages until all active receivers consume them or are dropped.
-* Add an opt-in latest-state channel under `asyncband::watch`.
+* Add an opt-in clone-based latest-state channel under `asyncband::watch`, including retained replacement updates through `Sender::send_replace`.
+* Add opt-in `asyncband::event::ManualResetEvent`, a reusable level-triggered signal that releases registered waits and remains ready for future waits until explicitly reset.
 * Add an opt-in shared one-shot completion primitive under `asyncband::completion` with a single-use completer, cloneable observers, a retained borrowed result, and observable abandonment.
 * Add opt-in `asyncband::once::LazyCell` for values that own one asynchronous initializer and preserve its in-flight future across caller cancellation.
 * Add opt-in bounded and unbounded runtime-agnostic object pools under `asyncband::pool`.
@@ -31,12 +52,17 @@ All notable changes to this project will be documented in this file.
 
 ### Bug fixes
 
+* Reject semaphore permit merges whose combined count exceeds `usize::MAX` instead of wrapping and losing permits.
 * Release cancelled wait registrations promptly and reclaim fulfilled `Semaphore::reduce_permits` debt nodes.
-* Preserve fan-out notifications when one registered waker panics.
-* Clone task wakers outside primitive state locks so reentrant clone callbacks cannot deadlock wait registration.
+* Preserve fan-out notifications, including semaphore permit grants, when one registered waker panics.
 
 ### Improvements
 
-* Remove the `slab` dependency in favor of a focused internal waiter arena.
+* Reduce fan-out notification overhead by avoiding heap allocation for a single waiter and transferring terminal waiter storage out of state locks.
+* Reduce MPSC receiver registration and wake latency by storing receiver wakers inline instead of allocating them on the heap.
+* Reduce semaphore and mutex hot-path overhead by avoiding wake-buffer allocation when no tasks are queued and batching queued wakes on the stack.
+* Allocate `OnceMap` and `singleflight::Group` registries lazily to reduce construction overhead.
 * Describe disconnected channel states consistently in channel error messages.
-* Replace the legacy standard-library MPSC backend with an owned queue core and remove the receiver types' manual `Sync` implementations.
+* Avoid fixed CPU spinning before registering `WaitGroup`, `Latch`, and `Once` waiters.
+* Specialize `WaitGroup`'s one-shot completion state to reduce handle registration and multi-waiter notification overhead while preserving cancellable multi-observer waits.
+* Reduce waiter state and notification overhead across `Barrier`, broadcast, completion, `Latch`, `Once`, and watch by reusing each primitive's existing lifecycle state instead of maintaining duplicate waiter epochs.

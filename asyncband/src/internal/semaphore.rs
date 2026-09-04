@@ -15,6 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Portions of the permit-accounting algorithm originated from Tokio 1.42.0's batch semaphore.
+// Copyright (c) Tokio Contributors
+// The Tokio-derived portions remain licensed under the MIT License.
+// Asyncband substantially replaced the waiter lifecycle with queue-owned WaitList nodes, supports
+// queue-head permit debt for exact reductions, has no closed state or reserved flag bits, and uses
+// its own cancellation, detachment, and batched-waking machinery.
+// Upstream source:
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/batch_semaphore.rs
+
 use std::future::Future;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
@@ -29,6 +38,8 @@ use std::task::Waker;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
+use crate::internal::wake_all;
+use crate::internal::waker_batch::WakerBatch;
 
 /// The internal semaphore that provides low-level async primitives.
 #[derive(Debug)]
@@ -77,12 +88,16 @@ impl WakeBatch {
     }
 
     fn wake_all(&mut self) {
-        while self.start < self.end {
+        wake_all(std::iter::from_fn(|| {
+            if self.start == self.end {
+                return None;
+            }
+
             let index = self.start;
             self.start += 1;
             // SAFETY: `index` was within the initialized range before advancing `start`.
-            unsafe { self.wakers[index].assume_init_read() }.wake();
-        }
+            Some(unsafe { self.wakers[index].assume_init_read() })
+        }));
         self.start = 0;
         self.end = 0;
     }
@@ -202,7 +217,7 @@ impl Semaphore {
     /// Adds as many permits until there is no waiter.
     pub fn notify_all(&self) {
         let mut waiters = self.waiters.lock();
-        let mut wakers = Vec::new();
+        let mut wakers = WakerBatch::new();
         loop {
             match waiters.unlink_first_waiter(|node| {
                 node.permits = 0;
@@ -221,9 +236,7 @@ impl Semaphore {
             }
         }
         drop(waiters);
-        for w in wakers.drain(..) {
-            w.wake();
-        }
+        wake_all(wakers.into_iter());
     }
 
     fn insert_permits_with_lock(

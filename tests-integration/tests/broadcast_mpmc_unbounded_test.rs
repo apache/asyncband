@@ -512,7 +512,7 @@ fn concurrent_senders_deliver_every_message_to_every_receiver() {
         .into_iter()
         .map(|mut receiver| {
             thread::spawn(move || {
-                let mut seen = Vec::new();
+                let mut seen = vec![];
                 while let Ok(value) = pollster::block_on(receiver.recv()) {
                     seen.push(value);
                 }

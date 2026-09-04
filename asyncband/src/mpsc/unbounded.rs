@@ -34,15 +34,11 @@ use super::queue::UnboundedConsumer;
 use super::queue::UnboundedQueue;
 use crate::internal::atomic_waker::AtomicWaker;
 
-/// Creates an unbounded mpsc channel for communicating between asynchronous
-/// tasks without backpressure.
+/// Creates an unbounded mpsc channel whose send operation never waits for capacity.
 ///
-/// A `send` on this channel will always succeed as long as the receiver is alive.
-/// If the receiver falls behind, messages will be arbitrarily buffered.
-///
-/// Note that the amount of available system memory is an implicit bound to
-/// the channel. Using an `unbounded` channel has the ability of causing the
-/// process to run out of memory. In this case, the process will be aborted.
+/// While the receiver is alive, each send appends its value immediately. Pending messages can
+/// therefore grow with producer demand and are limited only by successful memory allocation. Use a
+/// bounded channel or external admission control when producers may outpace the receiver.
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     let state = Arc::new(UnboundedState {
         queue: UnboundedQueue::new(),
@@ -65,7 +61,7 @@ struct UnboundedState<T> {
     rx_waker: AtomicWaker,
 }
 
-/// Send values to the associated [`UnboundedReceiver`].
+/// The sending endpoint of an unbounded mpsc channel.
 ///
 /// Instances are created by the [`unbounded`] function.
 pub struct UnboundedSender<T> {
@@ -102,14 +98,10 @@ impl<T> Drop for UnboundedSender<T> {
 }
 
 impl<T> UnboundedSender<T> {
-    /// Sends a message without blocking.
+    /// Enqueues a message without waiting for capacity.
     ///
-    /// This method is not marked async because sending a message to an unbounded channel
-    /// never requires any form of waiting. Because of this, the `send` method can be
-    /// used in both synchronous and asynchronous code without problems.
-    ///
-    /// If the receiver has been dropped, this function returns an error. The error includes
-    /// the value passed to `send`.
+    /// This operation is synchronous because the channel has no capacity limit. If the receiver has
+    /// been dropped, the returned error contains `value`.
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
         match self.state.queue.push(value) {
             Ok(()) => {}
@@ -123,7 +115,7 @@ impl<T> UnboundedSender<T> {
     }
 }
 
-/// Receive values from the associated [`UnboundedSender`].
+/// The receiving endpoint of an unbounded mpsc channel.
 ///
 /// Instances are created by the [`unbounded`] function.
 pub struct UnboundedReceiver<T> {
@@ -144,38 +136,27 @@ impl<T> Drop for UnboundedReceiver<T> {
 }
 
 impl<T> UnboundedReceiver<T> {
-    /// Tries to receive the next value for this receiver.
+    /// Attempts to receive the next queued value without waiting.
     ///
-    /// This method returns the [`Empty`] error if the channel is currently
-    /// empty, but there are still outstanding [senders].
-    ///
-    /// This method returns the [`Disconnected`] error if the channel is
-    /// currently empty, and there are no outstanding [senders].
-    ///
-    /// [`Empty`]: TryRecvError::Empty
-    /// [`Disconnected`]: TryRecvError::Disconnected
-    /// [senders]: UnboundedSender
+    /// An empty channel returns [`TryRecvError::Empty`] while at least one sender remains, or
+    /// [`TryRecvError::Disconnected`] after every sender has been dropped and all queued values
+    /// have been consumed.
     ///
     /// # Examples
     ///
     /// ```
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// use asyncband::mpsc;
     /// use asyncband::mpsc::TryRecvError;
-    /// let (tx, mut rx) = mpsc::unbounded();
+    /// use asyncband::mpsc::unbounded;
     ///
-    /// tx.send("hello").unwrap();
+    /// let (tx, mut rx) = unbounded();
+    /// tx.send("first").unwrap();
+    /// tx.send("second").unwrap();
     ///
-    /// assert_eq!(Ok("hello"), rx.try_recv());
-    /// assert_eq!(Err(TryRecvError::Empty), rx.try_recv());
-    ///
-    /// tx.send("hello").unwrap();
+    /// assert_eq!(rx.try_recv(), Ok("first"));
+    /// assert_eq!(rx.try_recv(), Ok("second"));
+    /// assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
     /// drop(tx);
-    ///
-    /// assert_eq!(Ok("hello"), rx.try_recv());
-    /// assert_eq!(Err(TryRecvError::Disconnected), rx.try_recv());
-    /// # }
+    /// assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
         if let Some(value) = self.state.queue.pop(&self.consumer) {
@@ -192,20 +173,17 @@ impl<T> UnboundedReceiver<T> {
         }
     }
 
-    /// Receives the next value for this receiver.
+    /// Waits for and receives the next value.
     ///
-    /// This method returns `Err(RecvError::Disconnected)` after all senders have been dropped and
-    /// no buffered messages remain. At that point, this `Receiver` can never receive another
-    /// value.
-    ///
-    /// If the buffer is empty while a sender remains, this method waits until a message is sent or
-    /// the final sender is dropped.
+    /// If no value is queued, this method waits until a sender adds one or the last sender is
+    /// dropped. It returns [`RecvError::Disconnected`] only after all senders are gone and the
+    /// queue has been drained.
     ///
     /// # Cancel safety
     ///
-    /// This method is cancel safe. If `recv` is used as the event in a `select` statement
-    /// and some other branch completes first, it is guaranteed that no messages were received
-    /// on this channel.
+    /// Dropping a pending `recv` does not remove a message from the channel. A later receive
+    /// operation can still observe the next queued value, so `recv` may safely be raced with other
+    /// futures in a selection construct.
     ///
     /// # Examples
     ///
@@ -215,28 +193,13 @@ impl<T> UnboundedReceiver<T> {
     /// use asyncband::mpsc;
     /// let (tx, mut rx) = mpsc::unbounded();
     ///
-    /// tokio::spawn(async move {
-    ///     tx.send("hello").unwrap();
-    /// });
+    /// tx.send("first").unwrap();
+    /// tx.send("second").unwrap();
+    /// drop(tx);
     ///
-    /// assert_eq!(Ok("hello"), rx.recv().await);
-    /// assert_eq!(Err(mpsc::RecvError::Disconnected), rx.recv().await);
-    /// # }
-    /// ```
-    ///
-    /// Values are buffered:
-    ///
-    /// ```
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// use asyncband::mpsc;
-    /// let (tx, mut rx) = mpsc::unbounded();
-    ///
-    /// tx.send("hello").unwrap();
-    /// tx.send("world").unwrap();
-    ///
-    /// assert_eq!(Ok("hello"), rx.recv().await);
-    /// assert_eq!(Ok("world"), rx.recv().await);
+    /// assert_eq!(rx.recv().await, Ok("first"));
+    /// assert_eq!(rx.recv().await, Ok("second"));
+    /// assert_eq!(rx.recv().await, Err(mpsc::RecvError::Disconnected));
     /// # }
     /// ```
     pub async fn recv(&mut self) -> Result<T, RecvError> {

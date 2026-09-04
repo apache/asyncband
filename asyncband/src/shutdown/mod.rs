@@ -39,7 +39,7 @@
 //! # #[tokio::main]
 //! # async fn main() {
 //! let (shutdown, guard) = asyncband::shutdown::new();
-//! let mut tasks = Vec::new();
+//! let mut tasks = vec![];
 //!
 //! for _ in 0..3 {
 //!     let guard = guard.clone();

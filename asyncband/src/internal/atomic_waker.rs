@@ -15,10 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// This state machine is derived from the futures-rs `AtomicWaker`, licensed under
-// Apache-2.0 OR MIT: https://github.com/rust-lang/futures-rs/blob/0.3.34/futures-core/src/task/__internal/atomic_waker.rs.
-// Its panic recovery is informed by Tokio's `AtomicWaker`, licensed under MIT:
-// https://github.com/tokio-rs/tokio/blob/tokio-1.53.1/tokio/src/sync/task/atomic_waker.rs.
+// This file contains a state machine derived from futures-rs 0.3.34 and panic-recovery behavior
+// informed by Tokio 1.53.1.
+// Asyncband uses the Apache-2.0 license option for code incorporated from futures-rs.
+// The incorporated code has been modified for use in Apache Asyncband.
+// Upstream sources:
+// https://github.com/rust-lang/futures-rs/blob/705e6b5c0f06535b1aac1cb1989a172b3d45be8c/futures-core/src/task/__internal/atomic_waker.rs
+// https://github.com/tokio-rs/tokio/blob/75fef53d0a8590c2d1dbb63672aa7b7d1ef51155/tokio/src/sync/task/atomic_waker.rs
 
 use std::cell::UnsafeCell;
 use std::panic::AssertUnwindSafe;
@@ -257,6 +260,18 @@ mod tests {
         }
     }
 
+    #[cfg(panic = "unwind")]
+    fn clone_panicking_waker() -> Waker {
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(
+            |_| panic!("clone failed"),
+            |_| unreachable!(),
+            |_| unreachable!(),
+            |_| {},
+        );
+
+        unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) }
+    }
+
     #[test]
     fn wake_notifies_once() {
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
@@ -352,19 +367,11 @@ mod tests {
     #[cfg(panic = "unwind")]
     #[test]
     fn clone_panic_does_not_poison_state() {
-        static PANICKING_VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| panic!("clone failed"),
-            |_| unreachable!(),
-            |_| unreachable!(),
-            |_| {},
-        );
-
-        let panicking = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &PANICKING_VTABLE)) };
         let atomic_waker = AtomicWaker::new();
 
         assert!(
             catch_unwind(|| {
-                atomic_waker.register(&panicking);
+                atomic_waker.register(&clone_panicking_waker());
             })
             .is_err()
         );
@@ -378,14 +385,6 @@ mod tests {
     #[cfg(panic = "unwind")]
     #[test]
     fn clone_panic_completes_concurrent_wake() {
-        static PANICKING_VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| panic!("clone failed"),
-            |_| unreachable!(),
-            |_| unreachable!(),
-            |_| {},
-        );
-
-        let panicking = unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &PANICKING_VTABLE)) };
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
         let atomic_waker = AtomicWaker::new();
         atomic_waker.register(&Waker::from(counter.clone()));
@@ -405,7 +404,7 @@ mod tests {
         // the state. Calling the helper completes the interrupted registration.
         assert!(
             catch_unwind(|| unsafe {
-                atomic_waker.register_locked(&panicking);
+                atomic_waker.register_locked(&clone_panicking_waker());
             })
             .is_err()
         );
@@ -455,7 +454,7 @@ mod tests {
         let atomic_waker = AtomicWaker::new();
         atomic_waker.register(&old_waker);
 
-        assert!(catch_unwind(|| atomic_waker.register(&new_waker)).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| atomic_waker.register(&new_waker))).is_err());
 
         atomic_waker.wake();
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);

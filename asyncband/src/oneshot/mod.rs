@@ -15,10 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// This implementation is derived from the `oneshot` crate [1], with significant simplifications
-// because this crate supports only asynchronous receive operations.
-//
-// [1] https://github.com/faern/oneshot/blob/83fd0864/src/lib.rs
+// This file contains code derived from the oneshot crate.
+// Asyncband uses the upstream crate's Apache-2.0 license option for that code.
+// The incorporated code has been modified for use in Apache Asyncband.
+// Upstream source (oneshot v0.1.11, before its channel code was split into modules):
+// https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/src/lib.rs
 
 //! A one-shot channel is used for sending a single message between asynchronous tasks. The
 //! [`channel`] function is used to create a [`Sender`] and [`Receiver`] pair that form the channel.
@@ -40,16 +41,12 @@
 //!
 //! let (tx, rx) = oneshot::channel();
 //!
-//! tokio::spawn(async move {
-//!     if let Err(_) = tx.send(3) {
-//!         println!("the receiver dropped");
-//!     }
+//! let sender = tokio::spawn(async move {
+//!     tx.send(3).unwrap();
 //! });
 //!
-//! match rx.await {
-//!     Ok(v) => println!("got = {:?}", v),
-//!     Err(_) => println!("the sender dropped"),
-//! }
+//! assert_eq!(rx.await, Ok(3));
+//! sender.await.unwrap();
 //! # }
 //! ```
 //!
@@ -62,12 +59,9 @@
 //!
 //! let (tx, rx) = oneshot::channel::<u32>();
 //!
-//! tokio::spawn(async move { drop(tx) });
+//! drop(tx);
 //!
-//! match rx.await {
-//!     Ok(_) => panic!("This doesn't happen"),
-//!     Err(_) => println!("the sender dropped"),
-//! }
+//! assert_eq!(rx.await, Err(oneshot::RecvError::Disconnected));
 //! # }
 //! ```
 //!
@@ -80,10 +74,8 @@
 //!
 //! drop(rx);
 //!
-//! match tx.send(42) {
-//!     Ok(_) => panic!("This doesn't happen"),
-//!     Err(_) => println!("the receiver dropped"),
-//! }
+//! let error = tx.send(42).unwrap_err();
+//! assert_eq!(error.into_inner(), 42);
 //! ```
 
 mod receiver;

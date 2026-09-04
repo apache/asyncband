@@ -18,4 +18,4 @@
 [default.extend-words]
 
 [files]
-extend-exclude = []
+extend-exclude = ["/target"]

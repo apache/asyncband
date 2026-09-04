@@ -62,28 +62,29 @@ Runnable examples live in the [`examples`](examples) workspace crate. They demon
 
 ## API map
 
-| Area                  | API                                                                                  | Feature        | Use                                                                                                    |
-|-----------------------|--------------------------------------------------------------------------------------|----------------|--------------------------------------------------------------------------------------------------------|
-| Shared state          | [`Mutex`](https://docs.rs/asyncband/*/asyncband/mutex/struct.Mutex.html)             | `mutex`        | Protect shared data with asynchronous mutual exclusion.                                                |
-|                       | [`RwLock`](https://docs.rs/asyncband/*/asyncband/rwlock/struct.RwLock.html)          | `rwlock`       | Allow multiple readers or one writer.                                                                  |
-|                       | [`Condvar`](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html)       | `condvar`      | Wait for notifications while releasing a mutex.                                                        |
-| Initialization        | [`Once`](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html)                | `once`         | Run asynchronous initialization exactly once.                                                          |
-|                       | [`OnceCell`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html)        | `once-cell`    | Initialize and store one asynchronous value.                                                           |
-|                       | [`LazyCell`](https://docs.rs/asyncband/*/asyncband/once/struct.LazyCell.html)        | `lazy-cell`    | Lazily initialize a value with a stored asynchronous function.                                         |
-|                       | [`OnceMap`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceMap.html)          | `once-map`     | Initialize and store one value per key.                                                                |
-| Task coordination     | [`Barrier`](https://docs.rs/asyncband/*/asyncband/barrier/struct.Barrier.html)       | `barrier`      | Wait until all participants reach a synchronization point.                                             |
-|                       | [`Completion`](https://docs.rs/asyncband/*/asyncband/completion/struct.Completion.html) | `completion` | Publish one shared result to any number of current and future observers.                                |
-|                       | [`Latch`](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html)             | `latch`        | Wait until a one-way countdown completes.                                                              |
-|                       | [`WaitGroup`](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html) | `waitgroup`    | Wait for a dynamic group of tasks to finish.                                                           |
-|                       | [`Shutdown`](https://docs.rs/asyncband/*/asyncband/shutdown/struct.Shutdown.html)    | `shutdown`     | Coordinate shutdown signals and completion.                                                            |
-| Channels              | [`oneshot`](https://docs.rs/asyncband/*/asyncband/oneshot/)                          | `oneshot`      | Send one value from one sender to one receiver.                                                         |
-|                       | [`mpsc`](https://docs.rs/asyncband/*/asyncband/mpsc/)                                | `mpsc`         | Send each value from multiple producers to one receiver through a bounded or unbounded queue.           |
-|                       | [`broadcast`](https://docs.rs/asyncband/*/asyncband/broadcast/)                      | `broadcast`    | Broadcast values from one or more producers and retain them until every active receiver consumes them. |
-|                       | [`watch`](https://docs.rs/asyncband/*/asyncband/watch/)                              | `watch`        | Publish the latest state to independently tracked receivers and coalesce intermediate updates.          |
-| Resource reuse        | [`pool`](https://docs.rs/asyncband/*/asyncband/pool/)                                | `pool`         | Reuse objects through bounded or unbounded pool variants.                                              |
-| Workload coordination | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore`    | Control concurrent access with permits.                                                                |
-|                       | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)      | `singleflight` | Coalesce concurrent calls for the same key.                                                            |
-| Sync interop          | [`FutureExt`](https://docs.rs/asyncband/*/asyncband/blocking/trait.FutureExt.html)   | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                              |
+| Area                       | API                                                                                            | Feature        | Use                                                                                                           |
+|----------------------------|------------------------------------------------------------------------------------------------|----------------|---------------------------------------------------------------------------------------------------------------|
+| Locks and conditions       | [`Mutex`](https://docs.rs/asyncband/*/asyncband/mutex/struct.Mutex.html)                       | `mutex`        | Protect shared data with asynchronous mutual exclusion.                                                       |
+|                            | [`RwLock`](https://docs.rs/asyncband/*/asyncband/rwlock/struct.RwLock.html)                    | `rwlock`       | Allow multiple readers or one writer.                                                                         |
+|                            | [`Condvar`](https://docs.rs/asyncband/*/asyncband/condvar/struct.Condvar.html)                 | `condvar`      | Wait for notifications while releasing a mutex.                                                               |
+| Coordination               | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html)           | `semaphore`    | Limit concurrent work by acquiring permits.                                                                   |
+|                            | [`Barrier`](https://docs.rs/asyncband/*/asyncband/barrier/struct.Barrier.html)                 | `barrier`      | Synchronize a fixed number of participants at a reusable rendezvous.                                          |
+|                            | [`ManualResetEvent`](https://docs.rs/asyncband/*/asyncband/event/struct.ManualResetEvent.html) | `event`        | Signal current and future waits until explicitly reset.                                                       |
+|                            | [`Latch`](https://docs.rs/asyncband/*/asyncband/latch/struct.Latch.html)                       | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                            |
+|                            | [`WaitGroup`](https://docs.rs/asyncband/*/asyncband/waitgroup/struct.WaitGroup.html)           | `waitgroup`    | Dynamically register participants and wait until all have completed.                                          |
+|                            | [`Shutdown`](https://docs.rs/asyncband/*/asyncband/shutdown/struct.Shutdown.html)              | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                            |
+| Work coalescing            | [`Once`](https://docs.rs/asyncband/*/asyncband/once/struct.Once.html)                          | `once`         | Complete one asynchronous initialization; cancelled or panicked attempts may be retried.                       |
+|                            | [`OnceCell`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceCell.html)                  | `once-cell`    | Store one value from an access-time initializer; failed, cancelled, or panicked attempts may be retried.       |
+|                            | [`LazyCell`](https://docs.rs/asyncband/*/asyncband/once/struct.LazyCell.html)                  | `lazy-cell`    | Initialize one value with a stored function and resume the same in-flight future after caller cancellation.   |
+|                            | [`OnceMap`](https://docs.rs/asyncband/*/asyncband/once/struct.OnceMap.html)                    | `once-map`     | Coalesce work per key and retain each successful value until explicitly removed.                              |
+|                            | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)                | `singleflight` | Coalesce overlapping work per key without retaining completed values.                                         |
+| Communication              | [`Completion`](https://docs.rs/asyncband/*/asyncband/completion/struct.Completion.html)       | `completion`   | Publish one shared result to any number of current and future observers.                                       |
+|                            | [`oneshot`](https://docs.rs/asyncband/*/asyncband/oneshot/)                                    | `oneshot`      | Send one value from one sender to one receiver.                                                               |
+|                            | [`mpsc`](https://docs.rs/asyncband/*/asyncband/mpsc/)                                          | `mpsc`         | Send each value from multiple producers to one receiver with bounded backpressure or an unbounded queue.      |
+|                            | [`broadcast`](https://docs.rs/asyncband/*/asyncband/broadcast/)                                | `broadcast`    | Deliver every value to receivers active at send time; retain an unbounded backlog until each consumes or drops. |
+|                            | [`watch`](https://docs.rs/asyncband/*/asyncband/watch/)                                        | `watch`        | Publish cloneable latest state from one or more senders; receivers independently coalesce intermediate updates. |
+| Object reuse               | [`pool`](https://docs.rs/asyncband/*/asyncband/pool/)                                          | `pool`         | Reuse objects through bounded or unbounded pool variants.                                                     |
+| Sync interop               | [`FutureExt`](https://docs.rs/asyncband/*/asyncband/blocking/trait.FutureExt.html)             | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                                     |
 
 ## Synchronous interoperability
 
@@ -130,10 +131,6 @@ The policy is that the minimum Rust version required to use this crate can be in
 
 ## License and Trademarks
 
-This project is licensed under [Apache License, Version 2.0](LICENSE).
+This project is licensed under [Apache License, Version 2.0](LICENSE); the license file also records incorporated third-party works and their terms.
 
 Apache Asyncband, Asyncband, and Apache are either registered trademarks or trademarks of The Apache Software Foundation in the United States and/or other countries.
-
-## History
-
-See [HISTORY.md](HISTORY.md) for the external implementations that informed Asyncband's APIs.
