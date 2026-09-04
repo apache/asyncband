@@ -118,25 +118,20 @@ impl BarrierWaitResult {
 }
 
 impl Barrier {
-    /// Creates a new barrier that can block the specified number of tasks.
+    /// Creates a barrier for `n` participants.
     ///
-    /// A barrier will block `n-1` tasks and release them all at once when the `n`th task arrives.
-    ///
-    /// # Arguments
-    ///
-    /// * `n`: The number of tasks to wait for. If `n` is 0, it will be treated as 1.
+    /// Each generation completes when `n` calls to [`wait`](Self::wait) have arrived. Passing zero
+    /// selects the same immediately completing behavior as passing one.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::barrier::Barrier;
     ///
-    /// let barrier = Barrier::new(3); // Creates a barrier for 3 tasks
+    /// let barrier = Barrier::new(3);
     /// ```
     pub fn new(n: u32) -> Self {
-        // If n is 0, it's not clear what behavior the user wants.
-        // std::sync::Barrier works with n = 0 the same as n = 1,
-        // where every .wait() immediately unblocks, so we adopt that here as well.
+        // Normalize an empty group to one participant so every wait completes its own generation.
         let n = if n > 0 { n } else { 1 };
 
         Self {

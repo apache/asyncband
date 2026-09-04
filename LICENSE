@@ -463,6 +463,14 @@ latch::Latch is inspired by latches:
 Asyncband uses a separate implementation based on its internal CountdownState
 primitive.
 
+mpsc channels are inspired by std::sync::mpsc and tokio::sync::mpsc:
+
+  https://doc.rust-lang.org/std/sync/mpsc/index.html
+  https://docs.rs/tokio/latest/tokio/sync/mpsc/index.html
+
+Asyncband uses the standard library channels for storage and supplies its own
+asynchronous wakeup and bounded-backpressure coordination.
+
 once::OnceMap is inspired by uv-once-map:
 
   https://github.com/astral-sh/uv/tree/936e6cdc42f44365e087a4ba7148238afc090b0b/crates/uv-once-map

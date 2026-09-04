@@ -45,8 +45,8 @@ enum Lookup<K, V> {
 
 /// A hash map that runs computation only once for each key and stores the result.
 ///
-/// Note that this always clones the value out of the underlying map. Because of this, it's common
-/// to wrap the `V` in an `Arc<V>` to make cloning cheap.
+/// Every successful lookup returns an owned clone of `V`. Choose a cheaply cloned value type, such
+/// as `Arc<T>`, when entries are large or frequently shared.
 pub struct OnceMap<K, V, S = RandomState> {
     // Hashbrown allocates the table lazily, and computation always runs after releasing this lock.
     entries: Mutex<Entries<K, V>>,
