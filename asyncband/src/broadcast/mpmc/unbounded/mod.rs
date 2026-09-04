@@ -141,11 +141,10 @@ pub enum TryRecvError {
 
 impl fmt::Display for TryRecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
+        f.write_str(match self {
             TryRecvError::Empty => "receiving on an empty channel",
             TryRecvError::Disconnected => "receiving on a disconnected channel",
-        };
-        f.write_str(message)
+        })
     }
 }
 

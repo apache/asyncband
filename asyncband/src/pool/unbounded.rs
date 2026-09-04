@@ -199,13 +199,13 @@ pub struct PoolIsEmpty(());
 
 impl std::fmt::Debug for PoolIsEmpty {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unbounded pool is empty")
+        f.write_str("unbounded pool is empty")
     }
 }
 
 impl std::fmt::Display for PoolIsEmpty {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(self, f)
+        f.write_str("unbounded pool is empty")
     }
 }
 
