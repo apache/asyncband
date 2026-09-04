@@ -176,6 +176,44 @@ fn unbounded_try_recv_preserves_order_and_reports_state() {
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
 }
 
+#[test]
+fn cancelled_receive_does_not_consume_a_later_message() {
+    let (unbounded_tx, mut unbounded_rx) = mpsc::unbounded();
+    {
+        let mut receive = Box::pin(unbounded_rx.recv());
+        assert!(poll_once(receive.as_mut()).is_pending());
+    }
+    unbounded_tx.send(1).unwrap();
+    assert_eq!(unbounded_rx.try_recv(), Ok(1));
+
+    let (bounded_tx, mut bounded_rx) = mpsc::bounded(1);
+    {
+        let mut receive = Box::pin(bounded_rx.recv());
+        assert!(poll_once(receive.as_mut()).is_pending());
+    }
+    bounded_tx.try_send(2).unwrap();
+    assert_eq!(bounded_rx.try_recv(), Ok(2));
+}
+
+#[test]
+fn buffered_messages_are_drained_before_disconnection() {
+    let (unbounded_tx, mut unbounded_rx) = mpsc::unbounded();
+    unbounded_tx.send(1).unwrap();
+    unbounded_tx.send(2).unwrap();
+    drop(unbounded_tx);
+    assert_eq!(unbounded_rx.try_recv(), Ok(1));
+    assert_eq!(unbounded_rx.try_recv(), Ok(2));
+    assert_eq!(unbounded_rx.try_recv(), Err(TryRecvError::Disconnected));
+
+    let (bounded_tx, mut bounded_rx) = mpsc::bounded(2);
+    bounded_tx.try_send(3).unwrap();
+    bounded_tx.try_send(4).unwrap();
+    drop(bounded_tx);
+    assert_eq!(bounded_rx.try_recv(), Ok(3));
+    assert_eq!(bounded_rx.try_recv(), Ok(4));
+    assert_eq!(bounded_rx.try_recv(), Err(TryRecvError::Disconnected));
+}
+
 #[tokio::test]
 async fn send_recv_bounded() {
     let (tx, mut rx) = mpsc::bounded(1);

@@ -29,6 +29,9 @@ use std::task::Poll;
 use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
+use super::queue::PushError;
+use super::queue::UnboundedConsumer;
+use super::queue::UnboundedQueue;
 use crate::internal::atomic_waker::AtomicWaker;
 
 /// Creates an unbounded mpsc channel whose send operation never waits for capacity.
@@ -38,22 +41,22 @@ use crate::internal::atomic_waker::AtomicWaker;
 /// bounded channel or external admission control when producers may outpace the receiver.
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     let state = Arc::new(UnboundedState {
+        queue: UnboundedQueue::new(),
         senders: AtomicUsize::new(1),
         rx_waker: AtomicWaker::new(),
     });
-    let (sender, receiver) = std::sync::mpsc::channel();
     let sender = UnboundedSender {
         state: state.clone(),
-        sender: Some(sender),
     };
     let receiver = UnboundedReceiver {
-        state: state.clone(),
-        receiver,
+        state,
+        consumer: UnboundedConsumer::new(),
     };
     (sender, receiver)
 }
 
-struct UnboundedState {
+struct UnboundedState<T> {
+    queue: UnboundedQueue<T>,
     senders: AtomicUsize,
     rx_waker: AtomicWaker,
 }
@@ -62,8 +65,7 @@ struct UnboundedState {
 ///
 /// Instances are created by the [`unbounded`] function.
 pub struct UnboundedSender<T> {
-    state: Arc<UnboundedState>,
-    sender: Option<std::sync::mpsc::Sender<T>>,
+    state: Arc<UnboundedState<T>>,
 }
 
 impl<T> Clone for UnboundedSender<T> {
@@ -71,7 +73,6 @@ impl<T> Clone for UnboundedSender<T> {
         self.state.senders.fetch_add(1, Ordering::Release);
         UnboundedSender {
             state: self.state.clone(),
-            sender: self.sender.clone(),
         }
     }
 }
@@ -84,9 +85,6 @@ impl<T> fmt::Debug for UnboundedSender<T> {
 
 impl<T> Drop for UnboundedSender<T> {
     fn drop(&mut self) {
-        // Dropping the final underlying sender disconnects the channel.
-        drop(self.sender.take());
-
         match self.state.senders.fetch_sub(1, Ordering::AcqRel) {
             1 => {
                 // Wake the receiver so it can observe the channel's disconnected state.
@@ -105,9 +103,11 @@ impl<T> UnboundedSender<T> {
     /// This operation is synchronous because the channel has no capacity limit. If the receiver has
     /// been dropped, the returned error contains `value`.
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
-        // INVARIANT: A shared borrow of the endpoint cannot overlap its destructor.
-        let sender = self.sender.as_ref().unwrap();
-        sender.send(value).map_err(|err| SendError::new(err.0))?;
+        match self.state.queue.push(value) {
+            Ok(()) => {}
+            Err(PushError::Disconnected(value)) => return Err(SendError::new(value)),
+            Err(PushError::Full(_)) => unreachable!("unbounded queue cannot be full"),
+        }
 
         self.state.rx_waker.wake();
 
@@ -119,17 +119,19 @@ impl<T> UnboundedSender<T> {
 ///
 /// Instances are created by the [`unbounded`] function.
 pub struct UnboundedReceiver<T> {
-    state: Arc<UnboundedState>,
-    receiver: std::sync::mpsc::Receiver<T>,
+    state: Arc<UnboundedState<T>>,
+    consumer: UnboundedConsumer<T>,
 }
-
-/// The only `!Sync` field `receiver` is protected by `&mut self` in `recv` and `try_recv`.
-/// That is, `UnboundedReceiver` can only be accessed by one thread at a time.
-unsafe impl<T: Send> Sync for UnboundedReceiver<T> {}
 
 impl<T> fmt::Debug for UnboundedReceiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UnboundedReceiver").finish_non_exhaustive()
+    }
+}
+
+impl<T> Drop for UnboundedReceiver<T> {
+    fn drop(&mut self) {
+        self.state.queue.disconnect_receiver(&self.consumer);
     }
 }
 
@@ -157,10 +159,17 @@ impl<T> UnboundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        match self.receiver.try_recv() {
-            Ok(v) => Ok(v),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(TryRecvError::Disconnected),
-            Err(std::sync::mpsc::TryRecvError::Empty) => Err(TryRecvError::Empty),
+        if let Some(value) = self.state.queue.pop(&self.consumer) {
+            Ok(value)
+        } else if self.state.senders.load(Ordering::Acquire) == 0 {
+            // The final sender can enqueue between the first empty observation and decrementing
+            // the sender count, so check the queue again before reporting disconnection.
+            self.state
+                .queue
+                .pop(&self.consumer)
+                .ok_or(TryRecvError::Disconnected)
+        } else {
+            Err(TryRecvError::Empty)
         }
     }
 

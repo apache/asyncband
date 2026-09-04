@@ -32,6 +32,8 @@ use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
 use super::TrySendError;
+use super::queue::BoundedQueue;
+use super::queue::PushError;
 use crate::internal::atomic_waker::AtomicWaker;
 use crate::internal::semaphore::Acquire;
 use crate::internal::semaphore::Semaphore;
@@ -48,23 +50,20 @@ use crate::internal::semaphore::Semaphore;
 pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     assert!(buffer > 0, "mpsc bounded channel requires buffer > 0");
     let state = Arc::new(BoundedState {
+        queue: BoundedQueue::new(buffer),
         senders: AtomicUsize::new(1),
         tx_permits: Semaphore::new(0),
         rx_waker: AtomicWaker::new(),
     });
-    let (sender, receiver) = std::sync::mpsc::sync_channel(buffer);
     let sender = BoundedSender {
         state: state.clone(),
-        sender: Some(sender),
     };
-    let receiver = BoundedReceiver {
-        state: state.clone(),
-        receiver: Some(receiver),
-    };
+    let receiver = BoundedReceiver { state };
     (sender, receiver)
 }
 
-struct BoundedState {
+struct BoundedState<T> {
+    queue: BoundedQueue<T>,
     senders: AtomicUsize,
     tx_permits: Semaphore,
     rx_waker: AtomicWaker,
@@ -74,8 +73,7 @@ struct BoundedState {
 ///
 /// Instances are created by the [`bounded`] function.
 pub struct BoundedSender<T> {
-    state: Arc<BoundedState>,
-    sender: Option<std::sync::mpsc::SyncSender<T>>,
+    state: Arc<BoundedState<T>>,
 }
 
 impl<T> Clone for BoundedSender<T> {
@@ -83,7 +81,6 @@ impl<T> Clone for BoundedSender<T> {
         self.state.senders.fetch_add(1, Ordering::Release);
         BoundedSender {
             state: self.state.clone(),
-            sender: self.sender.clone(),
         }
     }
 }
@@ -96,9 +93,6 @@ impl<T> fmt::Debug for BoundedSender<T> {
 
 impl<T> Drop for BoundedSender<T> {
     fn drop(&mut self) {
-        // Dropping the final underlying sender disconnects the channel.
-        drop(self.sender.take());
-
         match self.state.senders.fetch_sub(1, Ordering::AcqRel) {
             1 => {
                 // Wake the receiver so it can observe the channel's disconnected state.
@@ -192,18 +186,14 @@ impl<T> BoundedSender<T> {
     /// assert_eq!(tx.try_send(30), Err(TrySendError::Disconnected(30)));
     /// ```
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        // INVARIANT: A shared borrow of the endpoint cannot overlap its destructor.
-        let sender = self.sender.as_ref().unwrap();
-        match sender.try_send(value) {
+        match self.state.queue.try_push(value) {
             Ok(()) => {
                 self.state.rx_waker.wake();
 
                 Ok(())
             }
-            Err(std::sync::mpsc::TrySendError::Full(value)) => Err(TrySendError::Full(value)),
-            Err(std::sync::mpsc::TrySendError::Disconnected(value)) => {
-                Err(TrySendError::Disconnected(value))
-            }
+            Err(PushError::Full(value)) => Err(TrySendError::Full(value)),
+            Err(PushError::Disconnected(value)) => Err(TrySendError::Disconnected(value)),
         }
     }
 }
@@ -212,13 +202,8 @@ impl<T> BoundedSender<T> {
 ///
 /// Instances are created by the [`bounded`] function.
 pub struct BoundedReceiver<T> {
-    state: Arc<BoundedState>,
-    receiver: Option<std::sync::mpsc::Receiver<T>>,
+    state: Arc<BoundedState<T>>,
 }
-
-/// The only `!Sync` field `receiver` is protected by `&mut self` in `recv` and `try_recv`.
-/// That is, `BoundedReceiver` can only be accessed by one thread at a time.
-unsafe impl<T: Send> Sync for BoundedReceiver<T> {}
 
 impl<T> fmt::Debug for BoundedReceiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -228,7 +213,7 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        drop(self.receiver.take());
+        self.state.queue.disconnect_receiver();
         self.state.tx_permits.notify_all();
     }
 }
@@ -257,15 +242,20 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        // INVARIANT: A mutable borrow of the endpoint cannot overlap its destructor.
-        let receiver = self.receiver.as_ref().unwrap();
-        match receiver.try_recv() {
-            Ok(v) => {
+        if let Some(value) = self.state.queue.pop() {
+            self.state.tx_permits.release_if_nonempty(1);
+            Ok(value)
+        } else if self.state.senders.load(Ordering::Acquire) == 0 {
+            // The final sender can enqueue between the first empty observation and decrementing
+            // the sender count, so check the queue again before reporting disconnection.
+            if let Some(value) = self.state.queue.pop() {
                 self.state.tx_permits.release_if_nonempty(1);
-                Ok(v)
+                Ok(value)
+            } else {
+                Err(TryRecvError::Disconnected)
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(TryRecvError::Disconnected),
-            Err(std::sync::mpsc::TryRecvError::Empty) => Err(TryRecvError::Empty),
+        } else {
+            Err(TryRecvError::Empty)
         }
     }
 
