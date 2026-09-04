@@ -94,7 +94,7 @@ git tag --sign "${RC_TAG}" \
 git push https://github.com/apache/asyncband.git "${RC_TAG}"
 ```
 
-Wait for the `Release` GitHub Actions workflow to pass. The workflow validates a convenience prerelease package named `${VERSION}-rc.${RC}` with `cargo publish --dry-run` but does not publish it to crates.io. A candidate that needs a code change gets a new release pull request, merge commit, RC number, and signed tag.
+Wait for the `Release` GitHub Actions workflow to pass. The workflow validates the RC tag and runs `cargo publish --dry-run` against the unchanged `${VERSION}` package; it skips the crates.io publish job for RC tags. A candidate that needs a code change gets a new release pull request, merge commit, RC number, and signed tag.
 
 ## 3. Build and verify the source archive
 

@@ -41,7 +41,6 @@ jobs:
     timeout-minutes: 30
     outputs:
       version: ${{ steps.package.outputs.version }}
-      publish_version: ${{ steps.package.outputs.publish_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,12 +59,7 @@ jobs:
             echo "The asyncband package version must be a stable X.Y.Z version, got: ${version}" >&2
             exit 1
           fi
-          publish_version="${version}"
-          if [[ "${GITHUB_REF_NAME}" == "v${version}-rc."* ]]; then
-            publish_version="${GITHUB_REF_NAME#v}"
-          fi
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "publish_version=${publish_version}" >> "${GITHUB_OUTPUT}"
       - name: Check tag
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         shell: bash
@@ -93,22 +87,8 @@ jobs:
             echo "Release tag ${GITHUB_REF_NAME} does not point to a commit on main." >&2
             exit 1
           fi
-      - name: Prepare crates.io release candidate
-        if: ${{ steps.package.outputs.publish_version != steps.package.outputs.version }}
-        shell: bash
-        env:
-          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
-          PUBLISH_VERSION: ${{ steps.package.outputs.publish_version }}
-        run: |
-          perl -pi -e 's/^version = "\Q$ENV{PACKAGE_VERSION}\E"$/version = "$ENV{PUBLISH_VERSION}"/' asyncband/Cargo.toml
-          grep -Fx "version = \"${PUBLISH_VERSION}\"" asyncband/Cargo.toml
-          cargo check --package asyncband
       - name: Check crates.io package
-        if: ${{ steps.package.outputs.publish_version == steps.package.outputs.version }}
         run: cargo publish --package asyncband --locked --dry-run
-      - name: Check crates.io release candidate
-        if: ${{ steps.package.outputs.publish_version != steps.package.outputs.version }}
-        run: cargo publish --package asyncband --locked --dry-run --allow-dirty
 
   publish:
     name: Publish to crates.io
