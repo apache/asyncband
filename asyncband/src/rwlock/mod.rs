@@ -1,7 +1,7 @@
 // Portions derived from Tokio 1.42.0.
 // Copyright (c) Tokio Contributors
 // Licensed under the MIT License.
-// Modified by the Apache Software Foundation.
+// Modified for Apache Asyncband.
 // See the project LICENSE file for the exact upstream revision and source path.
 
 //! A reader-writer lock that allows multiple readers or a single writer at a time.

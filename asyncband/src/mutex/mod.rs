@@ -1,7 +1,7 @@
 // Portions derived from Tokio 1.41.0.
 // Copyright (c) Tokio Contributors
 // Licensed under the MIT License.
-// Modified by the Apache Software Foundation.
+// Modified for Apache Asyncband.
 // See the project LICENSE file for the exact upstream revision and source path.
 
 //! An async mutex for protecting shared data.

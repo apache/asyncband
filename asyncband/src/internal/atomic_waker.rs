@@ -16,8 +16,9 @@
 // under the License.
 
 // Portions derived from futures-rs 0.3.34, with panic recovery informed by Tokio 1.53.1. The
-// incorporated upstream portions use the Apache-2.0 option. See the project LICENSE file for the
-// exact upstream revisions and source paths.
+// incorporated upstream portions use the Apache-2.0 option.
+// Modified for Apache Asyncband.
+// See the project LICENSE file for the exact upstream revisions and source paths.
 
 use std::cell::UnsafeCell;
 use std::panic::AssertUnwindSafe;

@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Portions derived from the oneshot crate using its Apache-2.0 license option. See the project
-// LICENSE file for the exact upstream revision and source path.
+// Portions derived from the oneshot crate using its Apache-2.0 license option.
+// Modified for Apache Asyncband.
+// See the project LICENSE file for the exact upstream revision and source path.
 
 //! A one-shot channel is used for sending a single message between asynchronous tasks. The
 //! [`channel`] function is used to create a [`Sender`] and [`Receiver`] pair that form the channel.

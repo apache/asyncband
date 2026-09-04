@@ -16,7 +16,9 @@
 // under the License.
 
 // Portions of this test support are adapted from the oneshot crate using its Apache-2.0 license
-// option. See the project LICENSE file for the exact upstream revision and source paths.
+// option.
+// Modified for Apache Asyncband.
+// See the project LICENSE file for the exact upstream revision and source paths.
 
 use std::hint::spin_loop;
 use std::sync::Arc;
