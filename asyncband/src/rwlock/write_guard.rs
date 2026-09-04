@@ -16,18 +16,11 @@ use crate::rwlock::RwLock;
 use crate::rwlock::RwLockReadGuard;
 
 impl<T: ?Sized> RwLock<T> {
-    /// Locks this `RwLock` with exclusive write access, causing the current task to yield until the
-    /// lock has been acquired.
-    ///
-    /// The calling task will yield while other writers or readers currently have access to the
-    /// lock.
-    ///
-    /// Returns an RAII guard which will drop the write access of this `RwLock` when dropped.
+    /// Waits for exclusive write access and returns a borrowed guard.
     ///
     /// # Cancel safety
     ///
-    /// This method uses a queue to fairly distribute locks in the order they were requested.
-    /// Cancelling a call to `write` makes you lose your place in the queue.
+    /// Pending lock requests complete in order. Cancelling this call loses its place among them.
     ///
     /// # Examples
     ///
@@ -49,10 +42,7 @@ impl<T: ?Sized> RwLock<T> {
         }
     }
 
-    /// Attempts to acquire this `RwLock` with exclusive write access.
-    ///
-    /// If the access couldn't be acquired immediately, returns `None`. Otherwise, an RAII guard is
-    /// returned which will release write access when dropped.
+    /// Acquires exclusive write access without waiting, or returns `None` if it is unavailable.
     ///
     /// # Examples
     ///
@@ -82,29 +72,10 @@ impl<T: ?Sized> RwLock<T> {
     }
 }
 
-/// RAII structure used to release the exclusive write access of a lock when dropped.
+/// A borrowed guard that provides exclusive access to a [`RwLock`]'s value.
 ///
-/// This structure is created by the [`RwLock::write`] method.
-///
-/// See the [module level documentation](crate::rwlock) for more.
-///
-/// # Variance
-///
-/// The guard is invariant over `T`, as required for mutable access:
-///
-/// ```compile_fail
-/// use asyncband::rwlock::RwLockWriteGuard;
-///
-/// fn shorten<'lock, 'short: 'lock>(
-///     guard: RwLockWriteGuard<'lock, &'static str>,
-///     value: &'short str,
-/// ) -> RwLockWriteGuard<'lock, &'short str> {
-///     let mut guard: RwLockWriteGuard<'lock, &'short str> = guard;
-///     *guard = value;
-///     guard
-/// }
-/// ```
-#[must_use = "if unused the RwLock will immediately unlock"]
+/// [`RwLock::write`] and [`RwLock::try_write`] create this guard. Dropping it releases the lock.
+#[must_use = "dropping the guard releases its write access immediately"]
 pub struct RwLockWriteGuard<'a, T: ?Sized> {
     pub(super) permits_acquired: usize,
     pub(super) lock: &'a RwLock<T>,
@@ -145,13 +116,9 @@ impl<T: ?Sized> DerefMut for RwLockWriteGuard<'_, T> {
 }
 
 impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
-    /// Makes a new [`MappedRwLockWriteGuard`] for a component of the locked data.
+    /// Projects this guard to a mutable component of the protected value.
     ///
-    /// This operation cannot fail as the `RwLockWriteGuard` passed in already locked the rwlock.
-    ///
-    /// This is an associated function that needs to be used as `RwLockWriteGuard::map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// Call this as `RwLockWriteGuard::map(...)` so a method named `map` on `T` remains accessible.
     ///
     /// # Examples
     ///
@@ -190,14 +157,11 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
         MappedRwLockWriteGuard::new(d, &orig.lock.s, permits_acquired)
     }
 
-    /// Attempts to make a new [`MappedRwLockWriteGuard`] for a component of the
-    /// locked data. The original guard is returned if the closure returns `None`.
+    /// Attempts to project this guard to a mutable component of the protected value.
     ///
-    /// This operation cannot fail as the `RwLockWriteGuard` passed in already locked the rwlock.
-    ///
-    /// This is an associated function that needs to be used as `RwLockWriteGuard::filter_map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// The original guard is returned when `f` returns `None`. Call this as
+    /// `RwLockWriteGuard::filter_map(...)` so a method with the same name on `T` remains
+    /// accessible.
     ///
     /// # Examples
     ///

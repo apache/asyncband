@@ -28,17 +28,10 @@
 //! receiver can make that backlog exhaust available memory.
 //! [`UnboundedSender::retained_message_count`] reports its current length.
 //!
-//! Buffer capacity is reused across steady bursts. Allocation retained for an unusually large burst
-//! is released after a later, substantially smaller cycle drains completely.
-//!
 //! # Receivers
 //!
 //! [`UnboundedSender::subscribe`] and [`UnboundedReceiver::resubscribe`] add a receiver at the
 //! current publication boundary. They do not copy another receiver's unread backlog.
-//!
-//! Reclaiming the oldest value requires finding the earliest remaining receiver cursor. That work
-//! scales with the receiver slots allocated by the channel, including slots retained for reuse
-//! after receivers are dropped.
 //!
 //! # Example
 //!
@@ -387,7 +380,7 @@ impl<T> UnboundedSender<T> {
     ///
     /// # Panics
     ///
-    /// Panics when publishing would overflow the channel's internal version counter.
+    /// Panics if the channel has already published `u64::MAX` values.
     ///
     /// # Examples
     ///

@@ -31,9 +31,9 @@
 //! value and releases the lock when dropped. The guard may be held across `.await` points. When
 //! that is unnecessary, a synchronous mutex is usually cheaper.
 //!
-//! Waiters are served through Asyncband's fair semaphore queue. Cancelling a pending lock
-//! operation removes that waiter from the queue; a later attempt joins at the back. A panic while
-//! holding a guard releases the lock without poisoning it.
+//! Lock requests complete in the order they begin waiting. Cancelling a pending request loses its
+//! place, so a later attempt waits behind requests already in progress. A panic while holding a
+//! guard releases the lock without poisoning it.
 //!
 //! # Examples
 //!
@@ -74,7 +74,7 @@ use std::sync::Arc;
 
 use crate::internal::semaphore;
 
-/// An asynchronous mutex backed by Asyncband's fair semaphore.
+/// An asynchronous mutex that grants exclusive access in request order.
 ///
 /// See the [module level documentation](self) for more.
 pub struct Mutex<T: ?Sized> {
@@ -147,8 +147,7 @@ impl<T: ?Sized> Mutex<T> {
     ///
     /// # Cancel safety
     ///
-    /// Waiters enter the mutex's fair queue. Dropping this future before it completes removes the
-    /// waiter, so retrying starts again at the back of the queue.
+    /// Pending lock requests complete in order. Cancelling this call loses its place among them.
     ///
     /// # Examples
     ///
@@ -196,8 +195,7 @@ impl<T: ?Sized> Mutex<T> {
     ///
     /// # Cancel safety
     ///
-    /// Waiters enter the mutex's fair queue. Dropping this future before it completes removes the
-    /// waiter, so retrying starts again at the back of the queue.
+    /// Pending lock requests complete in order. Cancelling this call loses its place among them.
     ///
     /// # Examples
     ///
@@ -266,24 +264,7 @@ impl<T: ?Sized> Mutex<T> {
 /// A borrowed proof of exclusive access to a [`Mutex`].
 ///
 /// [`Mutex::lock`] and [`Mutex::try_lock`] create this guard. It dereferences to the protected
-/// value and returns its single semaphore permit when dropped.
-///
-/// # Variance
-///
-/// The guard is invariant over `T`, as required for mutable access:
-///
-/// ```compile_fail
-/// use asyncband::mutex::MutexGuard;
-///
-/// fn shorten<'lock, 'short: 'lock>(
-///     guard: MutexGuard<'lock, &'static str>,
-///     value: &'short str,
-/// ) -> MutexGuard<'lock, &'short str> {
-///     let mut guard: MutexGuard<'lock, &'short str> = guard;
-///     *guard = value;
-///     guard
-/// }
-/// ```
+/// value and releases the lock when dropped.
 #[must_use = "dropping the guard releases the mutex immediately"]
 pub struct MutexGuard<'a, T: ?Sized> {
     lock: &'a Mutex<T>,
@@ -330,7 +311,7 @@ impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
 impl<'a, T: ?Sized> MutexGuard<'a, T> {
     /// Projects this guard to a mutable component of the protected value.
     ///
-    /// The returned guard owns the same lock permit and releases it when dropped. Call this as
+    /// The returned guard keeps the same mutex locked. Call this as
     /// `MutexGuard::map(...)` so a method named `map` on `T` remains accessible through deref.
     ///
     /// # Examples
@@ -447,25 +428,8 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
 /// A proof of exclusive access that owns an [`Arc`] containing its [`Mutex`].
 ///
 /// [`Mutex::lock_owned`] and [`Mutex::try_lock_owned`] create this guard. Owning the `Arc` lets the
-/// guard outlive the reference used to acquire it; dropping the guard releases the lock permit and
-/// its share of the `Arc`.
-///
-/// # Variance
-///
-/// The guard is invariant over `T`, as required for mutable access:
-///
-/// ```compile_fail
-/// use asyncband::mutex::OwnedMutexGuard;
-///
-/// fn shorten<'short>(
-///     guard: OwnedMutexGuard<&'static str>,
-///     value: &'short str,
-/// ) -> OwnedMutexGuard<&'short str> {
-///     let mut guard: OwnedMutexGuard<&'short str> = guard;
-///     *guard = value;
-///     guard
-/// }
-/// ```
+/// guard outlive the reference used to acquire it; dropping the guard releases the lock and its
+/// share of the `Arc`.
 #[must_use = "dropping the guard releases the mutex immediately"]
 pub struct OwnedMutexGuard<T: ?Sized> {
     lock: Arc<Mutex<T>>,
@@ -512,7 +476,7 @@ impl<T: ?Sized> DerefMut for OwnedMutexGuard<T> {
 impl<T: ?Sized> OwnedMutexGuard<T> {
     /// Projects this guard to a mutable component of the protected value.
     ///
-    /// The returned guard retains the same `Arc` and lock permit. Call this as
+    /// The returned guard retains the same `Arc` and keeps the mutex locked. Call this as
     /// `OwnedMutexGuard::map(...)` so a method named `map` on `T` remains accessible through deref.
     ///
     /// # Examples
@@ -613,9 +577,8 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
 
 /// A borrowed mutex guard projected to a mutable component of the protected value.
 ///
-/// [`MutexGuard::map`] and [`MutexGuard::filter_map`] create this guard. It retains the original
-/// semaphore permit while exposing only the projected component, and releases that permit when
-/// dropped.
+/// [`MutexGuard::map`] and [`MutexGuard::filter_map`] create this guard. It keeps the mutex locked
+/// while exposing only the projected component.
 ///
 /// # Examples
 ///
@@ -652,23 +615,6 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
 /// // Now we can only access the user's profile
 /// assert_eq!(profile_guard.email, "user@example.com");
 /// # }
-/// ```
-///
-/// # Variance
-///
-/// The guard is invariant over `T`, as required for mutable access:
-///
-/// ```compile_fail
-/// use asyncband::mutex::MappedMutexGuard;
-///
-/// fn shorten<'lock, 'short: 'lock>(
-///     guard: MappedMutexGuard<'lock, &'static str>,
-///     value: &'short str,
-/// ) -> MappedMutexGuard<'lock, &'short str> {
-///     let mut guard: MappedMutexGuard<'lock, &'short str> = guard;
-///     *guard = value;
-///     guard
-/// }
 /// ```
 #[must_use = "dropping the guard releases the mutex immediately"]
 pub struct MappedMutexGuard<'a, T: ?Sized> {
@@ -727,7 +673,7 @@ impl<T: ?Sized> DerefMut for MappedMutexGuard<'_, T> {
 impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
     /// Projects an already mapped guard to a deeper mutable component.
     ///
-    /// The returned guard retains the same lock permit. Call this as
+    /// The returned guard keeps the same mutex locked. Call this as
     /// `MappedMutexGuard::map(...)` so a method named `map` on `T` remains accessible through
     /// deref.
     ///
@@ -848,8 +794,7 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
 /// An owned mutex guard projected to a mutable component of the protected value.
 ///
 /// [`OwnedMutexGuard::map`] and [`OwnedMutexGuard::filter_map`] create this guard. It keeps the
-/// original mutex alive through an `Arc`, retains its lock permit, and exposes only the projected
-/// component until dropped.
+/// original mutex alive and locked while exposing only the projected component.
 ///
 /// # Examples
 ///
@@ -872,23 +817,6 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
 ///
 /// assert_eq!(*value_guard, 42);
 /// # }
-/// ```
-///
-/// # Variance
-///
-/// The guard is invariant over its mapped type `U`, as required for mutable access:
-///
-/// ```compile_fail
-/// use asyncband::mutex::OwnedMappedMutexGuard;
-///
-/// fn shorten<'short>(
-///     guard: OwnedMappedMutexGuard<(), &'static str>,
-///     value: &'short str,
-/// ) -> OwnedMappedMutexGuard<(), &'short str> {
-///     let mut guard: OwnedMappedMutexGuard<(), &'short str> = guard;
-///     *guard = value;
-///     guard
-/// }
 /// ```
 #[must_use = "dropping the guard releases the mutex immediately"]
 pub struct OwnedMappedMutexGuard<T: ?Sized, U: ?Sized> {
@@ -953,7 +881,7 @@ impl<T: ?Sized, U: ?Sized> DerefMut for OwnedMappedMutexGuard<T, U> {
 impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
     /// Projects an owned mapped guard to a deeper mutable component.
     ///
-    /// The returned guard retains the same `Arc` and lock permit. Call this as
+    /// The returned guard retains the same `Arc` and keeps the mutex locked. Call this as
     /// `OwnedMappedMutexGuard::map(...)` so a method named `map` on `U` remains accessible through
     /// deref.
     ///
@@ -1080,4 +1008,63 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
             None => Err(orig),
         }
     }
+}
+
+#[cfg(doctest)]
+mod compile_fail_tests {
+    /// ```compile_fail
+    /// use asyncband::mutex::MutexGuard;
+    ///
+    /// fn shorten<'lock, 'short: 'lock>(
+    ///     guard: MutexGuard<'lock, &'static str>,
+    ///     value: &'short str,
+    /// ) -> MutexGuard<'lock, &'short str> {
+    ///     let mut guard: MutexGuard<'lock, &'short str> = guard;
+    ///     *guard = value;
+    ///     guard
+    /// }
+    /// ```
+    struct MutexGuardIsInvariant;
+
+    /// ```compile_fail
+    /// use asyncband::mutex::OwnedMutexGuard;
+    ///
+    /// fn shorten<'short>(
+    ///     guard: OwnedMutexGuard<&'static str>,
+    ///     value: &'short str,
+    /// ) -> OwnedMutexGuard<&'short str> {
+    ///     let mut guard: OwnedMutexGuard<&'short str> = guard;
+    ///     *guard = value;
+    ///     guard
+    /// }
+    /// ```
+    struct OwnedMutexGuardIsInvariant;
+
+    /// ```compile_fail
+    /// use asyncband::mutex::MappedMutexGuard;
+    ///
+    /// fn shorten<'lock, 'short: 'lock>(
+    ///     guard: MappedMutexGuard<'lock, &'static str>,
+    ///     value: &'short str,
+    /// ) -> MappedMutexGuard<'lock, &'short str> {
+    ///     let mut guard: MappedMutexGuard<'lock, &'short str> = guard;
+    ///     *guard = value;
+    ///     guard
+    /// }
+    /// ```
+    struct MappedMutexGuardIsInvariant;
+
+    /// ```compile_fail
+    /// use asyncband::mutex::OwnedMappedMutexGuard;
+    ///
+    /// fn shorten<'short>(
+    ///     guard: OwnedMappedMutexGuard<(), &'static str>,
+    ///     value: &'short str,
+    /// ) -> OwnedMappedMutexGuard<(), &'short str> {
+    ///     let mut guard: OwnedMappedMutexGuard<(), &'short str> = guard;
+    ///     *guard = value;
+    ///     guard
+    /// }
+    /// ```
+    struct OwnedMappedMutexGuardIsInvariant;
 }

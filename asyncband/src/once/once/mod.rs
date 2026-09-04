@@ -26,9 +26,9 @@ use crate::semaphore::Semaphore;
 
 /// A synchronization primitive which can be used to run a one-time async initialization.
 ///
-/// Unlike [`std::sync::Once`], this type never blocks a thread. The provided closure must
-/// produce a future and the future is awaited inside the primitive. Coordination happens
-/// with asynchronous [`Semaphore`], which keeps the implementation runtime-agnostic.
+/// Unlike [`std::sync::Once`], this type waits asynchronously rather than blocking a thread. The
+/// provided closure produces a future, and successful completion prevents later calls from running
+/// another initializer.
 ///
 /// This type also intentionally omits "poisoning" semantics. If an initialization future is
 /// cancelled or panics, the attempt is abandoned and other tasks may retry the operation.
@@ -137,8 +137,8 @@ impl Once {
     /// If the provided operation is cancelled, the initialization attempt is cancelled. If there
     /// are other tasks waiting, one of them will start another attempt.
     ///
-    /// Calling call_once recursively on the same Once from within the closure will deadlock,
-    /// because the closure holds the semaphore permit while trying to acquire it again.
+    /// Calling `call_once` recursively on the same `Once` from its initializer deadlocks because
+    /// the inner call waits for the outer call to finish.
     ///
     /// # Examples
     ///

@@ -14,23 +14,17 @@ use crate::rwlock::MappedRwLockReadGuard;
 use crate::rwlock::RwLock;
 
 impl<T: ?Sized> RwLock<T> {
-    /// Locks this `RwLock` with shared read access, causing the current task to yield until the
-    /// lock has been acquired.
+    /// Waits for shared read access and returns a borrowed guard.
     ///
-    /// The calling task will yield until there are no writers which hold the lock. There may be
-    /// other readers inside the lock when the task resumes.
+    /// Other readers may hold the lock at the same time. A writer already waiting ahead of this
+    /// request must acquire and release the lock first.
     ///
-    /// Note that under the priority policy of [`RwLock`], read locks are not granted until prior
-    /// write locks, to prevent starvation. Therefore, deadlock may occur if a read lock is held
-    /// by the current task, a write lock attempt is made, and then a subsequent read lock attempt
-    /// is made by the current task.
-    ///
-    /// Returns an RAII guard which will drop this read access of the `RwLock` when dropped.
+    /// Holding a read guard, queuing a write request, and then waiting for another read guard in
+    /// the same task can therefore deadlock.
     ///
     /// # Cancel safety
     ///
-    /// This method uses a queue to fairly distribute locks in the order they were requested.
-    /// Cancelling a call to `read` makes you lose your place in the queue.
+    /// Pending lock requests complete in order. Cancelling this call loses its place among them.
     ///
     /// # Examples
     ///
@@ -61,10 +55,7 @@ impl<T: ?Sized> RwLock<T> {
         RwLockReadGuard { lock: self }
     }
 
-    /// Attempts to acquire this `RwLock` with shared read access.
-    ///
-    /// If the access couldn't be acquired immediately, returns `None`. Otherwise, an RAII guard is
-    /// returned which will release read access when dropped.
+    /// Acquires shared read access without waiting, or returns `None` if it is unavailable.
     ///
     /// # Examples
     ///
@@ -91,12 +82,11 @@ impl<T: ?Sized> RwLock<T> {
     }
 }
 
-/// RAII structure used to release the shared read access of a lock when dropped.
+/// A borrowed guard that provides shared access to a [`RwLock`]'s value.
 ///
-/// This structure is created by the [`RwLock::read`] method.
-///
-/// See the [module level documentation](crate::rwlock) for more.
-#[must_use = "if unused the RwLock will immediately unlock"]
+/// [`RwLock::read`] and [`RwLock::try_read`] create this guard. Dropping it releases this reader's
+/// access.
+#[must_use = "dropping the guard releases its read access immediately"]
 pub struct RwLockReadGuard<'a, T: ?Sized> {
     pub(super) lock: &'a RwLock<T>,
 }
@@ -130,13 +120,9 @@ impl<T: ?Sized> Deref for RwLockReadGuard<'_, T> {
 }
 
 impl<'a, T: ?Sized> RwLockReadGuard<'a, T> {
-    /// Makes a new [`MappedRwLockReadGuard`] for a component of the locked data.
+    /// Projects this guard to a shared component of the protected value.
     ///
-    /// This operation cannot fail as the `RwLockReadGuard` passed in already locked the rwlock.
-    ///
-    /// This is an associated function that needs to be used as `RwLockReadGuard::map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// Call this as `RwLockReadGuard::map(...)` so a method named `map` on `T` remains accessible.
     ///
     /// # Examples
     ///
@@ -167,14 +153,10 @@ impl<'a, T: ?Sized> RwLockReadGuard<'a, T> {
         MappedRwLockReadGuard::new(d, &orig.lock.s)
     }
 
-    /// Attempts to make a new [`MappedRwLockReadGuard`] for a component of the
-    /// locked data. The original guard is returned if the closure returns `None`.
+    /// Attempts to project this guard to a shared component of the protected value.
     ///
-    /// This operation cannot fail as the `RwLockReadGuard` passed in already locked the rwlock.
-    ///
-    /// This is an associated function that needs to be used as `RwLockReadGuard::filter_map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// The original guard is returned when `f` returns `None`. Call this as
+    /// `RwLockReadGuard::filter_map(...)` so a method with the same name on `T` remains accessible.
     ///
     /// # Examples
     ///

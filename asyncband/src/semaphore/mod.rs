@@ -155,9 +155,9 @@ impl Semaphore {
     ///
     /// # Panics
     ///
-    /// Panics if adding the permits would cause the total number of permits to overflow or if a
-    /// registered waker panics while being notified. Added permits remain committed, and every
-    /// remaining registered waker is still notified before the first panic resumes.
+    /// Panics if adding the permits would overflow the total permit count, or if notifying a waiter
+    /// panics. Added permits remain available, and notification is still attempted for every other
+    /// eligible waiter before the panic resumes.
     ///
     /// # Examples
     ///
@@ -213,8 +213,7 @@ impl Semaphore {
     ///
     /// # Cancel safety
     ///
-    /// This method uses a queue to fairly distribute permits in the order they were requested.
-    /// Cancelling a call to `acquire` makes you lose your place in the queue.
+    /// Pending acquisitions complete in order. Cancelling this call loses its place among them.
     ///
     /// # Examples
     ///
@@ -291,8 +290,7 @@ impl Semaphore {
     ///
     /// # Cancel safety
     ///
-    /// This method uses a queue to fairly distribute permits in the order they were requested.
-    /// Cancelling a call to `acquire_owned` makes you lose your place in the queue.
+    /// Pending acquisitions complete in order. Cancelling this call loses its place among them.
     ///
     /// # Examples
     ///

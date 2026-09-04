@@ -13,28 +13,18 @@ use crate::rwlock::OwnedMappedRwLockReadGuard;
 use crate::rwlock::RwLock;
 
 impl<T: ?Sized> RwLock<T> {
-    /// Locks this `RwLock` with shared read access, causing the current task to yield until the
-    /// lock has been acquired.
+    /// Waits for shared read access and returns a guard that owns this [`Arc`].
     ///
-    /// The calling task will yield until there are no writers which hold the lock. There may be
-    /// other readers inside the lock when the task resumes.
+    /// Other readers may hold the lock at the same time. Owning the `Arc` lets the guard be moved
+    /// wherever a `'static` value is required.
     ///
-    /// This method is identical to [`RwLock::read`], except that the returned guard references the
-    /// `RwLock` with an [`Arc`] rather than by borrowing it. Therefore, the `RwLock` must be
-    /// wrapped in an `Arc` to call this method, and the guard will live for the `'static` lifetime,
-    /// as it keeps the `RwLock` alive by holding an `Arc`.
-    ///
-    /// Note that under the priority policy of [`RwLock`], read locks are not granted until prior
-    /// write locks, to prevent starvation. Therefore, deadlock may occur if a read lock is held
-    /// by the current task, a write lock attempt is made, and then a subsequent read lock attempt
-    /// is made by the current task.
-    ///
-    /// Returns an RAII guard which will drop this read access of the `RwLock` when dropped.
+    /// A writer already waiting ahead of this request must acquire and release the lock first.
+    /// Holding a read guard, queuing a write request, and then waiting for another read guard in
+    /// the same task can therefore deadlock.
     ///
     /// # Cancel safety
     ///
-    /// This method uses a queue to fairly distribute locks in the order they were requested.
-    /// Cancelling a call to `read_owned` makes you lose your place in the queue.
+    /// Pending lock requests complete in order. Cancelling this call loses its place among them.
     ///
     /// # Examples
     ///
@@ -65,15 +55,9 @@ impl<T: ?Sized> RwLock<T> {
         OwnedRwLockReadGuard { lock: self }
     }
 
-    /// Attempts to acquire this `RwLock` with shared read access.
+    /// Acquires shared read access without waiting and returns a guard that owns this [`Arc`].
     ///
-    /// If the access couldn't be acquired immediately, returns `None`. Otherwise, an RAII guard is
-    /// returned which will release read access when dropped.
-    ///
-    /// This method is identical to [`RwLock::try_read`], except that the returned guard references
-    /// the `RwLock` with an [`Arc`] rather than by borrowing it. Therefore, the `RwLock` must
-    /// be wrapped in an `Arc` to call this method, and the guard will live for the `'static`
-    /// lifetime, as it keeps the `RwLock` alive by holding an `Arc`.
+    /// Returns `None` if read access is unavailable.
     ///
     /// # Examples
     ///
@@ -100,12 +84,11 @@ impl<T: ?Sized> RwLock<T> {
     }
 }
 
-/// Owned RAII structure used to release the shared read access of a lock when dropped.
+/// An owned guard that provides shared access to a [`RwLock`]'s value.
 ///
-/// This structure is created by the [`RwLock::read`] method.
-///
-/// See the [module level documentation](crate::rwlock) for more.
-#[must_use = "if unused the RwLock will immediately unlock"]
+/// [`RwLock::read_owned`] and [`RwLock::try_read_owned`] create this guard. It keeps the lock alive
+/// without borrowing it and releases this reader's access when dropped.
+#[must_use = "dropping the guard releases its read access immediately"]
 pub struct OwnedRwLockReadGuard<T: ?Sized> {
     pub(super) lock: Arc<RwLock<T>>,
 }
@@ -136,15 +119,10 @@ impl<T: ?Sized> Deref for OwnedRwLockReadGuard<T> {
 }
 
 impl<T: ?Sized> OwnedRwLockReadGuard<T> {
-    /// Makes a new [`OwnedMappedRwLockReadGuard`] for a component of the locked
-    /// data.
+    /// Projects this guard to a shared component of the protected value.
     ///
-    /// This operation cannot fail as the `OwnedRwLockReadGuard` passed in already locked the
-    /// rwlock.
-    ///
-    /// This is an associated function that needs to be used as `OwnedRwLockReadGuard::map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// Call this as `OwnedRwLockReadGuard::map(...)` so a method named `map` on `T` remains
+    /// accessible.
     ///
     /// # Examples
     ///
@@ -190,16 +168,11 @@ impl<T: ?Sized> OwnedRwLockReadGuard<T> {
         OwnedMappedRwLockReadGuard::new(d, lock)
     }
 
-    /// Attempts to make a new [`OwnedMappedRwLockReadGuard`] for a component of the locked data.
-    /// The original guard is returned if the closure returns `None`.
+    /// Attempts to project this guard to a shared component of the protected value.
     ///
-    /// This operation cannot fail as the `OwnedRwLockReadGuard` passed in already locked the
-    /// rwlock.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `OwnedRwLockReadGuard::filter_map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// The original guard is returned when `f` returns `None`. Call this as
+    /// `OwnedRwLockReadGuard::filter_map(...)` so a method with the same name on `T` remains
+    /// accessible.
     ///
     /// # Examples
     ///

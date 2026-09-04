@@ -191,7 +191,7 @@ impl Condvar {
     ///
     /// # Cancel safety
     ///
-    /// Cancelling this wait removes the task from the wait queue. If the task was selected by
+    /// Cancelling this wait removes it from the current waiters. If the task was selected by
     /// [`notify_one`](Self::notify_one) but has not yet reacquired the mutex, the notification is
     /// passed to another task that is waiting at that point, if one exists. It is never buffered
     /// for a future waiter.

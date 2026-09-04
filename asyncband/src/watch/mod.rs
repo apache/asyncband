@@ -166,7 +166,7 @@ impl<T> Sender<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the internal version counter overflows.
+    /// Panics if the channel has already published `u64::MAX` updates.
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
         let (wakers, replaced) = {
             let mut state = self.shared.state.lock();
@@ -195,7 +195,7 @@ impl<T> Sender<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the internal version counter overflows.
+    /// Panics if the channel has already published `u64::MAX` updates.
     pub fn send_replace(&self, value: T) -> T {
         let (wakers, replaced) = {
             let mut state = self.shared.state.lock();

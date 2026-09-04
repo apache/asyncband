@@ -138,9 +138,8 @@ impl<T> Completer<T> {
     ///
     /// # Panics
     ///
-    /// Panics if a registered waker panics while being notified. The value is committed before
-    /// notification begins. Before resuming the panic, `complete` still attempts to wake every
-    /// remaining registered waker.
+    /// Panics if notifying a waiting observer panics. The value remains committed, and notification
+    /// is still attempted for every other pending observer before the panic resumes.
     pub fn complete(mut self, value: T) -> Result<(), T> {
         let Some(shared) = self.shared.upgrade() else {
             return Err(value);

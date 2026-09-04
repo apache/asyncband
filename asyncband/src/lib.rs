@@ -96,10 +96,9 @@
 //! instead of duplicating synchronous methods across every type. Sync-first implementations can
 //! exploit OS- or platform-specific facilities and remain the domain of dedicated libraries.
 //!
-//! The adapter's single-future executor parks the calling thread and resumes it through the
-//! future's waker. It is not a general-purpose async runtime, and futures that depend on a
-//! runtime-specific timer or I/O driver may not make progress. See the module documentation for the
-//! full execution constraints.
+//! The adapter polls one future on the calling thread. It is not a general-purpose async runtime,
+//! and futures that depend on a runtime-specific timer or I/O driver may not make progress. See the
+//! module documentation for the full execution constraints.
 //!
 //! # Thread safety
 //!

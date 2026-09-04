@@ -15,28 +15,12 @@ use std::sync::Arc;
 
 use crate::rwlock::RwLock;
 
-/// Owned RAII structure used to release the shared read access of a lock when dropped, for a mapped
-/// component of the locked data.
+/// An owned read guard projected to one component of the protected value.
 ///
-/// This guard is only available from a [`RwLock`] that is wrapped in an [`Arc`]. It is similar to
-/// [`MappedRwLockReadGuard`], except that rather than borrowing the `RwLock`, it clones the `Arc`,
-/// incrementing the reference count. This means that unlike `MappedRwLockReadGuard`, it will have
-/// the `'static` lifetime.
-///
-/// As long as you have this guard, you have shared read access to the underlying `U`. The guard
-/// internally keeps an `Arc` reference to the original rwlock, so the original lock is
-/// maintained until this guard is dropped.
-///
-/// `OwnedMappedRwLockReadGuard` implements [`Send`] and [`Sync`]
-/// when the underlying data type supports these traits, allowing it to be used across task
-/// boundaries and shared between threads safely.
-///
-/// [`map`]: crate::rwlock::OwnedRwLockReadGuard::map
-/// [`filter_map`]: crate::rwlock::OwnedRwLockReadGuard::filter_map
-/// [`OwnedRwLockReadGuard`]: crate::rwlock::OwnedRwLockReadGuard
-/// [`MappedRwLockReadGuard`]: crate::rwlock::MappedRwLockReadGuard
-///
-/// See the [module level documentation](crate::rwlock) for more.
+/// [`OwnedRwLockReadGuard::map`](crate::rwlock::OwnedRwLockReadGuard::map) and
+/// [`OwnedRwLockReadGuard::filter_map`](crate::rwlock::OwnedRwLockReadGuard::filter_map) create
+/// this guard. It keeps the lock alive and its read access active while exposing only the projected
+/// component.
 ///
 /// # Examples
 ///
@@ -76,7 +60,7 @@ use crate::rwlock::RwLock;
 /// assert_eq!(profile_guard.email, "user@example.com");
 /// # }
 /// ```
-#[must_use = "if unused the RwLock will immediately unlock"]
+#[must_use = "dropping the guard releases its read access immediately"]
 pub struct OwnedMappedRwLockReadGuard<T: ?Sized, U: ?Sized> {
     // This Arc acts as an ownership certificate, ensuring the RwLock remains valid
     // and the lock is not released
@@ -132,15 +116,10 @@ impl<T: ?Sized, U: ?Sized> Deref for OwnedMappedRwLockReadGuard<T, U> {
 }
 
 impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockReadGuard<T, U> {
-    /// Makes a new [`OwnedMappedRwLockReadGuard`] for a component of the locked data.
+    /// Projects this guard to a deeper shared component.
     ///
-    /// This operation cannot fail as the `OwnedMappedRwLockReadGuard` passed in already locked the
-    /// rwlock.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `OwnedMappedRwLockReadGuard::map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// The returned guard keeps the same read access active. Call this as
+    /// `OwnedMappedRwLockReadGuard::map(...)` so a method named `map` on `U` remains accessible.
     ///
     /// # Examples
     ///
@@ -202,16 +181,11 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockReadGuard<T, U> {
         OwnedMappedRwLockReadGuard::new(d, lock)
     }
 
-    /// Attempts to make a new [`OwnedMappedRwLockReadGuard`] for a component of the locked data.
-    /// The original guard is returned if the closure returns `None`.
+    /// Attempts to project this guard to a deeper shared component.
     ///
-    /// This operation cannot fail as the `OwnedMappedRwLockReadGuard` passed in already locked the
-    /// rwlock.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `OwnedMappedRwLockReadGuard::filter_map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// The original guard is returned when `f` returns `None`. Call this as
+    /// `OwnedMappedRwLockReadGuard::filter_map(...)` so a method with the same name on `U` remains
+    /// accessible.
     ///
     /// # Examples
     ///

@@ -144,8 +144,8 @@ impl ManualResetEvent {
     ///
     /// # Panics
     ///
-    /// Panics if a registered waker panics. The state transition remains committed, and every
-    /// remaining registered waker is still notified before the first panic resumes.
+    /// Panics if notifying a waiting task panics. The event remains set, and notification is still
+    /// attempted for every other current waiter before the panic resumes.
     ///
     /// # Examples
     ///
@@ -223,9 +223,8 @@ impl ManualResetEvent {
     /// # Cancel safety
     ///
     /// Dropping a pending wait unregisters only that call; it does not change the event or affect
-    /// other waiters. If cancellation races with `set`, either cancellation unregisters first or
-    /// `set` commits the wait first. A waker already detached by `set` may still run after the wait
-    /// is dropped.
+    /// other waiters. If cancellation races with [`set`](Self::set), the wait either unregisters
+    /// first or has already been released by that call.
     ///
     /// # Examples
     ///
