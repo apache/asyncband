@@ -10,7 +10,7 @@ All notable changes to this project will be documented in this file.
 
 * Preserve applicable third-party licensing and copyright notices on derived source files, and record exact provenance mappings in `LICENSE` and source comments.
 
-## v0.7.1
+## v0.7.1 - 2026-09-04
 
 This is an interim non-ASF release. It has not been approved by the Apache Incubator PMC and is not an act of the Apache Software Foundation.
 
@@ -18,7 +18,9 @@ This is an interim non-ASF release. It has not been approved by the Apache Incub
 
 * Correct source-header treatment and make third-party derivation and test provenance records more precise in source distributions.
 
-## v0.7.0
+## v0.7.0 - 2026-09-04
+
+This non-ASF release was not approved by the Apache Incubator PMC, is not an act of the Apache Software Foundation, and has been yanked from crates.io.
 
 ### Breaking changes
 
