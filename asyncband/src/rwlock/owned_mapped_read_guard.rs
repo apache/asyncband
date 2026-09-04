@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Derived from Tokio 1.42.0's RwLock implementation:
+// Portions derived from Tokio 1.42.0's RwLock implementation:
 // https://github.com/tokio-rs/tokio/tree/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock
 
 use std::fmt;

@@ -259,17 +259,28 @@ The Apache License, Version 2.0, reproduced above, applies to the upstream
 portions identified below. Where an upstream project offers a choice of
 Apache-2.0 or MIT, Apache Asyncband uses the Apache-2.0 option.
 
-Portions of the following files are derived from the oneshot crate at commit
-83fd0864be7289067ce96cc79cd96c0928742979:
+Portions of the following implementation files are derived from the oneshot
+crate at commit 83fd0864be7289067ce96cc79cd96c0928742979:
 
   asyncband/src/oneshot/mod.rs
   asyncband/src/oneshot/receiver.rs
   asyncband/src/oneshot/sender.rs
+
+Portions of the following test files and support are adapted from the same
+upstream test suite:
+
   asyncband/src/oneshot/tests.rs
   tests-integration/tests/oneshot_test/main.rs
+  tests-integration/tests/oneshot_test/support.rs
 
 The oneshot crate is available from https://github.com/faern/oneshot and is
-licensed under Apache-2.0 or MIT.
+licensed under Apache-2.0 or MIT. The corresponding upstream tests are:
+
+  https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/async.rs
+  https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/future.rs
+  https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/miri.rs
+  https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/sync.rs
+  https://github.com/faern/oneshot/tree/83fd0864be7289067ce96cc79cd96c0928742979/tests/helpers
 
 Portions of asyncband/src/internal/atomic_waker.rs are derived from futures-rs
 0.3.34 at commit 705e6b5c0f06535b1aac1cb1989a172b3d45be8c, available from

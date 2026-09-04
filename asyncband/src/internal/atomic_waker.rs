@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Derived from futures-rs 0.3.34, with panic recovery informed by Tokio 1.53.1:
+// Portions derived from futures-rs 0.3.34, with panic recovery informed by Tokio 1.53.1:
 // https://github.com/rust-lang/futures-rs/blob/705e6b5c0f06535b1aac1cb1989a172b3d45be8c/futures-core/src/task/__internal/atomic_waker.rs
 // https://github.com/tokio-rs/tokio/blob/75fef53d0a8590c2d1dbb63672aa7b7d1ef51155/tokio/src/sync/task/atomic_waker.rs
 

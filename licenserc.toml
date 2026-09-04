@@ -19,4 +19,6 @@
 builtin = "Apache-2.0-ASF"
 
 [files]
+# This adapted third-party source intentionally does not carry the ASF source header.
+excludes = ["asyncband/src/blocking/parker.rs"]
 includes = ["**/*.proto", "**/*.rs", "**/*.yml", "**/*.yaml", "**/*.toml"]

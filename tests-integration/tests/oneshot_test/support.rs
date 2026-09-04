@@ -15,6 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Portions of this test support are adapted from the oneshot crate at commit
+// 83fd0864be7289067ce96cc79cd96c0928742979:
+// https://github.com/faern/oneshot/tree/83fd0864be7289067ce96cc79cd96c0928742979/tests/helpers
+
 use std::hint::spin_loop;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;

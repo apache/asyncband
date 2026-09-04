@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Derived from Tokio 1.41.0:
+// Portions derived from Tokio 1.41.0:
 // https://github.com/tokio-rs/tokio/blob/01e04daaa162ce6122bb894fdda0b6803dd32093/tokio/src/sync/mutex.rs
 
 //! An async mutex for protecting shared data.

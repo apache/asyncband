@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Bug fixes
+
+* Correct source-header treatment and make third-party derivation and test provenance records more precise in source distributions.
+
 ## v0.7.0
 
 ### Breaking changes
