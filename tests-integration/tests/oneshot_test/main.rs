@@ -15,13 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Portions of these tests are adapted from the oneshot crate at commit
-// 83fd0864be7289067ce96cc79cd96c0928742979:
-// The incorporated upstream portions are licensed under Apache-2.0. See the project LICENSE file.
-// https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/async.rs
-// https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/future.rs
-// https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/miri.rs
-// https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/sync.rs
+// Portions of these tests are adapted from the oneshot crate using its Apache-2.0 license option.
+// See the project LICENSE file for the exact upstream revision and source paths.
 
 use std::future::Future;
 use std::future::IntoFuture;

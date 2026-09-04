@@ -15,10 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Portions of this test support are adapted from the oneshot crate at commit
-// 83fd0864be7289067ce96cc79cd96c0928742979:
-// The incorporated upstream portions are licensed under Apache-2.0. See the project LICENSE file.
-// https://github.com/faern/oneshot/tree/83fd0864be7289067ce96cc79cd96c0928742979/tests/helpers
+// Portions of this test support are adapted from the oneshot crate using its Apache-2.0 license
+// option. See the project LICENSE file for the exact upstream revision and source paths.
 
 use std::hint::spin_loop;
 use std::sync::Arc;

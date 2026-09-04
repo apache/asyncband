@@ -1,8 +1,8 @@
-// Portions derived from Tokio 1.41.0:
+// Portions derived from Tokio 1.41.0.
 // Copyright (c) Tokio Contributors
-// Licensed under the MIT License. See the LICENSE file in the project root.
+// Licensed under the MIT License.
 // Modified by the Apache Software Foundation.
-// https://github.com/tokio-rs/tokio/blob/01e04daaa162ce6122bb894fdda0b6803dd32093/tokio/src/sync/mutex.rs
+// See the project LICENSE file for the exact upstream revision and source path.
 
 //! An async mutex for protecting shared data.
 //!
