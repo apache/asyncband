@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## v0.7.2
+
 ### Improvements
 
 * Preserve applicable third-party licensing and copyright notices on derived source files, and record exact provenance mappings and design acknowledgements in `LICENSE` and source comments.
