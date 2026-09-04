@@ -18,6 +18,8 @@
 // Portions of this file originated from Tokio 1.42.0's Semaphore and permit APIs.
 // Copyright (c) Tokio Contributors
 // The Tokio-derived portions remain licensed under the MIT License.
+// Upstream source:
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/semaphore.rs
 // Asyncband substantially changed the contract: it has no closed state or close errors, accepts
 // usize permit counts without reserved flag bits, and adds direct drain and exact-reduction
 // operations backed by Asyncband's own waiter queue. See LICENSE for full implementation details.

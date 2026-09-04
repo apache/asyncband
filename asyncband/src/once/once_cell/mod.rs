@@ -18,9 +18,12 @@
 // Portions of this file originated from Tokio 1.47.0's OnceCell implementation.
 // Copyright (c) Tokio Contributors
 // The Tokio-derived portions remain licensed under the MIT License.
+// Upstream source:
+// https://github.com/tokio-rs/tokio/blob/3911cb8523f190142f61c64b66881c07c0d3e7be/tokio/src/sync/once_cell.rs
 // Asyncband substantially changed the synchronization model: initialization does not close the
 // semaphore, the cell can be emptied and initialized again, and value storage is delegated to a
-// reusable ValueCell shared with LazyCell. See LICENSE for the exact upstream source and details.
+// reusable ValueCell shared with LazyCell. See LICENSE for full provenance and implementation
+// details.
 
 use std::convert::Infallible;
 use std::fmt;

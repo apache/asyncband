@@ -18,6 +18,8 @@
 // Portions of the permit-accounting algorithm originated from Tokio 1.42.0's batch semaphore.
 // Copyright (c) Tokio Contributors
 // The Tokio-derived portions remain licensed under the MIT License.
+// Upstream source:
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/batch_semaphore.rs
 // Asyncband substantially replaced the waiter lifecycle with queue-owned WaitList nodes, supports
 // queue-head permit debt for exact reductions, has no closed state or reserved flag bits, and uses
 // its own cancellation, detachment, and batched-waking machinery. See LICENSE for full details.
