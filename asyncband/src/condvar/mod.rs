@@ -260,6 +260,11 @@ impl Condvar {
     /// notifier.await.unwrap();
     /// # }
     /// ```
+    ///
+    /// # Cancel safety
+    ///
+    /// Each wait iteration has the same cancellation semantics as [`wait`](Self::wait). Cancelling
+    /// drops the mutex guard; mutations already made by `condition` are not rolled back.
     pub async fn wait_while<'a, T, F>(
         &self,
         mut guard: MutexGuard<'a, T>,
@@ -305,6 +310,12 @@ impl Condvar {
     /// notifier.await.unwrap();
     /// # }
     /// ```
+    ///
+    /// # Cancel safety
+    ///
+    /// Each wait iteration has the same cancellation semantics as
+    /// [`wait_owned`](Self::wait_owned). Cancelling drops the owned mutex guard; mutations already
+    /// made by `condition` are not rolled back.
     pub async fn wait_while_owned<T, F>(
         &self,
         mut guard: OwnedMutexGuard<T>,

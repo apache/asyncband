@@ -276,6 +276,10 @@ impl<T: Send> Pool<T> {
     /// This method only exists for [`NeverManageObject`] pools. If you provide a custom
     /// [`ManageObject`] implementation, you should use [`Pool::get`] instead, and it will call
     /// [`ManageObject::create`] to create a new object if the pool is empty.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancelling while the provided future is pending leaves the pool unchanged.
     pub async fn get_or_create<E, F>(self: &Arc<Self>, f: F) -> Result<Object<T>, E>
     where
         F: AsyncFnOnce() -> Result<T, E> + Send,
@@ -309,6 +313,12 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// Retrieves an [`Object`] from this [`Pool`].
     ///
     /// If no idle object is available, this method calls [`ManageObject::create`].
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancelling while creating a new object leaves the pool unchanged. Cancelling while
+    /// [`ManageObject::is_recyclable`] is checking an idle object follows
+    /// [`PoolConfig::recycle_cancelled_strategy`].
     pub async fn get(self: &Arc<Self>) -> Result<Object<T, M>, M::Error> {
         let object = loop {
             let existing = self.slots.lock().pop(self.config.queue_strategy);

@@ -221,7 +221,8 @@ impl IntoFuture for WaitGroup {
 /// A future that completes when every [`WaitGroup`] handle has been dropped.
 ///
 /// Awaiting a [`WaitGroup`] creates this future. Cloning a `Wait` creates another observer without
-/// adding a worker to the group.
+/// adding a worker to the group. Dropping a pending `Wait` only unregisters that observer; it does
+/// not change the group's handle count or affect other observers.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Wait {
     token: Option<WakerToken>,

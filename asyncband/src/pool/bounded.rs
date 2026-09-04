@@ -209,6 +209,12 @@ impl<M: ManageObject> Pool<M> {
     ///
     /// Returns the number of objects created. If [`ManageObject::create`] fails, objects created by
     /// this call before the failure remain in the pool and the error is returned.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancelling this operation releases all reserved capacity. Objects created before
+    /// cancellation remain idle in the pool; the in-progress [`ManageObject::create`] future is
+    /// dropped.
     pub async fn replenish_to(&self, target_idle: usize) -> Result<usize, M::Error> {
         let target_idle = target_idle.min(self.config.max_size);
         let Some(mut reservation) = ReplenishReservation::reserve_up_to(&self.permits, target_idle)
@@ -255,6 +261,12 @@ impl<M: ManageObject> Pool<M> {
     ///
     /// If the pool has reached its maximum size and has no idle object, this method waits until an
     /// object is returned to or detached from the pool.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancelling while waiting for capacity or creating a new object restores the reserved pool
+    /// capacity. Cancelling while [`ManageObject::is_recyclable`] is checking an idle object
+    /// follows [`PoolConfig::recycle_cancelled_strategy`].
     pub async fn get(self: &Arc<Self>) -> Result<Object<M>, M::Error> {
         let permit = self.permits.clone().acquire_owned(1).await;
 
