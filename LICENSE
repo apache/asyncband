@@ -373,14 +373,14 @@ the following copyright notices:
   Copyright (c) 2016 Alex Crichton
   Copyright (c) 2017 The Tokio Authors
 
-The polling loop in asyncband/src/blocking/mod.rs is adapted from Pollster
+The polling loop in asyncband/src/blocking/executor.rs is adapted from Pollster
 1.0.1 at the following exact revision and source path:
 
   https://github.com/zesterer/pollster/blob/6a1a148208326e9c5b231b16f199f5227c550774/src/lib.rs
 
-Its reuse of a thread-local Parker/Waker pair, with a fresh pair for recursive
-calls, is adapted from futures-lite 2.6.1 at the following exact revision and
-source path:
+The same file's reuse of a thread-local Parker/Waker pair, with a fresh pair
+for recursive calls, is adapted from futures-lite 2.6.1 at the following exact
+revision and source path:
 
   https://github.com/smol-rs/futures-lite/blob/226ce18976d8714d6bd9700b61dcc81d7200bc9a/src/future.rs#L62-L91
 
