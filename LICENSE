@@ -203,31 +203,48 @@
 THIRD-PARTY WORKS
 
 This product contains portions of third-party works. The paths below identify
-the files containing those portions. Modifications made for Apache Asyncband
-are licensed under the Apache License, Version 2.0, unless otherwise noted.
+each local file containing those portions and the corresponding upstream
+source. Modifications made for Apache Asyncband are licensed under the Apache
+License, Version 2.0, unless otherwise noted.
 
 Tokio
 
-Portions of the following files are derived from Tokio:
-
-  asyncband/src/mutex/mod.rs
-  asyncband/src/rwlock/mapped_read_guard.rs
-  asyncband/src/rwlock/mapped_write_guard.rs
-  asyncband/src/rwlock/mod.rs
-  asyncband/src/rwlock/owned_mapped_read_guard.rs
-  asyncband/src/rwlock/owned_mapped_write_guard.rs
-  asyncband/src/rwlock/owned_read_guard.rs
-  asyncband/src/rwlock/owned_write_guard.rs
-  asyncband/src/rwlock/read_guard.rs
-  asyncband/src/rwlock/write_guard.rs
-
-Portions of asyncband/src/internal/atomic_waker.rs are informed by Tokio's
-AtomicWaker implementation.
-
-The original Mutex and RwLock sources are available at:
+Portions of asyncband/src/mutex/mod.rs are derived from Tokio 1.41.0:
 
   https://github.com/tokio-rs/tokio/blob/01e04daaa162ce6122bb894fdda0b6803dd32093/tokio/src/sync/mutex.rs
-  https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock.rs
+
+Portions of the following files are derived from Tokio 1.42.0. Each local path
+is followed by its upstream source path or paths:
+
+  asyncband/src/rwlock/mod.rs
+    tokio/src/sync/rwlock.rs
+  asyncband/src/rwlock/read_guard.rs
+    tokio/src/sync/rwlock/read_guard.rs
+  asyncband/src/rwlock/write_guard.rs
+    tokio/src/sync/rwlock/write_guard.rs
+  asyncband/src/rwlock/owned_read_guard.rs
+    tokio/src/sync/rwlock/owned_read_guard.rs
+  asyncband/src/rwlock/owned_write_guard.rs
+    tokio/src/sync/rwlock/owned_write_guard.rs
+  asyncband/src/rwlock/mapped_write_guard.rs
+    tokio/src/sync/rwlock/write_guard_mapped.rs
+  asyncband/src/rwlock/owned_mapped_write_guard.rs
+    tokio/src/sync/rwlock/owned_write_guard_mapped.rs
+  asyncband/src/rwlock/mapped_read_guard.rs
+    tokio/src/sync/rwlock/read_guard.rs
+    tokio/src/sync/rwlock/write_guard_mapped.rs
+  asyncband/src/rwlock/owned_mapped_read_guard.rs
+    tokio/src/sync/rwlock/owned_read_guard.rs
+    tokio/src/sync/rwlock/owned_write_guard_mapped.rs
+
+The Tokio 1.42.0 sources above are available under:
+
+  https://github.com/tokio-rs/tokio/tree/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync
+
+Portions of asyncband/src/internal/atomic_waker.rs are informed by Tokio's
+AtomicWaker implementation at:
+
+  https://github.com/tokio-rs/tokio/blob/75fef53d0a8590c2d1dbb63672aa7b7d1ef51155/tokio/src/sync/task/atomic_waker.rs
 
 Tokio is licensed under the MIT License:
 
@@ -260,65 +277,126 @@ portions identified below. Where an upstream project offers a choice of
 Apache-2.0 or MIT, Apache Asyncband uses the Apache-2.0 option.
 
 Portions of the following implementation files are derived from the oneshot
-crate at commit 83fd0864be7289067ce96cc79cd96c0928742979:
+crate's src/lib.rs at commit 83fd0864be7289067ce96cc79cd96c0928742979:
 
   asyncband/src/oneshot/mod.rs
   asyncband/src/oneshot/receiver.rs
   asyncband/src/oneshot/sender.rs
 
-Portions of the following test files and support are adapted from the same
-upstream test suite:
+The corresponding upstream source is:
 
-  asyncband/src/oneshot/tests.rs
-  tests-integration/tests/oneshot_test/main.rs
-  tests-integration/tests/oneshot_test/support.rs
+  https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/src/lib.rs
 
-The oneshot crate is available from https://github.com/faern/oneshot and is
-licensed under Apache-2.0 or MIT. The corresponding upstream tests are:
+Portions of asyncband/src/oneshot/tests.rs are adapted from the upstream test
+helpers at:
+
+  https://github.com/faern/oneshot/tree/83fd0864be7289067ce96cc79cd96c0928742979/tests/helpers
+
+Portions of tests-integration/tests/oneshot_test/main.rs are adapted from:
 
   https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/async.rs
   https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/future.rs
   https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/miri.rs
   https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/sync.rs
+
+Portions of tests-integration/tests/oneshot_test/support.rs are adapted from:
+
   https://github.com/faern/oneshot/tree/83fd0864be7289067ce96cc79cd96c0928742979/tests/helpers
 
+The oneshot crate is licensed under Apache-2.0 or MIT. Apache Asyncband uses
+the Apache-2.0 option for the incorporated portions.
+
 Portions of asyncband/src/internal/atomic_waker.rs are derived from futures-rs
-0.3.34 at commit 705e6b5c0f06535b1aac1cb1989a172b3d45be8c, available from
-https://github.com/rust-lang/futures-rs and licensed under Apache-2.0 or MIT:
+0.3.34 at commit 705e6b5c0f06535b1aac1cb1989a172b3d45be8c:
+
+  https://github.com/rust-lang/futures-rs/blob/705e6b5c0f06535b1aac1cb1989a172b3d45be8c/futures-core/src/task/__internal/atomic_waker.rs
+
+futures-rs is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
+Apache-2.0 option for the incorporated portions:
 
   Copyright (c) 2016 Alex Crichton
   Copyright (c) 2017 The Tokio Authors
 
-The polling loop in asyncband/src/blocking/mod.rs is adapted from Pollster 1.0.1
-at commit 6a1a148208326e9c5b231b16f199f5227c550774. Its reuse of a thread-local
-Parker/Waker pair, with a fresh pair for recursive calls, is adapted from
-futures-lite 2.6.1 at commit 226ce18976d8714d6bd9700b61dcc81d7200bc9a.
-Pollster is available from https://github.com/zesterer/pollster and is
-licensed under Apache-2.0 or MIT:
+The polling loop in asyncband/src/blocking/mod.rs is adapted from Pollster
+1.0.1 at commit 6a1a148208326e9c5b231b16f199f5227c550774:
+
+  https://github.com/zesterer/pollster/blob/6a1a148208326e9c5b231b16f199f5227c550774/src/lib.rs
+
+Its reuse of a thread-local Parker/Waker pair, with a fresh pair for recursive
+calls, is adapted from futures-lite 2.6.1 at commit
+226ce18976d8714d6bd9700b61dcc81d7200bc9a:
+
+  https://github.com/smol-rs/futures-lite/blob/226ce18976d8714d6bd9700b61dcc81d7200bc9a/src/future.rs#L62-L91
+
+Pollster is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
+Apache-2.0 option for the incorporated portions:
 
   Copyright (c) 2020-2021 Joshua Barretto
 
-futures-lite is available from https://github.com/smol-rs/futures-lite and is
-licensed under Apache-2.0 or MIT.
+futures-lite is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
+Apache-2.0 option for the incorporated portions.
 
 Portions of asyncband/src/blocking/parker.rs are adapted from parking 2.2.1 at
-commit 0ece32dbfd6cd1bc1510ede6ed56acb772edf83f, available from
-https://github.com/smol-rs/parking and licensed under Apache-2.0 or MIT:
+commit 0ece32dbfd6cd1bc1510ede6ed56acb772edf83f:
+
+  https://github.com/smol-rs/parking/blob/0ece32dbfd6cd1bc1510ede6ed56acb772edf83f/src/lib.rs#L327-L429
+
+parking is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
+Apache-2.0 option for the incorporated portions:
 
   Copyright 2014-2020 The Rust Project Developers
 
 Portions of the following files are ported from Fastpool 1.1.1 at commit
-e4c65f1ed38395abc58d68eda8bd09925c13028e:
+e4c65f1ed38395abc58d68eda8bd09925c13028e. Each local path is followed by its
+upstream source path or paths:
 
-  asyncband/src/pool/bounded.rs
-  asyncband/src/pool/common.rs
   asyncband/src/pool/mod.rs
+    fastpool/src/lib.rs
+  asyncband/src/pool/bounded.rs
+    fastpool/src/bounded.rs
+  asyncband/src/pool/common.rs
+    fastpool/src/common.rs
   asyncband/src/pool/state.rs
+    fastpool/src/bounded.rs
+    fastpool/src/unbounded.rs
   asyncband/src/pool/unbounded.rs
+    fastpool/src/unbounded.rs
   tests-integration/tests/pool_recycle_cancelled_test.rs
+    fastpool/tests/recycle_cancelled_tests.rs
   tests-integration/tests/pool_replenish_test.rs
+    fastpool/tests/replenish_tests.rs
 
-Fastpool is available from https://github.com/fast/fastpool and is licensed
-under Apache-2.0:
+The Fastpool sources are available under:
+
+  https://github.com/fast/fastpool/tree/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool
+
+Fastpool is a reimplementation of Deadpool. No Deadpool source is incorporated
+into Apache Asyncband through Fastpool. Fastpool is licensed under Apache-2.0:
 
   Copyright 2025 FastLabs Developers
+
+DESIGN PROVENANCE WITHOUT INCORPORATED THIRD-PARTY SOURCE
+
+For completeness, the following implementations acknowledge external designs
+or APIs but do not incorporate source from those projects. These
+acknowledgements do not change the Apache-2.0 licensing of the files:
+
+  barrier::Barrier
+    std::sync::Barrier
+    tokio::sync::Barrier
+  condvar::Condvar
+    std::sync::Condvar
+    async_std::sync::Condvar
+  latch::Latch
+    https://github.com/mirromutth/latches
+  once::OnceCell
+    tokio::sync::OnceCell
+  once::OnceMap
+    https://github.com/astral-sh/uv/tree/936e6cdc42f44365e087a4ba7148238afc090b0b/crates/uv-once-map
+  semaphore::Semaphore
+    tokio::sync::Semaphore
+  waitgroup::WaitGroup
+    https://github.com/laizy/waitgroup-rs
+
+HISTORY.md describes the design relationship and implementation differences
+for these acknowledgements in more detail.

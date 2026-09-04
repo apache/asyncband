@@ -17,6 +17,7 @@
 
 // The polling loop is adapted from Pollster 1.0.1. Reusing a thread-local Parker/Waker pair and
 // creating a fresh pair for recursive calls is adapted from futures-lite 2.6.1:
+// The incorporated upstream portions are licensed under Apache-2.0. See the project LICENSE file.
 // https://github.com/zesterer/pollster/blob/6a1a148208326e9c5b231b16f199f5227c550774/src/lib.rs
 // https://github.com/smol-rs/futures-lite/blob/226ce18976d8714d6bd9700b61dcc81d7200bc9a/src/future.rs#L62-L91
 

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Bug fixes
+
+* Preserve third-party source licensing and copyright notices on derived Tokio, parking, and Fastpool files, and document exact upstream-to-local provenance mappings.
+
 ## v0.7.1
 
 This is an interim non-ASF release. It has not been approved by the Apache Incubator PMC and is not an act of the Apache Software Foundation.

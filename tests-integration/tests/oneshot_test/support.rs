@@ -17,6 +17,7 @@
 
 // Portions of this test support are adapted from the oneshot crate at commit
 // 83fd0864be7289067ce96cc79cd96c0928742979:
+// The incorporated upstream portions are licensed under Apache-2.0. See the project LICENSE file.
 // https://github.com/faern/oneshot/tree/83fd0864be7289067ce96cc79cd96c0928742979/tests/helpers
 
 use std::hint::spin_loop;

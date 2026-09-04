@@ -17,6 +17,7 @@
 
 // Portions of these tests are adapted from the oneshot crate at commit
 // 83fd0864be7289067ce96cc79cd96c0928742979:
+// The incorporated upstream portions are licensed under Apache-2.0. See the project LICENSE file.
 // https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/async.rs
 // https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/future.rs
 // https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/miri.rs
