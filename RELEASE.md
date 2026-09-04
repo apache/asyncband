@@ -102,7 +102,7 @@ git tag --sign "${RC_TAG}" \
 git push https://github.com/apache/asyncband.git "${RC_TAG}"
 ```
 
-Wait for the `Release` GitHub Actions workflow to pass. An RC tag runs package validation and skips the crates.io publishing job. A candidate that needs a code change gets a new release pull request, merge commit, RC number, and signed tag.
+Wait for the `Release` GitHub Actions workflow to pass. The workflow publishes a convenience prerelease named `${VERSION}-rc.${RC}` to crates.io while the source tag and release candidate retain the stable `${VERSION}` package version. A candidate that needs a code change gets a new release pull request, merge commit, RC number, and signed tag.
 
 ## 3. Build and verify the source archive
 
