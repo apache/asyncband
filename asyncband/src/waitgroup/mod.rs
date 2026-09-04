@@ -15,14 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Wait for a set of worker handles to be dropped.
+//! Coordinate completion across a dynamically sized group of participants.
 //!
-//! A [`WaitGroup`] starts with one handle. Clone that handle once for each unit of work and move
-//! the clones into their workers. Dropping a worker handle marks that worker as complete. Awaiting
-//! a handle consumes it and waits until every remaining handle has been dropped.
+//! A [`WaitGroup`] starts with one participant. Cloning its handle registers another participant.
+//! Awaiting a handle marks that participant complete and waits until every other participant has
+//! completed. Dropping a handle marks its participant complete without waiting.
 //!
-//! Completion acquires the state published before every worker was dropped, so work performed by
-//! those workers is visible after the wait returns.
+//! Participants are symmetric: any number of them may wait for the same completion. A waiting
+//! participant no longer keeps the group pending, and all waiters are notified when the last
+//! remaining handle is awaited or dropped. Existing handles may register more participants by
+//! cloning until the group completes; completion is one-shot.
+//!
+//! Completion acquires the state published before every participant completed, so work performed
+//! by those participants is visible after the wait returns.
 //!
 //! # Examples
 //!
@@ -37,10 +42,10 @@
 //! let mut tasks = vec![];
 //!
 //! for _ in 0..3 {
-//!     let worker = group.clone();
+//!     let participant = group.clone();
 //!     tasks.push(tokio::spawn(async move {
 //!         do_work().await;
-//!         drop(worker); // Signals completion. This would also happen at the end of the task.
+//!         participant.await;
 //!     }));
 //! }
 //!
@@ -142,7 +147,7 @@ impl State {
     }
 }
 
-/// A group of handles whose collective completion can be awaited.
+/// A handle representing one participant in a dynamically sized wait group.
 ///
 /// See the [module level documentation](self) for more.
 pub struct WaitGroup {
@@ -164,7 +169,7 @@ impl Default for WaitGroup {
 }
 
 impl WaitGroup {
-    /// Creates a new `WaitGroup`.
+    /// Creates a new `WaitGroup` containing one participant.
     ///
     /// # Examples
     ///
@@ -181,10 +186,10 @@ impl WaitGroup {
 }
 
 impl Clone for WaitGroup {
-    /// Creates a new worker handle for the wait group.
+    /// Registers another participant and returns its handle.
     ///
-    /// The group completes after this handle and every other handle have been dropped or consumed
-    /// by a wait.
+    /// The group completes after every participant has completed, either by awaiting or dropping
+    /// its handle.
     fn clone(&self) -> Self {
         let state = self
             .state
@@ -210,7 +215,7 @@ impl IntoFuture for WaitGroup {
     type Output = ();
     type IntoFuture = Wait;
 
-    /// Consumes this handle and waits for all other handles to be dropped.
+    /// Marks this participant complete and waits for every other participant to complete.
     fn into_future(mut self) -> Self::IntoFuture {
         let state = self.state.take().expect("a live WaitGroup owns its state");
         state.release_handle();
@@ -218,11 +223,12 @@ impl IntoFuture for WaitGroup {
     }
 }
 
-/// A future that completes when every [`WaitGroup`] handle has been dropped.
+/// A future that completes when every [`WaitGroup`] participant has completed.
 ///
-/// Awaiting a [`WaitGroup`] creates this future. Cloning a `Wait` creates another observer without
-/// adding a worker to the group. Dropping a pending `Wait` only unregisters that observer; it does
-/// not change the group's handle count or affect other observers.
+/// Converting a [`WaitGroup`] into this future marks that handle's participant complete. Cloning a
+/// `Wait` creates another observer without registering a participant. Dropping a pending `Wait`
+/// only unregisters that observer; the participant remains complete and other observers are not
+/// affected.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Wait {
     token: Option<WakerToken>,
@@ -230,9 +236,9 @@ pub struct Wait {
 }
 
 impl Clone for Wait {
-    /// Creates a new future that also completes when the WaitGroup reaches zero handles.
+    /// Creates a new future that observes the same group completion.
     ///
-    /// This does not add a worker to the group.
+    /// This does not register another participant.
     fn clone(&self) -> Self {
         Wait {
             token: None,
