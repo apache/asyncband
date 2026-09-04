@@ -248,6 +248,53 @@ The exact Tokio 1.42.0 revision is:
 Asyncband's RwLock accepts any NonZeroUsize as max_readers instead of Tokio's
 restricted range.
 
+Portions of the following files originated from Tokio 1.47.0's OnceCell. Each
+local path is followed by its upstream source path:
+
+  asyncband/src/once/once_cell/mod.rs
+    tokio/src/sync/once_cell.rs
+  asyncband/src/internal/value_cell.rs
+    tokio/src/sync/once_cell.rs
+
+The exact Tokio 1.47.0 source is:
+
+  https://github.com/tokio-rs/tokio/blob/3911cb8523f190142f61c64b66881c07c0d3e7be/tokio/src/sync/once_cell.rs
+
+Asyncband substantially changed this implementation. OnceCell uses a permit
+only to serialize initialization and does not close its semaphore when a value
+is published. It can remove a value and later initialize the cell again, and
+its set operation waits for an in-progress initializer instead of reporting a
+closed or initializing state. ValueCell factors storage out of OnceCell,
+contains no semaphore or closed-state invariant, supports mutation, removal,
+and reinitialization, and is shared by OnceCell and LazyCell.
+
+Portions of the following files originated from Tokio 1.42.0's public and
+internal semaphore implementations:
+
+  asyncband/src/semaphore/mod.rs
+    tokio/src/sync/semaphore.rs
+  asyncband/src/internal/semaphore.rs
+    tokio/src/sync/batch_semaphore.rs
+
+The exact Tokio 1.42.0 sources are:
+
+  https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/semaphore.rs
+  https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/batch_semaphore.rs
+
+Asyncband substantially changed this implementation. It has no closed state,
+close operation, close errors, reserved status bits, or fixed maximum-permit
+constant. It uses usize permit counts and adds direct draining and exact
+reduction. Its internal implementation replaces Tokio's intrusive waiter node,
+which is pinned inside each acquire future, with queue-owned WaitList nodes
+addressed by stable IDs. Exact reduction inserts permit debt at the queue head.
+Cancellation detaches the queue-owned node and returns permits already assigned
+to it, while Asyncband's own batching machinery moves waker drops and wakeups
+outside the waiter lock.
+
+The standard ASF source headers on these four files apply to the substantial
+modifications contributed to Apache Asyncband. They do not replace the Tokio
+copyright notice or MIT License applicable to the incorporated portions.
+
 The panic-recovery behavior in asyncband/src/internal/atomic_waker.rs was
 informed by Tokio's AtomicWaker implementation at:
 
@@ -416,26 +463,11 @@ latch::Latch is inspired by latches:
 Asyncband uses a separate implementation based on its internal CountdownState
 primitive.
 
-once::OnceCell has an API informed by tokio::sync::OnceCell:
-
-  https://docs.rs/tokio/latest/tokio/sync/struct.OnceCell.html
-
-Asyncband uses an independent implementation based on its semaphore and value
-storage.
-
 once::OnceMap is inspired by uv-once-map:
 
   https://github.com/astral-sh/uv/tree/936e6cdc42f44365e087a4ba7148238afc090b0b/crates/uv-once-map
 
 Asyncband redesigns both the interface and implementation.
-
-semaphore::Semaphore has an API informed by tokio::sync::Semaphore:
-
-  https://docs.rs/tokio/latest/tokio/sync/struct.Semaphore.html
-
-Asyncband uses an independent waiter queue and permit accounting. It omits
-close, avoids Tokio's fixed maximum-permit constant, and provides operations
-such as reduce_permits for Asyncband's use cases.
 
 waitgroup::WaitGroup is inspired by waitgroup-rs:
 

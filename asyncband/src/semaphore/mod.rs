@@ -15,6 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Portions of this file originated from Tokio 1.42.0's Semaphore and permit APIs.
+// Copyright (c) Tokio Contributors
+// The Tokio-derived portions remain licensed under the MIT License.
+// Asyncband substantially changed the contract: it has no closed state or close errors, accepts
+// usize permit counts without reserved flag bits, and adds direct drain and exact-reduction
+// operations backed by Asyncband's own waiter queue. See LICENSE for full implementation details.
+
 //! Limit concurrent access with a set of permits.
 //!
 //! [`Semaphore::acquire`] waits for the requested number of permits and returns a guard that puts

@@ -15,6 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// This file was factored out of Asyncband's Tokio-derived OnceCell implementation.
+// Copyright (c) Tokio Contributors
+// The Tokio-derived portions remain licensed under the MIT License.
+// Unlike Tokio's storage, ValueCell has no semaphore or closed-state invariant. It provides
+// reusable value publication, mutation, removal, and reinitialization for OnceCell and LazyCell.
+// See LICENSE for the exact upstream source and details.
+
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicBool;

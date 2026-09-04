@@ -15,6 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Portions of the permit-accounting algorithm originated from Tokio 1.42.0's batch semaphore.
+// Copyright (c) Tokio Contributors
+// The Tokio-derived portions remain licensed under the MIT License.
+// Asyncband substantially replaced the waiter lifecycle with queue-owned WaitList nodes, supports
+// queue-head permit debt for exact reductions, has no closed state or reserved flag bits, and uses
+// its own cancellation, detachment, and batched-waking machinery. See LICENSE for full details.
+
 use std::future::Future;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
