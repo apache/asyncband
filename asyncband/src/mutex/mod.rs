@@ -45,7 +45,7 @@
 //! use asyncband::mutex::Mutex;
 //!
 //! let counter = Arc::new(Mutex::new(0));
-//! let mut tasks = Vec::new();
+//! let mut tasks = vec![];
 //!
 //! for _ in 0..3 {
 //!     let counter = counter.clone();
