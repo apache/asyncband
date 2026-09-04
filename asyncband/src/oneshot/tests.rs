@@ -18,7 +18,9 @@
 // This file contains test support adapted from the oneshot crate.
 // Asyncband uses the upstream crate's Apache-2.0 license option for that code.
 // The incorporated code has been modified for use in Apache Asyncband.
-// See the project LICENSE file for the exact upstream revision and source paths.
+// Upstream sources:
+// https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/helpers/mod.rs
+// https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/tests/helpers/waker.rs
 
 use std::future::Future;
 use std::future::IntoFuture;

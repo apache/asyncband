@@ -2,7 +2,9 @@
 // Copyright (c) Tokio Contributors
 // The derived code remains licensed under the MIT License.
 // The incorporated code has been modified for use in Apache Asyncband.
-// See the project LICENSE file for the exact upstream revision and source paths.
+// Upstream sources:
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock/owned_read_guard.rs
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock/owned_write_guard_mapped.rs
 
 use std::fmt;
 use std::marker::PhantomData;

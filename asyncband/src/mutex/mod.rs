@@ -2,7 +2,8 @@
 // Copyright (c) Tokio Contributors
 // The derived code remains licensed under the MIT License.
 // The incorporated code has been modified for use in Apache Asyncband.
-// See the project LICENSE file for the exact upstream revision and source path.
+// Upstream source:
+// https://github.com/tokio-rs/tokio/blob/01e04daaa162ce6122bb894fdda0b6803dd32093/tokio/src/sync/mutex.rs
 
 //! An async mutex for protecting shared data.
 //!

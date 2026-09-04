@@ -2,7 +2,8 @@
 // Copyright (c) Tokio Contributors
 // The derived code remains licensed under the MIT License.
 // The incorporated code has been modified for use in Apache Asyncband.
-// See the project LICENSE file for the exact upstream revision and source path.
+// Upstream source:
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock.rs
 
 //! A reader-writer lock that allows multiple readers or a single writer at a time.
 //!

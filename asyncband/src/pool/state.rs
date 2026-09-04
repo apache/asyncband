@@ -14,7 +14,9 @@
 //
 // This file contains code ported from Fastpool 1.1.1.
 // The incorporated code has been modified for use in Apache Asyncband.
-// See the project LICENSE file for the exact upstream revision and source paths.
+// Upstream sources:
+// https://github.com/fast/fastpool/blob/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool/src/bounded.rs
+// https://github.com/fast/fastpool/blob/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool/src/unbounded.rs
 
 use std::collections::VecDeque;
 

@@ -2,7 +2,8 @@
 // Copyright 2014-2020 The Rust Project Developers
 // Asyncband uses the upstream project's Apache-2.0 license option for the incorporated code.
 // The incorporated code has been modified for use in Apache Asyncband.
-// See the project LICENSE file for the exact upstream revision and source path.
+// Upstream source:
+// https://github.com/smol-rs/parking/blob/0ece32dbfd6cd1bc1510ede6ed56acb772edf83f/src/lib.rs#L327-L429
 
 use std::cell::Cell;
 use std::marker::PhantomData;
