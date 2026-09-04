@@ -15,6 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// The polling loop is adapted from Pollster, and the parker cache follows futures-lite 2.6.1:
+// https://github.com/zesterer/pollster
+// https://github.com/smol-rs/futures-lite/blob/v2.6.1/src/future.rs#L53-L94
+
 //! Synchronous interoperability for runtime-agnostic futures.
 //!
 //! This module bridges synchronous Rust code to a single future. Enable it with the opt-in
@@ -148,8 +152,8 @@ fn parker_and_waker() -> (Parker, Waker) {
 }
 
 thread_local! {
-    // This cache follows futures-lite's block_on design. Holding the mutable borrow while polling
-    // makes a recursive call take the fresh-parker path instead of sharing a notification token.
+    // Holding the mutable borrow while polling makes a recursive call take the fresh-parker path
+    // instead of sharing a notification token.
     static CACHE: RefCell<(Parker, Waker)> = RefCell::new(parker_and_waker());
 }
 

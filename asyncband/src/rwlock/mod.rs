@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Derived from Tokio 1.42.0:
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock.rs
+
 //! A reader-writer lock that allows multiple readers or a single writer at a time.
 //!
 //! This type of lock allows a number of readers or at most one writer at any point in time. The

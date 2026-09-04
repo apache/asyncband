@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Adapted from parking 2.2.1:
+// https://github.com/smol-rs/parking/tree/v2.2.1
+
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -67,8 +70,6 @@ impl Parker {
     }
 }
 
-// This private state machine is adapted from parking 2.2.1. Copyright 2014-2020 The Rust Project
-// Developers, licensed under Apache-2.0 OR MIT: https://github.com/smol-rs/parking/tree/v2.2.1.
 impl ParkerState {
     fn park(&self, timeout: Option<Duration>) {
         // Notifications are tokens. Consuming one is the common self-wake path and needs no lock.

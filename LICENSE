@@ -199,3 +199,118 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+THIRD-PARTY WORKS
+
+This product contains portions of third-party works. The paths below identify
+the files containing those portions. Modifications made for Apache Asyncband
+are licensed under the Apache License, Version 2.0, unless otherwise noted.
+
+Tokio
+
+Portions of the following files are derived from Tokio:
+
+  asyncband/src/mutex/mod.rs
+  asyncband/src/rwlock/mapped_read_guard.rs
+  asyncband/src/rwlock/mapped_write_guard.rs
+  asyncband/src/rwlock/mod.rs
+  asyncband/src/rwlock/owned_mapped_read_guard.rs
+  asyncband/src/rwlock/owned_mapped_write_guard.rs
+  asyncband/src/rwlock/owned_read_guard.rs
+  asyncband/src/rwlock/owned_write_guard.rs
+  asyncband/src/rwlock/read_guard.rs
+  asyncband/src/rwlock/write_guard.rs
+
+Portions of asyncband/src/internal/atomic_waker.rs are informed by Tokio's
+AtomicWaker implementation.
+
+The original Mutex and RwLock sources are available at:
+
+  https://github.com/tokio-rs/tokio/blob/01e04daaa162ce6122bb894fdda0b6803dd32093/tokio/src/sync/mutex.rs
+  https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock.rs
+
+Tokio is licensed under the MIT License:
+
+MIT License
+
+Copyright (c) Tokio Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Works used under the Apache License, Version 2.0
+
+The Apache License, Version 2.0, reproduced above, applies to the upstream
+portions identified below. Where an upstream project offers a choice of
+Apache-2.0 or MIT, Apache Asyncband uses the Apache-2.0 option.
+
+Portions of the following files are derived from the oneshot crate at commit
+83fd0864be7289067ce96cc79cd96c0928742979:
+
+  asyncband/src/oneshot/mod.rs
+  asyncband/src/oneshot/receiver.rs
+  asyncband/src/oneshot/sender.rs
+  asyncband/src/oneshot/tests.rs
+  tests-integration/tests/oneshot_test/main.rs
+
+The oneshot crate is available from https://github.com/faern/oneshot and is
+licensed under Apache-2.0 or MIT.
+
+Portions of asyncband/src/internal/atomic_waker.rs are derived from futures-rs
+0.3.34, available from https://github.com/rust-lang/futures-rs and licensed
+under Apache-2.0 or MIT:
+
+  Copyright (c) 2016 Alex Crichton
+  Copyright (c) 2017 The Tokio Authors
+
+Portions of asyncband/src/blocking/mod.rs are adapted from Pollster and
+futures-lite 2.6.1. Pollster is available from
+https://github.com/zesterer/pollster and is licensed under Apache-2.0 or MIT:
+
+  Copyright (c) 2020-2021 Joshua Barretto
+
+futures-lite is available from https://github.com/smol-rs/futures-lite and is
+licensed under Apache-2.0 or MIT.
+
+Portions of asyncband/src/blocking/parker.rs are adapted from parking 2.2.1,
+available from https://github.com/smol-rs/parking and licensed under
+Apache-2.0 or MIT:
+
+  Copyright 2014-2020 The Rust Project Developers
+
+The following files contain a reimplementation based on Fastpool 1.1.1 at
+commit e4c65f1, whose design derives from Deadpool:
+
+  asyncband/src/pool/bounded.rs
+  asyncband/src/pool/common.rs
+  asyncband/src/pool/mod.rs
+  asyncband/src/pool/state.rs
+  asyncband/src/pool/unbounded.rs
+  tests-integration/tests/pool_behavior_test.rs
+  tests-integration/tests/pool_recycle_cancelled_test.rs
+  tests-integration/tests/pool_replenish_test.rs
+
+Fastpool is available from https://github.com/fast/fastpool and is licensed
+under Apache-2.0:
+
+  Copyright 2025 FastLabs Developers
+
+Deadpool is available from https://github.com/deadpool-rs/deadpool and is
+licensed under Apache-2.0 or MIT:
+
+  Copyright (c) 2019 Michael P. Jung

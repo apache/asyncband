@@ -133,7 +133,7 @@ VERIFY_DIR="$(mktemp -d)"
 rm -rf "${VERIFY_DIR}"
 ```
 
-Inspect the archive for unexpected binary files, verify `LICENSE`, `NOTICE`, and `DISCLAIMER`, and compare its contents with the RC tag.
+Inspect the archive for unexpected binary files and compare its contents with the RC tag. Read `LICENSE` and `NOTICE` against the bundled and derived third-party works and their source-file notices; the presence of those files and a successful automated header scan are not sufficient verification.
 
 ## 4. Stage the candidate on ASF infrastructure
 

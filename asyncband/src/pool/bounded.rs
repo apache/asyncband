@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Reimplemented based on Fastpool 1.1.1 at commit e4c65f1, whose design derives from Deadpool:
+// https://github.com/fast/fastpool/tree/e4c65f1
+
 //! Bounded object pools.
 //!
 //! A bounded pool uses a [`ManageObject`] implementation to create, validate, and detach objects.

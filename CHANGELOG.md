@@ -2,14 +2,6 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
-
-### Improvements
-
-* Avoid fixed CPU spinning before registering `WaitGroup`, `Latch`, and `Once` waiters.
-* Specialize `WaitGroup`'s one-shot completion state to reduce handle registration and multi-waiter notification overhead while preserving cancellable multi-observer waits.
-* Reduce waiter state and notification overhead across `Barrier`, broadcast, completion, `Latch`, `Once`, and watch by reusing each primitive's existing lifecycle state instead of maintaining duplicate waiter epochs.
-
 ## v0.7.0
 
 ### Breaking changes
@@ -49,3 +41,6 @@ All notable changes to this project will be documented in this file.
 * Reduce semaphore and mutex hot-path overhead by avoiding wake-buffer allocation when no tasks are queued and batching queued wakes on the stack.
 * Allocate `OnceMap` and `singleflight::Group` registries lazily to reduce construction overhead.
 * Describe disconnected channel states consistently in channel error messages.
+* Avoid fixed CPU spinning before registering `WaitGroup`, `Latch`, and `Once` waiters.
+* Specialize `WaitGroup`'s one-shot completion state to reduce handle registration and multi-waiter notification overhead while preserving cancellable multi-observer waits.
+* Reduce waiter state and notification overhead across `Barrier`, broadcast, completion, `Latch`, `Once`, and watch by reusing each primitive's existing lifecycle state instead of maintaining duplicate waiter epochs.

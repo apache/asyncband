@@ -15,10 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// This state machine is derived from the futures-rs `AtomicWaker`, licensed under
-// Apache-2.0 OR MIT: https://github.com/rust-lang/futures-rs/blob/0.3.34/futures-core/src/task/__internal/atomic_waker.rs.
-// Its panic recovery is informed by Tokio's `AtomicWaker`, licensed under MIT:
-// https://github.com/tokio-rs/tokio/blob/tokio-1.53.1/tokio/src/sync/task/atomic_waker.rs.
+// Derived from futures-rs 0.3.34, with panic recovery informed by Tokio:
+// https://github.com/rust-lang/futures-rs/blob/0.3.34/futures-core/src/task/__internal/atomic_waker.rs
+// https://github.com/tokio-rs/tokio/blob/tokio-1.53.1/tokio/src/sync/task/atomic_waker.rs
 
 use std::cell::UnsafeCell;
 use std::panic::AssertUnwindSafe;

@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Derived from the oneshot crate at commit 83fd0864:
+// https://github.com/faern/oneshot/blob/83fd0864be7289067ce96cc79cd96c0928742979/src/lib.rs
+
 use std::any::type_name;
 use std::fmt;
 use std::mem::ManuallyDrop;
