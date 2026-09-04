@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Reimplemented based on Fastpool 1.1.1 at commit e4c65f1, whose design derives from Deadpool:
+// Portions ported from Fastpool 1.1.1 at commit e4c65f1:
+// Copyright 2025 FastLabs Developers
 // https://github.com/fast/fastpool/tree/e4c65f1
 
 //! Runtime-agnostic object pools for async Rust.

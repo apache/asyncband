@@ -278,9 +278,10 @@ under Apache-2.0 or MIT:
   Copyright (c) 2016 Alex Crichton
   Copyright (c) 2017 The Tokio Authors
 
-Portions of asyncband/src/blocking/mod.rs are adapted from Pollster and
-futures-lite 2.6.1. Pollster is available from
-https://github.com/zesterer/pollster and is licensed under Apache-2.0 or MIT:
+Portions of asyncband/src/blocking/mod.rs are adapted from Pollster 1.0.1 at
+commit 6a1a148208326e9c5b231b16f199f5227c550774 and futures-lite 2.6.1.
+Pollster is available from https://github.com/zesterer/pollster and is
+licensed under Apache-2.0 or MIT:
 
   Copyright (c) 2020-2021 Joshua Barretto
 
@@ -293,15 +294,14 @@ Apache-2.0 or MIT:
 
   Copyright 2014-2020 The Rust Project Developers
 
-The following files contain a reimplementation based on Fastpool 1.1.1 at
-commit e4c65f1, whose design derives from Deadpool:
+Portions of the following files are ported from Fastpool 1.1.1 at commit
+e4c65f1:
 
   asyncband/src/pool/bounded.rs
   asyncband/src/pool/common.rs
   asyncband/src/pool/mod.rs
   asyncband/src/pool/state.rs
   asyncband/src/pool/unbounded.rs
-  tests-integration/tests/pool_behavior_test.rs
   tests-integration/tests/pool_recycle_cancelled_test.rs
   tests-integration/tests/pool_replenish_test.rs
 
@@ -309,8 +309,3 @@ Fastpool is available from https://github.com/fast/fastpool and is licensed
 under Apache-2.0:
 
   Copyright 2025 FastLabs Developers
-
-Deadpool is available from https://github.com/deadpool-rs/deadpool and is
-licensed under Apache-2.0 or MIT:
-
-  Copyright (c) 2019 Michael P. Jung
