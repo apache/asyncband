@@ -217,6 +217,20 @@ Portions of asyncband/src/mutex/mod.rs are derived from Tokio 1.41.0:
 
   https://github.com/tokio-rs/tokio/blob/01e04daaa162ce6122bb894fdda0b6803dd32093/tokio/src/sync/mutex.rs
 
+Asyncband's Mutex core predates the incorporation of Tokio's owned and mapped
+guard APIs. It is built on Asyncband's own fair semaphore, has no closed state
+or acquisition error, returns Option from nonblocking acquisition, and provides
+a single const constructor without runtime-specific tracing or blocking entry
+points. Asyncband substantially changed the incorporated guard implementation.
+Projected guards use NonNull pointers and explicit invariance, borrowed and
+owned projected guards can be mapped repeatedly, and guard destruction releases
+permits through Asyncband's semaphore lifecycle.
+
+The standard ASF source header on asyncband/src/mutex/mod.rs applies to the
+independent Mutex core and the substantial modifications contributed to Apache
+Asyncband. It does not replace the Tokio copyright notice or MIT License
+applicable to the incorporated portions.
+
 Portions of the following files are derived from Tokio 1.42.0. Each local path
 is followed by its upstream source path or paths:
 
@@ -245,8 +259,13 @@ The exact Tokio 1.42.0 revision is:
 
   https://github.com/tokio-rs/tokio/tree/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync
 
-Asyncband's RwLock accepts any NonZeroUsize as max_readers instead of Tokio's
-restricted range.
+Asyncband adapted RwLock to its own semaphore and guard model. Acquisition has
+no semaphore-close error, nonblocking methods return Option, and max_readers is
+any NonZeroUsize instead of Tokio's restricted range. Mapped read guards use
+separate borrowed and owned types rather than changing a type parameter on the
+original read guard. All mapped guards use filter_map naming, and mutable mapped
+guards carry explicit invariance. The local guard types release and downgrade
+permits through Asyncband's usize-based semaphore implementation.
 
 Portions of the following files originated from Tokio 1.47.0's OnceCell. Each
 local path is followed by its upstream source path:

@@ -24,7 +24,6 @@ builtin = "Apache-2.0-ASF"
 excludes = [
   "asyncband/src/blocking/executor.rs",
   "asyncband/src/blocking/parker.rs",
-  "asyncband/src/mutex/mod.rs",
   "asyncband/src/pool/bounded.rs",
   "asyncband/src/pool/common.rs",
   "asyncband/src/pool/mod.rs",

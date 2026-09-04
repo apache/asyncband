@@ -1,19 +1,39 @@
-// This file contains code derived from Tokio 1.41.0.
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+// Portions of the owned and mapped guard APIs originated from Tokio 1.41.0's Mutex implementation.
 // Copyright (c) Tokio Contributors
-// The derived code remains licensed under the MIT License.
-// The incorporated code has been modified for use in Apache Asyncband.
+// The Tokio-derived portions remain licensed under the MIT License.
+// Asyncband independently built the mutex on its own semaphore and substantially changed the
+// incorporated guard implementation: the try-lock error type and semaphore closure are absent,
+// projected guards use NonNull pointers with explicit invariance, and projected guards can be
+// mapped repeatedly in both borrowed and owned forms.
 // Upstream source:
 // https://github.com/tokio-rs/tokio/blob/01e04daaa162ce6122bb894fdda0b6803dd32093/tokio/src/sync/mutex.rs
 
-//! An async mutex for protecting shared data.
+//! Mutual exclusion that yields the current task while waiting.
 //!
-//! Unlike a standard mutex, this implementation is designed to work with async/await,
-//! ensuring tasks yield properly when the lock is contended. This makes it suitable
-//! for protecting shared resources in async code.
+//! A successful lock operation returns a guard that provides exclusive access to the protected
+//! value and releases the lock when dropped. The guard may be held across `.await` points. When
+//! that is unnecessary, a synchronous mutex is usually cheaper.
 //!
-//! This mutex will block tasks waiting for the lock to become available. The
-//! mutex can be created via [`new`] and the protected data can be accessed
-//! via the async [`lock`] method.
+//! Waiters are served through Asyncband's fair semaphore queue. Cancelling a pending lock
+//! operation removes that waiter from the queue; a later attempt joins at the back. A panic while
+//! holding a guard releases the lock without poisoning it.
 //!
 //! # Examples
 //!
@@ -24,29 +44,24 @@
 //!
 //! use asyncband::mutex::Mutex;
 //!
-//! let mutex = Arc::new(Mutex::new(0));
-//! let mut handles = vec![];
+//! let counter = Arc::new(Mutex::new(0));
+//! let mut tasks = Vec::new();
 //!
-//! for i in 0..3 {
-//!     let mutex = mutex.clone();
-//!     handles.push(tokio::spawn(async move {
-//!         let mut lock = mutex.lock().await;
-//!         *lock += i;
+//! for _ in 0..3 {
+//!     let counter = counter.clone();
+//!     tasks.push(tokio::spawn(async move {
+//!         *counter.lock().await += 1;
 //!     }));
 //! }
 //!
-//! for handle in handles {
-//!     handle.await.unwrap();
+//! for task in tasks {
+//!     task.await.unwrap();
 //! }
 //!
-//! let final_value = mutex.lock().await;
-//! assert_eq!(*final_value, 3); // 0 + 1 + 2
+//! assert_eq!(*counter.lock().await, 3);
 //!
-//! #  }
+//! # }
 //! ```
-//!
-//! [`new`]: Mutex::new
-//! [`lock`]: Mutex::lock
 
 use std::cell::UnsafeCell;
 use std::fmt;
@@ -59,7 +74,7 @@ use std::sync::Arc;
 
 use crate::internal::semaphore;
 
-/// An async mutex for protecting shared data.
+/// An asynchronous mutex backed by Asyncband's fair semaphore.
 ///
 /// See the [module level documentation](self) for more.
 pub struct Mutex<T: ?Sized> {
@@ -96,7 +111,7 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
 }
 
 impl<T> Mutex<T> {
-    /// Creates a new mutex in an unlocked state ready for use.
+    /// Wraps `t` in an unlocked mutex.
     ///
     /// # Examples
     ///
@@ -111,7 +126,7 @@ impl<T> Mutex<T> {
         Self { s, c }
     }
 
-    /// Consumes the mutex, returning the underlying data.
+    /// Unwraps the protected value.
     ///
     /// # Examples
     ///
@@ -128,17 +143,12 @@ impl<T> Mutex<T> {
 }
 
 impl<T: ?Sized> Mutex<T> {
-    /// Locks this mutex, causing the current task to yield until the lock has been acquired. When
-    /// the lock has been acquired, function returns a [`MutexGuard`].
-    ///
-    /// This method is async and will yield the current task if the mutex is currently held by
-    /// another task. When the mutex becomes available, the task will be woken up and given the
-    /// lock.
+    /// Waits for exclusive access and returns a borrowed guard.
     ///
     /// # Cancel safety
     ///
-    /// This method uses a queue to fairly distribute locks in the order they were requested.
-    /// Cancelling a call to `lock` makes you lose your place in the queue.
+    /// Waiters enter the mutex's fair queue. Dropping this future before it completes removes the
+    /// waiter, so retrying starts again at the back of the queue.
     ///
     /// # Examples
     ///
@@ -158,8 +168,7 @@ impl<T: ?Sized> Mutex<T> {
         MutexGuard { lock: self }
     }
 
-    /// Attempts to acquire the lock, and returns `None` if the lock is currently held somewhere
-    /// else.
+    /// Acquires the mutex without waiting, or returns `None` when it is already held.
     ///
     /// # Examples
     ///
@@ -180,22 +189,15 @@ impl<T: ?Sized> Mutex<T> {
         }
     }
 
-    /// Locks this mutex, causing the current task to yield until the lock has been acquired. When
-    /// the lock has been acquired, this returns an [`OwnedMutexGuard`].
+    /// Waits for exclusive access and returns a guard that owns this [`Arc`].
     ///
-    /// This method is async and will yield the current task if the mutex is currently held by
-    /// another task. When the mutex becomes available, the task will be woken up and given the
-    /// lock.
-    ///
-    /// This method is identical to [`Mutex::lock`], except that the returned guard references the
-    /// `Mutex` with an [`Arc`] rather than by borrowing it. Therefore, the `Mutex` must be
-    /// wrapped in an `Arc` to call this method, and the guard will live for the `'static` lifetime,
-    /// as it keeps the `Mutex` alive by holding an `Arc`.
+    /// The owned guard keeps the mutex alive instead of borrowing it, which allows the guard to be
+    /// moved wherever a `'static` value is required.
     ///
     /// # Cancel safety
     ///
-    /// This method uses a queue to fairly distribute locks in the order they were requested.
-    /// Cancelling a call to `lock_owned` makes you lose your place in the queue.
+    /// Waiters enter the mutex's fair queue. Dropping this future before it completes removes the
+    /// waiter, so retrying starts again at the back of the queue.
     ///
     /// # Examples
     ///
@@ -217,13 +219,9 @@ impl<T: ?Sized> Mutex<T> {
         OwnedMutexGuard { lock: self }
     }
 
-    /// Attempts to acquire the lock, and returns `None` if the lock is currently held somewhere
-    /// else.
+    /// Acquires the mutex without waiting and returns a guard that owns this [`Arc`].
     ///
-    /// This method is identical to [`Mutex::try_lock`], except that the returned guard references
-    /// the `Mutex` with an [`Arc`] rather than by borrowing it. Therefore, the `Mutex` must be
-    /// wrapped in an `Arc` to call this method, and the guard will live for the `'static` lifetime,
-    /// as it keeps the `Mutex` alive by holding an `Arc`.
+    /// Returns `None` when another guard currently holds the mutex.
     ///
     /// # Examples
     ///
@@ -246,10 +244,10 @@ impl<T: ?Sized> Mutex<T> {
         }
     }
 
-    /// Returns a mutable reference to the underlying data.
+    /// Borrows the protected value mutably without locking.
     ///
-    /// Since this call borrows the `Mutex` mutably, no actual locking needs to take place: the
-    /// mutable borrow statically guarantees no locks exist.
+    /// The exclusive borrow of the mutex already prevents any guard from existing at the same
+    /// time.
     ///
     /// # Examples
     ///
@@ -265,14 +263,10 @@ impl<T: ?Sized> Mutex<T> {
     }
 }
 
-/// RAII structure used to release the exclusive lock on a mutex when dropped.
+/// A borrowed proof of exclusive access to a [`Mutex`].
 ///
-/// This structure is created by the [`lock`] and [`try_lock`] methods on [`Mutex`].
-///
-/// [`lock`]: Mutex::lock
-/// [`try_lock`]: Mutex::try_lock
-///
-/// See the [module level documentation](self) for more.
+/// [`Mutex::lock`] and [`Mutex::try_lock`] create this guard. It dereferences to the protected
+/// value and returns its single semaphore permit when dropped.
 ///
 /// # Variance
 ///
@@ -290,7 +284,7 @@ impl<T: ?Sized> Mutex<T> {
 ///     guard
 /// }
 /// ```
-#[must_use = "if unused the Mutex will immediately unlock"]
+#[must_use = "dropping the guard releases the mutex immediately"]
 pub struct MutexGuard<'a, T: ?Sized> {
     lock: &'a Mutex<T>,
 }
@@ -334,12 +328,10 @@ impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
 }
 
 impl<'a, T: ?Sized> MutexGuard<'a, T> {
-    /// Makes a new [`MappedMutexGuard`] for a component of the locked data.
+    /// Projects this guard to a mutable component of the protected value.
     ///
-    /// This operation cannot fail as the `MutexGuard` passed in already locked the mutex.
-    ///
-    /// This is an associated function that needs to be used as `MutexGuard::map(...)`. A method
-    /// would interfere with methods of the same name on the contents of the locked data.
+    /// The returned guard owns the same lock permit and releases it when dropped. Call this as
+    /// `MutexGuard::map(...)` so a method named `map` on `T` remains accessible through deref.
     ///
     /// # Examples
     ///
@@ -391,14 +383,10 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
         }
     }
 
-    /// Attempts to make a new [`MappedMutexGuard`] for a component of the locked data. The
-    /// original guard is returned if the closure returns `None`.
+    /// Attempts to project this guard to a mutable component of the protected value.
     ///
-    /// This operation cannot fail as the `MutexGuard` passed in already locked the mutex.
-    ///
-    /// This is an associated function that needs to be used as `MutexGuard::filter_map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// The original guard is returned when `f` returns `None`. Call this as
+    /// `MutexGuard::filter_map(...)` so a method with the same name on `T` remains accessible.
     ///
     /// # Examples
     ///
@@ -456,20 +444,11 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
     }
 }
 
-/// An owned handle to a held `Mutex`.
+/// A proof of exclusive access that owns an [`Arc`] containing its [`Mutex`].
 ///
-/// This guard is only available from a [`Mutex`] that is wrapped in an [`Arc`]. It is identical to
-/// [`MutexGuard`], except that rather than borrowing the `Mutex`, it clones the `Arc`, incrementing
-/// the reference count. This means that unlike `MutexGuard`, it will have the `'static` lifetime.
-///
-/// As long as you have this guard, you have exclusive access to the underlying `T`. The guard
-/// internally keeps a reference-counted pointer to the original `Mutex`, so even if the lock goes
-/// away, the guard remains valid.
-///
-/// The lock is automatically released whenever the guard is dropped, at which point `lock` will
-/// succeed yet again.
-///
-/// See the [module level documentation](self) for more.
+/// [`Mutex::lock_owned`] and [`Mutex::try_lock_owned`] create this guard. Owning the `Arc` lets the
+/// guard outlive the reference used to acquire it; dropping the guard releases the lock permit and
+/// its share of the `Arc`.
 ///
 /// # Variance
 ///
@@ -487,7 +466,7 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
 ///     guard
 /// }
 /// ```
-#[must_use = "if unused the Mutex will immediately unlock"]
+#[must_use = "dropping the guard releases the mutex immediately"]
 pub struct OwnedMutexGuard<T: ?Sized> {
     lock: Arc<Mutex<T>>,
 }
@@ -531,12 +510,10 @@ impl<T: ?Sized> DerefMut for OwnedMutexGuard<T> {
 }
 
 impl<T: ?Sized> OwnedMutexGuard<T> {
-    /// Makes a new [`OwnedMappedMutexGuard`] for a component of the locked data.
+    /// Projects this guard to a mutable component of the protected value.
     ///
-    /// This operation cannot fail as the `OwnedMutexGuard` passed in already locked the mutex.
-    ///
-    /// This is an associated function that needs to be used as `OwnedMutexGuard::map(...)`. A
-    /// method would interfere with methods of the same name on the contents of the locked data.
+    /// The returned guard retains the same `Arc` and lock permit. Call this as
+    /// `OwnedMutexGuard::map(...)` so a method named `map` on `T` remains accessible through deref.
     ///
     /// # Examples
     ///
@@ -584,14 +561,10 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
         }
     }
 
-    /// Attempts to make a new [`OwnedMappedMutexGuard`] for a component of the locked data. The
-    /// original guard is returned if the closure returns `None`.
+    /// Attempts to project this guard to a mutable component of the protected value.
     ///
-    /// This operation cannot fail as the `OwnedMutexGuard` passed in already locked the mutex.
-    ///
-    /// This is an associated function that needs to be used as `OwnedMutexGuard::filter_map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// The original guard is returned when `f` returns `None`. Call this as
+    /// `OwnedMutexGuard::filter_map(...)` so a method with the same name on `T` remains accessible.
     ///
     /// # Examples
     ///
@@ -638,25 +611,11 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
     }
 }
 
-/// RAII structure used to release the exclusive lock on a mutex when dropped, for a mapped
-/// component of the locked data.
+/// A borrowed mutex guard projected to a mutable component of the protected value.
 ///
-/// This structure is created by the [`map`] and [`filter_map`] methods on [`MutexGuard`]. It allows
-/// you to hold a lock on a subfield of the protected data, enabling more fine-grained access
-/// control while maintaining the same locking semantics.
-///
-/// As long as you have this guard, you have exclusive access to the underlying `T`. The guard
-/// internally keeps a reference to the original mutex's semaphore, so the original lock is
-/// maintained until this guard is dropped.
-///
-/// `MappedMutexGuard` implements [`Send`] and [`Sync`]
-/// when the underlying data type supports these traits, allowing it to be used across task
-/// boundaries and shared between threads safely.
-///
-/// See the [module level documentation](self) for more.
-///
-/// [`map`]: MutexGuard::map
-/// [`filter_map`]: MutexGuard::filter_map
+/// [`MutexGuard::map`] and [`MutexGuard::filter_map`] create this guard. It retains the original
+/// semaphore permit while exposing only the projected component, and releases that permit when
+/// dropped.
 ///
 /// # Examples
 ///
@@ -711,7 +670,7 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
 ///     guard
 /// }
 /// ```
-#[must_use = "if unused the Mutex will immediately unlock"]
+#[must_use = "dropping the guard releases the mutex immediately"]
 pub struct MappedMutexGuard<'a, T: ?Sized> {
     /// Non-null pointer to the mapped data
     d: NonNull<T>,
@@ -766,12 +725,11 @@ impl<T: ?Sized> DerefMut for MappedMutexGuard<'_, T> {
 }
 
 impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
-    /// Makes a new [`MappedMutexGuard`] for a component of the locked data.
+    /// Projects an already mapped guard to a deeper mutable component.
     ///
-    /// This operation cannot fail as the `MappedMutexGuard` passed in already locked the mutex.
-    ///
-    /// This is an associated function that needs to be used as `MappedMutexGuard::map(...)`. A
-    /// method would interfere with methods of the same name on the contents of the locked data.
+    /// The returned guard retains the same lock permit. Call this as
+    /// `MappedMutexGuard::map(...)` so a method named `map` on `T` remains accessible through
+    /// deref.
     ///
     /// # Examples
     ///
@@ -828,14 +786,11 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
         }
     }
 
-    /// Attempts to make a new [`MappedMutexGuard`] for a component of the locked data. The
-    /// original guard is returned if the closure returns `None`.
+    /// Attempts to project an already mapped guard to a deeper mutable component.
     ///
-    /// This operation cannot fail as the `MappedMutexGuard` passed in already locked the mutex.
-    ///
-    /// This is an associated function that needs to be used as `MappedMutexGuard::filter_map(...)`.
-    /// A method would interfere with methods of the same name on the contents of the locked
-    /// data.
+    /// The original mapped guard is returned when `f` returns `None`. Call this as
+    /// `MappedMutexGuard::filter_map(...)` so a method with the same name on `T` remains
+    /// accessible.
     ///
     /// # Examples
     ///
@@ -890,28 +845,11 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
     }
 }
 
-/// An owned handle to a held `Mutex` for a mapped component of the locked data.
+/// An owned mutex guard projected to a mutable component of the protected value.
 ///
-/// This guard is only available from a [`Mutex`] that is wrapped in an [`Arc`]. It is similar to
-/// [`MappedMutexGuard`], except that rather than borrowing the `Mutex`, it clones the `Arc`,
-/// incrementing the reference count. This means that unlike `MappedMutexGuard`, it will have
-/// the `'static` lifetime.
-///
-/// This structure is created by the [`map`] and [`filter_map`] methods on [`OwnedMutexGuard`].
-/// It allows you to hold a lock on a subfield of the protected data, enabling more fine-grained
-/// access control while maintaining the same locking semantics.
-///
-/// As long as you have this guard, you have exclusive access to the underlying `U`. The guard
-/// internally keeps a reference-counted pointer to the original `Mutex`, so even if the lock goes
-/// away, the guard remains valid.
-///
-/// The lock is automatically released whenever the guard is dropped, at which point `lock` will
-/// succeed yet again.
-///
-/// See the [module level documentation](self) for more.
-///
-/// [`map`]: OwnedMutexGuard::map
-/// [`filter_map`]: OwnedMutexGuard::filter_map
+/// [`OwnedMutexGuard::map`] and [`OwnedMutexGuard::filter_map`] create this guard. It keeps the
+/// original mutex alive through an `Arc`, retains its lock permit, and exposes only the projected
+/// component until dropped.
 ///
 /// # Examples
 ///
@@ -952,7 +890,7 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
 ///     guard
 /// }
 /// ```
-#[must_use = "if unused the Mutex will immediately unlock"]
+#[must_use = "dropping the guard releases the mutex immediately"]
 pub struct OwnedMappedMutexGuard<T: ?Sized, U: ?Sized> {
     // This Arc acts as an ownership certificate, ensuring the Mutex remains valid
     // and the lock is not released
@@ -1013,13 +951,11 @@ impl<T: ?Sized, U: ?Sized> DerefMut for OwnedMappedMutexGuard<T, U> {
 }
 
 impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
-    /// Makes a new [`OwnedMappedMutexGuard`] for a component of the locked data.
+    /// Projects an owned mapped guard to a deeper mutable component.
     ///
-    /// This operation cannot fail as the `OwnedMappedMutexGuard` passed in already locked the
-    /// mutex.
-    ///
-    /// This is an associated function that needs to be used as `OwnedMappedMutexGuard::map(...)`. A
-    /// method would interfere with methods of the same name on the contents of the locked data.
+    /// The returned guard retains the same `Arc` and lock permit. Call this as
+    /// `OwnedMappedMutexGuard::map(...)` so a method named `map` on `U` remains accessible through
+    /// deref.
     ///
     /// # Examples
     ///
@@ -1073,15 +1009,11 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
         }
     }
 
-    /// Attempts to make a new [`OwnedMappedMutexGuard`] for a component of the locked data. The
-    /// original guard is returned if the closure returns `None`.
+    /// Attempts to project an owned mapped guard to a deeper mutable component.
     ///
-    /// This operation cannot fail as the `OwnedMappedMutexGuard` passed in already locked the
-    /// mutex.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `OwnedMappedMutexGuard::filter_map(...)`. A method would interfere with methods of the same
-    /// name on the contents of the locked data.
+    /// The original mapped guard is returned when `f` returns `None`. Call this as
+    /// `OwnedMappedMutexGuard::filter_map(...)` so a method with the same name on `U` remains
+    /// accessible through deref.
     ///
     /// # Examples
     ///
