@@ -207,6 +207,10 @@ each local file containing those portions and the corresponding upstream
 source paths. Modifications made for Apache Asyncband are licensed under the
 Apache License, Version 2.0, unless otherwise noted.
 
+In this section, "derived", "adapted", and "ported" identify incorporated
+source code. "Inspired" and "informed" identify independent implementations
+that draw on external designs or APIs.
+
 Tokio
 
 Portions of asyncband/src/mutex/mod.rs are derived from Tokio 1.41.0:
@@ -240,6 +244,9 @@ is followed by its upstream source path or paths:
 The exact Tokio 1.42.0 revision is:
 
   https://github.com/tokio-rs/tokio/tree/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync
+
+Asyncband's RwLock accepts any NonZeroUsize as max_readers instead of Tokio's
+restricted range.
 
 The panic-recovery behavior in asyncband/src/internal/atomic_waker.rs was
 informed by Tokio's AtomicWaker implementation at:
@@ -303,6 +310,9 @@ The exact upstream revision is:
 
 The oneshot crate is licensed under Apache-2.0 or MIT. Apache Asyncband uses
 the Apache-2.0 option for the incorporated portions.
+
+Asyncband does not provide the upstream crate's synchronized receive
+operations and simplifies the incorporated implementation accordingly.
 
 Portions of asyncband/src/internal/atomic_waker.rs are derived from futures-rs
 0.3.34 at the following exact revision and source path:
@@ -370,34 +380,66 @@ The exact upstream revision is:
 
   https://github.com/fast/fastpool/tree/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool
 
-Fastpool is a reimplementation of Deadpool. No Deadpool source is incorporated
-into Apache Asyncband through Fastpool. Fastpool is licensed under Apache-2.0,
-and its source carries the following copyright notice:
+Asyncband retains Fastpool's runtime-agnostic design and caller-side timeout
+composition. Fastpool is licensed under Apache-2.0, and its source carries the
+following copyright notice:
 
   Copyright 2025 FastLabs Developers
 
 DESIGN PROVENANCE WITHOUT INCORPORATED THIRD-PARTY SOURCE
 
-For completeness, the following implementations acknowledge external designs
-or APIs but do not incorporate source from those projects. These
-acknowledgements do not change the Apache-2.0 licensing of the files:
+The following implementations were informed by external designs or APIs but
+do not incorporate source from those projects. They remain licensed under
+Apache-2.0.
 
-  barrier::Barrier
-    std::sync::Barrier
-    tokio::sync::Barrier
-  condvar::Condvar
-    std::sync::Condvar
-    async_std::sync::Condvar
-  latch::Latch
-    https://github.com/mirromutth/latches
-  once::OnceCell
-    tokio::sync::OnceCell
-  once::OnceMap
-    https://github.com/astral-sh/uv/tree/main/crates/uv-once-map
-  semaphore::Semaphore
-    tokio::sync::Semaphore
-  waitgroup::WaitGroup
-    https://github.com/laizy/waitgroup-rs
+barrier::Barrier is inspired by std::sync::Barrier and tokio::sync::Barrier:
 
-HISTORY.md describes the design relationship and implementation differences
-for these acknowledgements in more detail.
+  https://doc.rust-lang.org/std/sync/struct.Barrier.html
+  https://docs.rs/tokio/latest/tokio/sync/struct.Barrier.html
+
+Asyncband uses a separate implementation based on its internal WaitSet
+primitive.
+
+condvar::Condvar is inspired by std::sync::Condvar and
+async_std::sync::Condvar:
+
+  https://doc.rust-lang.org/std/sync/struct.Condvar.html
+  https://docs.rs/async-std/latest/async_std/sync/struct.Condvar.html
+
+Asyncband uses a fair FIFO waiter queue and standard non-buffered notification
+semantics.
+
+latch::Latch is inspired by latches:
+
+  https://github.com/mirromutth/latches
+
+Asyncband uses a separate implementation based on its internal CountdownState
+primitive.
+
+once::OnceCell has an API informed by tokio::sync::OnceCell:
+
+  https://docs.rs/tokio/latest/tokio/sync/struct.OnceCell.html
+
+Asyncband uses an independent implementation based on its semaphore and value
+storage.
+
+once::OnceMap is inspired by uv-once-map:
+
+  https://github.com/astral-sh/uv/tree/936e6cdc42f44365e087a4ba7148238afc090b0b/crates/uv-once-map
+
+Asyncband redesigns both the interface and implementation.
+
+semaphore::Semaphore has an API informed by tokio::sync::Semaphore:
+
+  https://docs.rs/tokio/latest/tokio/sync/struct.Semaphore.html
+
+Asyncband uses an independent waiter queue and permit accounting. It omits
+close, avoids Tokio's fixed maximum-permit constant, and provides operations
+such as reduce_permits for Asyncband's use cases.
+
+waitgroup::WaitGroup is inspired by waitgroup-rs:
+
+  https://github.com/laizy/waitgroup-rs
+
+Asyncband treats every cloned handle as an RAII participant and supports
+cancellable multi-observer waits.

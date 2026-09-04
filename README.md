@@ -133,10 +133,6 @@ The policy is that the minimum Rust version required to use this crate can be in
 
 ## License and Trademarks
 
-This project is licensed under [Apache License, Version 2.0](LICENSE); the license file also identifies incorporated third-party works and their terms.
+This project is licensed under [Apache License, Version 2.0](LICENSE); the license file also records incorporated third-party works, their terms, and external designs that informed independent Asyncband implementations.
 
 Apache Asyncband, Asyncband, and Apache are either registered trademarks or trademarks of The Apache Software Foundation in the United States and/or other countries.
-
-## History
-
-See [HISTORY.md](HISTORY.md) for the external implementations that informed Asyncband's APIs.

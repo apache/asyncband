@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug fixes
 
-* Preserve applicable third-party licensing and copyright notices on derived source files, and document exact upstream-to-local provenance mappings.
+* Preserve applicable third-party licensing and copyright notices on derived source files, and centralize exact provenance mappings and design acknowledgements in `LICENSE`.
 
 ## v0.7.1
 
