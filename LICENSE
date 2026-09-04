@@ -330,22 +330,25 @@ The Apache License, Version 2.0, reproduced above, applies to the upstream
 portions identified below. Where an upstream project offers a choice of
 Apache-2.0 or MIT, Apache Asyncband uses the Apache-2.0 option.
 
-Portions of the following files are derived or adapted from the oneshot crate.
+Portions of the following files are derived or adapted from oneshot v0.1.11.
+This is the version that Asyncband originally incorporated, before oneshot split
+its channel implementation across sender, receiver, channel, and state modules.
 Each local path is followed by its upstream source path or paths:
 
   asyncband/src/oneshot/mod.rs
     src/lib.rs
   asyncband/src/oneshot/receiver.rs
     src/lib.rs
+    src/errors.rs
   asyncband/src/oneshot/sender.rs
     src/lib.rs
+    src/errors.rs
   asyncband/src/oneshot/tests.rs
     tests/helpers/mod.rs
     tests/helpers/waker.rs
   tests-integration/tests/oneshot_test/main.rs
     tests/async.rs
     tests/future.rs
-    tests/miri.rs
     tests/sync.rs
   tests-integration/tests/oneshot_test/support.rs
     tests/helpers/mod.rs
@@ -353,7 +356,7 @@ Each local path is followed by its upstream source path or paths:
 
 The exact upstream revision is:
 
-  https://github.com/faern/oneshot/tree/83fd0864be7289067ce96cc79cd96c0928742979
+  https://github.com/faern/oneshot/tree/25274e995ee0a702b3e9e1ac81e577f8c3ce0892
 
 The oneshot crate is licensed under Apache-2.0 or MIT. Apache Asyncband uses
 the Apache-2.0 option for the incorporated portions.
