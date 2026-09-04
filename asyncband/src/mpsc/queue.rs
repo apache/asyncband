@@ -26,7 +26,7 @@ use std::sync::atomic::fence;
 
 use crate::internal::mutex::Mutex;
 
-pub(super) struct UnboundedQueue<T> {
+pub struct UnboundedQueue<T> {
     inner: Mutex<UnboundedInner<T>>,
 }
 
@@ -37,20 +37,20 @@ struct UnboundedInner<T> {
     receiver_alive: bool,
 }
 
-pub(super) struct UnboundedConsumer<T> {
+pub struct UnboundedConsumer<T> {
     local: Mutex<VecDeque<T>>,
 }
 
 // The consumer never relies on a pinned location for its local queue or queued values.
 impl<T> Unpin for UnboundedConsumer<T> {}
 
-pub(super) enum PushError<T> {
+pub enum PushError<T> {
     Full(T),
     Disconnected(T),
 }
 
 impl<T> UnboundedQueue<T> {
-    pub(super) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             inner: Mutex::new(UnboundedInner {
                 messages: VecDeque::new(),
@@ -59,7 +59,7 @@ impl<T> UnboundedQueue<T> {
         }
     }
 
-    pub(super) fn push(&self, value: T) -> Result<(), PushError<T>> {
+    pub fn push(&self, value: T) -> Result<(), PushError<T>> {
         let mut inner = self.inner.lock();
         if !inner.receiver_alive {
             return Err(PushError::Disconnected(value));
@@ -68,7 +68,7 @@ impl<T> UnboundedQueue<T> {
         Ok(())
     }
 
-    pub(super) fn pop(&self, consumer: &UnboundedConsumer<T>) -> Option<T> {
+    pub fn pop(&self, consumer: &UnboundedConsumer<T>) -> Option<T> {
         let mut local = consumer.local.lock();
         if local.is_empty() {
             let mut inner = self.inner.lock();
@@ -77,7 +77,7 @@ impl<T> UnboundedQueue<T> {
         local.pop_front()
     }
 
-    pub(super) fn disconnect_receiver(&self, consumer: &UnboundedConsumer<T>) {
+    pub fn disconnect_receiver(&self, consumer: &UnboundedConsumer<T>) {
         let (local, shared) = {
             let mut local = consumer.local.lock();
             let mut inner = self.inner.lock();
@@ -89,14 +89,14 @@ impl<T> UnboundedQueue<T> {
 }
 
 impl<T> UnboundedConsumer<T> {
-    pub(super) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             local: Mutex::new(VecDeque::new()),
         }
     }
 }
 
-pub(super) struct BoundedQueue<T> {
+pub struct BoundedQueue<T> {
     slots: Box<[Slot<T>]>,
     head: CachePadded<AtomicUsize>,
     tail: CachePadded<AtomicUsize>,
@@ -105,7 +105,29 @@ pub(super) struct BoundedQueue<T> {
     mark_bit: usize,
 }
 
-#[repr(align(64))]
+// Use conservative architecture estimates, not a guarantee about every CPU's cache line.
+// Keep 128 bytes for large ARM/PowerPC lines and adjacent-line prefetching on x86-64,
+// 256 bytes for s390x, and at least 64 bytes elsewhere.
+#[cfg_attr(target_arch = "s390x", repr(align(256)))]
+#[cfg_attr(
+    any(
+        target_arch = "aarch64",
+        target_arch = "arm64ec",
+        target_arch = "powerpc64",
+        target_arch = "x86_64",
+    ),
+    repr(align(128))
+)]
+#[cfg_attr(
+    not(any(
+        target_arch = "s390x",
+        target_arch = "aarch64",
+        target_arch = "arm64ec",
+        target_arch = "powerpc64",
+        target_arch = "x86_64",
+    )),
+    repr(align(64))
+)]
 struct CachePadded<T>(T);
 
 impl<T> std::ops::Deref for CachePadded<T> {
@@ -132,7 +154,7 @@ impl<T> std::panic::UnwindSafe for Slot<T> {}
 impl<T> std::panic::RefUnwindSafe for Slot<T> {}
 
 impl<T> BoundedQueue<T> {
-    pub(super) fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         assert!(capacity <= usize::MAX / 4, "mpsc capacity is too large");
         let mark_bit = (capacity + 1).next_power_of_two();
         let one_lap = mark_bit * 2;
@@ -152,7 +174,7 @@ impl<T> BoundedQueue<T> {
         }
     }
 
-    pub(super) fn try_push(&self, value: T) -> Result<(), PushError<T>> {
+    pub fn try_push(&self, value: T) -> Result<(), PushError<T>> {
         let mut tail = self.tail.load(Ordering::Relaxed);
         let mut backoff = 0;
         loop {
@@ -193,7 +215,7 @@ impl<T> BoundedQueue<T> {
         }
     }
 
-    pub(super) fn pop(&self) -> Option<T> {
+    pub fn pop(&self) -> Option<T> {
         let mut head = self.head.load(Ordering::Relaxed);
         let mut backoff = 0;
         loop {
@@ -225,7 +247,7 @@ impl<T> BoundedQueue<T> {
         }
     }
 
-    pub(super) fn disconnect_receiver(&self) {
+    pub fn disconnect_receiver(&self) {
         let tail = self.tail.fetch_or(self.mark_bit, Ordering::SeqCst) & !self.mark_bit;
         self.discard_until(tail);
     }
