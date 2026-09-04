@@ -4,10 +4,6 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-### Improvements
-
-* Reduce unbounded MPSC queue contention by receiving messages in local batches while preserving FIFO ordering and endpoint compatibility.
-
 ## v0.7.2
 
 ### Improvements
