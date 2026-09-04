@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// Portions ported from Fastpool 1.1.1.
-// Modified for Apache Asyncband.
-// See the project LICENSE file for the exact upstream revision and source path.
+// This file contains code ported from Fastpool 1.1.1.
+// The incorporated code has been modified for use in Apache Asyncband.
+// See the project LICENSE file for the exact upstream revision and source paths.
 
 use std::collections::VecDeque;
 

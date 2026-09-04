@@ -19,8 +19,8 @@
 builtin = "Apache-2.0-ASF"
 
 [files]
-# These third-party-derived sources retain the applicable upstream license and copyright notices
-# instead of carrying the standard ASF source header.
+# These third-party-derived files use the applicable upstream license and copyright notices instead
+# of the standard ASF source header.
 excludes = [
   "asyncband/src/blocking/parker.rs",
   "asyncband/src/mutex/mod.rs",

@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Portions of the polling loop are adapted from Pollster 1.0.1.
-// Reusing a thread-local Parker/Waker pair, with a fresh pair for recursive calls, is adapted from
-// futures-lite 2.6.1. Both incorporated upstream portions use the Apache-2.0 option.
-// Modified for Apache Asyncband.
+// This file contains a polling loop adapted from Pollster 1.0.1 and a thread-local Parker/Waker
+// reuse strategy adapted from futures-lite 2.6.1.
+// Asyncband uses the Apache-2.0 license option for code incorporated from both projects.
+// The incorporated code has been modified for use in Apache Asyncband.
 // See the project LICENSE file for the exact upstream revisions and source paths.
 
 //! Synchronous interoperability for runtime-agnostic futures.

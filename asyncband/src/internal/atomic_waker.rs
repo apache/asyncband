@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Portions derived from futures-rs 0.3.34, with panic recovery informed by Tokio 1.53.1. The
-// incorporated upstream portions use the Apache-2.0 option.
-// Modified for Apache Asyncband.
+// This file contains a state machine derived from futures-rs 0.3.34 and panic-recovery behavior
+// informed by Tokio 1.53.1.
+// Asyncband uses the Apache-2.0 license option for code incorporated from futures-rs.
+// The incorporated code has been modified for use in Apache Asyncband.
 // See the project LICENSE file for the exact upstream revisions and source paths.
 
 use std::cell::UnsafeCell;

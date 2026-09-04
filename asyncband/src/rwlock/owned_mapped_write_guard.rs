@@ -1,7 +1,7 @@
-// Portions derived from Tokio 1.42.0's RwLock implementation.
+// This file contains code derived from Tokio 1.42.0's RwLock implementation.
 // Copyright (c) Tokio Contributors
-// Licensed under the MIT License.
-// Modified for Apache Asyncband.
+// The derived code remains licensed under the MIT License.
+// The incorporated code has been modified for use in Apache Asyncband.
 // See the project LICENSE file for the exact upstream revision and source path.
 
 use std::fmt;

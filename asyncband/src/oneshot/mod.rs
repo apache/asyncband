@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Portions derived from the oneshot crate using its Apache-2.0 license option.
-// Modified for Apache Asyncband.
+// This file contains code derived from the oneshot crate.
+// Asyncband uses the upstream crate's Apache-2.0 license option for that code.
+// The incorporated code has been modified for use in Apache Asyncband.
 // See the project LICENSE file for the exact upstream revision and source path.
 
 //! A one-shot channel is used for sending a single message between asynchronous tasks. The

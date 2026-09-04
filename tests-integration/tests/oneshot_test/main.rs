@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Portions of these tests are adapted from the oneshot crate using its Apache-2.0 license option.
-// Modified for Apache Asyncband.
+// This file contains tests adapted from the oneshot crate.
+// Asyncband uses the upstream crate's Apache-2.0 license option for that code.
+// The incorporated code has been modified for use in Apache Asyncband.
 // See the project LICENSE file for the exact upstream revision and source paths.
 
 use std::future::Future;

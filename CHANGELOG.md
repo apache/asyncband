@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug fixes
 
-* Preserve third-party source licensing and copyright notices on derived Tokio, parking, and Fastpool files, and document exact upstream-to-local provenance mappings.
+* Preserve applicable third-party licensing and copyright notices on derived source files, and document exact upstream-to-local provenance mappings.
 
 ## v0.7.1
 

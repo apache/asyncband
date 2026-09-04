@@ -204,8 +204,8 @@ THIRD-PARTY WORKS
 
 This product contains portions of third-party works. The paths below identify
 each local file containing those portions and the corresponding upstream
-source. Modifications made for Apache Asyncband are licensed under the Apache
-License, Version 2.0, unless otherwise noted.
+source paths. Modifications made for Apache Asyncband are licensed under the
+Apache License, Version 2.0, unless otherwise noted.
 
 Tokio
 
@@ -237,12 +237,12 @@ is followed by its upstream source path or paths:
     tokio/src/sync/rwlock/owned_read_guard.rs
     tokio/src/sync/rwlock/owned_write_guard_mapped.rs
 
-The Tokio 1.42.0 sources above are available under:
+The exact Tokio 1.42.0 revision is:
 
   https://github.com/tokio-rs/tokio/tree/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync
 
-Portions of asyncband/src/internal/atomic_waker.rs are informed by Tokio's
-AtomicWaker implementation at:
+The panic-recovery behavior in asyncband/src/internal/atomic_waker.rs was
+informed by Tokio's AtomicWaker implementation at:
 
   https://github.com/tokio-rs/tokio/blob/75fef53d0a8590c2d1dbb63672aa7b7d1ef51155/tokio/src/sync/task/atomic_waker.rs
 
@@ -310,7 +310,8 @@ Portions of asyncband/src/internal/atomic_waker.rs are derived from futures-rs
   https://github.com/rust-lang/futures-rs/blob/705e6b5c0f06535b1aac1cb1989a172b3d45be8c/futures-core/src/task/__internal/atomic_waker.rs
 
 futures-rs is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
-Apache-2.0 option for the incorporated portions:
+Apache-2.0 option for the incorporated portions. The upstream source carries
+the following copyright notices:
 
   Copyright (c) 2016 Alex Crichton
   Copyright (c) 2017 The Tokio Authors
@@ -327,7 +328,8 @@ source path:
   https://github.com/smol-rs/futures-lite/blob/226ce18976d8714d6bd9700b61dcc81d7200bc9a/src/future.rs#L62-L91
 
 Pollster is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
-Apache-2.0 option for the incorporated portions:
+Apache-2.0 option for the incorporated portions. The upstream source carries
+the following copyright notice:
 
   Copyright (c) 2020-2021 Joshua Barretto
 
@@ -340,7 +342,8 @@ the following exact revision and source path:
   https://github.com/smol-rs/parking/blob/0ece32dbfd6cd1bc1510ede6ed56acb772edf83f/src/lib.rs#L327-L429
 
 parking is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
-Apache-2.0 option for the incorporated portions:
+Apache-2.0 option for the incorporated portions. The upstream source carries
+the following copyright notice:
 
   Copyright 2014-2020 The Rust Project Developers
 
@@ -368,7 +371,8 @@ The exact upstream revision is:
   https://github.com/fast/fastpool/tree/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool
 
 Fastpool is a reimplementation of Deadpool. No Deadpool source is incorporated
-into Apache Asyncband through Fastpool. Fastpool is licensed under Apache-2.0:
+into Apache Asyncband through Fastpool. Fastpool is licensed under Apache-2.0,
+and its source carries the following copyright notice:
 
   Copyright 2025 FastLabs Developers
 

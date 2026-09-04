@@ -1,7 +1,7 @@
-// Portions adapted from parking 2.2.1.
+// This file contains code adapted from parking 2.2.1.
 // Copyright 2014-2020 The Rust Project Developers
-// Licensed under Apache-2.0.
-// Modified for Apache Asyncband.
+// Asyncband uses the upstream project's Apache-2.0 license option for the incorporated code.
+// The incorporated code has been modified for use in Apache Asyncband.
 // See the project LICENSE file for the exact upstream revision and source path.
 
 use std::cell::Cell;
