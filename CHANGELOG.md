@@ -45,6 +45,7 @@ This non-ASF release was not approved by the Apache Incubator PMC, is not an act
 * Add opt-in `asyncband::once::LazyCell` for values that own one asynchronous initializer and preserve its in-flight future across caller cancellation.
 * Add opt-in bounded and unbounded runtime-agnostic object pools under `asyncband::pool`.
 * Add an opt-in `asyncband::blocking::FutureExt` bridge with `block_on` and `wait_timeout` methods for waiting on runtime-agnostic futures from synchronous code.
+* Add an opt-in runtime-agnostic `Phaser` with dynamic RAII participants, reusable phases, and cancellation-resilient arrival semantics.
 
 ### Bug fixes
 

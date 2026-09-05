@@ -58,6 +58,7 @@ once = ["semaphore"]
 once-cell = ["semaphore"]
 once-map = ["dep:hashbrown", "once-cell"]
 oneshot = []
+phaser = []
 pool = ["semaphore"]
 rwlock = []
 semaphore = []
@@ -73,6 +74,7 @@ hashbrown = { workspace = true, default-features = false, features = [
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+tokio-test = { workspace = true }
 
 [lints]
 workspace = true

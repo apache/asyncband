@@ -63,6 +63,7 @@
 //! |                            | [`Barrier`](barrier::Barrier)                 | `barrier`      | Synchronize a fixed number of participants at a reusable rendezvous.                                          |
 //! |                            | [`ManualResetEvent`](event::ManualResetEvent) | `event`        | Signal current and future waits until explicitly reset.                                                       |
 //! |                            | [`Latch`](latch::Latch)                       | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                            |
+//! |                            | [`Phaser`](phaser::Phaser)                    | `phaser`       | Coordinate repeated phases with a dynamic participant set.                                                    |
 //! |                            | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Dynamically register participants and wait until all have completed.                                          |
 //! |                            | [`Shutdown`](shutdown::Shutdown)              | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                            |
 //! | Work coalescing            | [`Once`](once::Once)                          | `once`         | Complete one asynchronous initialization; cancelled or panicked attempts may be retried.                       |
@@ -145,6 +146,8 @@ pub mod mutex;
 pub mod once;
 #[cfg(feature = "oneshot")]
 pub mod oneshot;
+#[cfg(feature = "phaser")]
+pub mod phaser;
 #[cfg(feature = "pool")]
 pub mod pool;
 #[cfg(feature = "rwlock")]
