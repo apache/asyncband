@@ -19,6 +19,7 @@ use std::cell::Cell;
 
 use asyncband::barrier::Barrier;
 use asyncband::broadcast;
+use asyncband::capacity_limiter;
 use asyncband::completion;
 use asyncband::condvar::Condvar;
 use asyncband::event::ManualResetEvent;
@@ -70,6 +71,11 @@ impl ManageObject for PoolManager {
 fn public_types_are_send_and_sync() {
     fn assert_send_and_sync<T: Send + Sync>() {}
 
+    assert_send_and_sync::<capacity_limiter::CapacityLimiter<String>>();
+    assert_send_and_sync::<capacity_limiter::Acquire<'static, String>>();
+    assert_send_and_sync::<capacity_limiter::Permit<'static, String>>();
+    assert_send_and_sync::<capacity_limiter::AlreadyBorrowed>();
+    assert_send_and_sync::<capacity_limiter::TryAcquireError>();
     assert_send_and_sync::<Barrier>();
     assert_send_and_sync::<Condvar>();
     assert_send_and_sync::<ManualResetEvent>();
@@ -138,6 +144,11 @@ fn movable_public_types_are_send() {
 fn public_types_are_unpin() {
     fn assert_unpin<T: Unpin>() {}
 
+    assert_unpin::<capacity_limiter::CapacityLimiter<String>>();
+    assert_unpin::<capacity_limiter::Acquire<'static, String>>();
+    assert_unpin::<capacity_limiter::Permit<'static, String>>();
+    assert_unpin::<capacity_limiter::AlreadyBorrowed>();
+    assert_unpin::<capacity_limiter::TryAcquireError>();
     assert_unpin::<Barrier>();
     assert_unpin::<Condvar>();
     assert_unpin::<ManualResetEvent>();

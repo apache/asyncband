@@ -15,28 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod barrier;
-mod blocking;
-mod broadcast;
-mod capacity_limiter;
-mod completion;
-mod condvar;
-mod event;
-mod latch;
-mod mpsc;
-mod mutex;
-mod once;
-mod once_map;
-mod oneshot;
-mod pool;
-mod rwlock;
-mod semaphore;
-mod shutdown;
-mod singleflight;
-mod support;
-mod waitgroup;
-mod watch;
+// Self-benchmarks with a bare semaphore as a cost reference. Identity tracking and permit
+// accounting differ, so the gap does not isolate the cost of hashing or any particular lock.
 
-fn main() {
-    divan::main();
-}
+mod contended;
+mod uncontended;

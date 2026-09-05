@@ -53,6 +53,7 @@ pub(crate) fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
 pub(crate) mod atomic_waker;
 
 #[cfg(any(
+    feature = "capacity-limiter",
     feature = "barrier",
     feature = "broadcast",
     feature = "event",
@@ -80,6 +81,7 @@ pub(crate) mod countdown;
 pub(crate) mod value_cell;
 
 #[cfg(any(
+    feature = "capacity-limiter",
     feature = "barrier",
     feature = "broadcast",
     feature = "event",
@@ -107,6 +109,7 @@ pub(crate) mod mutex;
 pub(crate) mod semaphore;
 
 #[cfg(any(
+    feature = "capacity-limiter",
     feature = "event",
     feature = "mpsc",
     feature = "mutex",

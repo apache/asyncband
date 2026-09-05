@@ -124,6 +124,8 @@ pub mod barrier;
 pub mod blocking;
 #[cfg(feature = "broadcast")]
 pub mod broadcast;
+#[cfg(feature = "capacity-limiter")]
+pub mod capacity_limiter;
 #[cfg(feature = "completion")]
 pub mod completion;
 #[cfg(feature = "condvar")]
