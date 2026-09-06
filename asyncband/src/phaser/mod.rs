@@ -45,6 +45,17 @@
 //!
 //! Consequently, dropping the last outstanding participant can advance the phase.
 //!
+//! # Synchronization
+//!
+//! A participant's arrival establishes a happens-before relationship between operations performed
+//! before the arrival and operations performed after a wait observes completion of that phase.
+//!
+//! This guarantee applies to both [`Phaser::wait_for_advance`] and
+//! [`PhaserParticipant::arrive_and_wait`], including waits that find the phase already completed.
+//!
+//! Arriving and deregistering, including when a participant is dropped, provides the same guarantee
+//! for operations preceding that arrival.
+//!
 //! # Cancellation
 //!
 //! Waiting with [`Phaser::wait_for_advance`] never registers a party or records an arrival.
@@ -90,6 +101,36 @@
 //! assert_eq!(first.arrive(), initial);
 //! assert_eq!(second.arrive_and_deregister(), initial);
 //! assert_ne!(phaser.phase(), initial);
+//! ```
+//!
+//! Participants can coordinate several rounds from separate tasks, using either combined or
+//! separate arrival and waiting:
+//!
+//! ```
+//! use std::sync::Arc;
+//!
+//! use asyncband::phaser::Phaser;
+//!
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() {
+//! let phaser = Arc::new(Phaser::new());
+//! let mut first = phaser.register();
+//! let mut second = phaser.register();
+//!
+//! let task = tokio::spawn(async move {
+//!     for _ in 0..3 {
+//!         // Finish this round's work before recording arrival.
+//!         let observed = first.arrive();
+//!         // Independent work can run here before waiting for the other party.
+//!         first.phaser().wait_for_advance(observed).await;
+//!     }
+//! });
+//!
+//! for _ in 0..3 {
+//!     second.arrive_and_wait().await;
+//! }
+//! task.await.unwrap();
+//! # }
 //! ```
 
 use std::fmt;
@@ -420,6 +461,15 @@ pub struct PhaserParticipant {
 }
 
 impl PhaserParticipant {
+    /// Returns the phaser this participant is registered with.
+    ///
+    /// This borrows the existing phaser without cloning its [`Arc`] or registering another party.
+    ///
+    /// Use this to call [`Phaser::wait_for_advance`] after a separate [`Self::arrive`] operation.
+    pub fn phaser(&self) -> &Phaser {
+        &self.phaser
+    }
+
     /// Arrives in the current phase without waiting for it to advance.
     ///
     /// Repeated calls in one phase return its identity without changing counts again.
