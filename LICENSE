@@ -258,13 +258,22 @@ The exact Tokio 1.42.0 revision is:
 
   https://github.com/tokio-rs/tokio/tree/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync
 
-Asyncband adapted RwLock to its own semaphore and guard model. Acquisition has
-no semaphore-close error, nonblocking methods return Option, and max_readers is
-any NonZeroUsize instead of Tokio's restricted range. Mapped read guards use
-separate borrowed and owned types rather than changing a type parameter on the
-original read guard. All mapped guards use filter_map naming, and mutable mapped
-guards carry explicit invariance. The local guard types release and downgrade
-permits through Asyncband's usize-based semaphore implementation.
+Asyncband retains semaphore-based fair scheduling and substantially rewrote
+RwLock's guard lifecycle. The private rwlock/access.rs implementation owns
+acquired permits in movable RAII tokens. Guards project data by transferring
+these tokens, with no manual destruction suppression or raw Arc extraction.
+Downgrading establishes a read token before releasing the other permits, so
+unwinding from a wake callback also releases the retained permit and ownership.
+The public documentation and examples were rewritten around access, projection,
+and owned lifetimes. The standard ASF source headers cover these substantial
+modifications contributed to Apache Asyncband; the incorporated Tokio-derived
+portions remain under the MIT License below.
+
+Acquisition has no semaphore-close error, nonblocking methods return Option,
+and max_readers accepts every NonZeroUsize. Mapped read guards use separate
+borrowed and owned types. All mapped guards use filter_map naming, and mutable
+mapped guards preserve invariance. The public guard types and FIFO ordering
+remain unchanged by the RAII rewrite.
 
 Portions of the following files originated from Tokio 1.47.0's OnceCell. Each
 local path is followed by its upstream source path:
