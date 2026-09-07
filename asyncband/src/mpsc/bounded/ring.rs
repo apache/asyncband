@@ -24,13 +24,9 @@ use std::sync::atomic::fence;
 use std::task::Poll;
 
 use crate::internal::cache_padded::CachePadded;
+use crate::mpsc::TrySendError;
 
-pub enum PushError<T> {
-    Full(T),
-    Disconnected(T),
-}
-
-pub struct BoundedQueue<T> {
+pub struct Ring<T> {
     slots: Box<[Slot<T>]>,
     head: CachePadded<AtomicUsize>,
     tail: CachePadded<AtomicUsize>,
@@ -54,7 +50,7 @@ unsafe impl<T: Send> Sync for Slot<T> {}
 impl<T> std::panic::UnwindSafe for Slot<T> {}
 impl<T> std::panic::RefUnwindSafe for Slot<T> {}
 
-impl<T> BoundedQueue<T> {
+impl<T> Ring<T> {
     pub fn new(capacity: usize) -> Self {
         assert!(capacity <= usize::MAX / 4, "mpsc capacity is too large");
         let mark_bit = (capacity + 1).next_power_of_two();
@@ -75,12 +71,12 @@ impl<T> BoundedQueue<T> {
         }
     }
 
-    pub fn try_push(&self, value: T) -> Result<(), PushError<T>> {
+    pub fn try_push(&self, value: T) -> Result<(), TrySendError<T>> {
         let mut tail = self.tail.load(Ordering::Relaxed);
         let mut backoff = 0;
         loop {
             if tail & self.mark_bit != 0 {
-                return Err(PushError::Disconnected(value));
+                return Err(TrySendError::Disconnected(value));
             }
 
             let index = tail & (self.mark_bit - 1);
@@ -106,7 +102,7 @@ impl<T> BoundedQueue<T> {
             } else if stamp.wrapping_add(self.one_lap) == tail.wrapping_add(1) {
                 fence(Ordering::SeqCst);
                 if self.head.load(Ordering::Relaxed).wrapping_add(self.one_lap) == tail {
-                    return Err(PushError::Full(value));
+                    return Err(TrySendError::Full(value));
                 }
                 tail = self.tail.load(Ordering::Relaxed);
             } else {
@@ -207,7 +203,7 @@ impl<T> BoundedQueue<T> {
     }
 }
 
-impl<T> Drop for BoundedQueue<T> {
+impl<T> Drop for Ring<T> {
     fn drop(&mut self) {
         let tail = self.tail.fetch_or(self.mark_bit, Ordering::SeqCst) & !self.mark_bit;
         // SAFETY: The queue is closed and its exclusive borrow rules out concurrent access.
@@ -223,16 +219,16 @@ mod tests {
     use std::task::Poll;
     use std::thread;
 
-    use super::BoundedQueue;
-    use super::PushError;
+    use super::Ring;
+    use super::TrySendError;
 
     #[test]
     fn bounded_queue_preserves_capacity_and_fifo_order() {
-        let queue = BoundedQueue::new(3);
+        let queue = Ring::new(3);
         for value in 0..3 {
             assert!(queue.try_push(value).is_ok());
         }
-        assert!(matches!(queue.try_push(3), Err(PushError::Full(3))));
+        assert!(matches!(queue.try_push(3), Err(TrySendError::Full(3))));
         for value in 0..3 {
             // SAFETY: This thread is the only consumer.
             assert_eq!(unsafe { queue.pop() }, Poll::Ready(Some(value)));
@@ -249,7 +245,7 @@ mod tests {
 
     #[test]
     fn bounded_queue_does_not_report_empty_behind_an_unpublished_head() {
-        let queue = BoundedQueue::new(2);
+        let queue = Ring::new(2);
 
         // Pause a synthetic producer after reserving and initializing slot 0, before publishing
         // its stamp. Another producer can finish sending into slot 1 in the meantime.
@@ -275,7 +271,7 @@ mod tests {
 
     #[test]
     fn bounded_queue_coordinates_multiple_producers() {
-        let queue = Arc::new(BoundedQueue::new(4));
+        let queue = Arc::new(Ring::new(4));
         let producers: Vec<_> = (0..2)
             .map(|producer| {
                 let queue = queue.clone();
@@ -285,11 +281,11 @@ mod tests {
                         loop {
                             match queue.try_push(value) {
                                 Ok(()) => break,
-                                Err(PushError::Full(returned)) => {
+                                Err(TrySendError::Full(returned)) => {
                                     value = returned;
                                     thread::yield_now();
                                 }
-                                Err(PushError::Disconnected(_)) => panic!("queue disconnected"),
+                                Err(TrySendError::Disconnected(_)) => panic!("queue disconnected"),
                             }
                         }
                     }
@@ -332,7 +328,7 @@ mod tests {
             AtomicUsize::new(0),
             AtomicUsize::new(0),
         ];
-        let queue = BoundedQueue::new(3);
+        let queue = Ring::new(3);
 
         // Positions: 0, 1, 2 (then tail wraps to 8).
         for counter in &drops[..3] {
