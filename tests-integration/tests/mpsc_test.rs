@@ -15,7 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::task::Context;
 use std::task::Poll;
+use std::task::RawWaker;
+use std::task::RawWakerVTable;
+use std::task::Wake;
+use std::task::Waker;
+use std::thread;
+use std::time::Duration;
 
 use asyncband::mpsc;
 use asyncband::mpsc::RecvError;
@@ -30,6 +41,177 @@ fn expect_ready<T>(poll: Poll<T>) -> T {
         Poll::Ready(value) => value,
         Poll::Pending => panic!("future should be ready"),
     }
+}
+
+struct HoldSender<S> {
+    _sender: S,
+}
+
+// This waker must own the sender so its final drop can break the tested reference cycle.
+#[allow(clippy::manual_noop_waker)]
+impl<S: Send + Sync> Wake for HoldSender<S> {
+    fn wake(self: Arc<Self>) {}
+}
+
+#[test]
+fn bounded_receiver_drop_releases_registered_waker() {
+    let (tx, mut rx) = mpsc::bounded::<()>(1);
+    let holder = Arc::new(HoldSender { _sender: tx });
+    let retained = Arc::downgrade(&holder);
+    let waker = Waker::from(holder);
+    assert!(
+        Box::pin(rx.recv())
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(waker);
+    drop(rx);
+    assert!(retained.upgrade().is_none());
+}
+
+#[test]
+fn unbounded_receiver_drop_releases_registered_waker() {
+    let (tx, mut rx) = mpsc::unbounded::<()>();
+    let holder = Arc::new(HoldSender { _sender: tx });
+    let retained = Arc::downgrade(&holder);
+    let waker = Waker::from(holder);
+    assert!(
+        Box::pin(rx.recv())
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(waker);
+    drop(rx);
+    assert!(retained.upgrade().is_none());
+}
+
+fn assert_completes_without_deadlock(test: impl FnOnce() + Send + 'static) {
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || {
+        test();
+        finished_tx.send(()).unwrap();
+    });
+    finished_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("waker callback did not finish");
+    worker.join().unwrap();
+}
+
+#[test]
+fn unbounded_wake_callback_can_send() {
+    struct SendOnWake(mpsc::UnboundedSender<usize>);
+
+    impl Wake for SendOnWake {
+        fn wake(self: Arc<Self>) {
+            self.0.send(2).unwrap();
+        }
+    }
+
+    assert_completes_without_deadlock(|| {
+        let (tx, mut rx) = mpsc::unbounded();
+        let waker = Waker::from(Arc::new(SendOnWake(tx.clone())));
+        assert!(
+            Box::pin(rx.recv())
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        tx.send(1).unwrap();
+        assert_eq!(rx.try_recv(), Ok(1));
+        assert_eq!(rx.try_recv(), Ok(2));
+    });
+}
+
+#[test]
+fn unbounded_replaced_and_disconnected_wakers_can_send() {
+    struct SendOnDrop {
+        sender: mpsc::UnboundedSender<usize>,
+        disconnected: bool,
+        drops: Arc<AtomicUsize>,
+    }
+
+    // The final waker drop must run a callback, even though waking itself does nothing.
+    #[allow(clippy::manual_noop_waker)]
+    impl Wake for SendOnDrop {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    impl Drop for SendOnDrop {
+        fn drop(&mut self) {
+            assert_eq!(self.sender.send(7).is_err(), self.disconnected);
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    assert_completes_without_deadlock(|| {
+        for disconnected in [false, true] {
+            let (tx, mut rx) = mpsc::unbounded();
+            let drops = Arc::new(AtomicUsize::new(0));
+            let waker = Waker::from(Arc::new(SendOnDrop {
+                sender: tx,
+                disconnected,
+                drops: drops.clone(),
+            }));
+            assert!(
+                Box::pin(rx.recv())
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            drop(waker);
+            if disconnected {
+                drop(rx);
+            } else {
+                // Replacing the waker can enqueue a message during this poll. Either immediate
+                // completion or a notified Pending is valid, but the message must not be lost.
+                let poll = poll_once(Box::pin(rx.recv()).as_mut());
+                if poll.is_pending() {
+                    assert_eq!(rx.try_recv(), Ok(7));
+                } else {
+                    assert_eq!(poll, Poll::Ready(Ok(7)));
+                }
+                assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+            }
+            assert_eq!(drops.load(Ordering::Relaxed), 1);
+        }
+    });
+}
+
+#[test]
+fn unbounded_waker_clone_rechecks_messages_sent_during_registration() {
+    unsafe fn clone_sender(data: *const ()) -> RawWaker {
+        let sender = data.cast::<mpsc::UnboundedSender<usize>>();
+        // SAFETY: Each raw waker owns an Arc to this sender; cloning borrows the live sender and
+        // then adds the strong reference owned by the returned waker.
+        unsafe {
+            (*sender).send(7).unwrap();
+            Arc::increment_strong_count(sender);
+        }
+        RawWaker::new(data, &VTABLE)
+    }
+
+    unsafe fn drop_sender(data: *const ()) {
+        // SAFETY: Consumes exactly the Arc reference owned by this raw waker.
+        drop(unsafe { Arc::from_raw(data.cast::<mpsc::UnboundedSender<usize>>()) });
+    }
+
+    static VTABLE: RawWakerVTable =
+        RawWakerVTable::new(clone_sender, drop_sender, |_| {}, drop_sender);
+
+    assert_completes_without_deadlock(|| {
+        let (tx, mut rx) = mpsc::unbounded::<usize>();
+        let data = Arc::into_raw(Arc::new(tx)).cast();
+        // SAFETY: The vtable manages one Arc reference per waker and the sender is Send + Sync.
+        let waker = unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) };
+        assert_eq!(
+            Box::pin(rx.recv())
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker)),
+            Poll::Ready(Ok(7))
+        );
+    });
 }
 
 #[test]
@@ -176,6 +358,44 @@ fn unbounded_try_recv_preserves_order_and_reports_state() {
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
 }
 
+#[test]
+fn cancelled_receive_does_not_consume_a_later_message() {
+    let (unbounded_tx, mut unbounded_rx) = mpsc::unbounded();
+    {
+        let mut receive = Box::pin(unbounded_rx.recv());
+        assert!(poll_once(receive.as_mut()).is_pending());
+    }
+    unbounded_tx.send(1).unwrap();
+    assert_eq!(unbounded_rx.try_recv(), Ok(1));
+
+    let (bounded_tx, mut bounded_rx) = mpsc::bounded(1);
+    {
+        let mut receive = Box::pin(bounded_rx.recv());
+        assert!(poll_once(receive.as_mut()).is_pending());
+    }
+    bounded_tx.try_send(2).unwrap();
+    assert_eq!(bounded_rx.try_recv(), Ok(2));
+}
+
+#[test]
+fn buffered_messages_are_drained_before_disconnection() {
+    let (unbounded_tx, mut unbounded_rx) = mpsc::unbounded();
+    unbounded_tx.send(1).unwrap();
+    unbounded_tx.send(2).unwrap();
+    drop(unbounded_tx);
+    assert_eq!(unbounded_rx.try_recv(), Ok(1));
+    assert_eq!(unbounded_rx.try_recv(), Ok(2));
+    assert_eq!(unbounded_rx.try_recv(), Err(TryRecvError::Disconnected));
+
+    let (bounded_tx, mut bounded_rx) = mpsc::bounded(2);
+    bounded_tx.try_send(3).unwrap();
+    bounded_tx.try_send(4).unwrap();
+    drop(bounded_tx);
+    assert_eq!(bounded_rx.try_recv(), Ok(3));
+    assert_eq!(bounded_rx.try_recv(), Ok(4));
+    assert_eq!(bounded_rx.try_recv(), Err(TryRecvError::Disconnected));
+}
+
 #[tokio::test]
 async fn send_recv_bounded() {
     let (tx, mut rx) = mpsc::bounded(1);
@@ -221,6 +441,51 @@ fn bounded_try_send_respects_capacity_and_order() {
         drop(tx);
         assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     }
+}
+
+#[test]
+fn bounded_try_recv_does_not_report_empty_after_completed_sends() {
+    const PRODUCERS: usize = 4;
+    const MESSAGES_PER_PRODUCER: usize = 16_384;
+    let (tx, mut rx) = mpsc::bounded(64);
+    let completed = AtomicUsize::new(0);
+    let mut premature_empty = 0;
+
+    thread::scope(|scope| {
+        for producer in 0..PRODUCERS {
+            let tx = tx.clone();
+            let completed = &completed;
+            scope.spawn(move || {
+                for sequence in 0..MESSAGES_PER_PRODUCER {
+                    loop {
+                        match tx.try_send((producer, sequence)) {
+                            Ok(()) => break,
+                            Err(TrySendError::Full(_)) => thread::yield_now(),
+                            Err(TrySendError::Disconnected(_)) => panic!("receiver is still alive"),
+                        }
+                    }
+                    completed.fetch_add(1, Ordering::Release);
+                }
+            });
+        }
+
+        let mut received = 0;
+        while received < PRODUCERS * MESSAGES_PER_PRODUCER {
+            // Once more sends have completed than messages received, Empty cannot be correct.
+            let has_completed_send = completed.load(Ordering::Acquire) > received;
+            match rx.try_recv() {
+                Ok(_) => received += 1,
+                Err(TryRecvError::Empty) => {
+                    premature_empty += usize::from(has_completed_send);
+                    thread::yield_now();
+                }
+                Err(TryRecvError::Disconnected) => panic!("original sender is still alive"),
+            }
+        }
+    });
+
+    // Drain and join before asserting so a failure cannot strand a producer on a full channel.
+    assert_eq!(premature_empty, 0);
 }
 
 #[tokio::test]

@@ -18,6 +18,8 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Barrier;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::thread::JoinHandle;
 
@@ -130,6 +132,69 @@ impl<C: ConcurrentMpsc> Drop for ConcurrentBatch<C> {
             if !panicking {
                 result.expect("benchmark producer panicked");
             }
+        }
+    }
+}
+
+// Reuse worker threads and channel storage so steady-state samples exclude thread creation.
+pub struct RepeatedBatch<C: ConcurrentMpsc> {
+    receiver: C::Receiver,
+    start: Arc<Barrier>,
+    stop: Arc<AtomicBool>,
+    workers: Vec<JoinHandle<()>>,
+}
+
+impl<C: ConcurrentMpsc> RepeatedBatch<C> {
+    pub fn new(producer_count: usize) -> Self {
+        assert_eq!(BATCH_MESSAGES % producer_count, 0);
+        let (sender, receiver) = C::channel();
+        let start = Arc::new(Barrier::new(producer_count + 1));
+        let stop = Arc::new(AtomicBool::new(false));
+        let messages_per_producer = BATCH_MESSAGES / producer_count;
+        let workers = (0..producer_count)
+            .map(|producer| {
+                let sender = sender.clone();
+                let start = start.clone();
+                let stop = stop.clone();
+                thread::spawn(move || {
+                    loop {
+                        start.wait();
+                        if stop.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let first = producer * messages_per_producer;
+                        for offset in 0..messages_per_producer {
+                            C::send(&sender, black_box(first + offset));
+                        }
+                    }
+                })
+            })
+            .collect();
+        drop(sender);
+        Self {
+            receiver,
+            start,
+            stop,
+            workers,
+        }
+    }
+
+    pub fn run(&mut self) -> usize {
+        self.start.wait();
+        let mut checksum = 0usize;
+        for _ in 0..BATCH_MESSAGES {
+            checksum = checksum.wrapping_add(C::recv(&mut self.receiver));
+        }
+        black_box(checksum)
+    }
+}
+
+impl<C: ConcurrentMpsc> Drop for RepeatedBatch<C> {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        self.start.wait();
+        for worker in self.workers.drain(..) {
+            worker.join().expect("benchmark producer panicked");
         }
     }
 }

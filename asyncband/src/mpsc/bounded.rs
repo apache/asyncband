@@ -19,15 +19,15 @@
 //! tasks with backpressure control.
 
 use std::fmt;
-use std::future::Future;
 use std::future::poll_fn;
-use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 
+use self::ring::Ring;
 use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
@@ -35,6 +35,8 @@ use super::TrySendError;
 use crate::internal::atomic_waker::AtomicWaker;
 use crate::internal::semaphore::Acquire;
 use crate::internal::semaphore::Semaphore;
+
+mod ring;
 
 /// Creates a bounded mpsc channel with room for `buffer` queued messages.
 ///
@@ -48,25 +50,23 @@ use crate::internal::semaphore::Semaphore;
 pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     assert!(buffer > 0, "mpsc bounded channel requires buffer > 0");
     let state = Arc::new(BoundedState {
+        buffer: Ring::new(buffer),
         senders: AtomicUsize::new(1),
-        tx_permits: Semaphore::new(0),
+        send_waiters: Semaphore::new(0),
         rx_waker: AtomicWaker::new(),
     });
-    let (sender, receiver) = std::sync::mpsc::sync_channel(buffer);
     let sender = BoundedSender {
         state: state.clone(),
-        sender: Some(sender),
     };
-    let receiver = BoundedReceiver {
-        state: state.clone(),
-        receiver: Some(receiver),
-    };
+    let receiver = BoundedReceiver { state };
     (sender, receiver)
 }
 
-struct BoundedState {
+struct BoundedState<T> {
+    buffer: Ring<T>,
     senders: AtomicUsize,
-    tx_permits: Semaphore,
+    // Notifications grant retries; only the ring determines whether buffer capacity is available.
+    send_waiters: Semaphore,
     rx_waker: AtomicWaker,
 }
 
@@ -74,8 +74,7 @@ struct BoundedState {
 ///
 /// Instances are created by the [`bounded`] function.
 pub struct BoundedSender<T> {
-    state: Arc<BoundedState>,
-    sender: Option<std::sync::mpsc::SyncSender<T>>,
+    state: Arc<BoundedState<T>>,
 }
 
 impl<T> Clone for BoundedSender<T> {
@@ -83,7 +82,6 @@ impl<T> Clone for BoundedSender<T> {
         self.state.senders.fetch_add(1, Ordering::Release);
         BoundedSender {
             state: self.state.clone(),
-            sender: self.sender.clone(),
         }
     }
 }
@@ -96,9 +94,6 @@ impl<T> fmt::Debug for BoundedSender<T> {
 
 impl<T> Drop for BoundedSender<T> {
     fn drop(&mut self) {
-        // Dropping the final underlying sender disconnects the channel.
-        drop(self.sender.take());
-
         match self.state.senders.fetch_sub(1, Ordering::AcqRel) {
             1 => {
                 // Wake the receiver so it can observe the channel's disconnected state.
@@ -142,7 +137,7 @@ impl<T> BoundedSender<T> {
                 };
 
                 loop {
-                    let poll = pin!(&mut self.acquire).poll(cx);
+                    let poll = self.acquire.poll_once(cx.waker());
 
                     value = match self.sender.try_send(value) {
                         Ok(()) => return Poll::Ready(Ok(())),
@@ -153,7 +148,7 @@ impl<T> BoundedSender<T> {
                     };
 
                     if poll.is_ready() {
-                        self.acquire = self.sender.state.tx_permits.poll_acquire(1);
+                        self.acquire = self.sender.state.send_waiters.poll_acquire(1);
                     } else {
                         self.value = Some(value);
                         return Poll::Pending;
@@ -162,7 +157,7 @@ impl<T> BoundedSender<T> {
             }
         }
 
-        let acquire = self.state.tx_permits.poll_acquire(1);
+        let acquire = self.state.send_waiters.poll_acquire(1);
         let mut send = SendState {
             sender: self,
             value: Some(value),
@@ -192,19 +187,9 @@ impl<T> BoundedSender<T> {
     /// assert_eq!(tx.try_send(30), Err(TrySendError::Disconnected(30)));
     /// ```
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        // INVARIANT: A shared borrow of the endpoint cannot overlap its destructor.
-        let sender = self.sender.as_ref().unwrap();
-        match sender.try_send(value) {
-            Ok(()) => {
-                self.state.rx_waker.wake();
-
-                Ok(())
-            }
-            Err(std::sync::mpsc::TrySendError::Full(value)) => Err(TrySendError::Full(value)),
-            Err(std::sync::mpsc::TrySendError::Disconnected(value)) => {
-                Err(TrySendError::Disconnected(value))
-            }
-        }
+        self.state.buffer.try_push(value)?;
+        self.state.rx_waker.wake();
+        Ok(())
     }
 }
 
@@ -212,13 +197,8 @@ impl<T> BoundedSender<T> {
 ///
 /// Instances are created by the [`bounded`] function.
 pub struct BoundedReceiver<T> {
-    state: Arc<BoundedState>,
-    receiver: Option<std::sync::mpsc::Receiver<T>>,
+    state: Arc<BoundedState<T>>,
 }
-
-/// The only `!Sync` field `receiver` is protected by `&mut self` in `recv` and `try_recv`.
-/// That is, `BoundedReceiver` can only be accessed by one thread at a time.
-unsafe impl<T: Send> Sync for BoundedReceiver<T> {}
 
 impl<T> fmt::Debug for BoundedReceiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -228,13 +208,20 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        drop(self.receiver.take());
-        self.state.tx_permits.notify_all();
+        // A registered waker may own a sender; release it to break that ownership cycle.
+        let receiver_waker = self.state.rx_waker.take();
+        // SAFETY: Only this non-cloneable receiver consumes the queue, through exclusive borrows.
+        unsafe { self.state.buffer.disconnect_receiver() };
+        self.state.send_waiters.notify_all();
+        drop(receiver_waker);
     }
 }
 
 impl<T> BoundedReceiver<T> {
-    /// Attempts to receive the next queued value without waiting.
+    /// Attempts to receive the next queued value without waiting for a new message.
+    ///
+    /// A producer already publishing a queued message may delay this call until publication
+    /// finishes. Use [`Self::recv`] to yield asynchronously while publication is in progress.
     ///
     /// Receiving a value frees one buffer slot. An empty channel returns [`TryRecvError::Empty`]
     /// while at least one sender remains, or [`TryRecvError::Disconnected`] after every sender has
@@ -257,16 +244,31 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        // INVARIANT: A mutable borrow of the endpoint cannot overlap its destructor.
-        let receiver = self.receiver.as_ref().unwrap();
-        match receiver.try_recv() {
-            Ok(v) => {
-                self.state.tx_permits.release_if_nonempty(1);
-                Ok(v)
+        loop {
+            if let Poll::Ready(result) = self.try_recv_once() {
+                return result;
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(TryRecvError::Disconnected),
-            Err(std::sync::mpsc::TryRecvError::Empty) => Err(TryRecvError::Empty),
+            std::thread::yield_now();
         }
+    }
+
+    fn try_recv_once(&mut self) -> Poll<Result<T, TryRecvError>> {
+        // SAFETY: Only this non-cloneable receiver consumes the queue, through exclusive borrows.
+        let value = if let Some(value) = ready!(unsafe { self.state.buffer.pop() }) {
+            value
+        } else if self.state.senders.load(Ordering::Acquire) == 0 {
+            // The final sender can enqueue between the first empty observation and decrementing
+            // the sender count, so check the queue again before reporting disconnection.
+            // SAFETY: The exclusive receiver borrow still guarantees a single consumer.
+            let Some(value) = ready!(unsafe { self.state.buffer.pop() }) else {
+                return Poll::Ready(Err(TryRecvError::Disconnected));
+            };
+            value
+        } else {
+            return Poll::Ready(Err(TryRecvError::Empty));
+        };
+        self.state.send_waiters.release_if_nonempty(1);
+        Poll::Ready(Ok(value))
     }
 
     /// Waits for and receives the next value, freeing one buffer slot.
@@ -303,16 +305,20 @@ impl<T> BoundedReceiver<T> {
     }
 
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
-        match self.try_recv() {
-            Ok(v) => Poll::Ready(Ok(v)),
-            Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
-            Err(TryRecvError::Empty) => {
+        match self.try_recv_once() {
+            Poll::Ready(Ok(v)) => Poll::Ready(Ok(v)),
+            Poll::Ready(Err(TryRecvError::Disconnected)) => {
+                Poll::Ready(Err(RecvError::Disconnected))
+            }
+            Poll::Pending | Poll::Ready(Err(TryRecvError::Empty)) => {
                 self.state.rx_waker.register(cx.waker());
 
-                match self.try_recv() {
-                    Ok(v) => Poll::Ready(Ok(v)),
-                    Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
-                    Err(TryRecvError::Empty) => Poll::Pending,
+                match self.try_recv_once() {
+                    Poll::Ready(Ok(v)) => Poll::Ready(Ok(v)),
+                    Poll::Ready(Err(TryRecvError::Disconnected)) => {
+                        Poll::Ready(Err(RecvError::Disconnected))
+                    }
+                    Poll::Pending | Poll::Ready(Err(TryRecvError::Empty)) => Poll::Pending,
                 }
             }
         }

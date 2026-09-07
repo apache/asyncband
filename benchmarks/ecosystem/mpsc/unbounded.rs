@@ -27,6 +27,7 @@ use super::adapters::UnboundedMpsc;
 use super::support::BATCH_MESSAGES;
 use super::support::ConcurrentBatch;
 use super::support::PRODUCER_COUNTS;
+use super::support::RepeatedBatch;
 use super::support::Unbounded;
 use crate::support::bench_context;
 
@@ -62,4 +63,93 @@ fn concurrent<C: UnboundedMpsc>(bencher: Bencher, producer_count: usize) {
     bencher
         .with_inputs(|| ConcurrentBatch::<Unbounded<C>>::new(producer_count))
         .bench_local_refs(|batch| batch.run());
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    args = [32, 1024, 65_536],
+    sample_count = 20,
+    sample_size = 1,
+)]
+fn burst_drain<C: UnboundedMpsc>(bencher: Bencher, messages: usize) {
+    repeated_bursts::<C, _, _>(bencher, messages, 0, || usize::MAX);
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    consts = [64, 1024],
+    args = [32, 1024, 65_536],
+    sample_count = 20,
+    sample_size = 1,
+)]
+fn burst_drain_inline<C: UnboundedMpsc<[u8; SIZE]>, const SIZE: usize>(
+    bencher: Bencher,
+    messages: usize,
+) {
+    repeated_bursts::<C, _, _>(bencher, messages, 0, || [1; SIZE]);
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    args = [32, 1024, 65_536],
+    sample_count = 20,
+    sample_size = 1,
+)]
+fn burst_drain_boxed<C: UnboundedMpsc<Box<[u8; 1024]>>>(bencher: Bencher, messages: usize) {
+    // Include payload allocation and destruction to compare the complete boxed-message lifecycle.
+    repeated_bursts::<C, _, _>(bencher, messages, 0, || Box::new([1; 1024]));
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    args = [1024, 65_536],
+    sample_count = 20,
+    sample_size = 1,
+)]
+fn burst_with_backlog<C: UnboundedMpsc>(bencher: Bencher, messages: usize) {
+    repeated_bursts::<C, _, _>(bencher, messages, messages / 2, || usize::MAX);
+}
+
+fn repeated_bursts<C: UnboundedMpsc<T>, T, F: Fn() -> T>(
+    bencher: Bencher,
+    messages: usize,
+    backlog: usize,
+    make_value: F,
+) {
+    // Keep one channel alive across samples so allocation reuse and reclamation are measured.
+    let (sender, mut receiver) = C::channel();
+    for _ in 0..backlog {
+        C::send(&sender, make_value());
+    }
+    let mut run = || {
+        for _ in 0..messages {
+            C::send(&sender, black_box(make_value()));
+        }
+        for _ in 0..messages {
+            black_box(C::try_recv(&mut receiver));
+        }
+    };
+    // Measure recurring bursts after the initial allocation, including a deliberately retained
+    // backlog where requested. Do not require an extra empty receive to trigger reclamation.
+    run();
+    bencher.counter(ItemsCount::new(messages)).bench_local(run);
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    args = PRODUCER_COUNTS,
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn sustained<C: UnboundedMpsc>(bencher: Bencher, producer_count: usize) {
+    let mut batch = RepeatedBatch::<Unbounded<C>>::new(producer_count);
+    batch.run();
+    bencher.bench_local(|| batch.run());
+}
+
+#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
+fn clone_drop_sender<C: UnboundedMpsc>(bencher: Bencher) {
+    let (sender, _receiver) = C::channel();
+    bencher.bench_local(|| drop(black_box(sender.clone())));
 }

@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Bug fixes
+
+* Release MPSC receiver wakers when the receiver is dropped, avoiding retained tasks and ownership cycles when a waker holds a sender.
+
+### Improvements
+
+* Reduce unbounded MPSC synchronization overhead by transferring messages in batches and coordinating receiver notifications with queued messages; release large empty batch allocations while retaining small buffers for reuse.
+
 ## v0.7.2
 
 ### Improvements

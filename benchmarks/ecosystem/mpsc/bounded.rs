@@ -29,6 +29,7 @@ use super::support::BOUNDED_CAPACITY;
 use super::support::Bounded;
 use super::support::ConcurrentBatch;
 use super::support::PRODUCER_COUNTS;
+use super::support::RepeatedBatch;
 use crate::support::bench_context;
 
 #[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
@@ -63,4 +64,23 @@ fn concurrent<C: BoundedMpsc>(bencher: Bencher, producer_count: usize) {
     bencher
         .with_inputs(|| ConcurrentBatch::<Bounded<C>>::new(producer_count))
         .bench_local_refs(|batch| batch.run());
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    args = PRODUCER_COUNTS,
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn sustained<C: BoundedMpsc>(bencher: Bencher, producer_count: usize) {
+    let mut batch = RepeatedBatch::<Bounded<C>>::new(producer_count);
+    batch.run();
+    bencher.bench_local(|| batch.run());
+}
+
+#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
+fn clone_drop_sender<C: BoundedMpsc>(bencher: Bencher) {
+    let (sender, _receiver) = C::channel(BOUNDED_CAPACITY);
+    bencher.bench_local(|| drop(black_box(sender.clone())));
 }

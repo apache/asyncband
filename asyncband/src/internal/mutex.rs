@@ -34,4 +34,8 @@ impl<T> Mutex<T> {
     pub fn lock(&self) -> std::sync::MutexGuard<'_, T> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    pub fn get_mut(&mut self) -> &mut T {
+        self.0.get_mut().unwrap_or_else(PoisonError::into_inner)
+    }
 }

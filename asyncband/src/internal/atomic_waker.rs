@@ -210,8 +210,10 @@ impl AtomicWaker {
         }
     }
 
+    /// Removes the registered waker if this call acquires the slot. A concurrent registration or
+    /// wake may instead take responsibility for notifying it.
     #[inline]
-    fn take(&self) -> Option<Waker> {
+    pub fn take(&self) -> Option<Waker> {
         // ORDERING: When this reads WAITING, Acquire receives the registered waker published by the
         // previous owner. Release publishes the condition update that the caller performed before
         // calling wake, including when a registering thread already owns the slot.

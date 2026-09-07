@@ -70,6 +70,9 @@ pub(crate) mod atomic_waker;
 #[allow(dead_code)]
 pub(crate) mod arena;
 
+#[cfg(feature = "mpsc")]
+pub(crate) mod cache_padded;
+
 #[cfg(any(feature = "latch", feature = "once"))]
 pub(crate) mod countdown;
 
@@ -92,6 +95,8 @@ pub(crate) mod value_cell;
     feature = "waitgroup",
     feature = "watch",
 ))]
+// Some primitives use only shared access, leaving `Mutex::get_mut` unused.
+#[allow(dead_code)]
 pub(crate) mod mutex;
 
 #[cfg(any(
