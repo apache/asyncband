@@ -27,6 +27,7 @@ use super::adapters::UnboundedMpsc;
 use super::support::BATCH_MESSAGES;
 use super::support::ConcurrentBatch;
 use super::support::PRODUCER_COUNTS;
+use super::support::RepeatedBatch;
 use super::support::Unbounded;
 use crate::support::bench_context;
 
@@ -132,4 +133,23 @@ fn repeated_bursts<C: UnboundedMpsc<T>, T, F: Fn() -> T>(
     // backlog where requested. Do not require an extra empty receive to trigger reclamation.
     run();
     bencher.counter(ItemsCount::new(messages)).bench_local(run);
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    args = PRODUCER_COUNTS,
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn sustained<C: UnboundedMpsc>(bencher: Bencher, producer_count: usize) {
+    let mut batch = RepeatedBatch::<Unbounded<C>>::new(producer_count);
+    batch.run();
+    bencher.bench_local(|| batch.run());
+}
+
+#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
+fn clone_drop_sender<C: UnboundedMpsc>(bencher: Bencher) {
+    let (sender, _receiver) = C::channel();
+    bencher.bench_local(|| drop(black_box(sender.clone())));
 }
