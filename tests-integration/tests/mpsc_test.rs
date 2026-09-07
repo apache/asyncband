@@ -29,6 +29,7 @@ use std::task::RawWakerVTable;
 use std::task::Wake;
 use std::task::Waker;
 use std::thread;
+#[cfg(not(miri))]
 use std::time::Duration;
 
 use asyncband::mpsc;
@@ -96,9 +97,13 @@ fn assert_completes_without_deadlock(test: impl FnOnce() + Send + 'static) {
         test();
         finished_tx.send(()).unwrap();
     });
+    #[cfg(not(miri))]
     finished_rx
         .recv_timeout(Duration::from_secs(10))
         .expect("waker callback did not finish");
+    // Miri detects deadlock itself; its interpretation time must not determine test success.
+    #[cfg(miri)]
+    finished_rx.recv().expect("waker callback did not finish");
     worker.join().unwrap();
 }
 
@@ -333,6 +338,7 @@ fn unbounded_waker_clone_rechecks_messages_sent_during_registration() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 fn unbounded_collects_from_multiple_producers() {
     let (tx, mut rx) = mpsc::unbounded();
 
@@ -354,6 +360,7 @@ fn unbounded_collects_from_multiple_producers() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn select_streams() {
     let (tx1, mut rx1) = mpsc::unbounded::<i32>();
     let (tx2, mut rx2) = mpsc::unbounded::<i32>();
@@ -431,6 +438,7 @@ async fn select_streams() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn send_recv_unbounded() {
     let (tx, mut rx) = mpsc::unbounded::<i32>();
 
@@ -447,6 +455,7 @@ async fn send_recv_unbounded() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn async_send_recv_unbounded() {
     let (tx, mut rx) = mpsc::unbounded();
 
@@ -515,6 +524,7 @@ fn buffered_messages_are_drained_before_disconnection() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn send_recv_bounded() {
     let (tx, mut rx) = mpsc::bounded(1);
 
@@ -526,6 +536,7 @@ async fn send_recv_bounded() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn async_send_recv_bounded() {
     let (tx, mut rx) = mpsc::bounded(1);
 
@@ -564,7 +575,7 @@ fn bounded_try_send_respects_capacity_and_order() {
 #[test]
 fn bounded_try_recv_does_not_report_empty_after_completed_sends() {
     const PRODUCERS: usize = 4;
-    const MESSAGES_PER_PRODUCER: usize = 16_384;
+    const MESSAGES_PER_PRODUCER: usize = if cfg!(miri) { 64 } else { 16_384 };
     let (tx, mut rx) = mpsc::bounded(64);
     let completed = AtomicUsize::new(0);
     let mut premature_empty = 0;
@@ -607,6 +618,7 @@ fn bounded_try_recv_does_not_report_empty_after_completed_sends() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn try_send_after_disconnection_bounded() {
     let (tx, rx) = mpsc::bounded(1);
 
@@ -617,6 +629,7 @@ async fn try_send_after_disconnection_bounded() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn send_after_disconnection_bounded() {
     let (tx, mut rx) = mpsc::bounded(1);
 
