@@ -170,3 +170,161 @@ fn lazy_cell_resumes_a_pinned_attempt_in_place() {
     let mut force = pin!(LazyCell::force_pin(lazy.as_ref()));
     assert_eq!(poll_once(force.as_mut()), Poll::Ready(&42));
 }
+
+#[test]
+fn rwlock_projection_panics_release_access() {
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
+
+    let lock = Arc::new(RwLock::new(vec![1, 2]));
+
+    // Exercise every guard representation. Some closures mutate before unwinding: the value
+    // must remain accessible afterward, and the lock must neither leak access nor be poisoned.
+    macro_rules! check {
+        ($project:expr) => {
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| {
+                    drop($project);
+                }))
+                .is_err()
+            );
+            assert!(lock.try_write().is_some());
+            assert_eq!(Arc::strong_count(&lock), 1);
+        };
+    }
+
+    check!(RwLockReadGuard::map::<(), _>(
+        lock.try_read().unwrap(),
+        |_| panic!("projection")
+    ));
+    check!(RwLockWriteGuard::filter_map::<(), _>(
+        lock.try_write().unwrap(),
+        |values| {
+            values.push(3);
+            panic!("projection");
+        }
+    ));
+    check!(OwnedRwLockReadGuard::filter_map::<(), _>(
+        lock.clone().try_read_owned().unwrap(),
+        |_| panic!("projection")
+    ));
+    check!(OwnedRwLockWriteGuard::map::<(), _>(
+        lock.clone().try_write_owned().unwrap(),
+        |_| panic!("projection")
+    ));
+
+    let read = RwLockReadGuard::map(lock.try_read().unwrap(), Vec::as_slice);
+    check!(MappedRwLockReadGuard::filter_map::<(), _>(
+        read,
+        |_| panic!("projection")
+    ));
+    let write = RwLockWriteGuard::map(lock.try_write().unwrap(), Vec::as_mut_slice);
+    check!(MappedRwLockWriteGuard::map::<(), _>(write, |_| panic!(
+        "projection"
+    )));
+    let read = OwnedRwLockReadGuard::map(lock.clone().try_read_owned().unwrap(), Vec::as_slice);
+    check!(OwnedMappedRwLockReadGuard::map::<(), _>(read, |_| panic!(
+        "projection"
+    )));
+    let write =
+        OwnedRwLockWriteGuard::map(lock.clone().try_write_owned().unwrap(), Vec::as_mut_slice);
+    check!(OwnedMappedRwLockWriteGuard::filter_map::<(), _>(
+        write,
+        |_| panic!("projection")
+    ));
+
+    assert_eq!(*lock.try_read().unwrap(), [1, 2, 3]);
+}
+
+#[test]
+fn rwlock_failed_projection_keeps_access_and_mutations() {
+    let lock = Arc::new(RwLock::new(vec![Some(1)]));
+    let guard = lock.try_write().unwrap();
+    let guard = RwLockWriteGuard::filter_map(guard, |values| {
+        values.push(None);
+        None::<&mut i32>
+    })
+    .unwrap_err();
+    assert!(lock.try_read().is_none());
+    let mut slot = RwLockWriteGuard::map(guard, |values| &mut values[1]);
+    slot = MappedRwLockWriteGuard::filter_map(slot, Option::as_mut).unwrap_err();
+    *slot = Some(2);
+    let slot = slot.downgrade();
+    let slot = MappedRwLockReadGuard::filter_map(slot, |_| None::<&i32>).unwrap_err();
+    assert_eq!(*slot, Some(2));
+    assert!(lock.try_write().is_none());
+    drop(slot);
+
+    let guard = lock.clone().try_write_owned().unwrap();
+    let slot = OwnedRwLockWriteGuard::map(guard, |values| &mut values[1]);
+    let mut slot = OwnedMappedRwLockWriteGuard::filter_map(slot, |_| None::<&mut i32>).unwrap_err();
+    *slot = Some(3);
+    let slot = slot.downgrade();
+    let slot = OwnedMappedRwLockReadGuard::filter_map(slot, |_| None::<&i32>).unwrap_err();
+    let weak = Arc::downgrade(&lock);
+    drop(lock);
+    assert_eq!(*slot, Some(3));
+    drop(slot);
+    assert!(weak.upgrade().is_none());
+}
+
+#[test]
+fn rwlock_downgrade_unwind_releases_retained_access() {
+    use std::num::NonZeroUsize;
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
+    use std::task::Wake;
+
+    struct PanicOnWake;
+    impl Wake for PanicOnWake {
+        fn wake(self: Arc<Self>) {
+            panic!("wake during downgrade");
+        }
+    }
+
+    fn check(lock: &RwLock<(usize, usize)>, downgrade: impl FnOnce()) {
+        let mut reader = Box::pin(lock.read());
+        let waker = Waker::from(Arc::new(PanicOnWake));
+        assert!(
+            reader
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        assert!(catch_unwind(AssertUnwindSafe(downgrade)).is_err());
+        // The queued reader received its permit before waking. After it releases that permit,
+        // no read access from the failed downgrade may remain.
+        let Poll::Ready(reader) = poll_once(reader.as_mut()) else {
+            panic!("reader was not granted access");
+        };
+        drop(reader);
+        assert!(lock.try_write().is_some());
+    }
+
+    for limit in [2, usize::MAX] {
+        let lock = Arc::new(RwLock::with_max_readers(
+            (1, 2),
+            NonZeroUsize::new(limit).unwrap(),
+        ));
+        let guard = lock.try_write().unwrap();
+        check(&lock, || {
+            drop(guard.downgrade());
+        });
+        let guard = RwLockWriteGuard::map(lock.try_write().unwrap(), |value| &mut value.0);
+        check(&lock, || {
+            drop(guard.downgrade());
+        });
+        let guard = lock.clone().try_write_owned().unwrap();
+        check(&lock, || {
+            drop(guard.downgrade());
+        });
+        assert_eq!(Arc::strong_count(&lock), 1);
+        let guard = OwnedRwLockWriteGuard::map(lock.clone().try_write_owned().unwrap(), |value| {
+            &mut value.1
+        });
+        check(&lock, || {
+            drop(guard.downgrade());
+        });
+        assert_eq!(Arc::strong_count(&lock), 1);
+    }
+}

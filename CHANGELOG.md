@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Bug fixes
+
+* Release the retained read access and owned lock reference when a waiter wake callback panics during `RwLock` guard downgrade.
+
 ## v0.7.2
 
 ### Improvements

@@ -1,97 +1,99 @@
-// This file contains code derived from Tokio 1.42.0's RwLock implementation.
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+// Portions of the guard API originated from Tokio 1.42.0's RwLock implementation.
 // Copyright (c) Tokio Contributors
-// The derived code remains licensed under the MIT License.
-// The incorporated code has been modified for use in Apache Asyncband.
+// The Tokio-derived portions remain licensed under the MIT License.
+// Asyncband replaced guard-local destruction and manual ownership transfers with movable RAII
+// access tokens. Projection moves the token, and downgrade establishes a read token before waking
+// waiters. The public documentation and examples describe Asyncband's access and projection model.
 // Upstream sources:
 // https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock/owned_read_guard.rs
 // https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock/owned_write_guard_mapped.rs
 
 use std::fmt;
-use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
 use crate::rwlock::RwLock;
+use crate::rwlock::access::ReadAccess;
 
-/// An owned read guard projected to one component of the protected value.
+/// Shared access to a projection of a locked value kept alive by an `Arc`.
 ///
-/// [`OwnedRwLockReadGuard::map`](crate::rwlock::OwnedRwLockReadGuard::map) and
-/// [`OwnedRwLockReadGuard::filter_map`](crate::rwlock::OwnedRwLockReadGuard::filter_map) create
-/// this guard. It keeps the lock alive and its read access active while exposing only the projected
-/// component.
-///
-/// # Examples
-///
-/// ```
-/// # #[tokio::main]
-/// # async fn main() {
-/// use std::sync::Arc;
-///
-/// use asyncband::rwlock::OwnedRwLockReadGuard;
-/// use asyncband::rwlock::RwLock;
-///
-/// #[derive(Debug)]
-/// struct User {
-///     id: u32,
-///     profile: UserProfile,
-/// }
-///
-/// #[derive(Debug)]
-/// struct UserProfile {
-///     email: String,
-///     name: String,
-/// }
-///
-/// let user = User {
-///     id: 1,
-///     profile: UserProfile {
-///         email: "user@example.com".to_owned(),
-///         name: "Alice".to_owned(),
-///     },
-/// };
-///
-/// let rwlock = Arc::new(RwLock::new(user));
-/// let guard = rwlock.read_owned().await;
-/// let profile_guard = OwnedRwLockReadGuard::map(guard, |user| &user.profile);
-///
-/// // Now we can only access the user's profile
-/// assert_eq!(profile_guard.email, "user@example.com");
-/// # }
-/// ```
+/// Use [`OwnedRwLockReadGuard::map`](crate::rwlock::OwnedRwLockReadGuard::map) to select a
+/// component. Dropping the guard releases its access.
 #[must_use = "dropping the guard releases its read access immediately"]
 pub struct OwnedMappedRwLockReadGuard<T: ?Sized, U: ?Sized> {
-    // This Arc acts as an ownership certificate, ensuring the RwLock remains valid
-    // and the lock is not released
-    lock: Arc<RwLock<T>>,
-    // This NonNull pointer precisely points to the subfield U, telling us which
-    // memory location we can operate on
-    d: NonNull<U>,
-    variance: PhantomData<fn() -> U>,
+    data: NonNull<U>,
+    access: ReadAccess<Arc<RwLock<T>>>,
 }
 
-// SAFETY: Arc<RwLock<T>> is Send when T: Send + Sync, and we only provide shared access (&U)
-// through deref(), so U: Sync is sufficient for safe cross-thread transfer.
-unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Sync> Send for OwnedMappedRwLockReadGuard<T, U> {}
+pub fn new<T: ?Sized, U: ?Sized>(
+    data: NonNull<U>,
+    access: ReadAccess<Arc<RwLock<T>>>,
+) -> OwnedMappedRwLockReadGuard<T, U> {
+    OwnedMappedRwLockReadGuard { data, access }
+}
 
-// SAFETY: OwnedMappedRwLockReadGuard can be safely shared between threads when T: Send + Sync and
-// U: Sync. Multiple threads can hold &OwnedMappedRwLockReadGuard and call deref() concurrently,
-// which only returns &U.
+// SAFETY: The Arc keeps T alive across threads; the projection only exposes shared access to U.
+unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Sync> Send for OwnedMappedRwLockReadGuard<T, U> {}
+// SAFETY: A shared guard reference only exposes &U, and the Arc is safe to share.
 unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Sync> Sync for OwnedMappedRwLockReadGuard<T, U> {}
 
-impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockReadGuard<T, U> {
-    pub(crate) fn new(d: NonNull<U>, lock: Arc<RwLock<T>>) -> Self {
-        Self {
-            d,
-            lock,
-            variance: PhantomData,
-        }
+impl<T: ?Sized, U: ?Sized> Deref for OwnedMappedRwLockReadGuard<T, U> {
+    type Target = U;
+
+    fn deref(&self) -> &U {
+        // SAFETY: The access token holds shared access and keeps the projection valid.
+        unsafe { self.data.as_ref() }
     }
 }
-impl<T: ?Sized, U: ?Sized> Drop for OwnedMappedRwLockReadGuard<T, U> {
-    fn drop(&mut self) {
-        self.lock.s.release(1);
+
+impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockReadGuard<T, U> {
+    /// Selects a component while retaining the same lock access.
+    ///
+    /// The closure runs while the original guard is held. If it panics, that guard is released.
+    /// Call this as `OwnedMappedRwLockReadGuard::map(guard, project)` to avoid shadowing methods of
+    /// the value.
+    pub fn map<V: ?Sized, F>(orig: Self, project: F) -> OwnedMappedRwLockReadGuard<T, V>
+    where
+        F: FnOnce(&U) -> &V,
+    {
+        let data = NonNull::from(project(&*orig));
+        new(data, orig.access)
+    }
+
+    /// Selects a component, or returns the still-held original guard when the closure returns
+    /// `None`.
+    ///
+    /// A panic in the closure releases the guard. Call this as
+    /// `OwnedMappedRwLockReadGuard::filter_map(guard, project)`.
+    pub fn filter_map<V: ?Sized, F>(
+        orig: Self,
+        project: F,
+    ) -> Result<OwnedMappedRwLockReadGuard<T, V>, Self>
+    where
+        F: FnOnce(&U) -> Option<&V>,
+    {
+        let Some(data) = project(&*orig).map(NonNull::from) else {
+            return Err(orig);
+        };
+        Ok(new(data, orig.access))
     }
 }
 
@@ -104,167 +106,5 @@ impl<T: ?Sized, U: ?Sized + fmt::Debug> fmt::Debug for OwnedMappedRwLockReadGuar
 impl<T: ?Sized, U: ?Sized + fmt::Display> fmt::Display for OwnedMappedRwLockReadGuard<T, U> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&**self, f)
-    }
-}
-
-impl<T: ?Sized, U: ?Sized> Deref for OwnedMappedRwLockReadGuard<T, U> {
-    type Target = U;
-    fn deref(&self) -> &Self::Target {
-        // SAFETY: we hold the read lock and the NonNull pointer is valid for the guard's lifetime
-        unsafe { self.d.as_ref() }
-    }
-}
-
-impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockReadGuard<T, U> {
-    /// Projects this guard to a deeper shared component.
-    ///
-    /// The returned guard keeps the same read access active. Call this as
-    /// `OwnedMappedRwLockReadGuard::map(...)` so a method named `map` on `U` remains accessible.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// use std::sync::Arc;
-    ///
-    /// use asyncband::rwlock::OwnedMappedRwLockReadGuard;
-    /// use asyncband::rwlock::OwnedRwLockReadGuard;
-    /// use asyncband::rwlock::RwLock;
-    ///
-    /// #[derive(Debug)]
-    /// struct ServerStats {
-    ///     uptime: u64,
-    ///     connection_info: ConnectionInfo,
-    /// }
-    ///
-    /// #[derive(Debug)]
-    /// struct ConnectionInfo {
-    ///     active_connections: u32,
-    ///     max_connections: u32,
-    /// }
-    ///
-    /// let stats = ServerStats {
-    ///     uptime: 86400, // 1 day in seconds
-    ///     connection_info: ConnectionInfo {
-    ///         active_connections: 150,
-    ///         max_connections: 1000,
-    ///     },
-    /// };
-    ///
-    /// let rwlock = Arc::new(RwLock::new(stats));
-    /// let guard = rwlock.read_owned().await;
-    /// // Map to connection info for cross-task monitoring
-    /// let conn_guard = OwnedRwLockReadGuard::map(guard, |stats| &stats.connection_info);
-    /// // Further map to active connections count
-    /// let active_guard = OwnedMappedRwLockReadGuard::map(conn_guard, |conn| &conn.active_connections);
-    ///
-    /// assert_eq!(*active_guard, 150);
-    /// # }
-    /// ```
-    pub fn map<V, F>(orig: Self, f: F) -> OwnedMappedRwLockReadGuard<T, V>
-    where
-        F: FnOnce(&U) -> &V,
-        V: ?Sized,
-    {
-        // SAFETY: orig.d is a valid NonNull<U> pointer that was created from a valid reference
-        // when the original OwnedMappedRwLockReadGuard was constructed. The guard guarantees shared
-        // access to the data through the rwlock, so dereferencing is safe.
-        let d = NonNull::from(f(unsafe { orig.d.as_ref() }));
-        let orig = ManuallyDrop::new(orig);
-
-        // SAFETY: The original guard is wrapped in `ManuallyDrop` and will not be dropped.
-        // This allows us to safely move the `Arc` out of it and transfer ownership to the new
-        // guard.
-        let lock = unsafe { std::ptr::read(&orig.lock) };
-
-        OwnedMappedRwLockReadGuard::new(d, lock)
-    }
-
-    /// Attempts to project this guard to a deeper shared component.
-    ///
-    /// The original guard is returned when `f` returns `None`. Call this as
-    /// `OwnedMappedRwLockReadGuard::filter_map(...)` so a method with the same name on `U` remains
-    /// accessible.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// use std::collections::HashMap;
-    /// use std::sync::Arc;
-    ///
-    /// use asyncband::rwlock::OwnedMappedRwLockReadGuard;
-    /// use asyncband::rwlock::OwnedRwLockReadGuard;
-    /// use asyncband::rwlock::RwLock;
-    ///
-    /// #[derive(Debug)]
-    /// struct Cache {
-    ///     entries: HashMap<String, CacheEntry>,
-    ///     stats: CacheStats,
-    /// }
-    ///
-    /// #[derive(Debug)]
-    /// struct CacheEntry {
-    ///     data: String,
-    ///     metadata: Option<String>,
-    /// }
-    ///
-    /// #[derive(Debug)]
-    /// struct CacheStats {
-    ///     hits: u64,
-    /// }
-    ///
-    /// let mut entries = HashMap::new();
-    /// entries.insert(
-    ///     "key1".to_owned(),
-    ///     CacheEntry {
-    ///         data: "cached_data".to_owned(),
-    ///         metadata: Some("important".to_owned()),
-    ///     },
-    /// );
-    ///
-    /// let cache = Cache {
-    ///     entries,
-    ///     stats: CacheStats { hits: 42 },
-    /// };
-    ///
-    /// let rwlock = Arc::new(RwLock::new(cache));
-    /// let guard = rwlock.read_owned().await;
-    ///
-    /// // Map to a specific cache entry for cross-task reading
-    /// let entry_guard = OwnedRwLockReadGuard::map(guard, |cache| cache.entries.get("key1").unwrap());
-    ///
-    /// // Try to map to the metadata if it exists
-    /// let metadata_guard =
-    ///     OwnedMappedRwLockReadGuard::filter_map(entry_guard, |entry| entry.metadata.as_ref())
-    ///         .expect("entry should have metadata");
-    ///
-    /// assert_eq!(&*metadata_guard, "important");
-    /// # }
-    /// ```
-    pub fn filter_map<V, F>(orig: Self, f: F) -> Result<OwnedMappedRwLockReadGuard<T, V>, Self>
-    where
-        F: FnOnce(&U) -> Option<&V>,
-        V: ?Sized,
-    {
-        // SAFETY: orig.d is a valid NonNull<U> pointer that was created from a valid reference
-        // when the original OwnedMappedRwLockReadGuard was constructed. The guard guarantees shared
-        // access to the data through the rwlock, so dereferencing is safe.
-        match f(unsafe { orig.d.as_ref() }) {
-            Some(d) => {
-                let d = NonNull::from(d);
-                let orig = ManuallyDrop::new(orig);
-
-                // SAFETY: The original guard is wrapped in `ManuallyDrop` and will not be dropped.
-                // This allows us to safely move the `Arc` out of it and transfer ownership to the
-                // new guard.
-                let lock = unsafe { std::ptr::read(&orig.lock) };
-
-                Ok(OwnedMappedRwLockReadGuard::new(d, lock))
-            }
-            None => Err(orig),
-        }
     }
 }

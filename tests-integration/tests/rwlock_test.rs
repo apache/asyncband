@@ -296,3 +296,65 @@ async fn queued_writer_precedes_a_later_reader() {
     let reader_guard = assert_ready!(poll_once(later_reader.as_mut()));
     assert_eq!(*reader_guard, 100);
 }
+
+#[test]
+fn cancelling_a_writer_returns_reserved_reader_slots() {
+    let lock = RwLock::with_max_readers(0, NonZeroUsize::new(2).unwrap());
+    let first = lock.try_read().unwrap();
+    let mut writer = Box::pin(lock.write());
+    let mut reader = Box::pin(lock.read());
+    assert_pending!(poll_once(writer.as_mut()));
+    assert_pending!(poll_once(reader.as_mut()));
+    assert!(lock.try_read().is_none());
+
+    drop(writer);
+    let second = assert_ready!(poll_once(reader.as_mut()));
+    assert!(lock.try_read().is_none());
+    drop(first);
+    drop(second);
+    assert!(lock.try_write().is_some());
+}
+
+#[test]
+fn cancelling_granted_owned_requests_releases_access_and_ownership() {
+    let lock = Arc::new(RwLock::new(0));
+    let writer = lock.try_write().unwrap();
+    let mut reader = Box::pin(lock.clone().read_owned());
+    assert_pending!(poll_once(reader.as_mut()));
+    drop(writer);
+    // Cancel after the semaphore granted access, before a guard is constructed by the future.
+    drop(reader);
+    assert_eq!(Arc::strong_count(&lock), 1);
+
+    let reader = lock.try_read().unwrap();
+    let mut writer = Box::pin(lock.clone().write_owned());
+    assert_pending!(poll_once(writer.as_mut()));
+    drop(reader);
+    drop(writer);
+    assert_eq!(Arc::strong_count(&lock), 1);
+    assert!(lock.try_write().is_some());
+}
+
+#[test]
+fn downgrade_preserves_queue_order_at_reader_limits() {
+    for limit in [1, 3, usize::MAX] {
+        let lock = RwLock::with_max_readers(0, NonZeroUsize::new(limit).unwrap());
+        let writer = lock.try_write().unwrap();
+        let mut next_writer = Box::pin(lock.write());
+        let mut reader = Box::pin(lock.read());
+        assert_pending!(poll_once(next_writer.as_mut()));
+        assert_pending!(poll_once(reader.as_mut()));
+
+        let held_reader = writer.downgrade();
+        assert_pending!(poll_once(next_writer.as_mut()));
+        assert_pending!(poll_once(reader.as_mut()));
+        assert!(lock.try_read().is_none());
+        drop(held_reader);
+
+        let next_writer = assert_ready!(poll_once(next_writer.as_mut()));
+        assert_pending!(poll_once(reader.as_mut()));
+        drop(next_writer);
+        drop(assert_ready!(poll_once(reader.as_mut())));
+        assert!(lock.try_write().is_some());
+    }
+}

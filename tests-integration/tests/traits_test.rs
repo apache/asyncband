@@ -34,6 +34,9 @@ use asyncband::oneshot;
 use asyncband::pool;
 use asyncband::pool::ManageObject;
 use asyncband::pool::ObjectStatus;
+use asyncband::rwlock::MappedRwLockReadGuard;
+use asyncband::rwlock::MappedRwLockWriteGuard;
+use asyncband::rwlock::OwnedMappedRwLockWriteGuard;
 use asyncband::rwlock::OwnedRwLockReadGuard;
 use asyncband::rwlock::RwLock;
 use asyncband::rwlock::RwLockReadGuard;
@@ -122,6 +125,9 @@ fn movable_public_types_are_send() {
     fn assert_send_value<T: Send>(_: T) {}
 
     assert_send::<RwLockReadGuard<'_, std::sync::MutexGuard<'static, ()>>>();
+    assert_send::<MappedRwLockReadGuard<'_, std::sync::MutexGuard<'static, ()>>>();
+    assert_send::<MappedRwLockWriteGuard<'_, Cell<u8>>>();
+    assert_send::<OwnedMappedRwLockWriteGuard<(), Cell<u8>>>();
     assert_send::<oneshot::Receiver<i64>>();
     assert_send::<oneshot::Recv<i64>>();
     assert_send::<pool::unbounded::Object<Cell<u8>>>();
