@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
+* Reduce bounded MPSC contention when senders or the receiver are not waiting, improving throughput without changing capacity or cancellation semantics.
 * Reduce unbounded MPSC synchronization overhead by transferring messages in batches and coordinating receiver notifications with queued messages; release large empty batch allocations while retaining small buffers for reuse.
 
 ## v0.7.2

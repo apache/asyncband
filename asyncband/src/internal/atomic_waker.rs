@@ -29,8 +29,10 @@ use std::panic::RefUnwindSafe;
 use std::panic::UnwindSafe;
 use std::panic::catch_unwind;
 use std::panic::resume_unwind;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::fence;
 use std::task::Waker;
 
 const WAITING: usize = 0;
@@ -68,9 +70,14 @@ const WAKING: usize = 0b10;
 /// that determines whether to return `Pending`.
 ///
 /// Every transition that acquires slot ownership has an Acquire operation paired with the previous
-/// owner's Release transition to `WAITING`. The Release half of `wake` also publishes the caller's
-/// preceding condition update; a racing `register` acquires that publication before it returns.
+/// owner's Release transition to `WAITING`. An additional `armed` hint lets notifications skip the
+/// state machine when no registration needs waking. SeqCst fences order the notifier's condition
+/// update and hint check against the registerer's hint update and subsequent condition check.
+/// Either the notifier observes the registration, or the registerer observes the condition update.
 pub struct AtomicWaker {
+    // Only the state machine grants slot ownership. A false hint may also mean another notifier
+    // has claimed responsibility for a registration, but has not taken the slot yet.
+    armed: AtomicBool,
     state: AtomicUsize,
     waker: UnsafeCell<Option<Waker>>,
 }
@@ -89,6 +96,7 @@ impl AtomicWaker {
     #[inline]
     pub const fn new() -> Self {
         Self {
+            armed: AtomicBool::new(false),
             state: AtomicUsize::new(WAITING),
             waker: UnsafeCell::new(None),
         }
@@ -125,6 +133,11 @@ impl AtomicWaker {
                 debug_assert!(state == REGISTERING || state == REGISTERING | WAKING);
             }
         }
+        // Publish the hint after installing the waker. A notifier that skipped an unfinished
+        // registration must publish its condition before its hint check; the paired fences ensure
+        // the caller's post-registration condition check cannot miss that publication too.
+        self.armed.store(true, Ordering::SeqCst);
+        fence(Ordering::SeqCst);
     }
 
     /// Registers a waker after this thread has acquired the REGISTERING state.
@@ -214,6 +227,13 @@ impl AtomicWaker {
     /// wake may instead take responsibility for notifying it.
     #[inline]
     pub fn take(&self) -> Option<Waker> {
+        fence(Ordering::SeqCst);
+        if !self.armed.load(Ordering::SeqCst) {
+            return None;
+        }
+        // Clear the hint before taking the slot. A registration racing after this clear either
+        // gets taken below or arms the hint again; clearing after taking could erase a newer wait.
+        self.armed.store(false, Ordering::SeqCst);
         // ORDERING: When this reads WAITING, Acquire receives the registered waker published by the
         // previous owner. Release publishes the condition update that the caller performed before
         // calling wake, including when a registering thread already owns the slot.
@@ -312,6 +332,26 @@ mod tests {
         assert_eq!(counter.0.load(Ordering::Relaxed), 0);
         atomic_waker.wake();
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn first_registration_cannot_miss_a_skipped_notification() {
+        for _ in 0..128 {
+            let published = AtomicBool::new(false);
+            let atomic_waker = AtomicWaker::new();
+            let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+            let waker = Waker::from(counter.clone());
+            std::thread::scope(|scope| {
+                let sender = scope.spawn(|| {
+                    published.store(true, Ordering::Relaxed);
+                    atomic_waker.wake();
+                });
+                atomic_waker.register(&waker);
+                let publication_seen = published.load(Ordering::Relaxed);
+                sender.join().unwrap();
+                assert!(publication_seen || counter.0.load(Ordering::Relaxed) > 0);
+            });
+        }
     }
 
     #[test]
