@@ -30,6 +30,7 @@ use super::support::Bounded;
 use super::support::ConcurrentBatch;
 use super::support::PRODUCER_COUNTS;
 use super::support::RepeatedBatch;
+use super::support::RepeatedTasks;
 use crate::support::bench_context;
 
 #[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
@@ -83,4 +84,38 @@ fn sustained<C: BoundedMpsc>(bencher: Bencher, producer_count: usize) {
 fn clone_drop_sender<C: BoundedMpsc>(bencher: Bencher) {
     let (sender, _receiver) = C::channel(BOUNDED_CAPACITY);
     bencher.bench_local(|| drop(black_box(sender.clone())));
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    consts = [1, 4096],
+    args = PRODUCER_COUNTS,
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn sustained_capacity<C: BoundedMpsc, const CAPACITY: usize>(
+    bencher: Bencher,
+    producer_count: usize,
+) {
+    let mut batch = RepeatedBatch::<Bounded<C, CAPACITY>>::new(producer_count);
+    batch.run();
+    bencher.bench_local(|| batch.run());
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    consts = [1, 64, 4096],
+    args = [(1, 0), (4, 0), (1, 4), (4, 4), (8, 4)],
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn scheduled<C: BoundedMpsc, const CAPACITY: usize>(
+    bencher: Bencher,
+    (producers, workers): (usize, usize),
+) {
+    let mut batch = RepeatedTasks::<Bounded<C, CAPACITY>>::new(producers, workers);
+    batch.run();
+    bencher.bench_local(|| batch.run());
 }

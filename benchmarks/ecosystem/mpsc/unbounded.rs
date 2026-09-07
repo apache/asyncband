@@ -28,6 +28,7 @@ use super::support::BATCH_MESSAGES;
 use super::support::ConcurrentBatch;
 use super::support::PRODUCER_COUNTS;
 use super::support::RepeatedBatch;
+use super::support::RepeatedTasks;
 use super::support::Unbounded;
 use crate::support::bench_context;
 
@@ -152,4 +153,17 @@ fn sustained<C: UnboundedMpsc>(bencher: Bencher, producer_count: usize) {
 fn clone_drop_sender<C: UnboundedMpsc>(bencher: Bencher) {
     let (sender, _receiver) = C::channel();
     bencher.bench_local(|| drop(black_box(sender.clone())));
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    args = [(1, 0), (4, 0), (1, 4), (4, 4), (8, 4)],
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn scheduled<C: UnboundedMpsc>(bencher: Bencher, (producers, workers): (usize, usize)) {
+    let mut batch = RepeatedTasks::<Unbounded<C>>::new(producers, workers);
+    batch.run();
+    bencher.bench_local(|| batch.run());
 }
