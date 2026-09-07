@@ -25,6 +25,7 @@ use std::sync::atomic::Ordering;
 use std::sync::atomic::fence;
 use std::task::Poll;
 
+use crate::internal::cache_padded::CachePadded;
 use crate::internal::mutex::Mutex;
 
 // Keep small batches reusable without retaining an arbitrarily large historical burst. Count
@@ -120,39 +121,6 @@ pub struct BoundedQueue<T> {
     mark_bit: usize,
 }
 
-// Use conservative architecture estimates, not a guarantee about every CPU's cache line.
-// Keep 128 bytes for large ARM/PowerPC lines and adjacent-line prefetching on x86-64,
-// 256 bytes for s390x, and at least 64 bytes elsewhere.
-#[cfg_attr(target_arch = "s390x", repr(align(256)))]
-#[cfg_attr(
-    any(
-        target_arch = "aarch64",
-        target_arch = "arm64ec",
-        target_arch = "powerpc64",
-        target_arch = "x86_64",
-    ),
-    repr(align(128))
-)]
-#[cfg_attr(
-    not(any(
-        target_arch = "s390x",
-        target_arch = "aarch64",
-        target_arch = "arm64ec",
-        target_arch = "powerpc64",
-        target_arch = "x86_64",
-    )),
-    repr(align(64))
-)]
-struct CachePadded<T>(T);
-
-impl<T> std::ops::Deref for CachePadded<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 struct Slot<T> {
     stamp: AtomicUsize,
     value: UnsafeCell<MaybeUninit<T>>,
@@ -181,8 +149,8 @@ impl<T> BoundedQueue<T> {
             .collect();
         Self {
             slots,
-            head: CachePadded(AtomicUsize::new(0)),
-            tail: CachePadded(AtomicUsize::new(0)),
+            head: CachePadded::new(AtomicUsize::new(0)),
+            tail: CachePadded::new(AtomicUsize::new(0)),
             capacity,
             one_lap,
             mark_bit,
