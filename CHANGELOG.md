@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file.
 
 * Release MPSC receiver wakers when the receiver is dropped, avoiding retained tasks and ownership cycles when a waker holds a sender.
 
+* Complete bounded MPSC disconnection notifications and buffered-message cleanup even when a wake callback or message destructor panics.
+
 ### Improvements
 
 * Reduce unbounded MPSC synchronization overhead by transferring messages in batches and coordinating receiver notifications with queued messages; release large empty batch allocations while retaining small buffers for reuse.

@@ -208,12 +208,23 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
+        struct DrainOnDrop<'a, T>(&'a Ring<T>);
+        impl<T> Drop for DrainOnDrop<'_, T> {
+            fn drop(&mut self) {
+                // SAFETY: This guard lives only within the exclusive receiver's drop, after close.
+                unsafe { self.0.drain() };
+            }
+        }
+
+        self.state.buffer.close();
+        let drain = DrainOnDrop(&self.state.buffer);
         // A registered waker may own a sender; release it to break that ownership cycle.
         let receiver_waker = self.state.rx_waker.take();
-        // SAFETY: Only this non-cloneable receiver consumes the queue, through exclusive borrows.
-        unsafe { self.state.buffer.disconnect_receiver() };
+        // Complete notifications before dropping messages. Either kind of callback may panic;
+        // the drain guard still releases buffered values if a wake or waker drop unwinds.
         self.state.send_waiters.notify_all();
         drop(receiver_waker);
+        drop(drain);
     }
 }
 

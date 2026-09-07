@@ -106,7 +106,17 @@ impl<T> Ring<T> {
                 }
                 tail = self.tail.load(Ordering::Relaxed);
             } else {
-                tail = self.tail.load(Ordering::Relaxed);
+                let actual = self.tail.load(Ordering::Relaxed);
+                if actual == tail {
+                    // Reserved but unpublished messages also occupy capacity. In particular, a
+                    // capacity-one queue must report Full without waiting for its producer to
+                    // publish the slot's stamp.
+                    fence(Ordering::SeqCst);
+                    if self.head.load(Ordering::Relaxed).wrapping_add(self.one_lap) == tail {
+                        return Err(TrySendError::Full(value));
+                    }
+                }
+                tail = actual;
             }
             Self::spin(&mut backoff);
         }
@@ -117,7 +127,7 @@ impl<T> Ring<T> {
     ///
     /// # Safety
     ///
-    /// The caller must serialize all calls to `pop` and `disconnect_receiver` for this queue.
+    /// The caller must serialize all calls to `pop` and `drain` for this queue.
     pub unsafe fn pop(&self) -> Poll<Option<T>> {
         let mut head = self.head.load(Ordering::Relaxed);
         let mut backoff = 0;
@@ -150,15 +160,37 @@ impl<T> Ring<T> {
         }
     }
 
-    /// Closes the queue and drops all remaining values.
+    /// Prevents subsequent sends from reserving slots. Already reserved slots still publish.
+    pub fn close(&self) {
+        self.tail.fetch_or(self.mark_bit, Ordering::SeqCst);
+    }
+
+    /// Drops all values after closing, including values whose publication is still in progress.
     ///
     /// # Safety
     ///
-    /// The caller must serialize all calls to `pop` and `disconnect_receiver` for this queue.
-    pub unsafe fn disconnect_receiver(&self) {
-        let tail = self.tail.fetch_or(self.mark_bit, Ordering::SeqCst) & !self.mark_bit;
-        // SAFETY: The caller guarantees exclusive consumer access.
-        unsafe { self.discard_until(tail) };
+    /// The queue must be closed. The caller must serialize all calls to `pop` and `drain`.
+    pub unsafe fn drain(&self) {
+        struct DrainRemaining<'a, T> {
+            ring: &'a Ring<T>,
+            tail: usize,
+        }
+        impl<T> Drop for DrainRemaining<'_, T> {
+            fn drop(&mut self) {
+                // SAFETY: The guard is scoped to the exclusive consumer's drain of a closed ring.
+                unsafe { self.ring.discard_until(self.tail) };
+            }
+        }
+
+        let tail = self.tail.load(Ordering::Relaxed);
+        debug_assert_ne!(tail & self.mark_bit, 0);
+        let remaining = DrainRemaining {
+            ring: self,
+            tail: tail & !self.mark_bit,
+        };
+        // SAFETY: The caller guarantees exclusive consumer access. The guard finishes draining if
+        // a value's destructor panics, so messages that own senders cannot retain the closed ring.
+        unsafe { self.discard_until(remaining.tail) };
     }
 
     fn advance(&self, position: usize) -> usize {
@@ -205,9 +237,9 @@ impl<T> Ring<T> {
 
 impl<T> Drop for Ring<T> {
     fn drop(&mut self) {
-        let tail = self.tail.fetch_or(self.mark_bit, Ordering::SeqCst) & !self.mark_bit;
+        self.close();
         // SAFETY: The queue is closed and its exclusive borrow rules out concurrent access.
-        unsafe { self.discard_until(tail) };
+        unsafe { self.drain() };
     }
 }
 
@@ -267,6 +299,28 @@ mod tests {
             assert_eq!(queue.pop(), Poll::Ready(Some(2)));
             assert_eq!(queue.pop(), Poll::Ready(None));
         }
+    }
+
+    #[test]
+    fn unpublished_reservations_count_toward_capacity() {
+        let queue = Arc::new(Ring::new(1));
+        queue.tail.store(queue.one_lap, Ordering::SeqCst);
+        let (done, completed) = std::sync::mpsc::channel();
+        let producer = {
+            let queue = queue.clone();
+            thread::spawn(move || done.send(queue.try_push(2)).unwrap())
+        };
+        let result = completed.recv_timeout(std::time::Duration::from_secs(10));
+        // Finish the synthetic reservation even if the other producer stalled. This lets the
+        // worker and the ring's destructor finish before the failure is reported.
+        let slot = &queue.slots[0];
+        // SAFETY: Advancing the tail above exclusively reserved the initially empty slot.
+        unsafe { (*slot.value.get()).write(1) };
+        slot.stamp.store(1, Ordering::Release);
+        producer.join().unwrap();
+        assert!(matches!(result, Ok(Err(TrySendError::Full(2)))));
+        // SAFETY: Both producers have finished and this thread is the only consumer.
+        assert_eq!(unsafe { queue.pop() }, Poll::Ready(Some(1)));
     }
 
     #[test]
@@ -347,8 +401,9 @@ mod tests {
         assert_eq!(queue.head.load(Ordering::Relaxed), 1);
         assert_eq!(queue.tail.load(Ordering::Relaxed), queue.one_lap + 1);
 
-        // SAFETY: This thread is the only consumer and no pop is in progress.
-        unsafe { queue.disconnect_receiver() };
+        queue.close();
+        // SAFETY: The queue is closed and this thread is the only consumer.
+        unsafe { queue.drain() };
 
         // `discard_until` must dispose every value exactly once, including position 8.
         for (value, counter) in drops.iter().enumerate() {

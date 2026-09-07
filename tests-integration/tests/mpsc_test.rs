@@ -17,6 +17,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -571,4 +572,75 @@ fn bounded_receiver_drop_returns_values_to_all_blocked_senders() {
     let second_error = expect_ready(poll_once(second.as_mut())).unwrap_err();
     assert_eq!(first_error.into_inner(), 1);
     assert_eq!(second_error.into_inner(), 2);
+}
+
+#[cfg(panic = "unwind")]
+#[test]
+fn bounded_disconnect_finishes_cleanup_when_a_callback_panics() {
+    struct Value {
+        id: usize,
+        drops: Arc<[AtomicUsize; 4]>,
+        panic_on_drop: bool,
+        _sender: Option<mpsc::BoundedSender<Value>>,
+    }
+    impl Drop for Value {
+        fn drop(&mut self) {
+            self.drops[self.id].fetch_add(1, Ordering::Relaxed);
+            assert!(!self.panic_on_drop, "payload destructor panicked");
+        }
+    }
+    struct Notify {
+        woken: AtomicBool,
+        panic_on_wake: bool,
+    }
+    impl Wake for Notify {
+        fn wake(self: Arc<Self>) {
+            self.woken.store(true, Ordering::Relaxed);
+            assert!(!self.panic_on_wake, "wake callback panicked");
+        }
+    }
+
+    for panic_on_wake in [false, true] {
+        let (tx, rx) = mpsc::bounded(3);
+        let drops = Arc::new(std::array::from_fn(|_| AtomicUsize::new(0)));
+        for id in 0..3 {
+            assert!(
+                tx.try_send(Value {
+                    id,
+                    drops: drops.clone(),
+                    panic_on_drop: id == 0 && !panic_on_wake,
+                    _sender: Some(tx.clone()),
+                })
+                .is_ok()
+            );
+        }
+        let notify = Arc::new(Notify {
+            woken: AtomicBool::new(false),
+            panic_on_wake,
+        });
+        let waker = Waker::from(notify.clone());
+        let mut send = Box::pin(tx.send(Value {
+            id: 3,
+            drops: drops.clone(),
+            panic_on_drop: false,
+            _sender: None,
+        }));
+        assert!(
+            send.as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(rx))).is_err());
+        assert!(notify.woken.load(Ordering::Relaxed));
+        for count in &drops[..3] {
+            assert_eq!(count.load(Ordering::Relaxed), 1);
+        }
+        assert_eq!(drops[3].load(Ordering::Relaxed), 0);
+        let error = match expect_ready(poll_once(send.as_mut())) {
+            Err(error) => error,
+            Ok(()) => panic!("the receiver is disconnected"),
+        };
+        assert_eq!(error.into_inner().id, 3);
+        assert_eq!(drops[3].load(Ordering::Relaxed), 1);
+    }
 }
