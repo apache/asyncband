@@ -70,7 +70,7 @@ pub(crate) mod atomic_waker;
 #[allow(dead_code)]
 pub(crate) mod arena;
 
-#[allow(dead_code)]
+#[cfg(feature = "mpsc")]
 pub(crate) mod cache_padded;
 
 #[cfg(any(feature = "latch", feature = "once"))]
