@@ -15,7 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
+use std::thread;
 
 use asyncband::mpsc;
 use asyncband::mpsc::RecvError;
@@ -259,6 +262,51 @@ fn bounded_try_send_respects_capacity_and_order() {
         drop(tx);
         assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     }
+}
+
+#[test]
+fn bounded_try_recv_does_not_report_empty_after_completed_sends() {
+    const PRODUCERS: usize = 4;
+    const MESSAGES_PER_PRODUCER: usize = 16_384;
+    let (tx, mut rx) = mpsc::bounded(64);
+    let completed = AtomicUsize::new(0);
+    let mut premature_empty = 0;
+
+    thread::scope(|scope| {
+        for producer in 0..PRODUCERS {
+            let tx = tx.clone();
+            let completed = &completed;
+            scope.spawn(move || {
+                for sequence in 0..MESSAGES_PER_PRODUCER {
+                    loop {
+                        match tx.try_send((producer, sequence)) {
+                            Ok(()) => break,
+                            Err(TrySendError::Full(_)) => thread::yield_now(),
+                            Err(TrySendError::Disconnected(_)) => panic!("receiver is still alive"),
+                        }
+                    }
+                    completed.fetch_add(1, Ordering::Release);
+                }
+            });
+        }
+
+        let mut received = 0;
+        while received < PRODUCERS * MESSAGES_PER_PRODUCER {
+            // Once more sends have completed than messages received, Empty cannot be correct.
+            let has_completed_send = completed.load(Ordering::Acquire) > received;
+            match rx.try_recv() {
+                Ok(_) => received += 1,
+                Err(TryRecvError::Empty) => {
+                    premature_empty += usize::from(has_completed_send);
+                    thread::yield_now();
+                }
+                Err(TryRecvError::Disconnected) => panic!("original sender is still alive"),
+            }
+        }
+    });
+
+    // Drain and join before asserting so a failure cannot strand a producer on a full channel.
+    assert_eq!(premature_empty, 0);
 }
 
 #[tokio::test]

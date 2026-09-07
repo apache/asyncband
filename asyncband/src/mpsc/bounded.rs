@@ -27,6 +27,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 
 use super::RecvError;
 use super::SendError;
@@ -219,7 +220,10 @@ impl<T> Drop for BoundedReceiver<T> {
 }
 
 impl<T> BoundedReceiver<T> {
-    /// Attempts to receive the next queued value without waiting.
+    /// Attempts to receive the next queued value without waiting for a new message.
+    ///
+    /// A producer already publishing a queued message may delay this call until publication
+    /// finishes. Use [`Self::recv`] to yield asynchronously while publication is in progress.
     ///
     /// Receiving a value frees one buffer slot. An empty channel returns [`TryRecvError::Empty`]
     /// while at least one sender remains, or [`TryRecvError::Disconnected`] after every sender has
@@ -242,21 +246,29 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        if let Some(value) = self.state.queue.pop() {
-            self.state.tx_permits.release_if_nonempty(1);
-            Ok(value)
+        loop {
+            if let Poll::Ready(result) = self.try_recv_once() {
+                return result;
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    fn try_recv_once(&mut self) -> Poll<Result<T, TryRecvError>> {
+        let value = if let Some(value) = ready!(self.state.queue.pop()) {
+            value
         } else if self.state.senders.load(Ordering::Acquire) == 0 {
             // The final sender can enqueue between the first empty observation and decrementing
             // the sender count, so check the queue again before reporting disconnection.
-            if let Some(value) = self.state.queue.pop() {
-                self.state.tx_permits.release_if_nonempty(1);
-                Ok(value)
-            } else {
-                Err(TryRecvError::Disconnected)
-            }
+            let Some(value) = ready!(self.state.queue.pop()) else {
+                return Poll::Ready(Err(TryRecvError::Disconnected));
+            };
+            value
         } else {
-            Err(TryRecvError::Empty)
-        }
+            return Poll::Ready(Err(TryRecvError::Empty));
+        };
+        self.state.tx_permits.release_if_nonempty(1);
+        Poll::Ready(Ok(value))
     }
 
     /// Waits for and receives the next value, freeing one buffer slot.
@@ -293,16 +305,20 @@ impl<T> BoundedReceiver<T> {
     }
 
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
-        match self.try_recv() {
-            Ok(v) => Poll::Ready(Ok(v)),
-            Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
-            Err(TryRecvError::Empty) => {
+        match self.try_recv_once() {
+            Poll::Ready(Ok(v)) => Poll::Ready(Ok(v)),
+            Poll::Ready(Err(TryRecvError::Disconnected)) => {
+                Poll::Ready(Err(RecvError::Disconnected))
+            }
+            Poll::Pending | Poll::Ready(Err(TryRecvError::Empty)) => {
                 self.state.rx_waker.register(cx.waker());
 
-                match self.try_recv() {
-                    Ok(v) => Poll::Ready(Ok(v)),
-                    Err(TryRecvError::Disconnected) => Poll::Ready(Err(RecvError::Disconnected)),
-                    Err(TryRecvError::Empty) => Poll::Pending,
+                match self.try_recv_once() {
+                    Poll::Ready(Ok(v)) => Poll::Ready(Ok(v)),
+                    Poll::Ready(Err(TryRecvError::Disconnected)) => {
+                        Poll::Ready(Err(RecvError::Disconnected))
+                    }
+                    Poll::Pending | Poll::Ready(Err(TryRecvError::Empty)) => Poll::Pending,
                 }
             }
         }

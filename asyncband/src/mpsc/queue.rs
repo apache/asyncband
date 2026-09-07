@@ -23,6 +23,7 @@ use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::fence;
+use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
 
@@ -215,7 +216,9 @@ impl<T> BoundedQueue<T> {
         }
     }
 
-    pub fn pop(&self) -> Option<T> {
+    // Pending means the head slot is reserved but not published. It is distinct from an empty
+    // queue: later producers may already have completed their sends.
+    pub fn pop(&self) -> Poll<Option<T>> {
         let mut head = self.head.load(Ordering::Relaxed);
         let mut backoff = 0;
         loop {
@@ -230,17 +233,17 @@ impl<T> BoundedQueue<T> {
                 slot.stamp
                     .store(head.wrapping_add(self.one_lap), Ordering::Release);
                 self.head.store(next_head, Ordering::SeqCst);
-                return Some(value);
+                return Poll::Ready(Some(value));
             }
 
             if stamp == head {
                 fence(Ordering::SeqCst);
                 if self.tail.load(Ordering::Relaxed) & !self.mark_bit == head {
-                    return None;
+                    return Poll::Ready(None);
                 }
             }
             if backoff == 8 {
-                return None;
+                return Poll::Pending;
             }
             Self::spin(&mut backoff);
             head = self.head.load(Ordering::Relaxed);
@@ -305,6 +308,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
+    use std::task::Poll;
     use std::thread;
 
     use super::BoundedQueue;
@@ -320,14 +324,36 @@ mod tests {
         }
         assert!(matches!(queue.try_push(3), Err(PushError::Full(3))));
         for value in 0..3 {
-            assert_eq!(queue.pop(), Some(value));
+            assert_eq!(queue.pop(), Poll::Ready(Some(value)));
         }
-        assert_eq!(queue.pop(), None);
+        assert_eq!(queue.pop(), Poll::Ready(None));
 
         for value in 3..12 {
             assert!(queue.try_push(value).is_ok());
-            assert_eq!(queue.pop(), Some(value));
+            assert_eq!(queue.pop(), Poll::Ready(Some(value)));
         }
+    }
+
+    #[test]
+    fn bounded_queue_does_not_report_empty_behind_an_unpublished_head() {
+        let queue = BoundedQueue::new(2);
+
+        // Pause a synthetic producer after reserving and initializing slot 0, before publishing
+        // its stamp. Another producer can finish sending into slot 1 in the meantime.
+        queue.tail.store(1, Ordering::SeqCst);
+        let slot = &queue.slots[0];
+        // SAFETY: advancing the tail reserved this initially empty slot for the synthetic producer.
+        unsafe { (*slot.value.get()).write(1) };
+        let later_send = queue.try_push(2);
+        let receive = queue.pop();
+
+        // Finish publication before asserting so even a failed assertion can safely drop the queue.
+        slot.stamp.store(1, Ordering::Release);
+        assert!(later_send.is_ok());
+        assert_eq!(receive, Poll::Pending);
+        assert_eq!(queue.pop(), Poll::Ready(Some(1)));
+        assert_eq!(queue.pop(), Poll::Ready(Some(2)));
+        assert_eq!(queue.pop(), Poll::Ready(None));
     }
 
     #[test]
@@ -356,7 +382,7 @@ mod tests {
 
         let mut values = Vec::new();
         while values.len() < 64 {
-            if let Some(value) = queue.pop() {
+            if let Poll::Ready(Some(value)) = queue.pop() {
                 values.push(value);
             } else {
                 thread::yield_now();
@@ -397,7 +423,7 @@ mod tests {
 
         // Free slot 0, then reuse it on the next lap at position 8.
         let popped = queue.pop();
-        assert!(popped.is_some());
+        assert!(matches!(popped, Poll::Ready(Some(_))));
         drop(popped);
         assert_eq!(drops[0].load(Ordering::Relaxed), 1);
         assert!(queue.try_push(DropSpy(&drops[3])).is_ok());
