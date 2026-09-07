@@ -131,7 +131,7 @@ impl<T> fmt::Debug for UnboundedReceiver<T> {
 
 impl<T> Drop for UnboundedReceiver<T> {
     fn drop(&mut self) {
-        self.state.queue.disconnect_receiver(&self.consumer);
+        self.state.queue.disconnect_receiver(&mut self.consumer);
     }
 }
 
@@ -159,14 +159,14 @@ impl<T> UnboundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        if let Some(value) = self.state.queue.pop(&self.consumer) {
+        if let Some(value) = self.state.queue.pop(&mut self.consumer) {
             Ok(value)
         } else if self.state.senders.load(Ordering::Acquire) == 0 {
             // The final sender can enqueue between the first empty observation and decrementing
             // the sender count, so check the queue again before reporting disconnection.
             self.state
                 .queue
-                .pop(&self.consumer)
+                .pop(&mut self.consumer)
                 .ok_or(TryRecvError::Disconnected)
         } else {
             Err(TryRecvError::Empty)

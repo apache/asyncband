@@ -39,6 +39,8 @@ struct UnboundedInner<T> {
 }
 
 pub struct UnboundedConsumer<T> {
+    // Preserve Sync for Send-only values; exclusive consumer access never needs to lock this
+    // mutex.
     local: Mutex<VecDeque<T>>,
 }
 
@@ -69,21 +71,21 @@ impl<T> UnboundedQueue<T> {
         Ok(())
     }
 
-    pub fn pop(&self, consumer: &UnboundedConsumer<T>) -> Option<T> {
-        let mut local = consumer.local.lock();
+    pub fn pop(&self, consumer: &mut UnboundedConsumer<T>) -> Option<T> {
+        let local = consumer.local.get_mut();
         if local.is_empty() {
             let mut inner = self.inner.lock();
-            mem::swap(&mut *local, &mut inner.messages);
+            mem::swap(local, &mut inner.messages);
         }
         local.pop_front()
     }
 
-    pub fn disconnect_receiver(&self, consumer: &UnboundedConsumer<T>) {
+    pub fn disconnect_receiver(&self, consumer: &mut UnboundedConsumer<T>) {
         let (local, shared) = {
-            let mut local = consumer.local.lock();
+            let local = consumer.local.get_mut();
             let mut inner = self.inner.lock();
             inner.receiver_alive = false;
-            (mem::take(&mut *local), mem::take(&mut inner.messages))
+            (mem::take(local), mem::take(&mut inner.messages))
         };
         drop((local, shared));
     }
@@ -479,13 +481,13 @@ mod tests {
     #[test]
     fn unbounded_queue_batches_without_reordering() {
         let queue = UnboundedQueue::new();
-        let consumer = UnboundedConsumer::new();
+        let mut consumer = UnboundedConsumer::new();
         assert!(queue.push(1).is_ok());
         assert!(queue.push(2).is_ok());
-        assert_eq!(queue.pop(&consumer), Some(1));
+        assert_eq!(queue.pop(&mut consumer), Some(1));
         assert!(queue.push(3).is_ok());
-        assert_eq!(queue.pop(&consumer), Some(2));
-        assert_eq!(queue.pop(&consumer), Some(3));
-        assert_eq!(queue.pop(&consumer), None);
+        assert_eq!(queue.pop(&mut consumer), Some(2));
+        assert_eq!(queue.pop(&mut consumer), Some(3));
+        assert_eq!(queue.pop(&mut consumer), None);
     }
 }
