@@ -40,13 +40,13 @@ use crate::internal::mutex::Mutex;
 /// therefore grow with producer demand and are limited only by successful memory allocation. Use a
 /// bounded channel or external admission control when producers may outpace the receiver.
 ///
-/// After all messages have been received, large backing allocations are released; small buffers
-/// may be retained for reuse. Partially consumed batches can retain their original allocation.
+/// Storage is reclaimed incrementally as messages are received. A bounded amount of empty
+/// storage may be retained for reuse, independently of the channel's previous peak occupancy.
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     let state = Arc::new(UnboundedState {
         senders: AtomicUsize::new(1),
         inbox: Mutex::new(Inbox {
-            messages: VecDeque::new(),
+            buffer: Buffer::new(),
             receiver_alive: true,
             rx_waker: None,
         }),
@@ -70,7 +70,7 @@ struct UnboundedState<T> {
 // Queue contents, receiver liveness, and its wake registration share one lock. Registering a
 // wait and checking its condition cannot race with sending or receiver disconnection.
 struct Inbox<T> {
-    messages: VecDeque<T>,
+    buffer: Buffer<T>,
     receiver_alive: bool,
     rx_waker: Option<Waker>,
 }
@@ -119,7 +119,7 @@ impl<T> UnboundedSender<T> {
             if !state.receiver_alive {
                 return Err(SendError::new(value));
             }
-            state.messages.push_back(value);
+            state.buffer.push(value);
             state.rx_waker.take()
         };
         if let Some(waker) = waker {
@@ -150,7 +150,10 @@ impl<T> Drop for UnboundedReceiver<T> {
         let (shared, waker) = {
             let mut state = self.state.inbox.lock();
             state.receiver_alive = false;
-            (mem::take(&mut state.messages), state.rx_waker.take())
+            (
+                mem::replace(&mut state.buffer, Buffer::new()),
+                state.rx_waker.take(),
+            )
         };
         // Destructors may send again. A waker may also own a sender and form an ownership cycle.
         drop((batch, shared, waker));
@@ -184,7 +187,8 @@ impl<T> UnboundedReceiver<T> {
         let batch = self.batch.get_mut();
         if batch.is_empty() {
             let mut state = self.state.inbox.lock();
-            if state.messages.is_empty() {
+            state.buffer.refill(batch);
+            if batch.is_empty() {
                 // Holding the inbox lock excludes a final send between the empty observation and
                 // the sender-count check; disconnection needs no second queue read.
                 return Err(if self.state.senders.load(Ordering::Acquire) == 0 {
@@ -193,7 +197,6 @@ impl<T> UnboundedReceiver<T> {
                     TryRecvError::Empty
                 });
             }
-            mem::swap(batch, &mut state.messages);
         }
         Ok(pop_batch(batch))
     }
@@ -241,8 +244,8 @@ impl<T> UnboundedReceiver<T> {
         let mut new_waker = None;
         loop {
             let mut state = self.state.inbox.lock();
-            if !state.messages.is_empty() {
-                mem::swap(batch, &mut state.messages);
+            state.buffer.refill(batch);
+            if !batch.is_empty() {
                 drop(state);
                 return Poll::Ready(Ok(pop_batch(batch)));
             }
@@ -271,12 +274,67 @@ impl<T> UnboundedReceiver<T> {
 // No operation relies on a pinned location for the receiver batch or its values.
 impl<T> Unpin for UnboundedReceiver<T> {}
 
-// Retain small buffers for reuse, measuring inline storage rather than separately boxed payloads.
-const BATCH_CACHE_BYTES: usize = 64 * 1024;
+// Bound the inline storage retained by a partial batch. Boxed payloads belong to individual
+// messages, not these backing allocations. Empty buffers are reused without retaining peak size.
+const SEGMENT_BYTES: usize = 32 * 1024;
+
+struct Buffer<T> {
+    writable: VecDeque<T>,
+    sealed: VecDeque<VecDeque<T>>,
+    spare: VecDeque<T>,
+}
+
+impl<T> Buffer<T> {
+    fn new() -> Self {
+        Self {
+            writable: VecDeque::new(),
+            sealed: VecDeque::new(),
+            spare: VecDeque::new(),
+        }
+    }
+
+    fn segment_capacity() -> usize {
+        if mem::size_of::<T>() == 0 {
+            return usize::MAX;
+        }
+        let limit = (SEGMENT_BYTES / mem::size_of::<T>()).max(1);
+        // Power-of-two limits let VecDeque grow naturally without exceeding the segment budget.
+        1 << (usize::BITS - 1 - limit.leading_zeros())
+    }
+
+    fn push(&mut self, value: T) {
+        if self.writable.len() == Self::segment_capacity() {
+            let next = if self.spare.capacity() == 0 {
+                VecDeque::with_capacity(Self::segment_capacity())
+            } else {
+                mem::take(&mut self.spare)
+            };
+            let sealed = mem::replace(&mut self.writable, next);
+            self.sealed.push_back(sealed);
+        }
+        self.writable.push_back(value);
+    }
+
+    fn refill(&mut self, batch: &mut VecDeque<T>) {
+        debug_assert!(batch.is_empty());
+        if let Some(sealed) = self.sealed.pop_front() {
+            // Keep one empty segment for the next producer rollover. Every other consumed
+            // segment is released, so retained payload storage does not track peak occupancy.
+            self.spare = mem::replace(batch, sealed);
+            if self.sealed.is_empty()
+                && self.sealed.capacity() * mem::size_of::<VecDeque<T>>() > 1024
+            {
+                self.sealed = VecDeque::new();
+            }
+        } else if !self.writable.is_empty() {
+            self.spare = VecDeque::new();
+            mem::swap(batch, &mut self.writable);
+        }
+    }
+}
 
 fn pop_batch<T>(batch: &mut VecDeque<T>) -> T {
-    if batch.len() == 1 && batch.capacity().saturating_mul(mem::size_of::<T>()) > BATCH_CACHE_BYTES
-    {
+    if batch.len() == 1 && batch.capacity().saturating_mul(mem::size_of::<T>()) > SEGMENT_BYTES {
         // Retire the allocation on the last value, outside the inbox lock. Keep this as a tail
         // expression to avoid intermediate storage for large inline values.
         mem::take(batch).pop_front()
@@ -288,6 +346,7 @@ fn pop_batch<T>(batch: &mut VecDeque<T>) -> T {
 
 #[cfg(test)]
 mod tests {
+    use super::SEGMENT_BYTES;
     use super::unbounded;
     use crate::mpsc::TryRecvError;
 
@@ -304,22 +363,46 @@ mod tests {
     }
 
     #[test]
-    fn releases_large_batches_after_the_last_value() {
+    fn reclaims_storage_while_a_burst_is_partially_consumed() {
+        fn allocated_bytes<T>(rx: &mut super::UnboundedReceiver<T>) -> usize {
+            let batch = rx.batch.get_mut().capacity();
+            let inbox = rx.state.inbox.lock();
+            let buffer = &inbox.buffer;
+            let slots = batch
+                + buffer.writable.capacity()
+                + buffer.spare.capacity()
+                + buffer
+                    .sealed
+                    .iter()
+                    .map(|batch| batch.capacity())
+                    .sum::<usize>();
+            slots * size_of::<T>()
+        }
+
         let (tx, mut rx) = unbounded();
-        for value in 0..128u8 {
-            tx.send([value; 1024]).unwrap();
+        for value in 0..1024usize {
+            tx.send([value; 128]).unwrap();
         }
-        for value in 0..64u8 {
-            assert_eq!(rx.try_recv(), Ok([value; 1024]));
+        let peak = allocated_bytes(&mut rx);
+        for value in 0..512 {
+            assert_eq!(rx.try_recv(), Ok([value; 128]));
         }
-        // A partially consumed batch survives while producers start filling the next batch.
-        tx.send([128; 1024]).unwrap();
-        for value in 64..128u8 {
-            assert_eq!(rx.try_recv(), Ok([value; 1024]));
+        assert!(allocated_bytes(&mut rx) <= peak * 3 / 4);
+        // New sends must remain behind both the receiver's current segment and sealed segments.
+        tx.send([1024; 128]).unwrap();
+        for value in 512..=1024 {
+            assert_eq!(rx.try_recv(), Ok([value; 128]));
         }
-        // Reclaim on the final successful receive, without requiring an extra empty poll.
+        assert!(allocated_bytes(&mut rx) <= 2 * SEGMENT_BYTES);
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn does_not_cache_an_oversized_inline_value() {
+        let (tx, mut rx) = unbounded();
+        tx.send([7u8; SEGMENT_BYTES + 1]).unwrap();
+        assert_eq!(rx.try_recv(), Ok([7u8; SEGMENT_BYTES + 1]));
         assert_eq!(rx.batch.get_mut().capacity(), 0);
-        assert_eq!(rx.try_recv(), Ok([128; 1024]));
         assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
     }
 
@@ -338,7 +421,7 @@ mod tests {
 
         tx.send(32).unwrap();
         assert_eq!(rx.try_recv(), Ok(32));
-        assert_eq!(rx.state.inbox.lock().messages.capacity(), capacity);
+        assert_eq!(rx.state.inbox.lock().buffer.writable.capacity(), capacity);
     }
 
     #[test]

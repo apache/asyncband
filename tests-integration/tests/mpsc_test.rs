@@ -183,6 +183,41 @@ fn bounded_receive_racing_with_send_registration_cannot_lose_wakeup() {
 }
 
 #[test]
+fn unbounded_disconnect_drops_partial_and_queued_batches_outside_lock() {
+    struct Value(Option<Arc<dyn Fn() + Send + Sync>>);
+    impl Drop for Value {
+        fn drop(&mut self) {
+            if let Some(callback) = &self.0 {
+                callback();
+            }
+        }
+    }
+
+    assert_completes_without_deadlock(|| {
+        let (tx, mut rx) = mpsc::unbounded();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let callback: Arc<dyn Fn() + Send + Sync> = {
+            let tx = tx.clone();
+            let drops = drops.clone();
+            Arc::new(move || {
+                // This exercises both a live receiver and disconnection. The marker has no
+                // callback, so destroying an unsuccessful send cannot recursively send again.
+                let _ = tx.send(Value(None));
+                drops.fetch_add(1, Ordering::Relaxed);
+            })
+        };
+        for _ in 0..8192 {
+            assert!(tx.send(Value(Some(callback.clone()))).is_ok());
+        }
+        for _ in 0..17 {
+            drop(rx.try_recv().unwrap());
+        }
+        drop(rx);
+        assert_eq!(drops.load(Ordering::Relaxed), 8192);
+    });
+}
+
+#[test]
 fn unbounded_wake_callback_can_send() {
     struct SendOnWake(mpsc::UnboundedSender<usize>);
 
