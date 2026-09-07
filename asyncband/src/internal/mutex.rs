@@ -35,8 +35,6 @@ impl<T> Mutex<T> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    // Exclusive access is currently used only by the mpsc receiver.
-    #[cfg_attr(not(feature = "mpsc"), allow(dead_code))]
     pub fn get_mut(&mut self) -> &mut T {
         self.0.get_mut().unwrap_or_else(PoisonError::into_inner)
     }

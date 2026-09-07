@@ -95,6 +95,8 @@ pub(crate) mod value_cell;
     feature = "waitgroup",
     feature = "watch",
 ))]
+// Some primitives use only shared access, leaving `Mutex::get_mut` unused.
+#[allow(dead_code)]
 pub(crate) mod mutex;
 
 #[cfg(any(
