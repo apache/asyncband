@@ -27,6 +27,10 @@ use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
 
+// Keep small batches reusable without retaining an arbitrarily large historical burst. Count
+// inline storage bytes: boxed payloads own separate allocations, and zero-sized values own none.
+const UNBOUNDED_CACHE_BYTES: usize = 64 * 1024;
+
 pub struct UnboundedQueue<T> {
     inner: Mutex<UnboundedInner<T>>,
 }
@@ -77,7 +81,15 @@ impl<T> UnboundedQueue<T> {
             let mut inner = self.inner.lock();
             mem::swap(local, &mut inner.messages);
         }
-        local.pop_front()
+        if local.len() == 1
+            && local.capacity().saturating_mul(mem::size_of::<T>()) > UNBOUNDED_CACHE_BYTES
+        {
+            // Retire the allocation on the last value, outside the shared lock. Keep the ordinary
+            // pop as a tail expression so large inline values need no intermediate storage.
+            mem::take(local).pop_front()
+        } else {
+            local.pop_front()
+        }
     }
 
     pub fn disconnect_receiver(&self, consumer: &mut UnboundedConsumer<T>) {
@@ -488,6 +500,61 @@ mod tests {
         assert!(queue.push(3).is_ok());
         assert_eq!(queue.pop(&mut consumer), Some(2));
         assert_eq!(queue.pop(&mut consumer), Some(3));
+        assert_eq!(queue.pop(&mut consumer), None);
+    }
+
+    #[test]
+    fn unbounded_queue_releases_large_batches_after_the_last_value() {
+        let queue = UnboundedQueue::new();
+        let mut consumer = UnboundedConsumer::new();
+        for value in 0..128u8 {
+            assert!(queue.push([value; 1024]).is_ok());
+        }
+
+        for value in 0..64u8 {
+            assert_eq!(queue.pop(&mut consumer), Some([value; 1024]));
+        }
+        // A partially consumed batch must survive while producers start filling the next batch.
+        assert!(queue.push([128; 1024]).is_ok());
+        for value in 64..128u8 {
+            assert_eq!(queue.pop(&mut consumer), Some([value; 1024]));
+        }
+
+        // Reclaim on the final successful receive, without requiring an extra empty poll.
+        assert_eq!(consumer.local.get_mut().capacity(), 0);
+        assert_eq!(queue.pop(&mut consumer), Some([128; 1024]));
+        assert_eq!(queue.pop(&mut consumer), None);
+    }
+
+    #[test]
+    fn unbounded_queue_keeps_small_batches_for_reuse() {
+        let queue = UnboundedQueue::new();
+        let mut consumer = UnboundedConsumer::new();
+        for value in 0..32usize {
+            assert!(queue.push(value).is_ok());
+        }
+        assert_eq!(queue.pop(&mut consumer), Some(0));
+        let capacity = consumer.local.get_mut().capacity();
+        for value in 1..32 {
+            assert_eq!(queue.pop(&mut consumer), Some(value));
+        }
+        assert_eq!(consumer.local.get_mut().capacity(), capacity);
+
+        // An empty poll returns the allocation to producers instead of discarding a small cache.
+        assert_eq!(queue.pop(&mut consumer), None);
+        assert_eq!(queue.inner.lock().messages.capacity(), capacity);
+    }
+
+    #[test]
+    fn unbounded_queue_drains_zero_sized_values() {
+        let queue = UnboundedQueue::new();
+        let mut consumer = UnboundedConsumer::new();
+        for _ in 0..32 {
+            assert!(queue.push(()).is_ok());
+        }
+        for _ in 0..32 {
+            assert_eq!(queue.pop(&mut consumer), Some(()));
+        }
         assert_eq!(queue.pop(&mut consumer), None);
     }
 }

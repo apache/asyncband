@@ -39,6 +39,9 @@ use crate::internal::atomic_waker::AtomicWaker;
 /// While the receiver is alive, each send appends its value immediately. Pending messages can
 /// therefore grow with producer demand and are limited only by successful memory allocation. Use a
 /// bounded channel or external admission control when producers may outpace the receiver.
+///
+/// After all messages have been received, large backing allocations are released; small buffers
+/// may be retained for reuse. Partially consumed batches can retain their original allocation.
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     let state = Arc::new(UnboundedState {
         queue: UnboundedQueue::new(),
