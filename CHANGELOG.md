@@ -10,6 +10,8 @@ All notable changes to this project will be documented in this file.
 
 * Complete bounded MPSC disconnection notifications and buffered-message cleanup even when a wake callback or message destructor panics.
 
+* Avoid deadlocks when a bounded MPSC sender's waker clone callback receives from the same channel.
+
 ### Improvements
 
 * Reduce unbounded MPSC synchronization overhead by transferring messages in batches and coordinating receiver notifications with queued messages; release large empty batch allocations while retaining small buffers for reuse.

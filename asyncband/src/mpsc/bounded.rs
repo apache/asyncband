@@ -28,15 +28,15 @@ use std::task::Poll;
 use std::task::ready;
 
 use self::ring::Ring;
+use self::waiters::SendWaiters;
 use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
 use super::TrySendError;
 use crate::internal::atomic_waker::AtomicWaker;
-use crate::internal::semaphore::Acquire;
-use crate::internal::semaphore::Semaphore;
 
 mod ring;
+mod waiters;
 
 /// Creates a bounded mpsc channel with room for `buffer` queued messages.
 ///
@@ -52,7 +52,7 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     let state = Arc::new(BoundedState {
         buffer: Ring::new(buffer),
         senders: AtomicUsize::new(1),
-        send_waiters: Semaphore::new(0),
+        send_waiters: SendWaiters::new(),
         rx_waker: AtomicWaker::new(),
     });
     let sender = BoundedSender {
@@ -65,8 +65,7 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
 struct BoundedState<T> {
     buffer: Ring<T>,
     senders: AtomicUsize,
-    // Notifications grant retries; only the ring determines whether buffer capacity is available.
-    send_waiters: Semaphore,
+    send_waiters: SendWaiters,
     rx_waker: AtomicWaker,
 }
 
@@ -122,48 +121,38 @@ impl<T> BoundedSender<T> {
             Err(TrySendError::Disconnected(value)) => return Err(SendError::new(value)),
             Err(TrySendError::Full(value)) => value,
         };
-
-        struct SendState<'a, T> {
-            sender: &'a BoundedSender<T>,
-            value: Option<T>,
-            acquire: Acquire<'a>,
-        }
-
-        impl<T> SendState<'_, T> {
-            fn poll_send(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SendError<T>>> {
-                let mut value = match self.value.take() {
-                    Some(value) => value,
-                    None => return Poll::Ready(Ok(())),
-                };
-
-                loop {
-                    let poll = self.acquire.poll_once(cx.waker());
-
-                    value = match self.sender.try_send(value) {
-                        Ok(()) => return Poll::Ready(Ok(())),
-                        Err(TrySendError::Disconnected(value)) => {
-                            return Poll::Ready(Err(SendError::new(value)));
-                        }
-                        Err(TrySendError::Full(value)) => value,
-                    };
-
-                    if poll.is_ready() {
-                        self.acquire = self.sender.state.send_waiters.poll_acquire(1);
-                    } else {
-                        self.value = Some(value);
-                        return Poll::Pending;
-                    }
+        let mut waiter = self.state.send_waiters.waiter();
+        let mut value = Some(value);
+        poll_fn(|cx| {
+            let message = value.take().expect("send polled after completion");
+            let message = match self.try_send(message) {
+                Ok(()) => {
+                    waiter.finish();
+                    return Poll::Ready(Ok(()));
+                }
+                Err(TrySendError::Disconnected(message)) => {
+                    waiter.finish();
+                    return Poll::Ready(Err(SendError::new(message)));
+                }
+                Err(TrySendError::Full(message)) => message,
+            };
+            waiter.register(cx.waker());
+            match self.try_send(message) {
+                Ok(()) => {
+                    waiter.finish();
+                    Poll::Ready(Ok(()))
+                }
+                Err(TrySendError::Disconnected(message)) => {
+                    waiter.finish();
+                    Poll::Ready(Err(SendError::new(message)))
+                }
+                Err(TrySendError::Full(message)) => {
+                    value = Some(message);
+                    Poll::Pending
                 }
             }
-        }
-
-        let acquire = self.state.send_waiters.poll_acquire(1);
-        let mut send = SendState {
-            sender: self,
-            value: Some(value),
-            acquire,
-        };
-        poll_fn(|cx| send.poll_send(cx)).await
+        })
+        .await
     }
 
     /// Attempts to send a message without waiting for capacity.
@@ -278,7 +267,7 @@ impl<T> BoundedReceiver<T> {
         } else {
             return Poll::Ready(Err(TryRecvError::Empty));
         };
-        self.state.send_waiters.release_if_nonempty(1);
+        self.state.send_waiters.notify_one();
         Poll::Ready(Ok(value))
     }
 

@@ -17,6 +17,8 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::Barrier;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -98,6 +100,86 @@ fn assert_completes_without_deadlock(test: impl FnOnce() + Send + 'static) {
         .recv_timeout(Duration::from_secs(10))
         .expect("waker callback did not finish");
     worker.join().unwrap();
+}
+
+#[test]
+fn bounded_send_rechecks_capacity_freed_by_waker_clone() {
+    struct ReceiveOnClone {
+        receiver: Mutex<mpsc::BoundedReceiver<usize>>,
+        received: AtomicBool,
+    }
+
+    unsafe fn clone(data: *const ()) -> RawWaker {
+        let pointer = data.cast::<ReceiveOnClone>();
+        // SAFETY: Each raw waker owns one Arc reference, and this callback borrows that reference.
+        let state = unsafe { &*pointer };
+        if !state.received.swap(true, Ordering::Relaxed) {
+            assert_eq!(state.receiver.lock().unwrap().try_recv(), Ok(1));
+        }
+        // SAFETY: The live reference owned by the input waker keeps the allocation alive.
+        unsafe { Arc::increment_strong_count(pointer) };
+        RawWaker::new(data, &VTABLE)
+    }
+    unsafe fn release(data: *const ()) {
+        // SAFETY: Consumes exactly the Arc reference owned by this waker.
+        drop(unsafe { Arc::from_raw(data.cast::<ReceiveOnClone>()) });
+    }
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, release, |_| {}, release);
+
+    assert_completes_without_deadlock(|| {
+        let (tx, rx) = mpsc::bounded(1);
+        tx.try_send(1).unwrap();
+        let state = Arc::new(ReceiveOnClone {
+            receiver: Mutex::new(rx),
+            received: AtomicBool::new(false),
+        });
+        let data = Arc::into_raw(state.clone()).cast();
+        // SAFETY: The vtable owns one Arc per waker; the callback state is Send + Sync.
+        let waker = unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) };
+        assert_eq!(
+            Box::pin(tx.send(2))
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker)),
+            Poll::Ready(Ok(()))
+        );
+        assert_eq!(state.receiver.lock().unwrap().try_recv(), Ok(2));
+    });
+}
+
+#[test]
+fn bounded_receive_racing_with_send_registration_cannot_lose_wakeup() {
+    struct Notified(AtomicBool);
+    impl Wake for Notified {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    for _ in 0..128 {
+        let (tx, mut rx) = mpsc::bounded(1);
+        tx.try_send(1).unwrap();
+        let start = Barrier::new(2);
+        let notified = Arc::new(Notified(AtomicBool::new(false)));
+        let waker = Waker::from(notified.clone());
+        let mut send = Box::pin(tx.send(2));
+        let poll = thread::scope(|scope| {
+            let receive = scope.spawn(|| {
+                start.wait();
+                assert_eq!(rx.try_recv(), Ok(1));
+            });
+            start.wait();
+            let poll = send.as_mut().poll(&mut Context::from_waker(&waker));
+            receive.join().unwrap();
+            poll
+        });
+        if poll.is_pending() {
+            assert!(notified.0.load(Ordering::Relaxed));
+            assert_eq!(poll_once(send.as_mut()), Poll::Ready(Ok(())));
+        } else {
+            assert_eq!(poll, Poll::Ready(Ok(())));
+        }
+        assert_eq!(rx.try_recv(), Ok(2));
+    }
 }
 
 #[test]
