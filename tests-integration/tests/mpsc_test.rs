@@ -15,9 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::future::Future;
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
 use std::thread;
 
 use asyncband::mpsc;
@@ -33,6 +38,50 @@ fn expect_ready<T>(poll: Poll<T>) -> T {
         Poll::Ready(value) => value,
         Poll::Pending => panic!("future should be ready"),
     }
+}
+
+struct HoldSender<S> {
+    _sender: S,
+}
+
+// This waker must own the sender so its final drop can break the tested reference cycle.
+#[allow(clippy::manual_noop_waker)]
+impl<S: Send + Sync> Wake for HoldSender<S> {
+    fn wake(self: Arc<Self>) {}
+}
+
+#[test]
+fn bounded_receiver_drop_releases_registered_waker() {
+    let (tx, mut rx) = mpsc::bounded::<()>(1);
+    let holder = Arc::new(HoldSender { _sender: tx });
+    let retained = Arc::downgrade(&holder);
+    let waker = Waker::from(holder);
+    assert!(
+        Box::pin(rx.recv())
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(waker);
+    drop(rx);
+    assert!(retained.upgrade().is_none());
+}
+
+#[test]
+fn unbounded_receiver_drop_releases_registered_waker() {
+    let (tx, mut rx) = mpsc::unbounded::<()>();
+    let holder = Arc::new(HoldSender { _sender: tx });
+    let retained = Arc::downgrade(&holder);
+    let waker = Waker::from(holder);
+    assert!(
+        Box::pin(rx.recv())
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(waker);
+    drop(rx);
+    assert!(retained.upgrade().is_none());
 }
 
 #[test]

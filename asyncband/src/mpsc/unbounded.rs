@@ -134,7 +134,10 @@ impl<T> fmt::Debug for UnboundedReceiver<T> {
 
 impl<T> Drop for UnboundedReceiver<T> {
     fn drop(&mut self) {
+        // A registered waker may own a sender; release it to break that ownership cycle.
+        let receiver_waker = self.state.rx_waker.take();
         self.state.queue.disconnect_receiver(&mut self.consumer);
+        drop(receiver_waker);
     }
 }
 

@@ -214,9 +214,12 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
+        // A registered waker may own a sender; release it to break that ownership cycle.
+        let receiver_waker = self.state.rx_waker.take();
         // SAFETY: Only this non-cloneable receiver consumes the queue, through exclusive borrows.
         unsafe { self.state.queue.disconnect_receiver() };
         self.state.tx_permits.notify_all();
+        drop(receiver_waker);
     }
 }
 
