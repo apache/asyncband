@@ -216,9 +216,13 @@ impl<T> BoundedQueue<T> {
         }
     }
 
-    // Pending means the head slot is reserved but not published. It is distinct from an empty
-    // queue: later producers may already have completed their sends.
-    pub fn pop(&self) -> Poll<Option<T>> {
+    /// Pending means the head slot is reserved but not published. It is distinct from an empty
+    /// queue: later producers may already have completed their sends.
+    ///
+    /// # Safety
+    ///
+    /// The caller must serialize all calls to `pop` and `disconnect_receiver` for this queue.
+    pub unsafe fn pop(&self) -> Poll<Option<T>> {
         let mut head = self.head.load(Ordering::Relaxed);
         let mut backoff = 0;
         loop {
@@ -250,9 +254,15 @@ impl<T> BoundedQueue<T> {
         }
     }
 
-    pub fn disconnect_receiver(&self) {
+    /// Closes the queue and drops all remaining values.
+    ///
+    /// # Safety
+    ///
+    /// The caller must serialize all calls to `pop` and `disconnect_receiver` for this queue.
+    pub unsafe fn disconnect_receiver(&self) {
         let tail = self.tail.fetch_or(self.mark_bit, Ordering::SeqCst) & !self.mark_bit;
-        self.discard_until(tail);
+        // SAFETY: The caller guarantees exclusive consumer access.
+        unsafe { self.discard_until(tail) };
     }
 
     fn advance(&self, position: usize) -> usize {
@@ -265,7 +275,8 @@ impl<T> BoundedQueue<T> {
         }
     }
 
-    fn discard_until(&self, tail: usize) {
+    // The caller must close the queue and have exclusive consumer access before discarding values.
+    unsafe fn discard_until(&self, tail: usize) {
         let mut head = self.head.load(Ordering::Relaxed);
         let mut backoff = 0;
         while head != tail {
@@ -299,7 +310,8 @@ impl<T> BoundedQueue<T> {
 impl<T> Drop for BoundedQueue<T> {
     fn drop(&mut self) {
         let tail = self.tail.fetch_or(self.mark_bit, Ordering::SeqCst) & !self.mark_bit;
-        self.discard_until(tail);
+        // SAFETY: The queue is closed and its exclusive borrow rules out concurrent access.
+        unsafe { self.discard_until(tail) };
     }
 }
 
@@ -324,13 +336,16 @@ mod tests {
         }
         assert!(matches!(queue.try_push(3), Err(PushError::Full(3))));
         for value in 0..3 {
-            assert_eq!(queue.pop(), Poll::Ready(Some(value)));
+            // SAFETY: This thread is the only consumer.
+            assert_eq!(unsafe { queue.pop() }, Poll::Ready(Some(value)));
         }
-        assert_eq!(queue.pop(), Poll::Ready(None));
+        // SAFETY: This thread is the only consumer.
+        assert_eq!(unsafe { queue.pop() }, Poll::Ready(None));
 
         for value in 3..12 {
             assert!(queue.try_push(value).is_ok());
-            assert_eq!(queue.pop(), Poll::Ready(Some(value)));
+            // SAFETY: This thread is the only consumer.
+            assert_eq!(unsafe { queue.pop() }, Poll::Ready(Some(value)));
         }
     }
 
@@ -345,15 +360,19 @@ mod tests {
         // SAFETY: advancing the tail reserved this initially empty slot for the synthetic producer.
         unsafe { (*slot.value.get()).write(1) };
         let later_send = queue.try_push(2);
-        let receive = queue.pop();
+        // SAFETY: This thread is the only consumer, even while a producer is unpublished.
+        let receive = unsafe { queue.pop() };
 
         // Finish publication before asserting so even a failed assertion can safely drop the queue.
         slot.stamp.store(1, Ordering::Release);
         assert!(later_send.is_ok());
         assert_eq!(receive, Poll::Pending);
-        assert_eq!(queue.pop(), Poll::Ready(Some(1)));
-        assert_eq!(queue.pop(), Poll::Ready(Some(2)));
-        assert_eq!(queue.pop(), Poll::Ready(None));
+        // SAFETY: This thread is the only consumer.
+        unsafe {
+            assert_eq!(queue.pop(), Poll::Ready(Some(1)));
+            assert_eq!(queue.pop(), Poll::Ready(Some(2)));
+            assert_eq!(queue.pop(), Poll::Ready(None));
+        }
     }
 
     #[test]
@@ -382,7 +401,8 @@ mod tests {
 
         let mut values = Vec::new();
         while values.len() < 64 {
-            if let Poll::Ready(Some(value)) = queue.pop() {
+            // SAFETY: Worker threads only push; this thread is the only consumer.
+            if let Poll::Ready(Some(value)) = unsafe { queue.pop() } {
                 values.push(value);
             } else {
                 thread::yield_now();
@@ -422,7 +442,8 @@ mod tests {
         }
 
         // Free slot 0, then reuse it on the next lap at position 8.
-        let popped = queue.pop();
+        // SAFETY: This thread is the only consumer.
+        let popped = unsafe { queue.pop() };
         assert!(matches!(popped, Poll::Ready(Some(_))));
         drop(popped);
         assert_eq!(drops[0].load(Ordering::Relaxed), 1);
@@ -432,7 +453,8 @@ mod tests {
         assert_eq!(queue.head.load(Ordering::Relaxed), 1);
         assert_eq!(queue.tail.load(Ordering::Relaxed), queue.one_lap + 1);
 
-        queue.disconnect_receiver();
+        // SAFETY: This thread is the only consumer and no pop is in progress.
+        unsafe { queue.disconnect_receiver() };
 
         // `discard_until` must dispose every value exactly once, including position 8.
         for (value, counter) in drops.iter().enumerate() {

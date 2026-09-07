@@ -214,7 +214,8 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        self.state.queue.disconnect_receiver();
+        // SAFETY: Only this non-cloneable receiver consumes the queue, through exclusive borrows.
+        unsafe { self.state.queue.disconnect_receiver() };
         self.state.tx_permits.notify_all();
     }
 }
@@ -255,12 +256,14 @@ impl<T> BoundedReceiver<T> {
     }
 
     fn try_recv_once(&mut self) -> Poll<Result<T, TryRecvError>> {
-        let value = if let Some(value) = ready!(self.state.queue.pop()) {
+        // SAFETY: Only this non-cloneable receiver consumes the queue, through exclusive borrows.
+        let value = if let Some(value) = ready!(unsafe { self.state.queue.pop() }) {
             value
         } else if self.state.senders.load(Ordering::Acquire) == 0 {
             // The final sender can enqueue between the first empty observation and decrementing
             // the sender count, so check the queue again before reporting disconnection.
-            let Some(value) = ready!(self.state.queue.pop()) else {
+            // SAFETY: The exclusive receiver borrow still guarantees a single consumer.
+            let Some(value) = ready!(unsafe { self.state.queue.pop() }) else {
                 return Poll::Ready(Err(TryRecvError::Disconnected));
             };
             value
