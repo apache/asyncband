@@ -16,9 +16,7 @@
 // under the License.
 
 use std::cell::UnsafeCell;
-use std::collections::VecDeque;
 use std::hint::spin_loop;
-use std::mem;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -26,90 +24,10 @@ use std::sync::atomic::fence;
 use std::task::Poll;
 
 use crate::internal::cache_padded::CachePadded;
-use crate::internal::mutex::Mutex;
-
-// Keep small batches reusable without retaining an arbitrarily large historical burst. Count
-// inline storage bytes: boxed payloads own separate allocations, and zero-sized values own none.
-const UNBOUNDED_CACHE_BYTES: usize = 64 * 1024;
-
-pub struct UnboundedQueue<T> {
-    inner: Mutex<UnboundedInner<T>>,
-}
-
-struct UnboundedInner<T> {
-    // Storage and receiver liveness share one lock so a send is linearized either before receiver
-    // disconnection, with its value in the queue, or after it, with the value returned to sender.
-    messages: VecDeque<T>,
-    receiver_alive: bool,
-}
-
-pub struct UnboundedConsumer<T> {
-    // Preserve Sync for Send-only values; exclusive consumer access never needs to lock this
-    // mutex.
-    local: Mutex<VecDeque<T>>,
-}
-
-// The consumer never relies on a pinned location for its local queue or queued values.
-impl<T> Unpin for UnboundedConsumer<T> {}
 
 pub enum PushError<T> {
     Full(T),
     Disconnected(T),
-}
-
-impl<T> UnboundedQueue<T> {
-    pub const fn new() -> Self {
-        Self {
-            inner: Mutex::new(UnboundedInner {
-                messages: VecDeque::new(),
-                receiver_alive: true,
-            }),
-        }
-    }
-
-    pub fn push(&self, value: T) -> Result<(), PushError<T>> {
-        let mut inner = self.inner.lock();
-        if !inner.receiver_alive {
-            return Err(PushError::Disconnected(value));
-        }
-        inner.messages.push_back(value);
-        Ok(())
-    }
-
-    pub fn pop(&self, consumer: &mut UnboundedConsumer<T>) -> Option<T> {
-        let local = consumer.local.get_mut();
-        if local.is_empty() {
-            let mut inner = self.inner.lock();
-            mem::swap(local, &mut inner.messages);
-        }
-        if local.len() == 1
-            && local.capacity().saturating_mul(mem::size_of::<T>()) > UNBOUNDED_CACHE_BYTES
-        {
-            // Retire the allocation on the last value, outside the shared lock. Keep the ordinary
-            // pop as a tail expression so large inline values need no intermediate storage.
-            mem::take(local).pop_front()
-        } else {
-            local.pop_front()
-        }
-    }
-
-    pub fn disconnect_receiver(&self, consumer: &mut UnboundedConsumer<T>) {
-        let (local, shared) = {
-            let local = consumer.local.get_mut();
-            let mut inner = self.inner.lock();
-            inner.receiver_alive = false;
-            (mem::take(local), mem::take(&mut inner.messages))
-        };
-        drop((local, shared));
-    }
-}
-
-impl<T> UnboundedConsumer<T> {
-    pub const fn new() -> Self {
-        Self {
-            local: Mutex::new(VecDeque::new()),
-        }
-    }
 }
 
 pub struct BoundedQueue<T> {
@@ -307,8 +225,6 @@ mod tests {
 
     use super::BoundedQueue;
     use super::PushError;
-    use super::UnboundedConsumer;
-    use super::UnboundedQueue;
 
     #[test]
     fn bounded_queue_preserves_capacity_and_fifo_order() {
@@ -456,73 +372,5 @@ mod tests {
                 "value {value} was dropped more than once"
             );
         }
-    }
-
-    #[test]
-    fn unbounded_queue_batches_without_reordering() {
-        let queue = UnboundedQueue::new();
-        let mut consumer = UnboundedConsumer::new();
-        assert!(queue.push(1).is_ok());
-        assert!(queue.push(2).is_ok());
-        assert_eq!(queue.pop(&mut consumer), Some(1));
-        assert!(queue.push(3).is_ok());
-        assert_eq!(queue.pop(&mut consumer), Some(2));
-        assert_eq!(queue.pop(&mut consumer), Some(3));
-        assert_eq!(queue.pop(&mut consumer), None);
-    }
-
-    #[test]
-    fn unbounded_queue_releases_large_batches_after_the_last_value() {
-        let queue = UnboundedQueue::new();
-        let mut consumer = UnboundedConsumer::new();
-        for value in 0..128u8 {
-            assert!(queue.push([value; 1024]).is_ok());
-        }
-
-        for value in 0..64u8 {
-            assert_eq!(queue.pop(&mut consumer), Some([value; 1024]));
-        }
-        // A partially consumed batch must survive while producers start filling the next batch.
-        assert!(queue.push([128; 1024]).is_ok());
-        for value in 64..128u8 {
-            assert_eq!(queue.pop(&mut consumer), Some([value; 1024]));
-        }
-
-        // Reclaim on the final successful receive, without requiring an extra empty poll.
-        assert_eq!(consumer.local.get_mut().capacity(), 0);
-        assert_eq!(queue.pop(&mut consumer), Some([128; 1024]));
-        assert_eq!(queue.pop(&mut consumer), None);
-    }
-
-    #[test]
-    fn unbounded_queue_keeps_small_batches_for_reuse() {
-        let queue = UnboundedQueue::new();
-        let mut consumer = UnboundedConsumer::new();
-        for value in 0..32usize {
-            assert!(queue.push(value).is_ok());
-        }
-        assert_eq!(queue.pop(&mut consumer), Some(0));
-        let capacity = consumer.local.get_mut().capacity();
-        for value in 1..32 {
-            assert_eq!(queue.pop(&mut consumer), Some(value));
-        }
-        assert_eq!(consumer.local.get_mut().capacity(), capacity);
-
-        // An empty poll returns the allocation to producers instead of discarding a small cache.
-        assert_eq!(queue.pop(&mut consumer), None);
-        assert_eq!(queue.inner.lock().messages.capacity(), capacity);
-    }
-
-    #[test]
-    fn unbounded_queue_drains_zero_sized_values() {
-        let queue = UnboundedQueue::new();
-        let mut consumer = UnboundedConsumer::new();
-        for _ in 0..32 {
-            assert!(queue.push(()).is_ok());
-        }
-        for _ in 0..32 {
-            assert_eq!(queue.pop(&mut consumer), Some(()));
-        }
-        assert_eq!(queue.pop(&mut consumer), None);
     }
 }

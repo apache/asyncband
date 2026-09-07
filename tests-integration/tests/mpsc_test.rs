@@ -21,9 +21,12 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::RawWaker;
+use std::task::RawWakerVTable;
 use std::task::Wake;
 use std::task::Waker;
 use std::thread;
+use std::time::Duration;
 
 use asyncband::mpsc;
 use asyncband::mpsc::RecvError;
@@ -82,6 +85,133 @@ fn unbounded_receiver_drop_releases_registered_waker() {
     drop(waker);
     drop(rx);
     assert!(retained.upgrade().is_none());
+}
+
+fn assert_completes_without_deadlock(test: impl FnOnce() + Send + 'static) {
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || {
+        test();
+        finished_tx.send(()).unwrap();
+    });
+    finished_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("waker callback did not finish");
+    worker.join().unwrap();
+}
+
+#[test]
+fn unbounded_wake_callback_can_send() {
+    struct SendOnWake(mpsc::UnboundedSender<usize>);
+
+    impl Wake for SendOnWake {
+        fn wake(self: Arc<Self>) {
+            self.0.send(2).unwrap();
+        }
+    }
+
+    assert_completes_without_deadlock(|| {
+        let (tx, mut rx) = mpsc::unbounded();
+        let waker = Waker::from(Arc::new(SendOnWake(tx.clone())));
+        assert!(
+            Box::pin(rx.recv())
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        tx.send(1).unwrap();
+        assert_eq!(rx.try_recv(), Ok(1));
+        assert_eq!(rx.try_recv(), Ok(2));
+    });
+}
+
+#[test]
+fn unbounded_replaced_and_disconnected_wakers_can_send() {
+    struct SendOnDrop {
+        sender: mpsc::UnboundedSender<usize>,
+        disconnected: bool,
+        drops: Arc<AtomicUsize>,
+    }
+
+    // The final waker drop must run a callback, even though waking itself does nothing.
+    #[allow(clippy::manual_noop_waker)]
+    impl Wake for SendOnDrop {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    impl Drop for SendOnDrop {
+        fn drop(&mut self) {
+            assert_eq!(self.sender.send(7).is_err(), self.disconnected);
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    assert_completes_without_deadlock(|| {
+        for disconnected in [false, true] {
+            let (tx, mut rx) = mpsc::unbounded();
+            let drops = Arc::new(AtomicUsize::new(0));
+            let waker = Waker::from(Arc::new(SendOnDrop {
+                sender: tx,
+                disconnected,
+                drops: drops.clone(),
+            }));
+            assert!(
+                Box::pin(rx.recv())
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            drop(waker);
+            if disconnected {
+                drop(rx);
+            } else {
+                // Replacing the waker can enqueue a message during this poll. Either immediate
+                // completion or a notified Pending is valid, but the message must not be lost.
+                let poll = poll_once(Box::pin(rx.recv()).as_mut());
+                if poll.is_pending() {
+                    assert_eq!(rx.try_recv(), Ok(7));
+                } else {
+                    assert_eq!(poll, Poll::Ready(Ok(7)));
+                }
+                assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+            }
+            assert_eq!(drops.load(Ordering::Relaxed), 1);
+        }
+    });
+}
+
+#[test]
+fn unbounded_waker_clone_rechecks_messages_sent_during_registration() {
+    unsafe fn clone_sender(data: *const ()) -> RawWaker {
+        let sender = data.cast::<mpsc::UnboundedSender<usize>>();
+        // SAFETY: Each raw waker owns an Arc to this sender; cloning borrows the live sender and
+        // then adds the strong reference owned by the returned waker.
+        unsafe {
+            (*sender).send(7).unwrap();
+            Arc::increment_strong_count(sender);
+        }
+        RawWaker::new(data, &VTABLE)
+    }
+
+    unsafe fn drop_sender(data: *const ()) {
+        // SAFETY: Consumes exactly the Arc reference owned by this raw waker.
+        drop(unsafe { Arc::from_raw(data.cast::<mpsc::UnboundedSender<usize>>()) });
+    }
+
+    static VTABLE: RawWakerVTable =
+        RawWakerVTable::new(clone_sender, drop_sender, |_| {}, drop_sender);
+
+    assert_completes_without_deadlock(|| {
+        let (tx, mut rx) = mpsc::unbounded::<usize>();
+        let data = Arc::into_raw(Arc::new(tx)).cast();
+        // SAFETY: The vtable manages one Arc reference per waker and the sender is Send + Sync.
+        let waker = unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) };
+        assert_eq!(
+            Box::pin(rx.recv())
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker)),
+            Poll::Ready(Ok(7))
+        );
+    });
 }
 
 #[test]
