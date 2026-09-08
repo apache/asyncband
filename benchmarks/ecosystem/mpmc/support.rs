@@ -101,6 +101,9 @@ impl ConcurrentBatch {
                 for offset in 0..messages_per_producer {
                     send(&sender, black_box(first + offset));
                 }
+                // Close the channel when production ends so pending receivers can finish
+                // draining it before all workers rendezvous at the completion barrier.
+                drop(sender);
                 done.wait();
             }));
         }
