@@ -63,6 +63,24 @@ pub fn poll_with<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Outpu
     future.poll(&mut Context::from_waker(waker))
 }
 
+pub fn waker_on_drop(callback: impl Fn() + Send + Sync + 'static) -> Waker {
+    struct OnDrop(Box<dyn Fn() + Send + Sync>);
+
+    // Only destruction runs the callback; waking consumes the reference as usual.
+    #[allow(clippy::manual_noop_waker)]
+    impl Wake for OnDrop {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    impl Drop for OnDrop {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+
+    Waker::from(Arc::new(OnDrop(Box::new(callback))))
+}
+
 // RawWaker is needed only to exercise clone callbacks, which the safe Wake trait cannot override.
 pub fn waker_on_clone(callback: impl Fn() + Send + Sync + 'static) -> Waker {
     struct OnClone(Box<dyn Fn() + Send + Sync>);

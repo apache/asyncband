@@ -19,8 +19,6 @@ use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::task::Wake;
 use std::task::Waker;
 
@@ -59,7 +57,27 @@ fn held_permits_consume_capacity_without_claiming_message_order() {
 }
 
 #[test]
-fn dropping_a_permit_wakes_a_pending_reservation() {
+fn zero_sized_messages_support_the_full_capacity_range() {
+    for capacity in [usize::MAX / 4 + 1, usize::MAX / 2 + 1, usize::MAX] {
+        let (tx, mut rx) = mpsc::bounded::<()>(capacity);
+        let permit = tx.try_reserve().unwrap();
+        tx.try_send(()).unwrap();
+        assert_eq!(rx.try_recv(), Ok(()));
+        drop(permit);
+        tx.try_reserve().unwrap().send(()).unwrap();
+        // Closing restores buffered capacity before outstanding permits are dropped.
+        let held = tx.try_reserve().unwrap();
+        drop(rx);
+        drop(held);
+        assert!(matches!(
+            tx.try_reserve(),
+            Err(TrySendError::Disconnected(()))
+        ));
+    }
+}
+
+#[test]
+fn released_capacity_is_granted_to_the_oldest_waiter() {
     let (tx, mut rx) = mpsc::bounded(1);
     let held = tx.try_reserve().unwrap();
     let mut waiting = Box::pin(tx.reserve());
@@ -67,10 +85,49 @@ fn dropping_a_permit_wakes_a_pending_reservation() {
     assert!(poll_with(waiting.as_mut(), &waker).is_pending());
     drop(held);
     assert_eq!(wakes.count(), 1);
+    // The waiting future owns the released slot even before the executor polls it again.
+    assert!(matches!(tx.try_reserve(), Err(TrySendError::Full(()))));
+    assert_eq!(tx.try_send(9), Err(TrySendError::Full(9)));
     let permit = expect_ready(poll_with(waiting.as_mut(), &waker)).unwrap();
     assert!(matches!(tx.try_reserve(), Err(TrySendError::Full(()))));
     permit.send(7).unwrap();
     assert_eq!(rx.try_recv(), Ok(7));
+}
+
+#[test]
+fn cancelling_a_granted_reservation_passes_capacity_to_a_waiting_send() {
+    let (tx, mut rx) = mpsc::bounded(1);
+    let held = tx.try_reserve().unwrap();
+    let mut reservation = Box::pin(tx.reserve());
+    let mut send = Box::pin(tx.send(7));
+    let (waker, wakes) = WakeCounter::new();
+    assert!(poll_once(reservation.as_mut()).is_pending());
+    assert!(poll_with(send.as_mut(), &waker).is_pending());
+    drop(held);
+    assert_eq!(wakes.count(), 0);
+    drop(reservation);
+    assert_eq!(wakes.count(), 1);
+    assert_eq!(tx.try_send(9), Err(TrySendError::Full(9)));
+    assert_eq!(expect_ready(poll_once(send.as_mut())), Ok(()));
+    assert_eq!(rx.try_recv(), Ok(7));
+    let held = tx.try_reserve().unwrap();
+    assert!(matches!(tx.try_reserve(), Err(TrySendError::Full(()))));
+    drop(held);
+}
+
+#[test]
+fn closing_after_a_grant_returns_the_unsent_message() {
+    let (tx, mut rx) = mpsc::bounded(1);
+    tx.try_send(String::from("queued")).unwrap();
+    let mut send = Box::pin(tx.send(String::from("unsent")));
+    let mut reservation = Box::pin(tx.reserve());
+    assert!(poll_once(send.as_mut()).is_pending());
+    assert!(poll_once(reservation.as_mut()).is_pending());
+    assert_eq!(rx.try_recv().unwrap(), "queued");
+    drop(rx);
+    let error = expect_ready(poll_once(send.as_mut())).unwrap_err();
+    assert_eq!(error.into_inner(), "unsent");
+    assert!(expect_ready(poll_once(reservation.as_mut())).is_err());
 }
 
 #[test]
@@ -132,31 +189,6 @@ fn a_panicking_publication_wake_cannot_return_capacity_twice() {
 }
 
 #[test]
-fn an_old_permit_observes_consumption_before_reusing_a_slot() {
-    let (tx, mut rx) = mpsc::bounded(2);
-    let old = tx.try_reserve().unwrap();
-    let recycled = AtomicBool::new(false);
-    std::thread::scope(|scope| {
-        let recycled = &recycled;
-        let producer = scope.spawn(move || {
-            // Coordinate the schedule without supplying the happens-before edge that the
-            // channel itself must provide between the previous read and this slot's reuse.
-            while !recycled.load(Ordering::Relaxed) {
-                std::thread::yield_now();
-            }
-            old.send(String::from("reused")).unwrap();
-        });
-        for value in ["first", "second"] {
-            tx.try_send(String::from(value)).unwrap();
-            assert_eq!(rx.try_recv().unwrap(), value);
-        }
-        recycled.store(true, Ordering::Relaxed);
-        producer.join().unwrap();
-    });
-    assert_eq!(rx.try_recv().unwrap(), "reused");
-}
-
-#[test]
 fn concurrent_cancellation_preserves_capacity_and_message_order() {
     const PRODUCERS: usize = 3;
     const MESSAGES: usize = if cfg!(miri) { 8 } else { 256 };
@@ -202,7 +234,7 @@ fn concurrent_cancellation_preserves_capacity_and_message_order() {
             worker.join().unwrap();
         }
     });
-    // Drain and join before asserting so a regression cannot strand producers on a full ring.
+    // Drain and join before asserting so a regression cannot strand producers on a full channel.
     assert_eq!(out_of_order, 0);
     let permits: Vec<_> = (0..3).map(|_| tx.try_reserve().unwrap()).collect();
     assert!(matches!(tx.try_reserve(), Err(TrySendError::Full(()))));

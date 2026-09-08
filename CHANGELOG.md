@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
-* Add bounded MPSC `reserve` and `try_reserve` methods returning a `Permit`, allowing callers to wait for capacity before constructing a message; unused permits release capacity without claiming message order.
+* Add bounded MPSC `reserve` and `try_reserve` methods returning a `Permit`, allowing callers to wait for capacity before constructing a message; pending sends and reservations receive capacity in wait-queue order, and unused permits release capacity without claiming message order.
 
 ### Bug fixes
 
@@ -17,7 +17,6 @@ All notable changes to this project will be documented in this file.
 ### Improvements
 
 * Finish releasing buffered bounded MPSC messages even if one message destructor panics.
-* Reduce bounded MPSC contention when senders or the receiver are not waiting, improving throughput without changing capacity or cancellation semantics.
 * Improve unbounded MPSC throughput with batched receiving and incremental storage reclamation; empty-buffer retention is bounded independently of previous peak occupancy.
 
 ## v0.7.2

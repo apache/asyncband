@@ -35,6 +35,7 @@ use super::support::assert_completes_without_deadlock;
 use super::support::expect_ready;
 use super::support::poll_with;
 use super::support::waker_on_clone;
+use super::support::waker_on_drop;
 
 struct HoldSender<S> {
     _sender: S,
@@ -155,35 +156,68 @@ fn wake_callbacks_can_send_into_the_same_channel() {
 }
 
 #[test]
-fn unbounded_replaced_and_disconnected_wakers_can_send() {
-    struct SendOnDrop {
-        sender: mpsc::UnboundedSender<usize>,
-        disconnected: bool,
-        drops: Arc<AtomicUsize>,
-    }
-
-    // The final waker drop must run a callback, even though waking itself does nothing.
-    #[allow(clippy::manual_noop_waker)]
-    impl Wake for SendOnDrop {
-        fn wake(self: Arc<Self>) {}
-    }
-
-    impl Drop for SendOnDrop {
-        fn drop(&mut self) {
-            assert_eq!(self.sender.send(7).is_err(), self.disconnected);
-            self.drops.fetch_add(1, Ordering::Relaxed);
+fn bounded_waiter_waker_replacement_and_cancellation_can_reenter() {
+    assert_completes_without_deadlock(|| {
+        for replace in [false, true] {
+            let (tx, mut rx) = mpsc::bounded(1);
+            tx.try_send(0).unwrap();
+            let drops = Arc::new(AtomicUsize::new(0));
+            let waker = waker_on_drop({
+                let tx = tx.clone();
+                let drops = drops.clone();
+                move || {
+                    assert_eq!(tx.try_send(9), Err(mpsc::TrySendError::Full(9)));
+                    drops.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+            let mut send = Box::pin(tx.send(1));
+            assert!(poll_with(send.as_mut(), &waker).is_pending());
+            drop(waker);
+            if replace {
+                assert!(poll_once(send.as_mut()).is_pending());
+                assert_eq!(drops.load(Ordering::Relaxed), 1);
+            }
+            drop(send);
+            assert_eq!(drops.load(Ordering::Relaxed), 1);
+            assert_eq!(rx.try_recv(), Ok(0));
+            tx.try_send(2).unwrap();
+            assert_eq!(rx.try_recv(), Ok(2));
         }
-    }
+    });
+}
 
+#[test]
+fn bounded_receiver_waker_replacement_can_send() {
+    assert_completes_without_deadlock(|| {
+        let (tx, mut rx) = mpsc::bounded(1);
+        let waker = waker_on_drop(move || tx.try_send(7).unwrap());
+        assert!(poll_with(Box::pin(rx.recv()).as_mut(), &waker).is_pending());
+        drop(waker);
+        let (waker, wakes) = WakeCounter::new();
+        let poll = poll_with(Box::pin(rx.recv()).as_mut(), &waker);
+        if poll.is_pending() {
+            assert!(wakes.count() > 0);
+            assert_eq!(rx.try_recv(), Ok(7));
+        } else {
+            assert_eq!(poll, Poll::Ready(Ok(7)));
+        }
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+    });
+}
+
+#[test]
+fn unbounded_replaced_and_disconnected_wakers_can_send() {
     assert_completes_without_deadlock(|| {
         for disconnected in [false, true] {
             let (tx, mut rx) = mpsc::unbounded();
             let drops = Arc::new(AtomicUsize::new(0));
-            let waker = Waker::from(Arc::new(SendOnDrop {
-                sender: tx,
-                disconnected,
-                drops: drops.clone(),
-            }));
+            let waker = waker_on_drop({
+                let drops = drops.clone();
+                move || {
+                    assert_eq!(tx.send(7).is_err(), disconnected);
+                    drops.fetch_add(1, Ordering::Relaxed);
+                }
+            });
             assert!(
                 Box::pin(rx.recv())
                     .as_mut()

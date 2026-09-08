@@ -105,6 +105,7 @@ dependencies = [
  "asyncband",
  "divan",
  "flume",
+ "kanal",
  "pollster",
  "tokio",
  "waitgroup",
@@ -563,6 +564,16 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "kanal"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e3953adf0cd667798b396c2fa13552d6d9b3269d7dd1154c4c416442d1ff574"
+dependencies = [
+ "futures-core",
+ "lock_api",
+]
 
 [[package]]
 name = "libc"
