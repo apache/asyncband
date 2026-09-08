@@ -7,11 +7,12 @@ All notable changes to this project will be documented in this file.
 ### Bug fixes
 
 * Release MPSC receiver wakers when the receiver is dropped, avoiding retained tasks and ownership cycles when a waker holds a sender.
-* Complete bounded MPSC disconnection notifications and buffered-message cleanup even when a wake callback or message destructor panics.
+* Notify all blocked bounded MPSC senders on receiver disconnection even when a buffered message destructor panics.
 * Avoid deadlocks when a bounded MPSC sender's waker clone callback receives from the same channel.
 
 ### Improvements
 
+* Finish releasing buffered bounded MPSC messages even if one message destructor panics.
 * Reduce bounded MPSC contention when senders or the receiver are not waiting, improving throughput without changing capacity or cancellation semantics.
 * Improve unbounded MPSC throughput with batched receiving and incremental storage reclamation; empty-buffer retention is bounded independently of previous peak occupancy.
 
