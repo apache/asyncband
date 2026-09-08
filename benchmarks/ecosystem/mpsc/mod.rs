@@ -17,5 +17,6 @@
 
 mod adapters;
 mod bounded;
+mod reservation;
 mod support;
 mod unbounded;
