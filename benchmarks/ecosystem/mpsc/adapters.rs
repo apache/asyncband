@@ -16,6 +16,7 @@
 // under the License.
 
 use std::fmt::Debug;
+use std::future::Future;
 use std::task::Context;
 
 use crate::support::poll_ready;
@@ -26,7 +27,7 @@ pub struct AsyncChannel;
 pub struct Flume;
 
 pub trait BoundedMpsc: Send + Sync + 'static {
-    type Sender: Clone + Send + 'static;
+    type Sender: Clone + Send + Sync + 'static;
     type Receiver: Send + 'static;
 
     fn channel(capacity: usize) -> (Self::Sender, Self::Receiver);
@@ -34,18 +35,21 @@ pub trait BoundedMpsc: Send + Sync + 'static {
     fn try_recv(receiver: &mut Self::Receiver) -> usize;
     fn send_ready(sender: &Self::Sender, value: usize, context: &mut Context<'_>);
     fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize;
+    fn send_async(sender: &Self::Sender, value: usize) -> impl Future<Output = ()> + Send;
+    fn recv_async(receiver: &mut Self::Receiver) -> impl Future<Output = usize> + Send;
     fn send_blocking(sender: &Self::Sender, value: usize);
     fn recv_blocking(receiver: &mut Self::Receiver) -> usize;
 }
 
 pub trait UnboundedMpsc<T = usize>: Send + Sync + 'static {
-    type Sender: Clone + Send + 'static;
+    type Sender: Clone + Send + Sync + 'static;
     type Receiver: Send + 'static;
 
     fn channel() -> (Self::Sender, Self::Receiver);
     fn send(sender: &Self::Sender, value: T);
     fn try_recv(receiver: &mut Self::Receiver) -> T;
     fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> T;
+    fn recv_async(receiver: &mut Self::Receiver) -> impl Future<Output = T> + Send;
     fn recv_blocking(receiver: &mut Self::Receiver) -> T;
 }
 
@@ -71,6 +75,14 @@ impl BoundedMpsc for Asyncband {
 
     fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
         poll_ready(receiver.recv(), context).unwrap()
+    }
+
+    async fn send_async(sender: &Self::Sender, value: usize) {
+        sender.send(value).await.unwrap();
+    }
+
+    async fn recv_async(receiver: &mut Self::Receiver) -> usize {
+        receiver.recv().await.unwrap()
     }
 
     fn send_blocking(sender: &Self::Sender, value: usize) {
@@ -106,6 +118,14 @@ impl BoundedMpsc for Tokio {
         poll_ready(receiver.recv(), context).unwrap()
     }
 
+    async fn send_async(sender: &Self::Sender, value: usize) {
+        sender.send(value).await.unwrap();
+    }
+
+    async fn recv_async(receiver: &mut Self::Receiver) -> usize {
+        receiver.recv().await.unwrap()
+    }
+
     fn send_blocking(sender: &Self::Sender, value: usize) {
         pollster::block_on(sender.send(value)).unwrap();
     }
@@ -137,6 +157,14 @@ impl BoundedMpsc for AsyncChannel {
 
     fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
         poll_ready(receiver.recv(), context).unwrap()
+    }
+
+    async fn send_async(sender: &Self::Sender, value: usize) {
+        sender.send(value).await.unwrap();
+    }
+
+    async fn recv_async(receiver: &mut Self::Receiver) -> usize {
+        receiver.recv().await.unwrap()
     }
 
     fn send_blocking(sender: &Self::Sender, value: usize) {
@@ -172,6 +200,14 @@ impl BoundedMpsc for Flume {
         poll_ready(receiver.recv_async(), context).unwrap()
     }
 
+    async fn send_async(sender: &Self::Sender, value: usize) {
+        sender.send_async(value).await.unwrap();
+    }
+
+    async fn recv_async(receiver: &mut Self::Receiver) -> usize {
+        receiver.recv_async().await.unwrap()
+    }
+
     fn send_blocking(sender: &Self::Sender, value: usize) {
         pollster::block_on(sender.send_async(value)).unwrap();
     }
@@ -201,6 +237,10 @@ impl<T: Debug + Send + 'static> UnboundedMpsc<T> for Asyncband {
         poll_ready(receiver.recv(), context).unwrap()
     }
 
+    async fn recv_async(receiver: &mut Self::Receiver) -> T {
+        receiver.recv().await.unwrap()
+    }
+
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {
         pollster::block_on(receiver.recv()).unwrap()
     }
@@ -224,6 +264,10 @@ impl<T: Debug + Send + 'static> UnboundedMpsc<T> for Tokio {
 
     fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> T {
         poll_ready(receiver.recv(), context).unwrap()
+    }
+
+    async fn recv_async(receiver: &mut Self::Receiver) -> T {
+        receiver.recv().await.unwrap()
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {
@@ -251,6 +295,10 @@ impl<T: Debug + Send + 'static> UnboundedMpsc<T> for AsyncChannel {
         poll_ready(receiver.recv(), context).unwrap()
     }
 
+    async fn recv_async(receiver: &mut Self::Receiver) -> T {
+        receiver.recv().await.unwrap()
+    }
+
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {
         pollster::block_on(receiver.recv()).unwrap()
     }
@@ -274,6 +322,10 @@ impl<T: Debug + Send + 'static> UnboundedMpsc<T> for Flume {
 
     fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> T {
         poll_ready(receiver.recv_async(), context).unwrap()
+    }
+
+    async fn recv_async(receiver: &mut Self::Receiver) -> T {
+        receiver.recv_async().await.unwrap()
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {

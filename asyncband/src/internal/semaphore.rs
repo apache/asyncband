@@ -39,7 +39,6 @@ use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::wake_all;
-use crate::internal::waker_batch::WakerBatch;
 
 /// The internal semaphore that provides low-level async primitives.
 #[derive(Debug)]
@@ -204,39 +203,6 @@ impl Semaphore {
         if n != 0 {
             self.insert_permits_with_lock(n, self.waiters.lock());
         }
-    }
-
-    /// Adds `n` permits to the semaphore if there is any waiter.
-    pub fn release_if_nonempty(&self, n: usize) {
-        let waiters = self.waiters.lock();
-        if !waiters.is_empty() {
-            self.insert_permits_with_lock(n, waiters);
-        }
-    }
-
-    /// Adds as many permits until there is no waiter.
-    pub fn notify_all(&self) {
-        let mut waiters = self.waiters.lock();
-        let mut wakers = WakerBatch::new();
-        loop {
-            match waiters.unlink_first_waiter(|node| {
-                node.permits = 0;
-                true
-            }) {
-                None => break,
-                Some((id, waiter)) => {
-                    let remove_now = waiter.waker.is_none();
-                    if let Some(waker) = waiter.waker.take() {
-                        wakers.push(waker);
-                    }
-                    if remove_now {
-                        waiters.remove_unlinked_waiter(id);
-                    }
-                }
-            }
-        }
-        drop(waiters);
-        wake_all(wakers.into_iter());
     }
 
     fn insert_permits_with_lock(

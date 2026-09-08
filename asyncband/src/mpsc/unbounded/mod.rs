@@ -29,10 +29,15 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
+use self::buffer::Buffer;
+use self::buffer::pop_batch;
 use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
 use crate::internal::mutex::Mutex;
+
+// Buffer owns segmentation and reclamation; Inbox serializes enqueueing, registration, and close.
+mod buffer;
 
 /// Creates an unbounded mpsc channel whose send operation never waits for capacity.
 ///
@@ -40,13 +45,13 @@ use crate::internal::mutex::Mutex;
 /// therefore grow with producer demand and are limited only by successful memory allocation. Use a
 /// bounded channel or external admission control when producers may outpace the receiver.
 ///
-/// After all messages have been received, large backing allocations are released; small buffers
-/// may be retained for reuse. Partially consumed batches can retain their original allocation.
+/// Storage is reclaimed incrementally as messages are received. A bounded amount of empty
+/// storage may be retained for reuse, independently of the channel's previous peak occupancy.
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
-    let state = Arc::new(UnboundedState {
+    let state = Arc::new(Shared {
         senders: AtomicUsize::new(1),
         inbox: Mutex::new(Inbox {
-            messages: VecDeque::new(),
+            buffer: Buffer::new(),
             receiver_alive: true,
             rx_waker: None,
         }),
@@ -61,7 +66,7 @@ pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     (sender, receiver)
 }
 
-struct UnboundedState<T> {
+struct Shared<T> {
     // Endpoint cloning and ordinary drops do not contend with message traffic.
     senders: AtomicUsize,
     inbox: Mutex<Inbox<T>>,
@@ -70,7 +75,7 @@ struct UnboundedState<T> {
 // Queue contents, receiver liveness, and its wake registration share one lock. Registering a
 // wait and checking its condition cannot race with sending or receiver disconnection.
 struct Inbox<T> {
-    messages: VecDeque<T>,
+    buffer: Buffer<T>,
     receiver_alive: bool,
     rx_waker: Option<Waker>,
 }
@@ -79,7 +84,7 @@ struct Inbox<T> {
 ///
 /// Instances are created by the [`unbounded`] function.
 pub struct UnboundedSender<T> {
-    state: Arc<UnboundedState<T>>,
+    state: Arc<Shared<T>>,
 }
 
 impl<T> Clone for UnboundedSender<T> {
@@ -119,7 +124,7 @@ impl<T> UnboundedSender<T> {
             if !state.receiver_alive {
                 return Err(SendError::new(value));
             }
-            state.messages.push_back(value);
+            state.buffer.push(value);
             state.rx_waker.take()
         };
         if let Some(waker) = waker {
@@ -133,7 +138,7 @@ impl<T> UnboundedSender<T> {
 ///
 /// Instances are created by the [`unbounded`] function.
 pub struct UnboundedReceiver<T> {
-    state: Arc<UnboundedState<T>>,
+    state: Arc<Shared<T>>,
     // Only accessed through `get_mut`; the mutex preserves Sync for Send-only payloads.
     batch: Mutex<VecDeque<T>>,
 }
@@ -150,7 +155,10 @@ impl<T> Drop for UnboundedReceiver<T> {
         let (shared, waker) = {
             let mut state = self.state.inbox.lock();
             state.receiver_alive = false;
-            (mem::take(&mut state.messages), state.rx_waker.take())
+            (
+                mem::replace(&mut state.buffer, Buffer::new()),
+                state.rx_waker.take(),
+            )
         };
         // Destructors may send again. A waker may also own a sender and form an ownership cycle.
         drop((batch, shared, waker));
@@ -184,7 +192,8 @@ impl<T> UnboundedReceiver<T> {
         let batch = self.batch.get_mut();
         if batch.is_empty() {
             let mut state = self.state.inbox.lock();
-            if state.messages.is_empty() {
+            state.buffer.refill(batch);
+            if batch.is_empty() {
                 // Holding the inbox lock excludes a final send between the empty observation and
                 // the sender-count check; disconnection needs no second queue read.
                 return Err(if self.state.senders.load(Ordering::Acquire) == 0 {
@@ -193,7 +202,6 @@ impl<T> UnboundedReceiver<T> {
                     TryRecvError::Empty
                 });
             }
-            mem::swap(batch, &mut state.messages);
         }
         Ok(pop_batch(batch))
     }
@@ -241,8 +249,8 @@ impl<T> UnboundedReceiver<T> {
         let mut new_waker = None;
         loop {
             let mut state = self.state.inbox.lock();
-            if !state.messages.is_empty() {
-                mem::swap(batch, &mut state.messages);
+            state.buffer.refill(batch);
+            if !batch.is_empty() {
                 drop(state);
                 return Poll::Ready(Ok(pop_batch(batch)));
             }
@@ -270,86 +278,3 @@ impl<T> UnboundedReceiver<T> {
 
 // No operation relies on a pinned location for the receiver batch or its values.
 impl<T> Unpin for UnboundedReceiver<T> {}
-
-// Retain small buffers for reuse, measuring inline storage rather than separately boxed payloads.
-const BATCH_CACHE_BYTES: usize = 64 * 1024;
-
-fn pop_batch<T>(batch: &mut VecDeque<T>) -> T {
-    if batch.len() == 1 && batch.capacity().saturating_mul(mem::size_of::<T>()) > BATCH_CACHE_BYTES
-    {
-        // Retire the allocation on the last value, outside the inbox lock. Keep this as a tail
-        // expression to avoid intermediate storage for large inline values.
-        mem::take(batch).pop_front()
-    } else {
-        batch.pop_front()
-    }
-    .expect("receiver batch must not be empty")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::unbounded;
-    use crate::mpsc::TryRecvError;
-
-    #[test]
-    fn batches_preserve_order_across_refills() {
-        let (tx, mut rx) = unbounded();
-        tx.send(1).unwrap();
-        tx.send(2).unwrap();
-        assert_eq!(rx.try_recv(), Ok(1));
-        tx.send(3).unwrap();
-        assert_eq!(rx.try_recv(), Ok(2));
-        assert_eq!(rx.try_recv(), Ok(3));
-        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
-    }
-
-    #[test]
-    fn releases_large_batches_after_the_last_value() {
-        let (tx, mut rx) = unbounded();
-        for value in 0..128u8 {
-            tx.send([value; 1024]).unwrap();
-        }
-        for value in 0..64u8 {
-            assert_eq!(rx.try_recv(), Ok([value; 1024]));
-        }
-        // A partially consumed batch survives while producers start filling the next batch.
-        tx.send([128; 1024]).unwrap();
-        for value in 64..128u8 {
-            assert_eq!(rx.try_recv(), Ok([value; 1024]));
-        }
-        // Reclaim on the final successful receive, without requiring an extra empty poll.
-        assert_eq!(rx.batch.get_mut().capacity(), 0);
-        assert_eq!(rx.try_recv(), Ok([128; 1024]));
-        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
-    }
-
-    #[test]
-    fn reuses_small_batches_on_refill() {
-        let (tx, mut rx) = unbounded();
-        for value in 0..32usize {
-            tx.send(value).unwrap();
-        }
-        assert_eq!(rx.try_recv(), Ok(0));
-        let capacity = rx.batch.get_mut().capacity();
-        for value in 1..32 {
-            assert_eq!(rx.try_recv(), Ok(value));
-        }
-        assert_eq!(rx.batch.get_mut().capacity(), capacity);
-
-        tx.send(32).unwrap();
-        assert_eq!(rx.try_recv(), Ok(32));
-        assert_eq!(rx.state.inbox.lock().messages.capacity(), capacity);
-    }
-
-    #[test]
-    fn drains_zero_sized_values() {
-        let (tx, mut rx) = unbounded();
-        for _ in 0..32 {
-            tx.send(()).unwrap();
-        }
-        for _ in 0..32 {
-            assert_eq!(rx.try_recv(), Ok(()));
-        }
-        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
-    }
-}
