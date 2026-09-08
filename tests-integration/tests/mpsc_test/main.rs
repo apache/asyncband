@@ -31,6 +31,7 @@ use self::support::poll_with;
 mod backpressure;
 mod callbacks;
 mod concurrency;
+mod reservation;
 mod support;
 
 #[test]
@@ -51,7 +52,7 @@ fn unbounded_try_recv_preserves_order_and_reports_state() {
 
 #[test]
 fn bounded_try_send_respects_capacity_and_order() {
-    for capacity in [1, 4, 16] {
+    for capacity in [1, 3, 4, 16] {
         let (tx, mut rx) = mpsc::bounded(capacity);
 
         for i in 0..capacity {

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### New features
+
+* Add bounded MPSC `reserve` and `try_reserve` methods returning a `Permit`, allowing callers to wait for capacity before constructing a message; unused permits release capacity without claiming message order.
+
 ### Bug fixes
 
 * Release MPSC receiver wakers when the receiver is dropped, avoiding retained tasks and ownership cycles when a waker holds a sender.

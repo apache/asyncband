@@ -20,6 +20,7 @@
 
 use std::fmt;
 use std::future::poll_fn;
+use std::mem;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -27,17 +28,20 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::ready;
 
+use self::capacity::Capacity;
 use self::ring::Ring;
-use self::waiters::SendWaiters;
 use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
 use super::TrySendError;
 
-// Ring owns capacity, publication, and waiting for the head slot. SendWaiters only schedules
-// retries after receiving frees capacity; a notification does not reserve a slot.
+// Capacity accounts for permits and queued messages. Ring owns FIFO publication; the receiver
+// alone advances its read cursor. A public reservation does not claim a position in the ring.
+mod capacity;
 mod ring;
-mod waiters;
+
+// The low bit marks closure; reservation and publication cursors advance in matching units.
+const SEQUENCE_STEP: usize = 2;
 
 /// Creates a bounded mpsc channel with room for `buffer` queued messages.
 ///
@@ -53,19 +57,19 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     let state = Arc::new(Shared {
         buffer: Ring::new(buffer),
         senders: AtomicUsize::new(1),
-        send_waiters: SendWaiters::new(),
+        capacity: Capacity::new(buffer),
     });
     let sender = BoundedSender {
         state: state.clone(),
     };
-    let receiver = BoundedReceiver { state };
+    let receiver = BoundedReceiver { state, head: 0 };
     (sender, receiver)
 }
 
 struct Shared<T> {
     buffer: Ring<T>,
     senders: AtomicUsize,
-    send_waiters: SendWaiters,
+    capacity: Capacity,
 }
 
 /// The sending endpoint of a bounded mpsc channel.
@@ -107,45 +111,87 @@ impl<T> BoundedSender<T> {
     ///
     /// Dropping a pending `send` loses its place waiting for capacity and drops `value`; a call
     /// that has returned `Pending` has not sent the message. Use [`Self::try_send`] when the
-    /// caller must retain ownership if capacity is unavailable.
+    /// caller must retain ownership if capacity is unavailable, or [`Self::reserve`] to wait for
+    /// capacity before constructing the message.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
-        let value = match self.try_send(value) {
-            Ok(()) => return Ok(()),
-            Err(TrySendError::Disconnected(value)) => return Err(SendError::new(value)),
-            Err(TrySendError::Full(value)) => value,
-        };
-        let mut waiter = self.state.send_waiters.waiter();
-        let mut value = Some(value);
+        match self.reserve().await {
+            Ok(permit) => permit.send(value),
+            Err(_) => Err(SendError::new(value)),
+        }
+    }
+
+    /// Reserves capacity for one message before constructing it.
+    ///
+    /// A successful reservation returns a [`Permit`]. Dropping the permit releases capacity;
+    /// [`Permit::send`] publishes a value without waiting for space. Reservations do not establish
+    /// message order: other producers may send while a permit is held.
+    ///
+    /// Returns `SendError(())` if the receiver has been dropped. A permit obtained earlier does
+    /// not keep the receiver alive; sending with it can still return the unsent value on
+    /// disconnect.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending reservation removes its wait registration without consuming capacity.
+    /// Notifications grant a retry, so a new sender may acquire capacity before a woken waiter.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let (tx, mut rx) = asyncband::mpsc::bounded(1);
+    /// let permit = tx.reserve().await.unwrap();
+    /// let message = String::from("constructed after capacity became available");
+    /// permit.send(message).unwrap();
+    /// assert_eq!(
+    ///     rx.recv().await.unwrap(),
+    ///     "constructed after capacity became available"
+    /// );
+    /// # }
+    /// ```
+    pub async fn reserve(&self) -> Result<Permit<'_, T>, SendError<()>> {
+        match self.try_reserve() {
+            Ok(permit) => return Ok(permit),
+            Err(TrySendError::Disconnected(())) => return Err(SendError::new(())),
+            Err(TrySendError::Full(())) => {}
+        }
+        let mut waiter = self.state.capacity.waiter();
         poll_fn(|cx| {
-            let message = value.take().expect("send polled after completion");
-            let message = match self.try_send(message) {
-                Ok(()) => {
+            match self.try_reserve() {
+                Ok(permit) => {
                     waiter.finish();
-                    return Poll::Ready(Ok(()));
+                    return Poll::Ready(Ok(permit));
                 }
-                Err(TrySendError::Disconnected(message)) => {
+                Err(TrySendError::Disconnected(())) => {
                     waiter.finish();
-                    return Poll::Ready(Err(SendError::new(message)));
+                    return Poll::Ready(Err(SendError::new(())));
                 }
-                Err(TrySendError::Full(message)) => message,
-            };
+                Err(TrySendError::Full(())) => {}
+            }
             waiter.register(cx.waker());
-            match self.try_send(message) {
-                Ok(()) => {
+            match self.try_reserve() {
+                Ok(permit) => {
                     waiter.finish();
-                    Poll::Ready(Ok(()))
+                    Poll::Ready(Ok(permit))
                 }
-                Err(TrySendError::Disconnected(message)) => {
+                Err(TrySendError::Disconnected(())) => {
                     waiter.finish();
-                    Poll::Ready(Err(SendError::new(message)))
+                    Poll::Ready(Err(SendError::new(())))
                 }
-                Err(TrySendError::Full(message)) => {
-                    value = Some(message);
-                    Poll::Pending
-                }
+                Err(TrySendError::Full(())) => Poll::Pending,
             }
         })
         .await
+    }
+
+    /// Reserves capacity for one message without waiting.
+    ///
+    /// Returns [`TrySendError::Full`] if queued messages and outstanding permits occupy the
+    /// buffer, or [`TrySendError::Disconnected`] if the receiver has been dropped.
+    pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
+        self.state.capacity.try_acquire()?;
+        Ok(Permit { sender: self })
     }
 
     /// Attempts to send a message without waiting for capacity.
@@ -169,7 +215,54 @@ impl<T> BoundedSender<T> {
     /// assert_eq!(tx.try_send(30), Err(TrySendError::Disconnected(30)));
     /// ```
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        self.state.buffer.try_push(value)
+        match self.try_reserve() {
+            Ok(permit) => permit
+                .send(value)
+                .map_err(|error| TrySendError::Disconnected(error.into_inner())),
+            Err(TrySendError::Full(())) => Err(TrySendError::Full(value)),
+            Err(TrySendError::Disconnected(())) => Err(TrySendError::Disconnected(value)),
+        }
+    }
+}
+
+/// Capacity reserved for one message on a bounded channel.
+///
+/// Created by [`BoundedSender::reserve`] or [`BoundedSender::try_reserve`]. Holding a permit
+/// reduces available capacity but does not prevent other messages from being received. Dropping
+/// it without sending releases capacity and notifies a waiting sender.
+#[must_use = "dropping the permit releases its reserved capacity"]
+pub struct Permit<'a, T> {
+    sender: &'a BoundedSender<T>,
+}
+
+impl<T> fmt::Debug for Permit<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Permit").finish_non_exhaustive()
+    }
+}
+
+impl<T> Permit<'_, T> {
+    /// Publishes a message using this reservation, without waiting for capacity.
+    ///
+    /// If the receiver has been dropped, the returned error contains the unsent value.
+    pub fn send(self, value: T) -> Result<(), SendError<T>> {
+        // SAFETY: This permit owns one unit of capacity. No user code runs between claiming the
+        // position and publishing its value; the consumer returns the capacity after reading it.
+        let claim = match unsafe { self.sender.state.buffer.claim() } {
+            Ok(claim) => claim,
+            Err(()) => return Err(SendError::new(value)),
+        };
+        // Publication can wake user code that panics. Transfer capacity ownership first so
+        // unwinding cannot return a permit for a message that is already in the ring.
+        mem::forget(self);
+        claim.publish(value);
+        Ok(())
+    }
+}
+
+impl<T> Drop for Permit<'_, T> {
+    fn drop(&mut self) {
+        self.sender.state.capacity.cancel();
     }
 }
 
@@ -178,6 +271,7 @@ impl<T> BoundedSender<T> {
 /// Instances are created by the [`bounded`] function.
 pub struct BoundedReceiver<T> {
     state: Arc<Shared<T>>,
+    head: usize,
 }
 
 impl<T> fmt::Debug for BoundedReceiver<T> {
@@ -188,21 +282,29 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        struct DrainOnDrop<'a, T>(&'a Ring<T>);
+        struct DrainOnDrop<'a, T> {
+            ring: &'a Ring<T>,
+            head: &'a mut usize,
+            tail: usize,
+        }
         impl<T> Drop for DrainOnDrop<'_, T> {
             fn drop(&mut self) {
                 // SAFETY: This guard lives only within the exclusive receiver's drop, after close.
-                unsafe { self.0.drain() };
+                unsafe { self.ring.drain(self.head, self.tail) };
             }
         }
 
-        self.state.buffer.close();
-        let drain = DrainOnDrop(&self.state.buffer);
+        let tail = self.state.buffer.close();
+        let drain = DrainOnDrop {
+            ring: &self.state.buffer,
+            head: &mut self.head,
+            tail,
+        };
         // A registered waker may own a sender; release it to break that ownership cycle.
         let receiver_waker = self.state.buffer.take_receiver_waker();
         // Complete notifications before dropping messages. Either kind of callback may panic;
         // the drain guard still releases buffered values if a wake or waker drop unwinds.
-        self.state.send_waiters.notify_all();
+        self.state.capacity.close();
         drop(receiver_waker);
         drop(drain);
     }
@@ -245,20 +347,20 @@ impl<T> BoundedReceiver<T> {
 
     fn try_recv_once(&mut self) -> Poll<Result<T, TryRecvError>> {
         // SAFETY: Only this non-cloneable receiver consumes the queue, through exclusive borrows.
-        let value = if let Some(value) = ready!(unsafe { self.state.buffer.pop() }) {
+        let value = if let Some(value) = ready!(unsafe { self.state.buffer.pop(&mut self.head) }) {
             value
         } else if self.state.senders.load(Ordering::Acquire) == 0 {
             // The final sender can enqueue between the first empty observation and decrementing
             // the sender count, so check the queue again before reporting disconnection.
             // SAFETY: The exclusive receiver borrow still guarantees a single consumer.
-            let Some(value) = ready!(unsafe { self.state.buffer.pop() }) else {
+            let Some(value) = ready!(unsafe { self.state.buffer.pop(&mut self.head) }) else {
                 return Poll::Ready(Err(TryRecvError::Disconnected));
             };
             value
         } else {
             return Poll::Ready(Err(TryRecvError::Empty));
         };
-        self.state.send_waiters.notify_one();
+        self.state.capacity.consume(self.head);
         Poll::Ready(Ok(value))
     }
 

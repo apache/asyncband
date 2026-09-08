@@ -25,21 +25,19 @@ use std::sync::atomic::fence;
 use std::task::Poll;
 use std::task::Waker;
 
+use super::SEQUENCE_STEP;
 use crate::internal::cache_padded::CachePadded;
 use crate::internal::mutex::Mutex;
-use crate::mpsc::TrySendError;
+
+const CLOSED: usize = 1;
 
 pub struct Ring<T> {
     slots: Box<[Slot<T>]>,
-    head: CachePadded<AtomicUsize>,
     tail: CachePadded<AtomicUsize>,
-    // This flag is usually stable while the consumer advances head. Sharing head
-    // for notifications would make every producer track a constantly invalidated cache line.
+    // Publication and receiver registration synchronize independently of capacity release.
     receiver_waiting: CachePadded<AtomicBool>,
     receiver: Mutex<Option<Waker>>,
-    capacity: usize,
-    one_lap: usize,
-    mark_bit: usize,
+    mask: usize,
 }
 
 struct Slot<T> {
@@ -47,9 +45,9 @@ struct Slot<T> {
     value: UnsafeCell<MaybeUninit<T>>,
 }
 
-// SAFETY: A successful tail CAS gives one producer exclusive access to a slot. That producer
+// SAFETY: A successful tail increment gives one producer exclusive access to a slot. That producer
 // initializes the value before publishing the next stamp with Release ordering. The single
-// consumer reads only after acquiring that stamp and publishes the following lap before reuse.
+// consumer reads only after acquiring that stamp and returns capacity before reuse.
 unsafe impl<T: Send> Sync for Slot<T> {}
 
 // The ownership transition finishes before user code can unwind, and no stored-value reference is
@@ -60,122 +58,65 @@ impl<T> std::panic::RefUnwindSafe for Slot<T> {}
 impl<T> Ring<T> {
     pub fn new(capacity: usize) -> Self {
         assert!(capacity <= usize::MAX / 4, "mpsc capacity is too large");
-        let mark_bit = (capacity + 1).next_power_of_two();
-        let one_lap = mark_bit * 2;
-        let slots = (0..capacity)
-            .map(|index| Slot {
-                stamp: AtomicUsize::new(index),
+        // Physical storage is rounded up, while Capacity enforces the exact requested limit.
+        // A power-of-two ring keeps indexing cheap and continuous across sequence overflow.
+        let storage = capacity.next_power_of_two();
+        let slots = (0..storage)
+            .map(|_| Slot {
+                stamp: AtomicUsize::new(CLOSED),
                 value: UnsafeCell::new(MaybeUninit::uninit()),
             })
             .collect();
         Self {
             slots,
-            head: CachePadded::new(AtomicUsize::new(0)),
             tail: CachePadded::new(AtomicUsize::new(0)),
             receiver_waiting: CachePadded::new(AtomicBool::new(false)),
             receiver: Mutex::new(None),
-            capacity,
-            one_lap,
-            mark_bit,
+            mask: storage - 1,
         }
     }
 
-    pub fn try_push(&self, value: T) -> Result<(), TrySendError<T>> {
-        let mut tail = self.tail.load(Ordering::Relaxed);
-        let mut backoff = 0;
-        loop {
-            if tail & self.mark_bit != 0 {
-                return Err(TrySendError::Disconnected(value));
-            }
-
-            let index = tail & (self.mark_bit - 1);
-            let slot = &self.slots[index];
-            let stamp = slot.stamp.load(Ordering::Acquire);
-            if stamp == tail {
-                let next_tail = self.advance(tail);
-                match self.tail.compare_exchange_weak(
-                    tail,
-                    next_tail,
-                    Ordering::SeqCst,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => {
-                        // SAFETY: The successful CAS reserved this slot exclusively, and its
-                        // matching stamp proves the consumer completed its previous lap.
-                        unsafe { (*slot.value.get()).write(value) };
-                        slot.stamp.store(tail.wrapping_add(1), Ordering::Release);
-                        // Publication precedes the wait check; registration pairs this fence
-                        // with a second pop before the receiver is allowed to return Pending.
-                        fence(Ordering::SeqCst);
-                        if self.receiver_waiting.load(Ordering::Relaxed)
-                            && self.receiver_waiting.swap(false, Ordering::Relaxed)
-                        {
-                            // Claim the notification before locking so concurrent publishers
-                            // do not all queue behind the same receiver registration.
-                            self.wake_receiver();
-                        }
-                        return Ok(());
-                    }
-                    Err(actual) => tail = actual,
-                }
-            } else if stamp.wrapping_add(self.one_lap) == tail.wrapping_add(1) {
-                fence(Ordering::SeqCst);
-                if self.head.load(Ordering::Relaxed).wrapping_add(self.one_lap) == tail {
-                    return Err(TrySendError::Full(value));
-                }
-                tail = self.tail.load(Ordering::Relaxed);
-            } else {
-                let actual = self.tail.load(Ordering::Relaxed);
-                if actual == tail {
-                    // Reserved but unpublished messages also occupy capacity. In particular, a
-                    // capacity-one queue must report Full without waiting for its producer to
-                    // publish the slot's stamp.
-                    fence(Ordering::SeqCst);
-                    if self.head.load(Ordering::Relaxed).wrapping_add(self.one_lap) == tail {
-                        return Err(TrySendError::Full(value));
-                    }
-                }
-                tail = actual;
-            }
-            Self::spin(&mut backoff);
-        }
-    }
-
-    /// Pending means the head slot is reserved but not published. It is distinct from an empty
-    /// queue: later producers may already have completed their sends.
+    /// Claims the next FIFO position. No payload is touched until `Claim::publish`.
     ///
     /// # Safety
     ///
-    /// The caller must serialize all calls to `pop` and `drain` for this queue.
-    pub unsafe fn pop(&self) -> Poll<Option<T>> {
-        let mut head = self.head.load(Ordering::Relaxed);
-        let mut backoff = 0;
-        loop {
-            let index = head & (self.mark_bit - 1);
-            let slot = &self.slots[index];
-            let stamp = slot.stamp.load(Ordering::Acquire);
-            if stamp == head.wrapping_add(1) {
-                let next_head = self.advance(head);
-                // SAFETY: Acquiring the matching stamp observes initialization by the producer.
-                // There is one consumer, so the value is read exactly once.
-                let value = unsafe { (*slot.value.get()).assume_init_read() };
-                slot.stamp
-                    .store(head.wrapping_add(self.one_lap), Ordering::Release);
-                self.head.store(next_head, Ordering::SeqCst);
-                return Poll::Ready(Some(value));
-            }
+    /// The caller must already own one capacity permit for this ring, and transfer that permit
+    /// to the consumer on publication. The claim must be published without invoking user code.
+    pub unsafe fn claim(&self) -> Result<Claim<'_, T>, ()> {
+        // A permit may predate the previous use of this slot. Carry earlier claimants'
+        // capacity acquires through the sequence so even an old permit observes that read.
+        let position = self.tail.fetch_add(SEQUENCE_STEP, Ordering::AcqRel);
+        if position & CLOSED != 0 {
+            Err(())
+        } else {
+            Ok(Claim {
+                ring: self,
+                position,
+            })
+        }
+    }
 
-            if stamp == head {
-                fence(Ordering::SeqCst);
-                if self.tail.load(Ordering::Relaxed) & !self.mark_bit == head {
-                    return Poll::Ready(None);
-                }
-            }
-            if backoff == 8 {
-                return Poll::Pending;
-            }
-            Self::spin(&mut backoff);
-            head = self.head.load(Ordering::Relaxed);
+    /// Pending means the head slot is claimed but not yet published.
+    ///
+    /// # Safety
+    ///
+    /// Only the exclusive consumer may call `pop` or `drain`, with its persistent head cursor.
+    /// Return one capacity permit after each successful pop, after the value has been read.
+    pub unsafe fn pop(&self, head: &mut usize) -> Poll<Option<T>> {
+        let index = (*head / SEQUENCE_STEP) & self.mask;
+        let slot = &self.slots[index];
+        if slot.stamp.load(Ordering::Acquire) == *head {
+            // SAFETY: Acquiring the published stamp observes initialization. The consumer owns
+            // this cursor exclusively, and capacity is not returned until after reading the value.
+            let value = unsafe { (*slot.value.get()).assume_init_read() };
+            *head = head.wrapping_add(SEQUENCE_STEP);
+            return Poll::Ready(Some(value));
+        }
+        fence(Ordering::SeqCst);
+        if self.tail.load(Ordering::Relaxed) & !CLOSED == *head {
+            Poll::Ready(None)
+        } else {
+            Poll::Pending
         }
     }
 
@@ -214,65 +155,53 @@ impl<T> Ring<T> {
     }
 
     /// Prevents subsequent sends from reserving slots. Already reserved slots still publish.
-    pub fn close(&self) {
-        self.tail.fetch_or(self.mark_bit, Ordering::SeqCst);
+    pub fn close(&self) -> usize {
+        // Failed claims may still advance tail after close. Freeze the drain boundary at the
+        // close operation itself; it includes every successful claim and no rejected claims.
+        self.tail.fetch_or(CLOSED, Ordering::SeqCst)
     }
 
-    /// Drops all values after closing, including values whose publication is still in progress.
+    /// Drops all values after closing, including short-lived claims still being published.
     ///
     /// # Safety
     ///
-    /// The queue must be closed. The caller must serialize all calls to `pop` and `drain`.
-    pub unsafe fn drain(&self) {
+    /// `tail` must be the value returned by the first close, and `head` the consumer's cursor.
+    pub unsafe fn drain(&self, head: &mut usize, tail: usize) {
         struct DrainRemaining<'a, T> {
             ring: &'a Ring<T>,
+            head: &'a mut usize,
             tail: usize,
         }
         impl<T> Drop for DrainRemaining<'_, T> {
             fn drop(&mut self) {
-                // SAFETY: The guard is scoped to the exclusive consumer's drain of a closed ring.
-                unsafe { self.ring.discard_until(self.tail) };
+                // SAFETY: The guard owns the consumer cursor until this closed ring is drained.
+                unsafe { self.ring.discard_until(self.head, self.tail) };
             }
         }
 
-        let tail = self.tail.load(Ordering::Relaxed);
-        debug_assert_ne!(tail & self.mark_bit, 0);
+        debug_assert_eq!(tail & CLOSED, 0);
         let remaining = DrainRemaining {
             ring: self,
-            tail: tail & !self.mark_bit,
+            head,
+            tail,
         };
-        // SAFETY: The caller guarantees exclusive consumer access. The guard finishes draining if
-        // a value's destructor panics, so messages that own senders cannot retain the closed ring.
-        unsafe { self.discard_until(remaining.tail) };
+        // SAFETY: The caller guarantees exclusive consumer access. The guard finishes draining
+        // if a destructor panics, including messages that own senders and would retain the ring.
+        unsafe { self.discard_until(remaining.head, remaining.tail) };
     }
 
-    fn advance(&self, position: usize) -> usize {
-        let index = position & (self.mark_bit - 1);
-        if index + 1 < self.capacity {
-            position + 1
-        } else {
-            let lap = position & !(self.one_lap - 1);
-            lap.wrapping_add(self.one_lap)
-        }
-    }
-
-    // The caller must close the queue and have exclusive consumer access before discarding values.
-    unsafe fn discard_until(&self, tail: usize) {
-        let mut head = self.head.load(Ordering::Relaxed);
+    // The caller owns the cursor and has prevented new claims by closing the ring.
+    unsafe fn discard_until(&self, head: &mut usize, tail: usize) {
         let mut backoff = 0;
-        while head != tail {
-            let index = head & (self.mark_bit - 1);
+        while *head != tail {
+            let index = (*head / SEQUENCE_STEP) & self.mask;
             let slot = &self.slots[index];
-            if slot.stamp.load(Ordering::Acquire) == head.wrapping_add(1) {
-                let next_head = self.advance(head);
-                // Move the head before dropping the value so unwinding cannot drop it twice.
-                slot.stamp
-                    .store(head.wrapping_add(self.one_lap), Ordering::Release);
-                self.head.store(next_head, Ordering::SeqCst);
-                // SAFETY: The acquired matching stamp proves the slot contains an initialized
-                // value, and advancing the single-consumer head claims it exactly once.
+            if slot.stamp.load(Ordering::Acquire) == *head {
+                // Advance before running the destructor so unwinding cannot drop a value twice.
+                *head = head.wrapping_add(SEQUENCE_STEP);
+                // SAFETY: The acquired stamp proves initialization; the cursor claims the value
+                // exactly once, and close prevents any producer from reusing its slot.
                 unsafe { (*slot.value.get()).assume_init_drop() };
-                head = next_head;
                 backoff = 0;
             } else {
                 Self::spin(&mut backoff);
@@ -288,11 +217,29 @@ impl<T> Ring<T> {
     }
 }
 
-impl<T> Drop for Ring<T> {
-    fn drop(&mut self) {
-        self.close();
-        // SAFETY: The queue is closed and its exclusive borrow rules out concurrent access.
-        unsafe { self.drain() };
+// Claims never escape a synchronous send. A public Permit owns capacity without claiming a
+// position, so holding or forgetting one cannot leave an unpublished hole in the ring.
+pub struct Claim<'a, T> {
+    ring: &'a Ring<T>,
+    position: usize,
+}
+
+impl<T> Claim<'_, T> {
+    pub fn publish(self, value: T) {
+        let slot = &self.ring.slots[(self.position / SEQUENCE_STEP) & self.ring.mask];
+        // SAFETY: Claiming required a capacity permit. Its acquire observes the consumer's
+        // completed read on the previous lap; the tail increment grants this producer exclusive
+        // access.
+        unsafe { (*slot.value.get()).write(value) };
+        slot.stamp.store(self.position, Ordering::Release);
+        // Paired with receiver registration: either the publisher sees the wait flag or the
+        // receiver's second pop observes this publication before it can return Pending.
+        fence(Ordering::SeqCst);
+        if self.ring.receiver_waiting.load(Ordering::Relaxed)
+            && self.ring.receiver_waiting.swap(false, Ordering::Relaxed)
+        {
+            self.ring.wake_receiver();
+        }
     }
 }
 
