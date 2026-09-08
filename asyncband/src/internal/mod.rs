@@ -49,7 +49,9 @@ pub(crate) fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
     }
 }
 
-#[cfg(feature = "mpsc")]
+// MPSC owns its receiver wait protocol; the general-purpose waker currently has no production
+// users.
+#[cfg(test)]
 pub(crate) mod atomic_waker;
 
 #[cfg(any(
