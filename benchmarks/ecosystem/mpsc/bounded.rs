@@ -33,7 +33,11 @@ use super::support::RepeatedBatch;
 use super::support::RepeatedTasks;
 use crate::support::bench_context;
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
+// Nanosecond-scale benches pin `sample_size`: divan's auto-tuning starts at 1
+// iteration per sample and stops once a sample exceeds 100x timer precision,
+// so a cold first call (lazy initialization, cache misses) can end tuning
+// immediately and quantize every sample to one timer tick (41 ns on macOS).
+#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume], sample_size = 512)]
 fn try_round_trip<C: BoundedMpsc>(bencher: Bencher) {
     let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
 
@@ -43,7 +47,7 @@ fn try_round_trip<C: BoundedMpsc>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
+#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume], sample_size = 256)]
 fn ready_round_trip<C: BoundedMpsc>(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
@@ -80,7 +84,7 @@ fn sustained<C: BoundedMpsc>(bencher: Bencher, producer_count: usize) {
     bencher.bench_local(|| batch.run());
 }
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
+#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume], sample_size = 2048)]
 fn clone_drop_sender<C: BoundedMpsc>(bencher: Bencher) {
     let (sender, _receiver) = C::channel(BOUNDED_CAPACITY);
     bencher.bench_local(|| drop(black_box(sender.clone())));
@@ -106,7 +110,7 @@ fn sustained_capacity<C: BoundedMpsc, const CAPACITY: usize>(
 #[divan::bench(
     types = [Asyncband, Tokio, AsyncChannel, Flume],
     consts = [1, 64, 4096],
-    args = [(1, 0), (4, 0), (1, 4), (4, 4), (8, 4)],
+    args = [(1, 0), (8, 0), (1, 4), (8, 4)],
     sample_count = 50,
     sample_size = 1,
     counter = ItemsCount::new(BATCH_MESSAGES),
@@ -116,6 +120,55 @@ fn scheduled<C: BoundedMpsc, const CAPACITY: usize>(
     (producers, workers): (usize, usize),
 ) {
     let mut batch = RepeatedTasks::<Bounded<C, CAPACITY>>::new(producers, workers);
+    batch.run();
+    bencher.bench_local(|| batch.run());
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    consts = [1, 64, 4096],
+    args = [(1, 0), (8, 0), (1, 4), (8, 4)],
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn scheduled_inline<C: BoundedMpsc<[u8; 1024]>, const CAPACITY: usize>(
+    bencher: Bencher,
+    (producers, workers): (usize, usize),
+) {
+    let mut batch = RepeatedTasks::<Bounded<C, CAPACITY, [u8; 1024]>>::new(producers, workers);
+    batch.run();
+    bencher.bench_local(|| batch.run());
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    consts = [1, 64, 4096],
+    args = [1, 8],
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn external_receiver<C: BoundedMpsc, const CAPACITY: usize>(bencher: Bencher, producers: usize) {
+    let mut batch = RepeatedTasks::<Bounded<C, CAPACITY>>::external_receiver(producers, 4);
+    batch.run();
+    bencher.bench_local(|| batch.run());
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    consts = [1, 64, 4096],
+    args = [1, 8],
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn external_receiver_inline<C: BoundedMpsc<[u8; 1024]>, const CAPACITY: usize>(
+    bencher: Bencher,
+    producers: usize,
+) {
+    let mut batch =
+        RepeatedTasks::<Bounded<C, CAPACITY, [u8; 1024]>>::external_receiver(producers, 4);
     batch.run();
     bencher.bench_local(|| batch.run());
 }
