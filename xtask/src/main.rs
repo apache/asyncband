@@ -68,11 +68,14 @@ enum SubCommand {
 }
 
 #[derive(Parser)]
-struct CommandBench;
+struct CommandBench {
+    #[arg(long, help = "Compile benchmarks without running them.")]
+    no_run: bool,
+}
 
 impl CommandBench {
     fn run(self) {
-        run_command(make_bench_cmd());
+        run_command(make_bench_cmd(self.no_run));
     }
 }
 
@@ -356,9 +359,12 @@ fn classify_release_type(baseline: &Version, release: &Version) -> SemverRelease
     }
 }
 
-fn make_bench_cmd() -> StdCommand {
+fn make_bench_cmd(no_run: bool) -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.args(["bench", "--workspace", "--all-features", "--bench", "*"]);
+    if no_run {
+        cmd.arg("--no-run");
+    }
     cmd
 }
 
