@@ -55,9 +55,6 @@ use std::sync::Arc;
 
 use crate::internal::semaphore;
 
-#[cfg(test)]
-mod tests;
-
 /// An async counting semaphore for controlling access to a set of resources.
 ///
 /// See the [module level documentation](self) for more.

@@ -16,11 +16,10 @@
 // under the License.
 
 use asyncband::mpsc;
+use tests_integration::WakeCounter;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
-
-use super::support::WakeCounter;
-use super::support::expect_ready;
-use super::support::poll_with;
+use tests_integration::poll_with;
 
 #[test]
 fn bounded_wakes_blocked_senders_one_at_a_time() {

@@ -32,7 +32,6 @@ use super::adapters::Flume;
 use super::adapters::Tokio;
 use super::adapters::UnboundedMpsc;
 use super::support::BATCH_MESSAGES;
-use super::support::ConcurrentBatch;
 use super::support::PRODUCER_COUNTS;
 use super::support::RepeatedBatch;
 use super::support::RepeatedTasks;
@@ -62,19 +61,6 @@ fn try_round_trip<C: UnboundedMpsc>(bencher: Bencher) {
 
 #[divan::bench(
     types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = PRODUCER_COUNTS,
-    sample_count = 20,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
-fn concurrent<C: UnboundedMpsc>(bencher: Bencher, producer_count: usize) {
-    bencher
-        .with_inputs(|| ConcurrentBatch::<Unbounded<C>>::new(producer_count))
-        .bench_local_refs(|batch| batch.run());
-}
-
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
     args = [32, 1024, 65_536],
     sample_count = 20,
     sample_size = 1,
@@ -86,7 +72,7 @@ fn burst_drain<C: UnboundedMpsc>(bencher: Bencher, messages: usize) {
 #[divan::bench(
     types = [Asyncband, Tokio, AsyncChannel, Flume],
     consts = [64, 1024],
-    args = [32, 1024, 65_536],
+    args = [1024],
     sample_count = 20,
     sample_size = 1,
 )]
@@ -99,7 +85,7 @@ fn burst_drain_inline<C: UnboundedMpsc<[u8; SIZE]>, const SIZE: usize>(
 
 #[divan::bench(
     types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = [32, 1024, 65_536],
+    args = [1024],
     sample_count = 20,
     sample_size = 1,
 )]
@@ -164,7 +150,7 @@ fn clone_drop_sender<C: UnboundedMpsc>(bencher: Bencher) {
 
 #[divan::bench(
     types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = [(1, 0), (4, 0), (1, 4), (4, 4), (8, 4)],
+    args = [(1, 0), (8, 0), (1, 4), (8, 4)],
     sample_count = 50,
     sample_size = 1,
     counter = ItemsCount::new(BATCH_MESSAGES),
@@ -177,7 +163,7 @@ fn scheduled<C: UnboundedMpsc>(bencher: Bencher, (producers, workers): (usize, u
 
 #[divan::bench(
     types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = [(1, 64), (4, 64), (8, 64), (1, 1024), (4, 1024), (8, 1024)],
+    args = [(1, 64), (8, 64), (1, 1024), (8, 1024)],
     sample_count = 50,
     sample_size = 1,
     counter = ItemsCount::new(BATCH_MESSAGES),

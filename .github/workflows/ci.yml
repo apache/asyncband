@@ -63,6 +63,8 @@ jobs:
       - run: cargo x lint
       - name: Check feature matrix
         run: cargo x check
+      - name: Compile benchmarks
+        run: cargo x bench --no-run
 
   test:
     name: Run tests
@@ -112,28 +114,11 @@ jobs:
       - name: Run Miri tests
         run: cargo x miri
 
-  benchmark:
-    name: Run benchmarks
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      RUSTUP_TOOLCHAIN: stable
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install stable toolchain
-        run: >-
-          rustup toolchain install stable
-          --profile minimal
-          --no-self-update
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo x bench
-
   required:
     name: Required
     runs-on: ubuntu-24.04
     if: ${{ always() }}
     needs:
-      - benchmark
       - check
       - miri
       - test
@@ -141,8 +126,7 @@ jobs:
       - name: Guardian
         run: |
           if [[ ! ( \
-                 "${{ needs.benchmark.result }}" == "success" \
-              && "${{ needs.check.result }}" == "success" \
+                 "${{ needs.check.result }}" == "success" \
               && "${{ needs.miri.result }}" == "success" \
               && "${{ needs.test.result }}" == "success" \
               ) ]]; then

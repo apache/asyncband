@@ -15,64 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::task::Context;
 use std::task::Poll;
-use std::task::Wake;
 use std::task::Waker;
-use std::thread;
-use std::time::Duration;
 
 use asyncband::watch;
-
-struct TrackWake(AtomicUsize);
-
-impl Wake for TrackWake {
-    fn wake(self: Arc<Self>) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-struct PanicWake;
-
-impl Wake for PanicWake {
-    fn wake(self: Arc<Self>) {
-        panic!("wake failed");
-    }
-}
-
-struct WakeCallback(Mutex<Option<Box<dyn FnOnce() + Send>>>);
-
-impl Wake for WakeCallback {
-    fn wake(self: Arc<Self>) {
-        let callback = self.0.lock().unwrap().take();
-        if let Some(callback) = callback {
-            callback();
-        }
-    }
-}
-
-struct DropCallbackWake(Mutex<Option<Box<dyn FnOnce() + Send>>>);
-
-// This test needs a custom waker whose final `Arc` drop is observable.
-#[allow(clippy::manual_noop_waker)]
-impl Wake for DropCallbackWake {
-    fn wake(self: Arc<Self>) {}
-}
-
-impl Drop for DropCallbackWake {
-    fn drop(&mut self) {
-        if let Some(callback) = self.0.get_mut().unwrap().take() {
-            callback();
-        }
-    }
-}
+use tests_integration::PanicWake;
+use tests_integration::WakeCounter;
+use tests_integration::assert_completes_without_deadlock;
+use tests_integration::poll_with;
+use tests_integration::waker_on_drop;
+use tests_integration::waker_on_wake;
 
 #[derive(Clone)]
 struct ReentrantDrop(Option<watch::Sender<ReentrantDrop>>);
@@ -101,10 +56,6 @@ impl Clone for PanicOnceClone {
             panic_next: self.panic_next.clone(),
         }
     }
-}
-
-fn poll_with<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
-    future.poll(&mut Context::from_waker(waker))
 }
 
 #[test]
@@ -254,7 +205,7 @@ fn send_replace_returns_previous_and_publishes_without_receivers() {
 #[test]
 fn cancelling_changed_releases_its_waker_without_consuming() {
     let (tx, mut rx) = watch::channel(0);
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let baseline = Arc::strong_count(&tracker);
     let mut changed = Box::pin(rx.changed());
@@ -265,20 +216,20 @@ fn cancelling_changed_releases_its_waker_without_consuming() {
     assert_eq!(Arc::strong_count(&tracker), baseline);
 
     tx.send(1).unwrap();
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 0);
+    assert_eq!(tracker.count(), 0);
     assert_eq!(pollster::block_on(rx.recv()).unwrap(), 1);
 }
 
 #[test]
 fn cancelling_after_wake_still_leaves_the_update_unseen() {
     let (tx, mut rx) = watch::channel(0);
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let mut changed = Box::pin(rx.changed());
 
     assert!(poll_with(changed.as_mut(), &waker).is_pending());
     tx.send(1).unwrap();
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(tracker.count(), 1);
     drop(changed);
 
     assert_eq!(pollster::block_on(rx.recv()).unwrap(), 1);
@@ -287,13 +238,13 @@ fn cancelling_after_wake_still_leaves_the_update_unseen() {
 #[test]
 fn cancelling_recv_after_wake_still_leaves_the_update_unseen() {
     let (tx, mut rx) = watch::channel(0);
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let mut recv = Box::pin(rx.recv());
 
     assert!(poll_with(recv.as_mut(), &waker).is_pending());
     tx.send(1).unwrap();
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(tracker.count(), 1);
     drop(recv);
 
     assert_eq!(pollster::block_on(rx.recv()).unwrap(), 1);
@@ -303,8 +254,8 @@ fn cancelling_recv_after_wake_still_leaves_the_update_unseen() {
 fn one_update_wakes_every_waiting_receiver_once() {
     let (tx, mut first) = watch::channel(0);
     let mut second = first.clone();
-    let first_tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
-    let second_tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let first_tracker = Arc::new(WakeCounter::default());
+    let second_tracker = Arc::new(WakeCounter::default());
     let first_waker = Waker::from(first_tracker.clone());
     let second_waker = Waker::from(second_tracker.clone());
     let mut first_changed = Box::pin(first.changed());
@@ -314,8 +265,8 @@ fn one_update_wakes_every_waiting_receiver_once() {
     assert!(poll_with(second_changed.as_mut(), &second_waker).is_pending());
 
     tx.send(1).unwrap();
-    assert_eq!(first_tracker.0.load(Ordering::Relaxed), 1);
-    assert_eq!(second_tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(first_tracker.count(), 1);
+    assert_eq!(second_tracker.count(), 1);
     assert_eq!(
         poll_with(first_changed.as_mut(), &first_waker),
         Poll::Ready(Ok(()))
@@ -335,7 +286,7 @@ fn panicking_waker_does_not_skip_other_waiters() {
     let (tx, mut first) = watch::channel(0);
     let mut second = first.clone();
     let panicking = Waker::from(Arc::new(PanicWake));
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let tracked = Waker::from(tracker.clone());
     let mut first_changed = Box::pin(first.changed());
     let mut second_changed = Box::pin(second.changed());
@@ -345,7 +296,7 @@ fn panicking_waker_does_not_skip_other_waiters() {
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tx.send(1)));
     assert!(result.is_err());
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(tracker.count(), 1);
     assert_eq!(
         poll_with(second_changed.as_mut(), &tracked),
         Poll::Ready(Ok(()))
@@ -356,15 +307,15 @@ fn panicking_waker_does_not_skip_other_waiters() {
 fn only_the_last_sender_drop_wakes_a_waiter() {
     let (tx, mut rx) = watch::channel(());
     let other = tx.clone();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let mut changed = Box::pin(rx.changed());
 
     assert!(poll_with(changed.as_mut(), &waker).is_pending());
     drop(tx);
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 0);
+    assert_eq!(tracker.count(), 0);
     drop(other);
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(tracker.count(), 1);
     assert_eq!(
         poll_with(changed.as_mut(), &waker),
         Poll::Ready(Err(watch::RecvError::Disconnected))
@@ -375,16 +326,16 @@ fn only_the_last_sender_drop_wakes_a_waiter() {
 fn dropping_a_stale_changed_future_keeps_a_new_waiter_registered() {
     let (tx, mut first) = watch::channel(0);
     let mut second = first.clone();
-    let first_tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let first_tracker = Arc::new(WakeCounter::default());
     let first_waker = Waker::from(first_tracker.clone());
     let mut first_changed = Box::pin(first.changed());
 
     assert!(poll_with(first_changed.as_mut(), &first_waker).is_pending());
     tx.send(1).unwrap();
-    assert_eq!(first_tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(first_tracker.count(), 1);
 
     assert_eq!(pollster::block_on(second.recv()).unwrap(), 1);
-    let second_tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let second_tracker = Arc::new(WakeCounter::default());
     let second_waker = Waker::from(second_tracker.clone());
     let mut second_changed = Box::pin(second.changed());
     assert!(poll_with(second_changed.as_mut(), &second_waker).is_pending());
@@ -392,7 +343,7 @@ fn dropping_a_stale_changed_future_keeps_a_new_waiter_registered() {
     drop(first_changed);
     tx.send(2).unwrap();
 
-    assert_eq!(second_tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(second_tracker.count(), 1);
     assert_eq!(
         poll_with(second_changed.as_mut(), &second_waker),
         Poll::Ready(Ok(()))
@@ -401,31 +352,21 @@ fn dropping_a_stale_changed_future_keeps_a_new_waiter_registered() {
 
 #[test]
 fn replaced_values_are_dropped_outside_the_channel_lock() {
-    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-    let worker = thread::spawn(move || {
+    assert_completes_without_deadlock(|| {
         let (tx, _rx) = watch::channel(ReentrantDrop(None));
         tx.send(ReentrantDrop(Some(tx.clone()))).unwrap();
         tx.send(ReentrantDrop(None)).unwrap();
-        finished_tx.send(()).unwrap();
     });
-
-    finished_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("value destructor deadlocked against the watch lock");
-    worker.join().unwrap();
 }
 
 #[test]
 fn wake_callbacks_run_outside_the_channel_lock() {
-    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-    let worker = thread::spawn(move || {
+    assert_completes_without_deadlock(|| {
         let (tx, mut rx) = watch::channel(0);
         let callback_sender = tx.clone();
-        let waker = Waker::from(Arc::new(WakeCallback(Mutex::new(Some(Box::new(
-            move || {
-                drop(callback_sender.subscribe());
-            },
-        ))))));
+        let waker = waker_on_wake(move || {
+            drop(callback_sender.subscribe());
+        });
         let mut changed = Box::pin(rx.changed());
 
         assert!(poll_with(changed.as_mut(), &waker).is_pending());
@@ -434,11 +375,9 @@ fn wake_callbacks_run_outside_the_channel_lock() {
         drop(changed);
 
         let observer = rx.clone();
-        let waker = Waker::from(Arc::new(WakeCallback(Mutex::new(Some(Box::new(
-            move || {
-                assert!(observer.is_disconnected());
-            },
-        ))))));
+        let waker = waker_on_wake(move || {
+            assert!(observer.is_disconnected());
+        });
         let mut changed = Box::pin(rx.changed());
         assert!(poll_with(changed.as_mut(), &waker).is_pending());
         drop(tx);
@@ -446,37 +385,22 @@ fn wake_callbacks_run_outside_the_channel_lock() {
             poll_with(changed.as_mut(), &waker),
             Poll::Ready(Err(watch::RecvError::Disconnected))
         );
-        finished_tx.send(()).unwrap();
     });
-
-    finished_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("wake callback deadlocked against the watch lock");
-    worker.join().unwrap();
 }
 
 #[test]
 fn replaced_wakers_are_dropped_outside_the_channel_lock() {
-    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-    let worker = thread::spawn(move || {
+    assert_completes_without_deadlock(|| {
         let (tx, mut rx) = watch::channel(0);
         let callback_sender = tx.clone();
-        let old_waker = Waker::from(Arc::new(DropCallbackWake(Mutex::new(Some(Box::new(
-            move || {
-                drop(callback_sender.subscribe());
-            },
-        ))))));
+        let old_waker = waker_on_drop(move || {
+            drop(callback_sender.subscribe());
+        });
         let mut changed = Box::pin(rx.changed());
         assert!(poll_with(changed.as_mut(), &old_waker).is_pending());
         drop(old_waker);
 
-        let replacement = Waker::from(Arc::new(TrackWake(AtomicUsize::new(0))));
+        let replacement = Waker::from(Arc::new(WakeCounter::default()));
         assert!(poll_with(changed.as_mut(), &replacement).is_pending());
-        finished_tx.send(()).unwrap();
     });
-
-    finished_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("replaced waker destructor deadlocked against the watch lock");
-    worker.join().unwrap();
 }

@@ -31,6 +31,7 @@ use asyncband::pool::ManageObject;
 use asyncband::pool::ObjectStatus;
 use asyncband::pool::bounded::Pool;
 use asyncband::pool::bounded::PoolConfig;
+use tests_integration::WakeCounter;
 
 struct Manager {
     create_calls: Arc<AtomicUsize>,
@@ -63,25 +64,18 @@ impl ManageObject for Manager {
     }
 }
 
-#[derive(Default)]
-struct WakeCount(AtomicUsize);
-
-impl Wake for WakeCount {
-    fn wake(self: Arc<Self>) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
 fn ready<T>(future: impl Future<Output = Result<T, ()>>) -> T {
-    ready_after_wake(future, &Arc::new(WakeCount(AtomicUsize::new(1))))
+    let wakes = Arc::new(WakeCounter::default());
+    wakes.wake_by_ref();
+    ready_after_wake(future, &wakes)
 }
 
-fn ready_after_wake<T>(future: impl Future<Output = Result<T, ()>>, wakes: &Arc<WakeCount>) -> T {
+fn ready_after_wake<T>(future: impl Future<Output = Result<T, ()>>, wakes: &Arc<WakeCounter>) -> T {
     let mut future = pin!(future);
     let waker = Waker::from(wakes.clone());
     // Allow cooperative yields, but never poll away a missing notification or spin forever.
     for _ in 0..32 {
-        assert!(wakes.0.swap(0, Ordering::Relaxed) > 0, "missing wake");
+        assert!(wakes.take() > 0, "missing wake");
         match future.as_mut().poll(&mut Context::from_waker(&waker)) {
             Poll::Ready(Ok(value)) => return value,
             Poll::Ready(Err(())) => panic!("operation should succeed"),
@@ -101,8 +95,8 @@ fn cancel_waiter(return_before_cancel: bool) {
         },
     );
     let held = ready(pool.get());
-    let mut first_wakes = Arc::new(WakeCount::default());
-    let mut next_wakes = Arc::new(WakeCount::default());
+    let mut first_wakes = Arc::new(WakeCounter::default());
+    let mut next_wakes = Arc::new(WakeCounter::default());
     let first_waker = Waker::from(first_wakes.clone());
     let next_waker = Waker::from(next_wakes.clone());
     let mut first = Box::pin(pool.get());
@@ -123,11 +117,11 @@ fn cancel_waiter(return_before_cancel: bool) {
     if return_before_cancel {
         drop(held);
         // Cancel a notified waiter without requiring FIFO notification order.
-        if first_wakes.0.load(Ordering::Relaxed) == 0 {
+        if first_wakes.count() == 0 {
             std::mem::swap(&mut first, &mut next);
             std::mem::swap(&mut first_wakes, &mut next_wakes);
         }
-        assert!(first_wakes.0.load(Ordering::Relaxed) > 0);
+        assert!(first_wakes.count() > 0);
         // Cancel the notified future without polling it to retrieve its permit.
         drop(first);
     } else {
@@ -177,7 +171,7 @@ fn cancelling_create_restores_capacity_for_waiting_get() {
     assert_eq!(create_calls.load(Ordering::Relaxed), 1);
     assert_eq!(pool.status().current_size, 0);
 
-    let wakes = Arc::new(WakeCount::default());
+    let wakes = Arc::new(WakeCounter::default());
     let waker = Waker::from(wakes.clone());
     let mut next = Box::pin(pool.get());
     assert!(
@@ -187,7 +181,7 @@ fn cancelling_create_restores_capacity_for_waiting_get() {
     );
     assert_eq!(create_calls.load(Ordering::Relaxed), 1);
     drop(creating);
-    assert!(wakes.0.load(Ordering::Relaxed) > 0);
+    assert!(wakes.count() > 0);
     assert_eq!(pool.status().current_size, 0);
     assert_eq!(pool.status().idle_count, 0);
 

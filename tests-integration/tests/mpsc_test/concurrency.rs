@@ -29,12 +29,11 @@ use asyncband::mpsc;
 use asyncband::mpsc::RecvError;
 use asyncband::mpsc::TryRecvError;
 use asyncband::mpsc::TrySendError;
+use tests_integration::WakeCounter;
 use tests_integration::poll_once;
+use tests_integration::poll_with;
 use tests_integration::test_runtime;
 use tokio_test::assert_ok;
-
-use super::support::WakeCounter;
-use super::support::poll_with;
 
 #[test]
 fn publication_racing_with_close_drops_every_payload_once() {
@@ -285,11 +284,12 @@ fn unbounded_collects_from_multiple_producers() {
         }
         drop(tx);
 
-        let mut sum = 0;
+        let mut received = Vec::new();
         while let Ok(i) = rx.recv().await {
-            sum += i;
+            received.push(i);
         }
-        assert_eq!(sum, 28);
+        received.sort_unstable();
+        assert_eq!(received, (0..8).collect::<Vec<_>>());
     });
 }
 
@@ -297,15 +297,21 @@ fn unbounded_collects_from_multiple_producers() {
 #[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn bounded_backpressure_progresses_on_an_executor() {
     let (tx, mut rx) = mpsc::bounded(1);
+    let (blocked_tx, blocked_rx) = tokio::sync::oneshot::channel();
 
     tx.send(1).await.unwrap();
-    // This will block until the receiver is ready to receive.
-    tokio::spawn(async move {
-        tx.send(2).await.unwrap();
+    let sender = tokio::spawn(async move {
+        let mut send = std::pin::pin!(tx.send(2));
+        let first_poll = std::future::poll_fn(|cx| Poll::Ready(send.as_mut().poll(cx))).await;
+        assert!(first_poll.is_pending());
+        blocked_tx.send(()).unwrap();
+        send.await.unwrap();
     });
 
+    blocked_rx.await.unwrap();
     assert_eq!(Ok(1), rx.recv().await);
     assert_eq!(Ok(2), rx.recv().await);
+    sender.await.unwrap();
     assert_eq!(Err(RecvError::Disconnected), rx.recv().await);
 }
 

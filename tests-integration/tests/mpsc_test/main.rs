@@ -21,11 +21,10 @@ use asyncband::mpsc;
 use asyncband::mpsc::RecvError;
 use asyncband::mpsc::TryRecvError;
 use asyncband::mpsc::TrySendError;
+use tests_integration::WakeCounter;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
-
-use self::support::WakeCounter;
-use self::support::expect_ready;
-use self::support::poll_with;
+use tests_integration::poll_with;
 
 // Public channel contracts. The other suites cover backpressure, callbacks, and concurrency.
 mod backpressure;
@@ -42,7 +41,9 @@ fn unbounded_try_recv_preserves_order_and_reports_state() {
         tx.send(i).unwrap();
     }
 
-    for i in 0..4 {
+    assert_eq!(rx.try_recv(), Ok(0));
+    tx.send(4).unwrap();
+    for i in 1..5 {
         assert_eq!(rx.try_recv(), Ok(i));
     }
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));

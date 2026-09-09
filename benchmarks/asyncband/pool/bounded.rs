@@ -29,8 +29,6 @@ use crate::support::poll_pending;
 use crate::support::poll_pinned_ready;
 use crate::support::poll_ready;
 
-const CAPACITIES: &[usize] = &[1, 32, 1024, usize::MAX];
-
 struct Manager;
 
 impl ManageObject for Manager {
@@ -50,11 +48,11 @@ impl ManageObject for Manager {
     }
 }
 
-#[divan::bench(args = CAPACITIES)]
-fn construct_bounded(bencher: Bencher, capacity: usize) {
+#[divan::bench]
+fn construct_bounded(bencher: Bencher) {
     bencher.bench_local(|| {
         black_box(bounded::Pool::new(
-            bounded::PoolConfig::new(black_box(capacity)),
+            bounded::PoolConfig::new(black_box(32)),
             Manager,
         ))
     });

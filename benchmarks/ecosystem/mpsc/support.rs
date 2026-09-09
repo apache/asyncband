@@ -31,7 +31,7 @@ use super::adapters::UnboundedMpsc;
 
 pub const BOUNDED_CAPACITY: usize = 64;
 pub const BATCH_MESSAGES: usize = 16_384;
-pub const PRODUCER_COUNTS: &[usize] = &[1, 2, 4, 8];
+pub const PRODUCER_COUNTS: &[usize] = &[1, 8];
 
 pub trait Message: Send + 'static {
     fn new(sequence: usize) -> Self;
@@ -131,63 +131,6 @@ impl<C: UnboundedMpsc> ConcurrentMpsc for Unbounded<C> {
 
     fn recv(receiver: &mut Self::Receiver) -> usize {
         C::recv_blocking(receiver)
-    }
-}
-
-pub struct ConcurrentBatch<C: ConcurrentMpsc<Message = usize>> {
-    receiver: C::Receiver,
-    start: Arc<Barrier>,
-    workers: Vec<JoinHandle<()>>,
-}
-
-impl<C: ConcurrentMpsc<Message = usize>> ConcurrentBatch<C> {
-    pub fn new(producer_count: usize) -> Self {
-        assert_eq!(BATCH_MESSAGES % producer_count, 0);
-
-        let (sender, receiver) = C::channel();
-        let start = Arc::new(Barrier::new(producer_count + 1));
-        let messages_per_producer = BATCH_MESSAGES / producer_count;
-        let workers = (0..producer_count)
-            .map(|producer| {
-                let sender = sender.clone();
-                let start = start.clone();
-                thread::spawn(move || {
-                    start.wait();
-                    let first = producer * messages_per_producer;
-                    for offset in 0..messages_per_producer {
-                        C::send(&sender, black_box(first + offset));
-                    }
-                })
-            })
-            .collect();
-        drop(sender);
-
-        Self {
-            receiver,
-            start,
-            workers,
-        }
-    }
-
-    pub fn run(&mut self) -> usize {
-        self.start.wait();
-        let mut checksum = 0usize;
-        for _ in 0..BATCH_MESSAGES {
-            checksum = checksum.wrapping_add(C::recv(&mut self.receiver));
-        }
-        black_box(checksum)
-    }
-}
-
-impl<C: ConcurrentMpsc<Message = usize>> Drop for ConcurrentBatch<C> {
-    fn drop(&mut self) {
-        let panicking = thread::panicking();
-        for worker in self.workers.drain(..) {
-            let result = worker.join();
-            if !panicking {
-                result.expect("benchmark producer panicked");
-            }
-        }
     }
 }
 

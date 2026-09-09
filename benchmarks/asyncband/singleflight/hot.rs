@@ -29,39 +29,6 @@ use crate::support::poll_pending;
 use crate::support::poll_pinned_ready;
 use crate::support::wait_until_open;
 
-// Isolates duplicate admission: the leader is already pending and future construction happens
-// outside the timed section. A whole batch is needed because one admission is below the timer's
-// useful resolution; sample_size=1 lets Divan drop the batch before the next sample instead of
-// growing a synthetic waiter backlog across samples.
-#[divan::bench(args = BATCH_SIZES, sample_count = 100, sample_size = 1)]
-fn join_in_flight(bencher: Bencher, duplicate_count: usize) {
-    let group = BenchGroup::default();
-    let gate = Cell::new(false);
-    let mut context = bench_context();
-    let mut leader = Box::pin(group.work(0, || async {
-        wait_until_open(&gate).await;
-        black_box(1usize)
-    }));
-    poll_pending(leader.as_mut(), &mut context);
-
-    bencher
-        .with_inputs(|| {
-            (0..duplicate_count)
-                .map(|_| Box::pin(group.work(0, || async { unreachable!() })))
-                .collect::<Vec<_>>()
-        })
-        .counter(ItemsCount::new(duplicate_count))
-        .bench_local_values(|mut duplicates| {
-            for duplicate in &mut duplicates {
-                poll_pending(duplicate.as_mut(), &mut context);
-            }
-            duplicates
-        });
-
-    gate.set(true);
-    black_box(poll_pinned_ready(leader.as_mut(), &mut context));
-}
-
 // Measures the complete successful fan-in: one leader is suspended, every duplicate joins it, and
 // all callers receive the cloned result after the leader completes.
 #[divan::bench(args = BATCH_SIZES, sample_size = BATCH_SAMPLE_SIZE)]

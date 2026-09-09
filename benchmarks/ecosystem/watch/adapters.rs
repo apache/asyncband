@@ -16,7 +16,6 @@
 // under the License.
 
 use std::future::Future;
-use std::pin::Pin;
 
 pub struct Asyncband;
 pub struct Tokio;
@@ -28,8 +27,8 @@ pub trait Watch: Send + Sync + 'static {
     fn channel(receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>);
     fn send(sender: &Self::Sender, value: usize);
     fn get(receiver: &Self::Receiver) -> usize;
-    fn recv(receiver: &mut Self::Receiver) -> Pin<Box<dyn Future<Output = usize> + '_>>;
-    fn changed(receiver: &mut Self::Receiver) -> Pin<Box<dyn Future<Output = ()> + '_>>;
+    fn recv(receiver: &mut Self::Receiver) -> impl Future<Output = usize>;
+    fn changed(receiver: &mut Self::Receiver) -> impl Future<Output = ()>;
 }
 
 impl Watch for Asyncband {
@@ -52,12 +51,12 @@ impl Watch for Asyncband {
         receiver.get()
     }
 
-    fn recv(receiver: &mut Self::Receiver) -> Pin<Box<dyn Future<Output = usize> + '_>> {
-        Box::pin(async move { receiver.recv().await.unwrap() })
+    async fn recv(receiver: &mut Self::Receiver) -> usize {
+        receiver.recv().await.unwrap()
     }
 
-    fn changed(receiver: &mut Self::Receiver) -> Pin<Box<dyn Future<Output = ()> + '_>> {
-        Box::pin(async move { receiver.changed().await.unwrap() })
+    async fn changed(receiver: &mut Self::Receiver) {
+        receiver.changed().await.unwrap();
     }
 }
 
@@ -81,14 +80,12 @@ impl Watch for Tokio {
         *receiver.borrow()
     }
 
-    fn recv(receiver: &mut Self::Receiver) -> Pin<Box<dyn Future<Output = usize> + '_>> {
-        Box::pin(async move {
-            receiver.changed().await.unwrap();
-            *receiver.borrow_and_update()
-        })
+    async fn recv(receiver: &mut Self::Receiver) -> usize {
+        receiver.changed().await.unwrap();
+        *receiver.borrow_and_update()
     }
 
-    fn changed(receiver: &mut Self::Receiver) -> Pin<Box<dyn Future<Output = ()> + '_>> {
-        Box::pin(async move { receiver.changed().await.unwrap() })
+    async fn changed(receiver: &mut Self::Receiver) {
+        receiver.changed().await.unwrap();
     }
 }

@@ -25,6 +25,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use asyncband::once::OnceMap;
+use tests_integration::poll_once;
 
 #[test]
 fn constructors_and_default() {
@@ -43,42 +44,35 @@ async fn compute_caches_value() {
 
 #[tokio::test]
 async fn concurrent_compute_runs_once() {
-    let map = Arc::new(OnceMap::new());
-    let count = Arc::new(AtomicUsize::new(0));
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let map = OnceMap::new();
+    let count = AtomicUsize::new(0);
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
 
-    let map_clone = map.clone();
-    let count_clone = count.clone();
-    let first = tokio::spawn(async move {
-        map_clone
-            .compute("key", async move || {
-                count_clone.fetch_add(1, Ordering::SeqCst);
-                started_tx.send(()).unwrap();
-                release_rx.await.unwrap();
-                42
-            })
-            .await
+    let first = map.compute("key", async || {
+        count.fetch_add(1, Ordering::SeqCst);
+        release_rx.await.unwrap();
+        42
     });
+    tokio::pin!(first);
+    assert!(poll_once(first.as_mut()).is_pending());
 
-    started_rx.await.unwrap();
-    let mut waiters = vec![];
-    for _ in 0..9 {
-        let map = map.clone();
-        let count = count.clone();
-        waiters.push(tokio::spawn(async move {
-            map.compute("key", async move || {
+    let mut waiters = (0..9)
+        .map(|_| {
+            Box::pin(map.compute("key", async || {
                 count.fetch_add(1, Ordering::SeqCst);
-                42
-            })
-            .await
-        }));
+                99
+            }))
+        })
+        .collect::<Vec<_>>();
+    for waiter in &mut waiters {
+        assert!(poll_once(waiter.as_mut()).is_pending());
     }
+    assert_eq!(count.load(Ordering::SeqCst), 1);
 
     release_tx.send(()).unwrap();
-    assert_eq!(first.await.unwrap(), 42);
+    assert_eq!(first.await, 42);
     for waiter in waiters {
-        assert_eq!(waiter.await.unwrap(), 42);
+        assert_eq!(waiter.await, 42);
     }
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
@@ -227,37 +221,13 @@ async fn remove_while_computing_allows_a_new_generation() {
     });
 
     started_rx.await.unwrap();
+    assert_eq!(map.get("key"), None);
     assert_eq!(map.remove("key"), None);
     assert_eq!(map.compute("key", async || 2).await, 2);
     release_tx.send(()).unwrap();
 
     assert_eq!(task.await.unwrap(), 1);
     assert_eq!(map.get("key"), Some(2));
-}
-
-#[tokio::test]
-async fn get_returns_none_while_computing() {
-    let map = Arc::new(OnceMap::new());
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-
-    let map_clone = map.clone();
-    let task = tokio::spawn(async move {
-        map_clone
-            .compute("key", async move || {
-                started_tx.send(()).unwrap();
-                release_rx.await.unwrap();
-                1
-            })
-            .await
-    });
-
-    started_rx.await.unwrap();
-    assert_eq!(map.get("key"), None);
-    release_tx.send(()).unwrap();
-
-    assert_eq!(task.await.unwrap(), 1);
-    assert_eq!(map.get("key"), Some(1));
 }
 
 #[test]
