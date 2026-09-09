@@ -64,7 +64,8 @@ impl Reservable for Tokio {
     }
 }
 
-#[divan::bench(types = [Asyncband, Tokio])]
+// `sample_size` is pinned for the reason documented in `bounded.rs`.
+#[divan::bench(types = [Asyncband, Tokio], sample_size = 512)]
 fn reserve_publish_receive<C: Reservable>(bencher: Bencher) {
     let (sender, mut receiver) = C::channel(64);
     let mut context = bench_context();
@@ -75,7 +76,7 @@ fn reserve_publish_receive<C: Reservable>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, Tokio])]
+#[divan::bench(types = [Asyncband, Tokio], sample_size = 1024)]
 fn cancel_reserved_capacity<C: Reservable>(bencher: Bencher) {
     let (sender, _receiver) = C::channel(64);
     bencher.bench_local(|| drop(black_box(C::try_reserve(&sender))));
