@@ -78,5 +78,55 @@ pub fn pop_batch<T>(batch: &mut VecDeque<T>) -> T {
 }
 
 #[cfg(test)]
-#[path = "buffer_tests.rs"]
-mod tests;
+mod tests {
+    use std::collections::VecDeque;
+
+    use super::Buffer;
+    use super::SEGMENT_BYTES;
+    use super::pop_batch;
+
+    fn allocated_bytes<T>(buffer: &Buffer<T>, batch: &VecDeque<T>) -> usize {
+        let slots = batch.capacity()
+            + buffer.writable.capacity()
+            + buffer.sealed.iter().map(VecDeque::capacity).sum::<usize>();
+        slots * size_of::<T>()
+    }
+
+    fn receive<T>(buffer: &mut Buffer<T>, batch: &mut VecDeque<T>) -> T {
+        if batch.is_empty() {
+            buffer.refill(batch);
+        }
+        pop_batch(batch)
+    }
+
+    #[test]
+    fn a_partial_drain_reclaims_segments_and_preserves_new_sends() {
+        let mut buffer = Buffer::new();
+        let mut batch = VecDeque::new();
+        for value in 0..1024usize {
+            buffer.push([value; 128]);
+        }
+        let peak = allocated_bytes(&buffer, &batch);
+        for value in 0..512 {
+            assert_eq!(receive(&mut buffer, &mut batch), [value; 128]);
+        }
+        assert!(allocated_bytes(&buffer, &batch) <= peak * 3 / 4);
+        // This value must stay behind both the current batch and the sealed segments.
+        buffer.push([1024; 128]);
+        for value in 512..=1024 {
+            assert_eq!(receive(&mut buffer, &mut batch), [value; 128]);
+        }
+        assert!(allocated_bytes(&buffer, &batch) <= 2 * SEGMENT_BYTES);
+        buffer.refill(&mut batch);
+        assert!(batch.is_empty());
+    }
+
+    #[test]
+    fn oversized_inline_values_release_the_allocation_on_the_last_receive() {
+        let mut buffer = Buffer::new();
+        let mut batch = VecDeque::new();
+        buffer.push([7u8; SEGMENT_BYTES + 1]);
+        assert_eq!(receive(&mut buffer, &mut batch), [7u8; SEGMENT_BYTES + 1]);
+        assert_eq!(allocated_bytes(&buffer, &batch), 0);
+    }
+}
