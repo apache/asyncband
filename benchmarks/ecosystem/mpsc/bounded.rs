@@ -44,16 +44,6 @@ fn try_round_trip<C: BoundedMpsc>(bencher: Bencher) {
 }
 
 #[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
-fn try_round_trip_zero_sized<C: BoundedMpsc<()>>(bencher: Bencher) {
-    let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
-
-    bencher.bench_local(|| {
-        C::try_send(black_box(&sender), ());
-        C::try_recv(black_box(&mut receiver));
-    });
-}
-
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
 fn ready_round_trip<C: BoundedMpsc>(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
