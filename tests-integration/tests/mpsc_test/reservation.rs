@@ -58,7 +58,7 @@ fn held_permits_consume_capacity_without_claiming_message_order() {
 
 #[test]
 fn zero_sized_messages_support_the_full_capacity_range() {
-    for capacity in [usize::MAX / 4 + 1, usize::MAX / 2 + 1, usize::MAX] {
+    for capacity in [(usize::MAX >> 2) - 1, usize::MAX >> 2] {
         let (tx, mut rx) = mpsc::bounded::<()>(capacity);
         let permit = tx.try_reserve().unwrap();
         tx.try_send(()).unwrap();
@@ -89,7 +89,7 @@ fn zero_sized_messages_are_dropped_once_when_received_or_discarded() {
         }
     }
 
-    let (tx, mut rx) = mpsc::bounded(usize::MAX);
+    let (tx, mut rx) = mpsc::bounded(usize::MAX >> 2);
     for _ in 0..3 {
         assert!(tx.try_send(Message).is_ok());
     }

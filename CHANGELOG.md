@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
+* Reject bounded MPSC capacities above `usize::MAX >> 2` up front with an explicit panic message instead of an opaque arithmetic or allocation failure; zero-sized messages need no slot storage and remain limited only by the permit counter.
 * Finish releasing buffered bounded MPSC messages even if one message destructor panics.
 * Improve unbounded MPSC throughput with batched receiving and incremental storage reclamation; empty-buffer retention is bounded independently of previous peak occupancy.
 

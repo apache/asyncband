@@ -174,3 +174,29 @@ fn receives_wake_for_messages_and_the_last_sender_drop() {
         Poll::Ready(Err(RecvError::Disconnected))
     );
 }
+
+#[test]
+#[should_panic(expected = "mpsc bounded channel requires buffer > 0")]
+fn bounded_rejects_zero_capacity() {
+    let _ = mpsc::bounded::<usize>(0);
+}
+
+#[test]
+#[should_panic(expected = "exceeds the maximum")]
+fn bounded_rejects_capacity_above_the_maximum() {
+    let _ = mpsc::bounded::<usize>((usize::MAX >> 2) + 1);
+}
+
+#[test]
+#[should_panic(expected = "exceeds the allocation limit")]
+fn bounded_rejects_capacity_above_the_allocation_limit() {
+    // Within the maximum capacity, but the rounded-up slot storage cannot fit one allocation.
+    let _ = mpsc::bounded::<[u64; 4]>(usize::MAX >> 2);
+}
+
+#[test]
+fn bounded_zero_sized_messages_need_no_slot_storage() {
+    let (tx, mut rx) = mpsc::bounded::<()>(usize::MAX >> 2);
+    tx.try_send(()).unwrap();
+    assert_eq!(rx.try_recv(), Ok(()));
+}

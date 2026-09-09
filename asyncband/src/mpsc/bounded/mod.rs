@@ -54,11 +54,16 @@ mod buffer;
 ///
 /// # Panics
 ///
-/// Panics if `buffer` is zero or the preallocated message buffer exceeds the allocation size
-/// limit. There is no additional channel-specific capacity limit.
+/// Panics if `buffer` is zero or exceeds the maximum capacity of `usize::MAX >> 2`, or if the
+/// rounded-up message buffer would exceed the allocation size limit.
 #[track_caller]
 pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     assert!(buffer > 0, "mpsc bounded channel requires buffer > 0");
+    assert!(
+        buffer <= MAX_CAPACITY,
+        "mpsc bounded channel capacity {buffer} exceeds the maximum of {MAX_CAPACITY}"
+    );
+    Buffer::<T>::check_allocation(buffer);
     let shared = Arc::new(Shared {
         senders: AtomicUsize::new(1),
         tx_permits: CachePadded::new(Semaphore::new(buffer)),
@@ -78,6 +83,12 @@ struct Shared<T> {
     rx_waker: CachePadded<AtomicWaker>,
     buffer: Buffer<T>,
 }
+
+/// The largest capacity accepted by [`bounded`].
+///
+/// The shared permit counter packs channel state into two flag bits, which also keeps the
+/// rounded-up slot storage from overflowing a power of two.
+const MAX_CAPACITY: usize = usize::MAX >> 2;
 
 // This channel-local semaphore grants one permit at a time and can close its wait queue.
 // The general-purpose semaphore has neither a close operation nor acquisition errors.
