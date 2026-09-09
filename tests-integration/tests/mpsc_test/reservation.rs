@@ -82,6 +82,7 @@ fn zero_sized_messages_are_dropped_once_when_received_or_discarded() {
     use std::sync::atomic::Ordering;
 
     static DROPS: AtomicUsize = AtomicUsize::new(0);
+    #[repr(align(128))]
     struct Message;
     impl Drop for Message {
         fn drop(&mut self) {
@@ -99,6 +100,38 @@ fn zero_sized_messages_are_dropped_once_when_received_or_discarded() {
     assert_eq!(DROPS.load(Ordering::Relaxed), 3);
     drop(tx.try_send(Message).err().unwrap().into_inner());
     assert_eq!(DROPS.load(Ordering::Relaxed), 4);
+}
+
+#[cfg(panic = "unwind")]
+#[test]
+fn zero_sized_messages_preserve_backpressure_and_cleanup_after_a_drop_panic() {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+    #[repr(align(128))]
+    struct Message;
+    impl Drop for Message {
+        fn drop(&mut self) {
+            if DROPS.fetch_add(1, Ordering::Relaxed) == 0 {
+                panic!("first zero-sized message destructor");
+            }
+        }
+    }
+
+    let (tx, rx) = mpsc::bounded(3);
+    for _ in 0..3 {
+        assert!(tx.try_send(Message).is_ok());
+    }
+    assert!(matches!(tx.try_reserve(), Err(TrySendError::Full(()))));
+    let mut waiting = Box::pin(tx.reserve());
+    let (waker, wakes) = WakeCounter::new();
+    assert!(poll_with(waiting.as_mut(), &waker).is_pending());
+
+    assert!(catch_unwind(|| drop(rx)).is_err());
+    assert_eq!(DROPS.load(Ordering::Relaxed), 3);
+    assert_eq!(wakes.count(), 1);
+    assert!(expect_ready(poll_with(waiting.as_mut(), &waker)).is_err());
 }
 
 #[test]

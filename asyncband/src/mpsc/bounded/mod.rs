@@ -28,7 +28,6 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-use self::buffer::Buffer;
 use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
@@ -41,7 +40,11 @@ use crate::internal::waitlist::WaiterId;
 use crate::internal::wake_all;
 use crate::internal::waker_batch::WakerBatch;
 
-mod buffer;
+mod storage;
+mod zero_sized;
+
+#[cfg(test)]
+mod tests;
 
 /// Creates a bounded mpsc channel with room for `buffer` queued messages.
 ///
@@ -49,8 +52,8 @@ mod buffer;
 /// one slot for a waiting sender. Capacity is granted in the order that pending sends and
 /// reservations enter the wait queue; new senders cannot take an already granted slot.
 ///
-/// Storage for nonzero-sized messages is preallocated and rounded up to a power of two; the
-/// channel's capacity remains exactly `buffer`. Zero-sized messages need no per-slot storage.
+/// Storage for nonzero-sized messages is preallocated. The channel's capacity is exactly
+/// `buffer`. Zero-sized messages need no per-slot storage.
 ///
 /// # Panics
 ///
@@ -59,16 +62,17 @@ mod buffer;
 #[track_caller]
 pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     assert!(buffer > 0, "mpsc bounded channel requires buffer > 0");
+    let (sender, receiver) = storage::channel(buffer);
     let shared = Arc::new(Shared {
         senders: AtomicUsize::new(1),
         tx_permits: CachePadded::new(Semaphore::new(buffer)),
         rx_waker: CachePadded::new(AtomicWaker::new()),
-        buffer: Buffer::new(buffer),
+        sender,
     });
     let sender = BoundedSender {
         shared: shared.clone(),
     };
-    let receiver = BoundedReceiver { shared, head: 0 };
+    let receiver = BoundedReceiver { shared, receiver };
     (sender, receiver)
 }
 
@@ -76,7 +80,7 @@ struct Shared<T> {
     senders: AtomicUsize,
     tx_permits: CachePadded<Semaphore>,
     rx_waker: CachePadded<AtomicWaker>,
-    buffer: Buffer<T>,
+    sender: storage::Sender<T>,
 }
 
 // This channel-local semaphore grants one permit at a time and can close its wait queue.
@@ -407,9 +411,10 @@ impl<T> Permit<'_, T> {
     /// If the receiver has been dropped, the returned error contains the unsent value.
     pub fn send(mut self, value: T) -> Result<(), SendError<T>> {
         let shared = &self.sender.unwrap().shared;
-        // SAFETY: This permit owns one capacity unit. Claiming a slot and writing it is a
-        // synchronous operation with no user callbacks or await points between the two.
-        unsafe { shared.buffer.push(value) }.map_err(SendError::new)?;
+        if shared.tx_permits.closed.load(Ordering::Acquire) {
+            return Err(SendError::new(value));
+        }
+        shared.sender.send(value).map_err(SendError::new)?;
         // Publication owns the capacity before a wake callback can panic.
         self.sender = None;
         shared.rx_waker.wake();
@@ -428,11 +433,10 @@ impl<T> Drop for Permit<'_, T> {
 /// The receiving endpoint of a bounded mpsc channel.
 ///
 /// Instances are created by the [`bounded`] function.
-/// Dropping the receiver discards queued values. The backing allocation remains alive until
-/// all endpoints are dropped, so a concurrent sender can safely finish returning an unsent value.
+/// Dropping the receiver discards queued values and wakes senders waiting for capacity.
 pub struct BoundedReceiver<T> {
     shared: Arc<Shared<T>>,
-    head: usize,
+    receiver: storage::Receiver<T>,
 }
 
 impl<T> fmt::Debug for BoundedReceiver<T> {
@@ -443,14 +447,11 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        // SAFETY: Receiver ownership provides exclusive access to the consumption cursor.
-        // The drain first prevents new claims. Its destructor completes cleanup on unwinding.
-        let drain = unsafe { self.shared.buffer.close(self.head) };
         let wakers = self.shared.tx_permits.close();
+        self.shared.sender.close();
         let receiver_waker = self.shared.rx_waker.take();
         wake_all(wakers.into_iter());
         drop(receiver_waker);
-        drop(drain);
     }
 }
 
@@ -460,9 +461,6 @@ impl<T> BoundedReceiver<T> {
     /// Receiving a value frees one buffer slot. An empty channel returns [`TryRecvError::Empty`]
     /// while at least one sender remains, or [`TryRecvError::Disconnected`] after every sender has
     /// been dropped and all queued values have been consumed.
-    ///
-    /// If a producer is still completing a synchronous publication at the queue head, this
-    /// method waits for that publication. Use [`Self::recv`] to wait asynchronously instead.
     ///
     /// # Examples
     ///
@@ -481,44 +479,20 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let mut spins = 0;
-        loop {
-            match self.try_pop() {
-                Poll::Ready(result) => return result,
-                Poll::Pending => {
-                    // A synchronous publisher already owns the head. Reporting Empty here
-                    // could hide a later send that has completed. Async recv parks instead.
-                    if spins < 32 {
-                        std::hint::spin_loop();
-                        spins += 1;
-                    } else {
-                        std::thread::yield_now();
-                    }
-                }
-            }
-        }
-    }
-
-    fn try_pop(&mut self) -> Poll<Result<T, TryRecvError>> {
         let mut disconnected = false;
         loop {
-            // SAFETY: Only this receiver owns head. Capacity is released after the buffer
-            // finishes reading and advances the cursor, so no producer can overwrite the value.
-            match unsafe { self.shared.buffer.pop(&mut self.head) } {
-                Poll::Ready(Some(value)) => {
-                    self.shared.tx_permits.release();
-                    return Poll::Ready(Ok(value));
-                }
-                Poll::Ready(None) if disconnected => {
-                    return Poll::Ready(Err(TryRecvError::Disconnected));
-                }
-                Poll::Ready(None) if self.shared.senders.load(Ordering::Acquire) == 0 => {
-                    // Acquire the last sender's completed publications before checking again.
-                    disconnected = true;
-                }
-                Poll::Ready(None) => return Poll::Ready(Err(TryRecvError::Empty)),
-                Poll::Pending => return Poll::Pending,
+            if let Some(value) = self.receiver.recv() {
+                self.shared.tx_permits.release();
+                return Ok(value);
             }
+            if disconnected {
+                return Err(TryRecvError::Disconnected);
+            }
+            if self.shared.senders.load(Ordering::Acquire) != 0 {
+                return Err(TryRecvError::Empty);
+            }
+            // Acquire the last sender's completed publications before checking again.
+            disconnected = true;
         }
     }
 
@@ -557,13 +531,13 @@ impl<T> BoundedReceiver<T> {
 
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
         for registered in [false, true] {
-            match self.try_pop() {
-                Poll::Ready(Ok(value)) => return Poll::Ready(Ok(value)),
-                Poll::Ready(Err(TryRecvError::Disconnected)) => {
+            match self.try_recv() {
+                Ok(value) => return Poll::Ready(Ok(value)),
+                Err(TryRecvError::Disconnected) => {
                     drop(self.shared.rx_waker.take());
                     return Poll::Ready(Err(RecvError::Disconnected));
                 }
-                Poll::Pending | Poll::Ready(Err(TryRecvError::Empty)) => {}
+                Err(TryRecvError::Empty) => {}
             }
             if !registered {
                 self.shared.rx_waker.register(cx.waker());
