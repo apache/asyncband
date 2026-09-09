@@ -57,7 +57,7 @@ const WAKING: usize = 0b10;
 ///           REGISTERING ------------AcqRel CAS----------------> WAITING
 ///
 /// wake:     WAITING ----------------AcqRel fetch_or-----------> WAKING
-///           WAKING -----------------Release swap--------------> WAITING
+///           WAKING -----------------Release store-------------> WAITING
 ///
 /// race:     REGISTERING ------------AcqRel fetch_or-----------> REGISTERING | WAKING
 ///           REGISTERING | WAKING ---AcqRel swap---------------> WAITING
@@ -224,9 +224,15 @@ impl AtomicWaker {
                 let waker = unsafe { (*self.waker.get()).take() };
 
                 // ORDERING: Release publishes the emptied slot before another operation acquires
-                // it. The fetch_or above already performed the required Acquire operation.
-                let old_state = self.state.swap(WAITING, Ordering::Release);
-                debug_assert_eq!(old_state, WAKING);
+                // it. The fetch_or above already performed the required Acquire operation. A
+                // plain store suffices: only this claim moves the state out of WAKING, because
+                // registration enters from WAITING and concurrent wakes keep the bit set. Debug
+                // builds pay for a swap to assert that invariant.
+                if cfg!(debug_assertions) {
+                    debug_assert_eq!(self.state.swap(WAITING, Ordering::Release), WAKING);
+                } else {
+                    self.state.store(WAITING, Ordering::Release);
+                }
                 waker
             }
             state => {
