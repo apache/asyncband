@@ -38,7 +38,7 @@ fn publish_claimed<T>(
     value: T,
 ) -> Result<(), T> {
     // SAFETY: The test claimed this position while holding the same capacity permit.
-    unsafe { tx.shared().buffer.publish(position, value) }?;
+    unsafe { tx.shared().buffer.slots().publish(position, value) }?;
     // Publication owns the capacity now; forgetting skips the permit's release on drop.
     std::mem::forget(permit);
     tx.shared().rx_waker.wake();
@@ -51,12 +51,16 @@ fn a_claimed_head_waits_for_publication_across_laps() {
         for initial in [0, usize::MAX - 1] {
             let (tx, mut rx) = bounded(capacity);
             // Start an empty ring near ticket overflow instead of running usize::MAX sends.
-            tx.shared().buffer.tail.store(initial, Ordering::Relaxed);
+            tx.shared()
+                .buffer
+                .slots()
+                .tail
+                .store(initial, Ordering::Relaxed);
             rx.set_head(initial);
             let mut cx = Context::from_waker(Waker::noop());
             for lap in 0..8 {
                 let permit = tx.try_reserve().unwrap();
-                let position = tx.shared().buffer.claim().unwrap();
+                let position = tx.shared().buffer.slots().claim().unwrap();
                 for offset in 1..capacity {
                     tx.try_send(lap * capacity + offset).unwrap();
                 }
@@ -84,9 +88,14 @@ fn a_claim_delayed_past_close_returns_its_value() {
     };
     let allocation = Arc::downgrade(tx.shared());
     // Pause after claim's open check, then resume its atomic ticket allocation after close.
-    assert!(!tx.shared().buffer.closed.load(Ordering::Acquire));
+    assert!(!tx.shared().buffer.slots().closed.load(Ordering::Acquire));
     drop(rx);
-    let position = tx.shared().buffer.tail.fetch_add(1, Ordering::AcqRel);
+    let position = tx
+        .shared()
+        .buffer
+        .slots()
+        .tail
+        .fetch_add(1, Ordering::AcqRel);
     let unsent = publish_claimed(&tx, permit, position, value).unwrap_err();
     assert_eq!(unsent.bytes, [7; 1024]);
     drop(unsent);
@@ -125,7 +134,7 @@ fn closing_reclaims_ready_values_without_waiting_for_a_paused_publisher() {
         let paused = &paused;
         let publisher = scope.spawn(move || {
             let permit = sender.try_reserve().unwrap();
-            let position = sender.shared().buffer.claim().unwrap();
+            let position = sender.shared().buffer.slots().claim().unwrap();
             let value = Payload {
                 bytes: [1; 1024],
                 drops: drops.clone(),

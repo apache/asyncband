@@ -42,13 +42,26 @@ use crate::internal::cache_padded::CachePadded;
 const EMPTY: u8 = 0;
 const READY: u8 = 1;
 const CLOSED: u8 = 2;
-const ZERO_SIZED_CLOSED: usize = 1 << (usize::BITS - 1);
+const CLOSED_BIT: usize = 1 << (usize::BITS - 1);
 
 pub struct Buffer<T> {
+    storage: Storage<T>,
+}
+
+/// Slotted and zero-sized queues share no storage beyond a message count. Splitting them into
+/// variants frees the zero-sized queue from a dead ticket, close flag, and slot allocation.
+/// Boxing the slotted variant keeps that saving: an unboxed enum reserves room for the larger
+/// variant either way. The variant tag sits beside the words every operation already loads,
+/// so the dispatch branch is as predictable as the size check it replaces.
+enum Storage<T> {
+    Slots(Box<Slots<T>>),
+    ZeroSized(ZeroSized),
+}
+
+struct Slots<T> {
     slots: Box<[Slot<T>]>,
     tail: CachePadded<AtomicUsize>,
     closed: AtomicBool,
-    zero_sized: ZeroSized,
 }
 
 struct Slot<T> {
@@ -88,7 +101,7 @@ impl ZeroSized {
     fn push(&self) -> bool {
         let mut queued = self.queued.load(Ordering::Acquire);
         loop {
-            if queued & ZERO_SIZED_CLOSED != 0 {
+            if queued & CLOSED_BIT != 0 {
                 return false;
             }
             // The capacity limit keeps the count far below the closed flag bit.
@@ -106,7 +119,7 @@ impl ZeroSized {
 
     /// Accounts for one consumed message, returning `false` when the queue was observed empty.
     fn pop(&self) -> bool {
-        let queued = self.queued.load(Ordering::Acquire) & !ZERO_SIZED_CLOSED;
+        let queued = self.queued.load(Ordering::Acquire) & !CLOSED_BIT;
         if queued == 0 {
             return false;
         }
@@ -118,27 +131,22 @@ impl ZeroSized {
 
     /// Stops publication and returns the queue length transferred to the drain.
     fn close(&self) -> usize {
-        self.queued.fetch_or(ZERO_SIZED_CLOSED, Ordering::AcqRel) & !ZERO_SIZED_CLOSED
+        self.queued.fetch_or(CLOSED_BIT, Ordering::AcqRel) & !CLOSED_BIT
     }
 }
 
-impl<T> Buffer<T> {
-    pub fn new(capacity: usize) -> Self {
-        let slots = if size_of::<T>() == 0 {
-            Box::default()
-        } else {
-            (0..capacity.next_power_of_two())
-                .map(|_| Slot {
-                    state: AtomicU8::new(EMPTY),
-                    value: UnsafeCell::new(MaybeUninit::uninit()),
-                })
-                .collect()
-        };
+impl<T> Slots<T> {
+    fn new(capacity: usize) -> Self {
+        let slots = (0..capacity.next_power_of_two())
+            .map(|_| Slot {
+                state: AtomicU8::new(EMPTY),
+                value: UnsafeCell::new(MaybeUninit::uninit()),
+            })
+            .collect();
         Self {
             slots,
             tail: CachePadded::new(AtomicUsize::new(0)),
             closed: AtomicBool::new(false),
-            zero_sized: ZeroSized::new(),
         }
     }
 
@@ -157,28 +165,11 @@ impl<T> Buffer<T> {
         Ok(self.tail.fetch_add(1, Ordering::AcqRel))
     }
 
-    /// Writes and publishes one message. Closing may instead return the unsent value.
+    /// Writes and publishes one message into a claimed position.
     ///
     /// # Safety
     ///
-    /// Own one capacity permit before calling; release it only after a failed push or after
-    /// the consumer reads the published value. No user code runs between claim and publication.
-    pub unsafe fn push(&self, value: T) -> Result<(), T> {
-        if size_of::<T>() == 0 {
-            return if self.zero_sized.push() {
-                mem::forget(value);
-                Ok(())
-            } else {
-                Err(value)
-            };
-        }
-        let Ok(position) = self.claim() else {
-            return Err(value);
-        };
-        // SAFETY: The caller owns capacity and the atomic increment assigned this position.
-        unsafe { self.publish(position, value) }
-    }
-
+    /// Own the position from a claim, backed by a capacity permit, and publish it at most once.
     unsafe fn publish(&self, position: usize, value: T) -> Result<(), T> {
         let slot = self.slot(position);
         // SAFETY: Capacity prevents wrapping over unread slots. AcqRel tail increments carry prior
@@ -203,17 +194,8 @@ impl<T> Buffer<T> {
     ///
     /// # Safety
     ///
-    /// Only the exclusive consumer may call this, using its persistent cursor. Release one
-    /// capacity permit after each successful pop, after the value has been read completely.
-    pub unsafe fn pop(&self, head: &mut usize) -> Poll<Option<T>> {
-        if size_of::<T>() == 0 {
-            return if self.zero_sized.pop() {
-                // SAFETY: A queued value proves that this ZST is inhabited and owns one value.
-                Poll::Ready(Some(unsafe { Self::read_zero_sized() }))
-            } else {
-                Poll::Ready(None)
-            };
-        }
+    /// Only the exclusive consumer may call this, using its persistent cursor.
+    unsafe fn pop(&self, head: &mut usize) -> Poll<Option<T>> {
         let slot = self.slot(*head);
         if slot.state.load(Ordering::Acquire) == READY {
             // SAFETY: Publication initialized the value, and only this consumer can read it.
@@ -229,19 +211,83 @@ impl<T> Buffer<T> {
         }
     }
 
+    /// Stops new claims and returns the physical slot count the drain must cover: a producer
+    /// may have passed the open check but not obtained its ticket yet, and such a late claim
+    /// must also find a CLOSED slot.
+    fn close(&self) -> usize {
+        self.closed.store(true, Ordering::Release);
+        self.slots.len()
+    }
+}
+
+impl<T> Buffer<T> {
+    pub fn new(capacity: usize) -> Self {
+        let storage = if size_of::<T>() == 0 {
+            Storage::ZeroSized(ZeroSized::new())
+        } else {
+            Storage::Slots(Box::new(Slots::new(capacity)))
+        };
+        Self { storage }
+    }
+
+    /// Writes and publishes one message. Closing may instead return the unsent value.
+    ///
+    /// # Safety
+    ///
+    /// Own one capacity permit before calling; release it only after a failed push or after
+    /// the consumer reads the published value. No user code runs between claim and publication.
+    pub unsafe fn push(&self, value: T) -> Result<(), T> {
+        match &self.storage {
+            Storage::Slots(slots) => {
+                let Ok(position) = slots.claim() else {
+                    return Err(value);
+                };
+                // SAFETY: The caller owns capacity and the ticket assigned this position.
+                unsafe { slots.publish(position, value) }
+            }
+            Storage::ZeroSized(zero_sized) => {
+                debug_assert_eq!(size_of::<T>(), 0);
+                if zero_sized.push() {
+                    mem::forget(value);
+                    Ok(())
+                } else {
+                    Err(value)
+                }
+            }
+        }
+    }
+
+    /// Pending means a producer claimed the head but has not published it yet.
+    ///
+    /// # Safety
+    ///
+    /// Only the exclusive consumer may call this, using its persistent cursor. Release one
+    /// capacity permit after each successful pop, after the value has been read completely.
+    pub unsafe fn pop(&self, head: &mut usize) -> Poll<Option<T>> {
+        match &self.storage {
+            // SAFETY: The caller's guarantee forwards unchanged.
+            Storage::Slots(slots) => unsafe { slots.pop(head) },
+            Storage::ZeroSized(zero_sized) => {
+                debug_assert_eq!(size_of::<T>(), 0);
+                if zero_sized.pop() {
+                    // SAFETY: A queued value proves that this ZST is inhabited and owns one value.
+                    Poll::Ready(Some(unsafe { read_zero_sized() }))
+                } else {
+                    Poll::Ready(None)
+                }
+            }
+        }
+    }
+
     /// Stops new claims and returns ownership of published values to a drain guard.
     ///
     /// # Safety
     ///
     /// Only the exclusive consumer may close the buffer, once, using its current cursor.
     pub unsafe fn close(&self, head: usize) -> Drain<'_, T> {
-        self.closed.store(true, Ordering::Release);
-        let remaining = if size_of::<T>() == 0 {
-            self.zero_sized.close()
-        } else {
-            // Cover every physical slot: a producer may have passed the open check but not
-            // obtained its ticket yet. Such a late claim must also find a CLOSED slot.
-            self.slots.len()
+        let remaining = match &self.storage {
+            Storage::Slots(slots) => slots.close(),
+            Storage::ZeroSized(zero_sized) => zero_sized.close(),
         };
         Drain {
             buffer: self,
@@ -250,11 +296,22 @@ impl<T> Buffer<T> {
         }
     }
 
-    unsafe fn read_zero_sized() -> T {
-        // SAFETY: The caller owns an initialized, inhabited ZST. Reading it accesses no bytes;
-        // dangling supplies a non-null, correctly aligned pointer, as in a ZST Vec.
-        unsafe { NonNull::<T>::dangling().as_ptr().read() }
+    #[cfg(test)]
+    fn slots(&self) -> &Slots<T> {
+        match &self.storage {
+            Storage::Slots(slots) => slots,
+            Storage::ZeroSized(_) => unreachable!("zero-sized messages have no slots"),
+        }
     }
+}
+
+/// # Safety
+///
+/// The caller must own an initialized, inhabited ZST value.
+unsafe fn read_zero_sized<T>() -> T {
+    // SAFETY: Reading it accesses no bytes; dangling supplies a non-null, correctly aligned
+    // pointer, as in a ZST Vec.
+    unsafe { NonNull::<T>::dangling().as_ptr().read() }
 }
 
 pub struct Drain<'a, T> {
@@ -271,18 +328,20 @@ impl<T> Iterator for Drain<'_, T> {
             let position = self.position;
             self.remaining -= 1;
             self.position = self.position.wrapping_add(1);
-            if size_of::<T>() == 0 {
+            match &self.buffer.storage {
+                Storage::Slots(slots) => {
+                    let slot = slots.slot(position);
+                    if slot.state.swap(CLOSED, Ordering::AcqRel) == READY {
+                        // SAFETY: The drain won ownership of a published value. The cursor and
+                        // state already advanced, so a panicking destructor cannot read twice.
+                        return Some(unsafe { (*slot.value.get()).assume_init_read() });
+                    }
+                    // An unpublished slot stays owned by its producer, which will observe CLOSED
+                    // and recover its value. The shared Arc keeps this allocation alive until then.
+                }
                 // SAFETY: Closing transferred this many initialized ZST values to the drain.
-                return Some(unsafe { Buffer::<T>::read_zero_sized() });
+                Storage::ZeroSized(_) => return Some(unsafe { read_zero_sized() }),
             }
-            let slot = self.buffer.slot(position);
-            if slot.state.swap(CLOSED, Ordering::AcqRel) == READY {
-                // SAFETY: The drain won ownership of a published value. The cursor and state
-                // already advanced, so a panicking destructor cannot cause a second read.
-                return Some(unsafe { (*slot.value.get()).assume_init_read() });
-            }
-            // An unpublished slot stays owned by its producer, which will observe CLOSED and
-            // recover its value. The shared Arc keeps this allocation alive until that finishes.
         }
         None
     }
