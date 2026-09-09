@@ -27,8 +27,6 @@ use crate::support::poll_pending;
 use crate::support::poll_pinned_ready;
 
 const WORKER_COUNTS: &[usize] = &[1, 8, 32];
-const THREAD_COUNTS: &[usize] = &[1, 2, 8, 32];
-const CONTENDED_SAMPLE_SIZE: u32 = 256;
 
 #[divan::bench]
 fn ready_empty(bencher: Bencher) {
@@ -39,20 +37,6 @@ fn ready_empty(bencher: Bencher) {
         poll_pinned_ready(wait.as_mut(), &mut context);
         black_box(())
     });
-}
-
-#[divan::bench]
-fn worker_round_trip(bencher: Bencher) {
-    let root = WaitGroup::new();
-
-    bencher.bench_local(|| black_box(root.clone()));
-}
-
-#[divan::bench(threads = THREAD_COUNTS, sample_size = CONTENDED_SAMPLE_SIZE)]
-fn worker_round_trip_contended(bencher: Bencher) {
-    let root = WaitGroup::new();
-
-    bencher.bench(|| black_box(root.clone()));
 }
 
 #[divan::bench]
