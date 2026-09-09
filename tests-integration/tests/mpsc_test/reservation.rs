@@ -16,6 +16,7 @@
 // under the License.
 
 use std::cell::Cell;
+use std::mem;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::sync::Arc;
@@ -57,16 +58,26 @@ fn held_permits_consume_capacity_without_claiming_message_order() {
 }
 
 #[test]
-fn zero_sized_messages_support_the_full_capacity_range() {
-    for capacity in [(usize::MAX >> 1) - 1, usize::MAX >> 1] {
+fn zero_sized_messages_preserve_capacity_across_reservation_and_close() {
+    for capacity in [1, 3, 64] {
         let (tx, mut rx) = mpsc::bounded::<()>(capacity);
         let permit = tx.try_reserve().unwrap();
-        tx.try_send(()).unwrap();
-        assert_eq!(rx.try_recv(), Ok(()));
+        for _ in 1..capacity {
+            tx.try_send(()).unwrap();
+        }
+        assert_eq!(tx.try_send(()), Err(TrySendError::Full(())));
+        for _ in 1..capacity {
+            assert_eq!(rx.try_recv(), Ok(()));
+        }
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
         drop(permit);
         tx.try_reserve().unwrap().send(()).unwrap();
+        assert_eq!(rx.try_recv(), Ok(()));
         // Closing restores buffered capacity before outstanding permits are dropped.
         let held = tx.try_reserve().unwrap();
+        for _ in 1..capacity {
+            tx.try_send(()).unwrap();
+        }
         drop(rx);
         drop(held);
         assert!(matches!(
@@ -82,6 +93,7 @@ fn zero_sized_messages_are_dropped_once_when_received_or_discarded() {
     use std::sync::atomic::Ordering;
 
     static DROPS: AtomicUsize = AtomicUsize::new(0);
+    #[repr(align(128))]
     struct Message;
     impl Drop for Message {
         fn drop(&mut self) {
@@ -89,7 +101,7 @@ fn zero_sized_messages_are_dropped_once_when_received_or_discarded() {
         }
     }
 
-    let (tx, mut rx) = mpsc::bounded(usize::MAX >> 1);
+    let (tx, mut rx) = mpsc::bounded(3);
     for _ in 0..3 {
         assert!(tx.try_send(Message).is_ok());
     }
@@ -159,7 +171,7 @@ fn closing_after_a_grant_returns_the_unsent_message() {
 fn receiver_drop_does_not_wait_for_held_or_forgotten_permits() {
     let (tx, mut rx) = mpsc::bounded(3);
     let held = tx.try_reserve().unwrap();
-    std::mem::forget(tx.try_reserve().unwrap());
+    mem::forget(tx.try_reserve().unwrap());
     tx.try_send(String::from("ready")).unwrap();
     assert_eq!(rx.try_recv().unwrap(), "ready");
     tx.try_send(String::from("discarded on close")).unwrap();

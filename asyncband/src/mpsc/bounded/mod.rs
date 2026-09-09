@@ -41,8 +41,8 @@ pub use self::sender::Permit;
 /// one slot for a waiting sender. Capacity is granted in the order that pending sends and
 /// reservations enter the wait queue; new senders cannot take an already granted slot.
 ///
-/// Storage for nonzero-sized messages is preallocated and rounded up to a power of two; the
-/// channel's capacity remains exactly `buffer`. Zero-sized messages need no per-slot storage.
+/// Message slots are preallocated and rounded up to a power of two; the channel's capacity
+/// remains exactly `buffer`. Every slot needs state metadata, including for zero-sized messages.
 ///
 /// # Panics
 ///
@@ -51,9 +51,8 @@ pub use self::sender::Permit;
 pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     /// The largest capacity accepted by [`bounded`].
     ///
-    /// The shared permit counter reserves two sentinel values above the usable range, and the
-    /// zero-sized queue length packs a closed flag into its top bit. This bound also keeps the
-    /// rounded-up slot storage from overflowing a power of two.
+    /// The shared permit counter reserves two sentinel values above the usable range. This
+    /// bound also keeps the rounded-up slot storage from overflowing a power of two.
     const MAX_CAPACITY: usize = usize::MAX >> 1;
 
     assert!(

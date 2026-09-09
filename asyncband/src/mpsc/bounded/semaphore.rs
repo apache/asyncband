@@ -191,12 +191,6 @@ pub struct Capacity<'a> {
     semaphore: &'a Semaphore,
 }
 
-impl Capacity<'_> {
-    pub fn forget(self) {
-        std::mem::forget(self);
-    }
-}
-
 impl Drop for Capacity<'_> {
     fn drop(&mut self) {
         self.semaphore.release();

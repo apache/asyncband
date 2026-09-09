@@ -17,6 +17,7 @@
 
 use std::fmt;
 use std::future::poll_fn;
+use std::mem;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -186,13 +187,12 @@ impl<T> Permit<'_, T> {
     ///
     /// If the receiver has been dropped, the returned error contains the unsent value.
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
-        let Self { shared, capacity } = self;
         // SAFETY: This permit owns one capacity unit. Claiming a slot and writing it is a
         // synchronous operation with no user callbacks or await points between the two.
-        unsafe { shared.buffer.push(value) }.map_err(SendError::new)?;
-        // Publication owns the capacity before a wake callback can panic.
-        capacity.forget();
-        shared.rx_waker.wake();
+        unsafe { self.shared.buffer.push(value) }.map_err(SendError::new)?;
+        // The queued message now owns capacity, even if the wake callback panics.
+        mem::forget(self.capacity);
+        self.shared.rx_waker.wake();
         Ok(())
     }
 }
