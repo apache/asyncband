@@ -17,13 +17,11 @@
 
 use std::fmt;
 use std::future::poll_fn;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::BoundedSender;
 use super::Permit;
 use super::SendError;
-use super::Shared;
 use super::TrySendError;
 
 impl<T> Clone for BoundedSender<T> {
@@ -50,10 +48,6 @@ impl<T> Drop for BoundedSender<T> {
 }
 
 impl<T> BoundedSender<T> {
-    pub(crate) fn new(shared: Arc<Shared<T>>) -> Self {
-        Self { shared }
-    }
-
     /// Sends a message, waiting until the channel has capacity when necessary.
     ///
     /// If the receiver has been dropped, the returned error contains `value`.
@@ -144,11 +138,6 @@ impl<T> BoundedSender<T> {
             Err(TrySendError::Full(())) => Err(TrySendError::Full(value)),
             Err(TrySendError::Disconnected(())) => Err(TrySendError::Disconnected(value)),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn shared(&self) -> &Arc<Shared<T>> {
-        &self.shared
     }
 }
 

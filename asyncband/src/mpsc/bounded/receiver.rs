@@ -17,15 +17,13 @@
 
 use std::fmt;
 use std::future::poll_fn;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use super::RecvError;
-use super::Shared;
-use super::TryRecvError;
 use super::BoundedReceiver;
+use super::RecvError;
+use super::TryRecvError;
 use crate::internal::wake_all;
 
 impl<T> fmt::Debug for BoundedReceiver<T> {
@@ -48,10 +46,6 @@ impl<T> Drop for BoundedReceiver<T> {
 }
 
 impl<T> BoundedReceiver<T> {
-    pub(crate) fn new(shared: Arc<Shared<T>>) -> Self {
-        Self { shared, head: 0 }
-    }
-
     /// Attempts to receive the next queued value without waiting for a new message.
     ///
     /// Receiving a value frees one buffer slot. An empty channel returns [`TryRecvError::Empty`]
@@ -129,9 +123,9 @@ impl<T> BoundedReceiver<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `recv` does not remove a message from the channel. A later receive
-    /// operation can still observe the next queued value, so `recv` may safely be raced with other
-    /// futures in a selection construct.
+    /// Dropping a pending `recv` does not remove a message from the channel. A later `recv` call
+    /// can still observe the next queued value, so `recv` may safely be raced with other futures
+    /// in a selection construct.
     ///
     /// # Examples
     ///
