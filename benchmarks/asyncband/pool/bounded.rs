@@ -72,6 +72,19 @@ fn bounded_warm_get_and_return(bencher: Bencher) {
 }
 
 #[divan::bench]
+fn bounded_warm_get_and_return_with_spare_capacity(bencher: Bencher) {
+    let pool = bounded::Pool::new(bounded::PoolConfig::new(8), Manager);
+    let mut context = bench_context();
+    drop(poll_ready(pool.get(), &mut context).unwrap());
+
+    bencher.bench_local(|| {
+        let object = poll_ready(pool.get(), &mut context).unwrap();
+        black_box(*object);
+        drop(object);
+    });
+}
+
+#[divan::bench]
 fn bounded_contended_handoff(bencher: Bencher) {
     let pool = bounded::Pool::new(bounded::PoolConfig::new(1), Manager);
     let mut context = bench_context();

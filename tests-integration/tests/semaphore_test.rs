@@ -17,11 +17,16 @@
 
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::Barrier;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
+use std::thread;
 
+use asyncband::blocking::FutureExt;
 use asyncband::semaphore::Semaphore;
 use tests_integration::PanicWake;
 use tests_integration::WakeCounter;
@@ -271,4 +276,108 @@ fn reduce_permits_takes_priority_over_pending_acquires() {
 
     drop(permit);
     assert_eq!(s.available_permits(), 1);
+}
+
+/// Releases race acquisitions that drain the balance to zero and link waiters. The permit count
+/// must be conserved, and no more permits than the capacity may ever be held at once.
+#[test]
+fn concurrent_releases_conserve_permits() {
+    const PERMITS: usize = 3;
+    const THREADS: usize = 8;
+    const ITERATIONS: usize = 4_000;
+
+    fn next(state: &mut u64) -> usize {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (*state >> 33) as usize
+    }
+
+    let semaphore = Arc::new(Semaphore::new(PERMITS));
+    let held = Arc::new(AtomicUsize::new(0));
+    let start = Arc::new(Barrier::new(THREADS));
+    let workers = (0..THREADS)
+        .map(|seed| {
+            let semaphore = semaphore.clone();
+            let held = held.clone();
+            let start = start.clone();
+            thread::spawn(move || {
+                let mut state = seed as u64 + 1;
+                start.wait();
+                let hold = |n: usize, state: &mut u64| {
+                    let now = held.fetch_add(n, Ordering::AcqRel) + n;
+                    assert!(now <= PERMITS, "{now} permits held at once");
+                    for _ in 0..next(state) % 8 {
+                        std::hint::spin_loop();
+                    }
+                    held.fetch_sub(n, Ordering::AcqRel);
+                };
+                for _ in 0..ITERATIONS {
+                    let n = next(&mut state) % PERMITS + 1;
+                    match next(&mut state) % 5 {
+                        0 => {
+                            if let Some(permit) = semaphore.try_acquire(n) {
+                                hold(n, &mut state);
+                                drop(permit);
+                            }
+                        }
+                        1 => {
+                            let permit = FutureExt::block_on(semaphore.acquire(n));
+                            hold(n, &mut state);
+                            permit.forget();
+                            semaphore.release(n);
+                        }
+                        2 => {
+                            semaphore.reduce_permits(n);
+                            semaphore.release(n);
+                        }
+                        3 => {
+                            let mut acquire = pin!(semaphore.acquire(n));
+                            let poll = poll_with(acquire.as_mut(), Waker::noop());
+                            if let Poll::Ready(permit) = poll {
+                                hold(n, &mut state);
+                                drop(permit);
+                            }
+                        }
+                        _ => {
+                            let permit = FutureExt::block_on(semaphore.acquire(n));
+                            hold(n, &mut state);
+                            drop(permit);
+                        }
+                    }
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(semaphore.available_permits(), PERMITS);
+    assert!(semaphore.try_acquire(PERMITS).is_some());
+}
+
+/// Two releases race on a balance one below `usize::MAX`: exactly one may succeed, and the other
+/// must panic before adding anything, whichever path each of them takes.
+#[test]
+fn concurrent_releases_at_the_limit_panic_exactly_once() {
+    let semaphore = Arc::new(Semaphore::new(usize::MAX - 1));
+    let start = Arc::new(Barrier::new(2));
+    let workers = (0..2)
+        .map(|_| {
+            let semaphore = semaphore.clone();
+            let start = start.clone();
+            thread::spawn(move || {
+                start.wait();
+                std::panic::catch_unwind(|| semaphore.release(1)).is_ok()
+            })
+        })
+        .collect::<Vec<_>>();
+    let succeeded = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .filter(|succeeded| *succeeded)
+        .count();
+    assert_eq!(succeeded, 1);
+    assert_eq!(semaphore.available_permits(), usize::MAX);
 }

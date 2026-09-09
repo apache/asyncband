@@ -39,3 +39,14 @@ fn read_heavy_reuse(bencher: Bencher) {
         black_box(*guard)
     });
 }
+
+#[divan::bench]
+fn read_reuse(bencher: Bencher) {
+    let lock = RwLock::new(0usize);
+    let mut context = bench_context();
+
+    bencher.bench_local(|| {
+        let guard = poll_ready(lock.read(), &mut context);
+        black_box(*guard)
+    });
+}
