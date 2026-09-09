@@ -221,37 +221,13 @@ async fn remove_while_computing_allows_a_new_generation() {
     });
 
     started_rx.await.unwrap();
+    assert_eq!(map.get("key"), None);
     assert_eq!(map.remove("key"), None);
     assert_eq!(map.compute("key", async || 2).await, 2);
     release_tx.send(()).unwrap();
 
     assert_eq!(task.await.unwrap(), 1);
     assert_eq!(map.get("key"), Some(2));
-}
-
-#[tokio::test]
-async fn get_returns_none_while_computing() {
-    let map = Arc::new(OnceMap::new());
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-
-    let map_clone = map.clone();
-    let task = tokio::spawn(async move {
-        map_clone
-            .compute("key", async move || {
-                started_tx.send(()).unwrap();
-                release_rx.await.unwrap();
-                1
-            })
-            .await
-    });
-
-    started_rx.await.unwrap();
-    assert_eq!(map.get("key"), None);
-    release_tx.send(()).unwrap();
-
-    assert_eq!(task.await.unwrap(), 1);
-    assert_eq!(map.get("key"), Some(1));
 }
 
 #[test]
