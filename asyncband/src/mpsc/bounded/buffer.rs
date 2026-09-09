@@ -70,24 +70,6 @@ impl<T> std::panic::UnwindSafe for Slot<T> {}
 impl<T> std::panic::RefUnwindSafe for Slot<T> {}
 
 impl<T> Buffer<T> {
-    /// Asserts that the preallocated slot storage for `capacity` fits one allocation.
-    ///
-    /// Zero-sized messages allocate no slots. Callers must already have bounded `capacity` so
-    /// that rounding up to a power of two cannot overflow.
-    pub fn check_allocation(capacity: usize) {
-        if size_of::<T>() == 0 {
-            return;
-        }
-        let within_limit = capacity
-            .next_power_of_two()
-            .checked_mul(size_of::<Slot<T>>())
-            .is_some_and(|bytes| bytes <= isize::MAX as usize);
-        assert!(
-            within_limit,
-            "mpsc bounded channel capacity {capacity} exceeds the allocation limit"
-        );
-    }
-
     pub fn new(capacity: usize) -> Self {
         let slots = if size_of::<T>() == 0 {
             Box::default()

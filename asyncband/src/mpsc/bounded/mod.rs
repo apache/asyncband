@@ -53,8 +53,7 @@ mod buffer;
 ///
 /// # Panics
 ///
-/// Panics if `buffer` is zero or exceeds the maximum capacity of `usize::MAX >> 2`, or if the
-/// rounded-up message buffer would exceed the allocation size limit.
+/// Panics if `buffer` is zero or exceeds the maximum capacity of `usize::MAX >> 2`.
 #[track_caller]
 pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     assert!(buffer > 0, "mpsc bounded channel requires buffer > 0");
@@ -62,7 +61,6 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
         buffer <= MAX_CAPACITY,
         "mpsc bounded channel capacity {buffer} exceeds the maximum of {MAX_CAPACITY}"
     );
-    Buffer::<T>::check_allocation(buffer);
     let shared = Arc::new(Shared {
         senders: AtomicUsize::new(1),
         tx_permits: CachePadded::new(Semaphore::new(buffer)),

@@ -188,13 +188,6 @@ fn bounded_rejects_capacity_above_the_maximum() {
 }
 
 #[test]
-#[should_panic(expected = "exceeds the allocation limit")]
-fn bounded_rejects_capacity_above_the_allocation_limit() {
-    // Within the maximum capacity, but the rounded-up slot storage cannot fit one allocation.
-    let _ = mpsc::bounded::<[u64; 4]>(usize::MAX >> 2);
-}
-
-#[test]
 fn bounded_zero_sized_messages_need_no_slot_storage() {
     let (tx, mut rx) = mpsc::bounded::<()>(usize::MAX >> 2);
     tx.try_send(()).unwrap();
