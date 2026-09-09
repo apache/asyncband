@@ -38,11 +38,11 @@ use std::sync::atomic::Ordering;
 use std::task::Poll;
 
 use crate::internal::cache_padded::CachePadded;
-use crate::internal::mutex::Mutex;
 
 const EMPTY: u8 = 0;
 const READY: u8 = 1;
 const CLOSED: u8 = 2;
+const ZERO_SIZED_CLOSED: usize = 1 << (usize::BITS - 1);
 
 pub struct Buffer<T> {
     slots: Box<[Slot<T>]>,
@@ -50,7 +50,8 @@ pub struct Buffer<T> {
     closed: AtomicBool,
     // ZSTs need no positions or per-slot flags. Counting them separately also allows every
     // nonzero usize capacity without allocating publication metadata for nonexistent bytes.
-    zero_sized: Mutex<usize>,
+    // The count packs a closed flag into its top bit so publication and close stay atomic.
+    zero_sized: AtomicUsize,
 }
 
 struct Slot<T> {
@@ -102,7 +103,7 @@ impl<T> Buffer<T> {
             slots,
             tail: CachePadded::new(AtomicUsize::new(0)),
             closed: AtomicBool::new(false),
-            zero_sized: Mutex::new(0),
+            zero_sized: AtomicUsize::new(0),
         }
     }
 
@@ -129,13 +130,25 @@ impl<T> Buffer<T> {
     /// the consumer reads the published value. No user code runs between claim and publication.
     pub unsafe fn push(&self, value: T) -> Result<(), T> {
         if size_of::<T>() == 0 {
-            let mut queued = self.zero_sized.lock();
-            if self.closed.load(Ordering::Acquire) {
-                return Err(value);
+            let mut queued = self.zero_sized.load(Ordering::Acquire);
+            loop {
+                if queued & ZERO_SIZED_CLOSED != 0 {
+                    return Err(value);
+                }
+                // The capacity limit keeps the count far below the closed flag bit.
+                match self.zero_sized.compare_exchange_weak(
+                    queued,
+                    queued + 1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => {
+                        mem::forget(value);
+                        return Ok(());
+                    }
+                    Err(actual) => queued = actual,
+                }
             }
-            *queued += 1;
-            mem::forget(value);
-            return Ok(());
         }
         let Ok(position) = self.claim() else {
             return Err(value);
@@ -172,11 +185,13 @@ impl<T> Buffer<T> {
     /// capacity permit after each successful pop, after the value has been read completely.
     pub unsafe fn pop(&self, head: &mut usize) -> Poll<Option<T>> {
         if size_of::<T>() == 0 {
-            let mut queued = self.zero_sized.lock();
-            return if *queued == 0 {
+            let queued = self.zero_sized.load(Ordering::Acquire) & !ZERO_SIZED_CLOSED;
+            return if queued == 0 {
                 Poll::Ready(None)
             } else {
-                *queued -= 1;
+                // Only this consumer decrements, and producers can only add: the count
+                // observed above is a lower bound, so this cannot wrap.
+                self.zero_sized.fetch_sub(1, Ordering::AcqRel);
                 // SAFETY: A queued value proves that this ZST is inhabited and owns one value.
                 Poll::Ready(Some(unsafe { Self::read_zero_sized() }))
             };
@@ -204,7 +219,11 @@ impl<T> Buffer<T> {
     pub unsafe fn close(&self, head: usize) -> Drain<'_, T> {
         self.closed.store(true, Ordering::Release);
         let remaining = if size_of::<T>() == 0 {
-            mem::take(&mut *self.zero_sized.lock())
+            // Counting stops with the closed flag: a publication that raced ahead of it is
+            // included in the count, and every later one observes the flag and fails.
+            self.zero_sized
+                .fetch_or(ZERO_SIZED_CLOSED, Ordering::AcqRel)
+                & !ZERO_SIZED_CLOSED
         } else {
             // Cover every physical slot: a producer may have passed the open check but not
             // obtained its ticket yet. Such a late claim must also find a CLOSED slot.
