@@ -15,48 +15,42 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
 use std::future::IntoFuture;
-use std::pin::Pin;
-use std::task::Context;
-use std::task::Poll;
-use std::task::Waker;
+use std::pin::pin;
 
 use asyncband::oneshot::channel;
 use divan::Bencher;
 use divan::black_box;
 
+use crate::support::bench_context;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
+
 #[divan::bench]
 fn send_before_poll(bencher: Bencher) {
-    let mut context = Context::from_waker(Waker::noop());
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let (sender, receiver) = black_box(channel());
-        let mut receiver = receiver.into_future();
+        let mut receiver = pin!(receiver.into_future());
 
         sender.send(black_box(1usize)).unwrap();
 
-        match Pin::new(&mut receiver).poll(&mut context) {
-            Poll::Ready(Ok(value)) => black_box(value),
-            result => panic!("unexpected receive result: {result:?}"),
-        }
+        black_box(poll_pinned_ready(receiver.as_mut(), &mut context).unwrap())
     });
 }
 
 #[divan::bench]
 fn poll_before_send(bencher: Bencher) {
-    let mut context = Context::from_waker(Waker::noop());
+    let mut context = bench_context();
 
     bencher.bench_local(|| {
         let (sender, receiver) = black_box(channel());
-        let mut receiver = receiver.into_future();
+        let mut receiver = pin!(receiver.into_future());
 
-        assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Pending);
+        poll_pending(receiver.as_mut(), &mut context);
         sender.send(black_box(1usize)).unwrap();
 
-        match Pin::new(&mut receiver).poll(&mut context) {
-            Poll::Ready(Ok(value)) => black_box(value),
-            result => panic!("unexpected receive result: {result:?}"),
-        }
+        black_box(poll_pinned_ready(receiver.as_mut(), &mut context).unwrap())
     });
 }
