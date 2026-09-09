@@ -53,7 +53,7 @@ mod buffer;
 ///
 /// # Panics
 ///
-/// Panics if `buffer` is zero or exceeds the maximum capacity of `usize::MAX >> 2`.
+/// Panics if `buffer` is zero or exceeds the maximum capacity of `usize::MAX >> 1`.
 #[track_caller]
 pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     assert!(buffer > 0, "mpsc bounded channel requires buffer > 0");
@@ -83,38 +83,40 @@ struct Shared<T> {
 
 /// The largest capacity accepted by [`bounded`].
 ///
-/// The shared permit counter packs channel state into two flag bits, which also keeps the
+/// The shared permit counter reserves two sentinel values above the usable range, and the
+/// zero-sized queue length packs a closed flag into its top bit. This bound also keeps the
 /// rounded-up slot storage from overflowing a power of two.
-const MAX_CAPACITY: usize = usize::MAX >> 2;
+const MAX_CAPACITY: usize = usize::MAX >> 1;
 
-// This channel-local semaphore packs its permit counter and channel state into one atomic.
+// This channel-local semaphore keeps its permit counter and channel state in one atomic.
 // The general-purpose semaphore has neither a close operation nor acquisition errors.
 //
-// `state` holds the available permits shifted left by two, plus two flag bits:
+// `state` is the available permit count, plus two sentinel values at the top of the range:
 //
 // * `CLOSED`: the receiver is gone. No permits are issued or returned, and waiters drain with an
 //   error.
 // * `WAITING`: the wait queue may be non-empty. Releases then take the locked path and grant the
 //   permit directly to the oldest waiter instead of returning it to the counter, so capacity is
-//   handed out in registration order and new arrivals cannot steal an already granted slot.
+//   handed out in registration order and new arrivals cannot steal an already granted slot. The
+//   counter is zero while this sentinel stands: waiters only register after observing exhaustion,
+//   and grants bypass the counter.
 //
-// With neither flag set, acquire and release are single lock-free operations on `state`.
-// Wait-queue mutations always hold the queue lock; a registration sets `WAITING` before its
-// final capacity recheck, which switches any racing release to the locked path and strands
-// no permit without a wake.
+// With neither sentinel installed, acquire and release are single lock-free operations on `state`.
+// Wait-queue mutations always hold the queue lock; a registration installs `WAITING` before its
+// final capacity recheck, which switches any racing release to the locked path and strands no
+// permit without a wake.
 struct Semaphore {
     state: AtomicUsize,
     waiters: Mutex<WaitList<Waiter>>,
 }
 
-const CLOSED: usize = 0b01;
-const WAITING: usize = 0b10;
-const PERMIT: usize = 0b100;
+const CLOSED: usize = usize::MAX;
+const WAITING: usize = usize::MAX - 1;
 
 impl Semaphore {
     fn new(available: usize) -> Self {
         Self {
-            state: AtomicUsize::new(available * PERMIT),
+            state: AtomicUsize::new(available),
             waiters: Mutex::new(WaitList::new()),
         }
     }
@@ -122,15 +124,15 @@ impl Semaphore {
     fn try_acquire(&self) -> Result<(), TrySendError<()>> {
         let mut state = self.state.load(Ordering::Acquire);
         loop {
-            if state & CLOSED != 0 {
+            if state == CLOSED {
                 return Err(TrySendError::Disconnected(()));
             }
-            if state < PERMIT {
+            if state == WAITING || state == 0 {
                 return Err(TrySendError::Full(()));
             }
             match self.state.compare_exchange_weak(
                 state,
-                state - PERMIT,
+                state - 1,
                 Ordering::Acquire,
                 Ordering::Acquire,
             ) {
@@ -141,15 +143,22 @@ impl Semaphore {
     }
 
     fn is_closed(&self) -> bool {
-        self.state.load(Ordering::Acquire) & CLOSED != 0
+        self.state.load(Ordering::Acquire) == CLOSED
     }
 
+    // Installs WAITING over an exhausted counter. A permit that arrived first wins the compare
+    // exchange, and the caller's recheck under the queue lock picks it up instead.
     fn set_waiting(&self) {
-        self.state.fetch_or(WAITING, Ordering::AcqRel);
+        let _ = self
+            .state
+            .compare_exchange(0, WAITING, Ordering::AcqRel, Ordering::Acquire);
     }
 
+    // Removes WAITING, keeping whatever count a racing grant restoration left behind.
     fn clear_waiting(&self) {
-        self.state.fetch_and(!WAITING, Ordering::Release);
+        let _ = self
+            .state
+            .compare_exchange(WAITING, 0, Ordering::Release, Ordering::Relaxed);
     }
 
     fn release(&self) {
@@ -157,12 +166,12 @@ impl Semaphore {
         // back to the counter.
         let mut state = self.state.load(Ordering::Relaxed);
         loop {
-            if state & (WAITING | CLOSED) != 0 {
+            if state == WAITING || state == CLOSED {
                 break;
             }
             match self.state.compare_exchange_weak(
                 state,
-                state + PERMIT,
+                state + 1,
                 Ordering::Release,
                 Ordering::Relaxed,
             ) {
@@ -189,17 +198,24 @@ impl Semaphore {
             }
             return waker;
         }
-        // The queue is empty. Only releases add permits, and the counter grows with the
-        // queue locked, so a linked waiter always sees zero available permits until it
-        // receives its own grant. An outstanding grant already owns its capacity.
-        self.state.fetch_add(PERMIT, Ordering::Release);
-        self.clear_waiting();
+        // The queue is empty: return the permit to the counter. An outstanding grant already
+        // owns its capacity. Adding to a plain count is safe because only lock-holding
+        // operations install a sentinel, and this operation holds the lock; WAITING itself
+        // must be displaced rather than incremented, because WAITING + 1 is CLOSED.
+        if self.state.load(Ordering::Relaxed) == WAITING {
+            let _displaced =
+                self.state
+                    .compare_exchange(WAITING, 1, Ordering::Release, Ordering::Relaxed);
+            debug_assert_eq!(_displaced, Ok(WAITING));
+        } else {
+            self.state.fetch_add(1, Ordering::Release);
+        }
         None
     }
 
     fn close(&self) -> WakerBatch {
         let mut waiters = self.waiters.lock();
-        self.state.fetch_or(CLOSED, Ordering::AcqRel);
+        self.state.store(CLOSED, Ordering::Release);
         let mut wakers = WakerBatch::new();
         while let Some((_, waiter)) = waiters.unlink_first_waiter(|_| true) {
             if let Some(waker) = waiter.waker.take() {
@@ -266,9 +282,11 @@ impl<'a, T> Reservation<'a, T> {
                     return Poll::Pending;
                 }
             } else {
-                // Set WAITING before the final capacity recheck: a racing release switches
-                // to the locked path, so no permit can be stranded without a wake. Waiting
-                // senders already in the queue take priority over this recheck.
+                // Install WAITING before the final capacity recheck: if a permit arrived
+                // first, the installation loses the compare exchange and the recheck picks
+                // the permit up; otherwise a racing release switches to the locked path, so
+                // no permit can be stranded without a wake. Waiting senders already in the
+                // queue take priority over this recheck.
                 semaphore.set_waiting();
                 if waiters.is_empty() && semaphore.try_acquire().is_ok() {
                     semaphore.clear_waiting();
