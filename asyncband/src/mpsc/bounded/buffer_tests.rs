@@ -31,12 +31,17 @@ use crate::mpsc::bounded;
 
 // Exercise the scheduling window inside synchronous send, while retaining a real capacity
 // permit. Ordinary callers cannot split a claim from its publication.
-fn publish_claimed<T>(mut permit: Permit<'_, T>, position: usize, value: T) -> Result<(), T> {
-    let shared = &permit.sender.unwrap().shared;
+fn publish_claimed<T>(
+    tx: &BoundedSender<T>,
+    permit: Permit<'_, T>,
+    position: usize,
+    value: T,
+) -> Result<(), T> {
     // SAFETY: The test claimed this position while holding the same capacity permit.
-    unsafe { shared.buffer.publish(position, value) }?;
-    permit.sender = None;
-    shared.rx_waker.wake();
+    unsafe { tx.shared().buffer.publish(position, value) }?;
+    // Publication owns the capacity now; forgetting skips the permit's release on drop.
+    std::mem::forget(permit);
+    tx.shared().rx_waker.wake();
     Ok(())
 }
 
@@ -46,18 +51,18 @@ fn a_claimed_head_waits_for_publication_across_laps() {
         for initial in [0, usize::MAX - 1] {
             let (tx, mut rx) = bounded(capacity);
             // Start an empty ring near ticket overflow instead of running usize::MAX sends.
-            tx.shared.buffer.tail.store(initial, Ordering::Relaxed);
-            rx.head = initial;
+            tx.shared().buffer.tail.store(initial, Ordering::Relaxed);
+            rx.set_head(initial);
             let mut cx = Context::from_waker(Waker::noop());
             for lap in 0..8 {
                 let permit = tx.try_reserve().unwrap();
-                let position = tx.shared.buffer.claim().unwrap();
+                let position = tx.shared().buffer.claim().unwrap();
                 for offset in 1..capacity {
                     tx.try_send(lap * capacity + offset).unwrap();
                 }
                 // A full ring must differ from an empty one even if no head value is ready yet.
                 assert!(rx.poll_recv(&mut cx).is_pending());
-                publish_claimed(permit, position, lap * capacity).unwrap();
+                publish_claimed(&tx, permit, position, lap * capacity).unwrap();
                 for offset in 0..capacity {
                     assert_eq!(rx.try_recv(), Ok(lap * capacity + offset));
                 }
@@ -77,12 +82,12 @@ fn a_claim_delayed_past_close_returns_its_value() {
         drops: drops.clone(),
         _sender: tx.clone(),
     };
-    let allocation = Arc::downgrade(&tx.shared);
+    let allocation = Arc::downgrade(tx.shared());
     // Pause after claim's open check, then resume its atomic ticket allocation after close.
-    assert!(!tx.shared.buffer.closed.load(Ordering::Acquire));
+    assert!(!tx.shared().buffer.closed.load(Ordering::Acquire));
     drop(rx);
-    let position = tx.shared.buffer.tail.fetch_add(1, Ordering::AcqRel);
-    let unsent = publish_claimed(permit, position, value).unwrap_err();
+    let position = tx.shared().buffer.tail.fetch_add(1, Ordering::AcqRel);
+    let unsent = publish_claimed(&tx, permit, position, value).unwrap_err();
     assert_eq!(unsent.bytes, [7; 1024]);
     drop(unsent);
     assert_eq!(drops.load(Ordering::Relaxed), 1);
@@ -108,7 +113,7 @@ impl Drop for Payload {
 #[test]
 fn closing_reclaims_ready_values_without_waiting_for_a_paused_publisher() {
     let (tx, rx) = bounded(2);
-    let allocation = Arc::downgrade(&tx.shared);
+    let allocation = Arc::downgrade(tx.shared());
     let drops = Arc::new(AtomicUsize::new(0));
     let paused = Barrier::new(2);
     let (resume_tx, resume_rx) = std::sync::mpsc::channel();
@@ -120,7 +125,7 @@ fn closing_reclaims_ready_values_without_waiting_for_a_paused_publisher() {
         let paused = &paused;
         let publisher = scope.spawn(move || {
             let permit = sender.try_reserve().unwrap();
-            let position = sender.shared.buffer.claim().unwrap();
+            let position = sender.shared().buffer.claim().unwrap();
             let value = Payload {
                 bytes: [1; 1024],
                 drops: drops.clone(),
@@ -128,7 +133,7 @@ fn closing_reclaims_ready_values_without_waiting_for_a_paused_publisher() {
             };
             paused.wait();
             resume_rx.recv().unwrap();
-            let unsent = publish_claimed(permit, position, value).unwrap_err();
+            let unsent = publish_claimed(sender, permit, position, value).unwrap_err();
             assert_eq!(unsent.bytes, [1; 1024]);
             drop(unsent);
         });
@@ -165,7 +170,7 @@ fn closing_reclaims_ready_values_without_waiting_for_a_paused_publisher() {
 fn publication_racing_with_close_drops_every_payload_once() {
     for _ in 0..if cfg!(miri) { 8 } else { 128 } {
         let (tx, rx) = bounded(3);
-        let allocation = Arc::downgrade(&tx.shared);
+        let allocation = Arc::downgrade(tx.shared());
         let drops = Arc::new(AtomicUsize::new(0));
         let start = Barrier::new(4);
         thread::scope(|scope| {
