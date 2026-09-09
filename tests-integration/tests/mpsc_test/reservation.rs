@@ -76,7 +76,7 @@ fn zero_sized_messages_preserve_capacity_across_reservation_and_close() {
         drop(permit);
         tx.try_reserve().unwrap().send(()).unwrap();
         assert_eq!(rx.try_recv(), Ok(()));
-        // Closing restores buffered capacity before outstanding permits are dropped.
+        // An outstanding permit can be dropped after the receiver closes.
         let held = tx.try_reserve().unwrap();
         for _ in 1..capacity {
             tx.try_send(()).unwrap();

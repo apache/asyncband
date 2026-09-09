@@ -17,30 +17,24 @@
 
 use std::fmt;
 use std::future::poll_fn;
+use std::mem;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::sync::atomic::fence;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
-use super::Shared;
-use crate::internal::cache_padded::CachePadded;
+use super::State;
 use crate::internal::mutex::Mutex;
 use crate::internal::wake_all;
+use crate::internal::waker_batch::WakerBatch;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
 
 /// The receiving endpoint of a bounded mpsc channel.
 ///
 /// Instances are created by the [`bounded`](crate::mpsc::bounded) function. Dropping the receiver
-/// discards queued values.
-/// The backing allocation remains alive until all endpoints are dropped, so a concurrent sender
-/// can safely finish returning an unsent value.
+/// discards queued values and disconnects pending sends and reservations.
 pub struct BoundedReceiver<T> {
-    shared: Arc<Shared<T>>,
-    head: usize,
+    shared: Arc<Mutex<State<T>>>,
 }
 
 impl<T> fmt::Debug for BoundedReceiver<T> {
@@ -51,20 +45,29 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        // SAFETY: Receiver ownership provides exclusive access to the consumption cursor.
-        // The drain first prevents new claims. Its destructor completes cleanup on unwinding.
-        let drain = unsafe { self.shared.buffer.close(self.head) };
-        let wakers = self.shared.tx_permits.close();
-        let receiver_waker = self.shared.rx_waker.take();
+        let (queue, receiver_waker, wakers) = {
+            let mut state = self.shared.lock();
+            state.receiver_open = false;
+            let queue = mem::take(&mut state.queue);
+            let receiver_waker = state.receiver_waker.take();
+            let mut wakers = WakerBatch::new();
+            while let Some((_, waiter)) = state.waiters.unlink_first_waiter(|_| true) {
+                if let Some(waker) = waiter.waker.take() {
+                    wakers.push(waker);
+                }
+            }
+            (queue, receiver_waker, wakers)
+        };
+        // Local ownership also drains the queue if a wake or waker destructor unwinds.
         wake_all(wakers.into_iter());
         drop(receiver_waker);
-        drop(drain);
+        drop(queue);
     }
 }
 
 impl<T> BoundedReceiver<T> {
-    pub(super) fn new(shared: Arc<Shared<T>>) -> Self {
-        Self { shared, head: 0 }
+    pub(super) fn new(shared: Arc<Mutex<State<T>>>) -> Self {
+        Self { shared }
     }
 
     /// Attempts to receive the next queued value without waiting for a new message.
@@ -72,9 +75,6 @@ impl<T> BoundedReceiver<T> {
     /// Receiving a value frees one buffer slot. An empty channel returns [`TryRecvError::Empty`]
     /// while at least one sender remains, or [`TryRecvError::Disconnected`] after every sender has
     /// been dropped and all queued values have been consumed.
-    ///
-    /// If a producer is still completing a synchronous publication at the queue head, this
-    /// method waits for that publication. Use [`Self::recv`] to wait asynchronously instead.
     ///
     /// # Examples
     ///
@@ -93,22 +93,11 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let mut spins = 0;
-        loop {
-            match self.pull() {
-                Poll::Ready(result) => return result,
-                Poll::Pending => {
-                    // A synchronous publisher already owns the head. Reporting Empty here
-                    // could hide a later send that has completed. Async recv parks instead.
-                    if spins < 32 {
-                        std::hint::spin_loop();
-                        spins += 1;
-                    } else {
-                        std::thread::yield_now();
-                    }
-                }
-            }
+        let (value, wake) = self.shared.lock().pop()?;
+        if let Some(waker) = wake {
+            waker.wake();
         }
+        Ok(value)
     }
 
     /// Waits for and receives the next value, freeing one buffer slot.
@@ -144,96 +133,42 @@ impl<T> BoundedReceiver<T> {
         poll_fn(|cx| self.poll_recv(cx)).await
     }
 
-    /// One attempt to take the head value: a message, an empty-or-disconnected classification,
-    /// or `Pending` while a claimed head waits for its publication.
-    fn pull(&mut self) -> Poll<Result<T, TryRecvError>> {
-        let mut disconnected = false;
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
+        let mut cloned_waker = None;
         loop {
-            // SAFETY: Only this receiver owns head. Capacity is released after the buffer
-            // finishes reading and advances the cursor, so no producer can overwrite the value.
-            match unsafe { self.shared.buffer.pop(&mut self.head) } {
-                Poll::Ready(Some(value)) => {
-                    self.shared.tx_permits.release();
+            let mut state = self.shared.lock();
+            match state.pop() {
+                Ok((value, wake)) => {
+                    drop(state);
+                    if let Some(waker) = wake {
+                        waker.wake();
+                    }
                     return Poll::Ready(Ok(value));
                 }
-                Poll::Ready(None) if disconnected => {
-                    return Poll::Ready(Err(TryRecvError::Disconnected));
-                }
-                Poll::Ready(None) if self.shared.senders.load(Ordering::Acquire) == 0 => {
-                    // Acquire the last sender's completed publications before checking again.
-                    disconnected = true;
-                }
-                Poll::Ready(None) => return Poll::Ready(Err(TryRecvError::Empty)),
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-    }
-
-    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
-        for registered in [false, true] {
-            match self.pull() {
-                Poll::Ready(Ok(value)) => return Poll::Ready(Ok(value)),
-                Poll::Ready(Err(TryRecvError::Disconnected)) => {
-                    drop(self.shared.rx_waker.take());
+                Err(TryRecvError::Disconnected) => {
+                    let old = state.receiver_waker.take();
+                    drop(state);
+                    drop(old);
                     return Poll::Ready(Err(RecvError::Disconnected));
                 }
-                Poll::Pending | Poll::Ready(Err(TryRecvError::Empty)) => {}
+                Err(TryRecvError::Empty) => {}
             }
-            if !registered {
-                self.shared.rx_waker.register(cx.waker());
+            if state
+                .receiver_waker
+                .as_ref()
+                .is_some_and(|w| w.will_wake(cx.waker()))
+            {
+                return Poll::Pending;
             }
+            if let Some(waker) = cloned_waker.take() {
+                let old = state.receiver_waker.replace(waker);
+                drop(state);
+                drop(old);
+                return Poll::Pending;
+            }
+            drop(state);
+            // Clone can reenter the channel, so check the queue again after acquiring the lock.
+            cloned_waker = Some(cx.waker().clone());
         }
-        Poll::Pending
-    }
-}
-
-// The receiver checks the queue after registering; publishers check this flag after publication.
-// Paired SeqCst fences prevent both sides from missing the other's transition. The stable false
-// flag avoids modifying the waker's cache line for every message while the receiver is running.
-pub struct ReceiverWaker {
-    waiting: CachePadded<AtomicBool>,
-    waker: Mutex<Option<Waker>>,
-}
-
-impl ReceiverWaker {
-    pub fn new() -> Self {
-        Self {
-            waiting: CachePadded::new(AtomicBool::new(false)),
-            waker: Mutex::new(None),
-        }
-    }
-
-    pub fn register(&self, waker: &Waker) {
-        let mut current = self.waker.lock();
-        let old = if current.as_ref().is_some_and(|old| old.will_wake(waker)) {
-            None
-        } else {
-            // Only the receiver registers. User clone callbacks run outside the lock.
-            drop(current);
-            let waker = waker.clone();
-            current = self.waker.lock();
-            current.replace(waker)
-        };
-        self.waiting.store(true, Ordering::Relaxed);
-        fence(Ordering::SeqCst);
-        drop(current);
-        drop(old);
-    }
-
-    pub fn wake(&self) {
-        fence(Ordering::SeqCst);
-        if !self.waiting.load(Ordering::Relaxed) || !self.waiting.swap(false, Ordering::Relaxed) {
-            return;
-        }
-        if let Some(waker) = self.take() {
-            waker.wake();
-        }
-    }
-
-    pub fn take(&self) -> Option<Waker> {
-        let mut current = self.waker.lock();
-        // Clearing under the lock also takes responsibility for a newer registration.
-        self.waiting.store(false, Ordering::Relaxed);
-        current.take()
     }
 }
