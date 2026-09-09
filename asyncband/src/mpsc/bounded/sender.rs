@@ -72,8 +72,13 @@ impl<T> BoundedSender<T> {
     /// caller must retain ownership if capacity is unavailable, or [`Self::reserve`] to wait for
     /// capacity before constructing the message.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
-        match self.reserve().await {
-            Ok(permit) => permit.send(value),
+        let mut acquire = self.shared.tx_permits.acquire();
+        match poll_fn(|cx| acquire.poll(cx)).await {
+            Ok(capacity) => Permit {
+                shared: &self.shared,
+                capacity,
+            }
+            .send(value),
             Err(_) => Err(SendError::new(value)),
         }
     }
@@ -157,11 +162,6 @@ impl<T> BoundedSender<T> {
             Err(TrySendError::Full(())) => Err(TrySendError::Full(value)),
             Err(TrySendError::Disconnected(())) => Err(TrySendError::Disconnected(value)),
         }
-    }
-
-    #[cfg(test)]
-    pub(super) fn shared(&self) -> &Arc<Shared<T>> {
-        &self.shared
     }
 }
 

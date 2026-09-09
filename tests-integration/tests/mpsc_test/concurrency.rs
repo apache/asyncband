@@ -17,6 +17,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -34,6 +35,54 @@ use tokio_test::assert_ok;
 
 use super::support::WakeCounter;
 use super::support::poll_with;
+
+#[test]
+fn publication_racing_with_close_drops_every_payload_once() {
+    #[derive(Debug)]
+    #[repr(align(128))]
+    struct Payload {
+        bytes: [u8; 1024],
+        drops: Arc<[AtomicUsize; 3]>,
+        // Queued messages must not retain the channel through a sender cycle.
+        _sender: mpsc::BoundedSender<Payload>,
+    }
+
+    impl Drop for Payload {
+        fn drop(&mut self) {
+            self.drops[self.bytes[0] as usize].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    for _ in 0..if cfg!(miri) { 8 } else { 128 } {
+        let (tx, rx) = mpsc::bounded(3);
+        let drops = Arc::new(std::array::from_fn(|_| AtomicUsize::new(0)));
+        let start = Barrier::new(4);
+        thread::scope(|scope| {
+            for byte in 0..3 {
+                let permit = tx.try_reserve().unwrap();
+                let value = Payload {
+                    bytes: [byte; 1024],
+                    drops: drops.clone(),
+                    _sender: tx.clone(),
+                };
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    if let Err(error) = permit.send(value) {
+                        let value = error.into_inner();
+                        assert_eq!(value.bytes, [byte; 1024]);
+                        drop(value);
+                    }
+                });
+            }
+            start.wait();
+            drop(rx);
+        });
+        for count in drops.iter() {
+            assert_eq!(count.load(Ordering::Relaxed), 1);
+        }
+    }
+}
 
 #[test]
 fn bounded_receive_racing_with_send_registration_cannot_lose_wakeup() {

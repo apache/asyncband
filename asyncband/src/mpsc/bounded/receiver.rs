@@ -18,11 +18,16 @@
 use std::fmt;
 use std::future::poll_fn;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::fence;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use super::Shared;
+use crate::internal::cache_padded::CachePadded;
+use crate::internal::mutex::Mutex;
 use crate::internal::wake_all;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
@@ -180,8 +185,55 @@ impl<T> BoundedReceiver<T> {
         }
         Poll::Pending
     }
-    #[cfg(test)]
-    pub(super) fn set_head(&mut self, head: usize) {
-        self.head = head;
+}
+
+// The receiver checks the queue after registering; publishers check this flag after publication.
+// Paired SeqCst fences prevent both sides from missing the other's transition. The stable false
+// flag avoids modifying the waker's cache line for every message while the receiver is running.
+pub struct ReceiverWaker {
+    waiting: CachePadded<AtomicBool>,
+    waker: Mutex<Option<Waker>>,
+}
+
+impl ReceiverWaker {
+    pub fn new() -> Self {
+        Self {
+            waiting: CachePadded::new(AtomicBool::new(false)),
+            waker: Mutex::new(None),
+        }
+    }
+
+    pub fn register(&self, waker: &Waker) {
+        let mut current = self.waker.lock();
+        let old = if current.as_ref().is_some_and(|old| old.will_wake(waker)) {
+            None
+        } else {
+            // Only the receiver registers. User clone callbacks run outside the lock.
+            drop(current);
+            let waker = waker.clone();
+            current = self.waker.lock();
+            current.replace(waker)
+        };
+        self.waiting.store(true, Ordering::Relaxed);
+        fence(Ordering::SeqCst);
+        drop(current);
+        drop(old);
+    }
+
+    pub fn wake(&self) {
+        fence(Ordering::SeqCst);
+        if !self.waiting.load(Ordering::Relaxed) || !self.waiting.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        if let Some(waker) = self.take() {
+            waker.wake();
+        }
+    }
+
+    pub fn take(&self) -> Option<Waker> {
+        let mut current = self.waker.lock();
+        // Clearing under the lock also takes responsibility for a newer registration.
+        self.waiting.store(false, Ordering::Relaxed);
+        current.take()
     }
 }

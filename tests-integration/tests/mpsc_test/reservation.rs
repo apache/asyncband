@@ -37,15 +37,18 @@ fn held_permits_consume_capacity_without_claiming_message_order() {
     for capacity in [1, 3, 64] {
         let (tx, mut rx) = mpsc::bounded(capacity);
         let permit = tx.try_reserve().unwrap();
-        for value in 1..capacity {
-            tx.try_send(value).unwrap();
+        // The held permit stays usable while other messages repeatedly reuse the buffer.
+        for lap in 0..8 {
+            for offset in 1..capacity {
+                tx.try_send(lap * capacity + offset).unwrap();
+            }
+            assert!(matches!(tx.try_reserve(), Err(TrySendError::Full(()))));
+            assert_eq!(tx.try_send(0), Err(TrySendError::Full(0)));
+            for offset in 1..capacity {
+                assert_eq!(rx.try_recv(), Ok(lap * capacity + offset));
+            }
+            assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
         }
-        assert!(matches!(tx.try_reserve(), Err(TrySendError::Full(()))));
-        assert_eq!(tx.try_send(0), Err(TrySendError::Full(0)));
-        for value in 1..capacity {
-            assert_eq!(rx.try_recv(), Ok(value));
-        }
-        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
         permit.send(0).unwrap();
         assert_eq!(rx.try_recv(), Ok(0));
         // Repeated reservation and cancellation must restore the exact original capacity.

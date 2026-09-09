@@ -22,8 +22,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
 use self::buffer::Buffer;
+use self::receiver::ReceiverWaker;
 use self::semaphore::Semaphore;
-use crate::internal::atomic_waker::AtomicWaker;
 use crate::internal::cache_padded::CachePadded;
 
 mod buffer;
@@ -67,7 +67,7 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     let shared = Arc::new(Shared {
         senders: AtomicUsize::new(1),
         tx_permits: CachePadded::new(Semaphore::new(buffer)),
-        rx_waker: AtomicWaker::new(),
+        rx_waker: ReceiverWaker::new(),
         buffer: Buffer::new(buffer),
     });
     (
@@ -79,6 +79,6 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
 struct Shared<T> {
     senders: AtomicUsize,
     tx_permits: CachePadded<Semaphore>,
-    rx_waker: AtomicWaker,
+    rx_waker: ReceiverWaker,
     buffer: Buffer<T>,
 }
