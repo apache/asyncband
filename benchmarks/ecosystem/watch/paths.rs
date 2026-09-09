@@ -20,6 +20,8 @@
 // continuing. The recv adapter combines Tokio's changed and borrow_and_update operations to match
 // Asyncband's owned receive contract.
 
+use std::pin::pin;
+
 use divan::Bencher;
 use divan::black_box;
 
@@ -31,7 +33,7 @@ use crate::support::poll_pending;
 use crate::support::poll_pinned_ready;
 use crate::support::poll_ready;
 
-const RECEIVER_COUNTS: &[usize] = &[1, 2, 4, 8, 32];
+const RECEIVER_COUNTS: &[usize] = &[2, 4, 8, 32];
 
 #[divan::bench(types = [Asyncband, Tokio])]
 fn get_current<C: Watch>(bencher: Bencher) {
@@ -70,6 +72,19 @@ fn ready_changed<C: Watch>(bencher: Bencher) {
     bencher.bench_local(|| {
         C::send(&sender, black_box(1));
         poll_ready(C::changed(&mut receiver), &mut context);
+    });
+}
+
+#[divan::bench(types = [Asyncband, Tokio])]
+fn notify_pending<C: Watch>(bencher: Bencher) {
+    let mut context = bench_context();
+    let (sender, mut receivers) = C::channel(1);
+    let mut receiver = receivers.pop().unwrap();
+    bencher.bench_local(|| {
+        let mut changed = pin!(C::changed(&mut receiver));
+        poll_pending(changed.as_mut(), &mut context);
+        C::send(&sender, black_box(1));
+        poll_pinned_ready(changed.as_mut(), &mut context);
     });
 }
 
