@@ -21,7 +21,6 @@
 use std::fmt;
 use std::future::poll_fn;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -67,7 +66,7 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     let shared = Arc::new(Shared {
         senders: AtomicUsize::new(1),
         tx_permits: CachePadded::new(Semaphore::new(buffer)),
-        rx_wake: CachePadded::new(RxWake::new()),
+        rx_waker: CachePadded::new(AtomicWaker::new()),
         buffer: Buffer::new(buffer),
     });
     let sender = BoundedSender {
@@ -80,34 +79,8 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
 struct Shared<T> {
     senders: AtomicUsize,
     tx_permits: CachePadded<Semaphore>,
-    rx_wake: CachePadded<RxWake>,
+    rx_waker: CachePadded<AtomicWaker>,
     buffer: Buffer<T>,
-}
-
-/// The receiver's wake registration and its publishable intent to park.
-///
-/// `parked` and each slot publication are both SeqCst operations. A producer that observes
-/// `parked` unset therefore precedes the receiver's store in the total order, so its
-/// publication happens-before the receiver's post-store recheck and cannot be missed. A
-/// skipped wake thus always pairs with a recheck that observes the published message.
-struct RxWake {
-    waker: AtomicWaker,
-    parked: AtomicBool,
-}
-
-impl RxWake {
-    fn new() -> Self {
-        Self {
-            waker: AtomicWaker::new(),
-            parked: AtomicBool::new(false),
-        }
-    }
-
-    fn wake_parked(&self) {
-        if self.parked.swap(false, Ordering::SeqCst) {
-            self.waker.wake();
-        }
-    }
 }
 
 /// The largest capacity accepted by [`bounded`].
@@ -373,7 +346,7 @@ impl<T> fmt::Debug for BoundedSender<T> {
 impl<T> Drop for BoundedSender<T> {
     fn drop(&mut self) {
         if self.shared.senders.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.shared.rx_wake.wake_parked();
+            self.shared.rx_waker.wake();
         }
     }
 }
@@ -501,7 +474,7 @@ impl<T> Permit<'_, T> {
         unsafe { shared.buffer.push(value) }.map_err(SendError::new)?;
         // Publication owns the capacity before a wake callback can panic.
         self.sender = None;
-        shared.rx_wake.wake_parked();
+        shared.rx_waker.wake();
         Ok(())
     }
 }
@@ -536,7 +509,7 @@ impl<T> Drop for BoundedReceiver<T> {
         // The drain first prevents new claims. Its destructor completes cleanup on unwinding.
         let drain = unsafe { self.shared.buffer.close(self.head) };
         let wakers = self.shared.tx_permits.close();
-        let receiver_waker = self.shared.rx_wake.waker.take();
+        let receiver_waker = self.shared.rx_waker.take();
         wake_all(wakers.into_iter());
         drop(receiver_waker);
         drop(drain);
@@ -649,17 +622,13 @@ impl<T> BoundedReceiver<T> {
             match self.try_pop() {
                 Poll::Ready(Ok(value)) => return Poll::Ready(Ok(value)),
                 Poll::Ready(Err(TryRecvError::Disconnected)) => {
-                    drop(self.shared.rx_wake.waker.take());
+                    drop(self.shared.rx_waker.take());
                     return Poll::Ready(Err(RecvError::Disconnected));
                 }
                 Poll::Pending | Poll::Ready(Err(TryRecvError::Empty)) => {}
             }
             if !registered {
-                // Publish the intent to park before rechecking the queue: a producer that
-                // observes this flag after publishing completes the wake, and one that does
-                // not has its publication observed by the recheck below.
-                self.shared.rx_wake.parked.store(true, Ordering::SeqCst);
-                self.shared.rx_wake.waker.register(cx.waker());
+                self.shared.rx_waker.register(cx.waker());
             }
         }
         Poll::Pending

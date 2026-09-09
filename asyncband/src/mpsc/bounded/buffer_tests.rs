@@ -36,7 +36,7 @@ fn publish_claimed<T>(mut permit: Permit<'_, T>, position: usize, value: T) -> R
     // SAFETY: The test claimed this position while holding the same capacity permit.
     unsafe { shared.buffer.publish(position, value) }?;
     permit.sender = None;
-    shared.rx_wake.wake_parked();
+    shared.rx_waker.wake();
     Ok(())
 }
 
