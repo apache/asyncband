@@ -284,11 +284,12 @@ fn unbounded_collects_from_multiple_producers() {
         }
         drop(tx);
 
-        let mut sum = 0;
+        let mut received = Vec::new();
         while let Ok(i) = rx.recv().await {
-            sum += i;
+            received.push(i);
         }
-        assert_eq!(sum, 28);
+        received.sort_unstable();
+        assert_eq!(received, (0..8).collect::<Vec<_>>());
     });
 }
 
