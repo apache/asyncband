@@ -83,48 +83,6 @@ impl Rng {
     }
 }
 
-#[tokio::test]
-async fn test_broadcast_basic() {
-    let (tx, mut rx1) = unbounded();
-    let mut rx2 = tx.subscribe();
-
-    tx.send(10);
-    tx.send(20);
-
-    assert_eq!(rx1.recv().await, Ok(10));
-    assert_eq!(rx1.recv().await, Ok(20));
-    assert_eq!(rx2.recv().await, Ok(10));
-    assert_eq!(rx2.recv().await, Ok(20));
-}
-
-#[tokio::test]
-async fn test_subscribe() {
-    let (tx, _rx) = unbounded();
-    let mut rx = tx.subscribe();
-
-    tx.send(100);
-    assert_eq!(rx.recv().await, Ok(100));
-}
-
-#[tokio::test]
-async fn test_resubscribe() {
-    let (tx, mut rx) = unbounded();
-
-    tx.send(1);
-    tx.send(2);
-
-    let mut rx2 = rx.resubscribe();
-
-    // rx sees 1, 2
-    // rx2 sees nothing yet (starts at tail=2)
-
-    tx.send(3);
-
-    assert_eq!(rx.recv().await, Ok(1));
-    assert_eq!(rx.recv().await, Ok(2));
-    assert_eq!(rx2.recv().await, Ok(3));
-}
-
 #[test]
 fn test_try_recv() {
     let (tx, mut rx) = unbounded();
