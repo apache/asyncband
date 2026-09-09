@@ -48,10 +48,7 @@ pub struct Buffer<T> {
     slots: Box<[Slot<T>]>,
     tail: CachePadded<AtomicUsize>,
     closed: AtomicBool,
-    // ZSTs need no positions or per-slot flags. Counting them separately also allows every
-    // nonzero usize capacity without allocating publication metadata for nonexistent bytes.
-    // The count packs a closed flag into its top bit so publication and close stay atomic.
-    zero_sized: AtomicUsize,
+    zero_sized: ZeroSized,
 }
 
 struct Slot<T> {
@@ -69,6 +66,62 @@ unsafe impl<T: Send> Sync for Slot<T> {}
 impl<T> std::panic::UnwindSafe for Slot<T> {}
 impl<T> std::panic::RefUnwindSafe for Slot<T> {}
 
+/// Queue storage for zero-sized messages, which need no slots, positions, or per-slot flags.
+/// Counting them separately also allows every nonzero usize capacity without allocating
+/// publication metadata for nonexistent bytes.
+///
+/// The queue is entirely its length. The count packs a closed flag into its top bit so that
+/// publication and close stay atomic: a publication that raced ahead of the flag is included
+/// in the drained count, and every later one observes the flag and fails.
+struct ZeroSized {
+    queued: AtomicUsize,
+}
+
+impl ZeroSized {
+    fn new() -> Self {
+        Self {
+            queued: AtomicUsize::new(0),
+        }
+    }
+
+    /// Accounts for one published message, returning `false` once the queue is closed.
+    fn push(&self) -> bool {
+        let mut queued = self.queued.load(Ordering::Acquire);
+        loop {
+            if queued & ZERO_SIZED_CLOSED != 0 {
+                return false;
+            }
+            // The capacity limit keeps the count far below the closed flag bit.
+            match self.queued.compare_exchange_weak(
+                queued,
+                queued + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => queued = actual,
+            }
+        }
+    }
+
+    /// Accounts for one consumed message, returning `false` when the queue was observed empty.
+    fn pop(&self) -> bool {
+        let queued = self.queued.load(Ordering::Acquire) & !ZERO_SIZED_CLOSED;
+        if queued == 0 {
+            return false;
+        }
+        // Only the consumer decrements, and producers can only add: the count observed above
+        // is a lower bound, so this cannot wrap.
+        self.queued.fetch_sub(1, Ordering::AcqRel);
+        true
+    }
+
+    /// Stops publication and returns the queue length transferred to the drain.
+    fn close(&self) -> usize {
+        self.queued.fetch_or(ZERO_SIZED_CLOSED, Ordering::AcqRel) & !ZERO_SIZED_CLOSED
+    }
+}
+
 impl<T> Buffer<T> {
     pub fn new(capacity: usize) -> Self {
         let slots = if size_of::<T>() == 0 {
@@ -85,7 +138,7 @@ impl<T> Buffer<T> {
             slots,
             tail: CachePadded::new(AtomicUsize::new(0)),
             closed: AtomicBool::new(false),
-            zero_sized: AtomicUsize::new(0),
+            zero_sized: ZeroSized::new(),
         }
     }
 
@@ -112,25 +165,12 @@ impl<T> Buffer<T> {
     /// the consumer reads the published value. No user code runs between claim and publication.
     pub unsafe fn push(&self, value: T) -> Result<(), T> {
         if size_of::<T>() == 0 {
-            let mut queued = self.zero_sized.load(Ordering::Acquire);
-            loop {
-                if queued & ZERO_SIZED_CLOSED != 0 {
-                    return Err(value);
-                }
-                // The capacity limit keeps the count far below the closed flag bit.
-                match self.zero_sized.compare_exchange_weak(
-                    queued,
-                    queued + 1,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => {
-                        mem::forget(value);
-                        return Ok(());
-                    }
-                    Err(actual) => queued = actual,
-                }
-            }
+            return if self.zero_sized.push() {
+                mem::forget(value);
+                Ok(())
+            } else {
+                Err(value)
+            };
         }
         let Ok(position) = self.claim() else {
             return Err(value);
@@ -167,15 +207,11 @@ impl<T> Buffer<T> {
     /// capacity permit after each successful pop, after the value has been read completely.
     pub unsafe fn pop(&self, head: &mut usize) -> Poll<Option<T>> {
         if size_of::<T>() == 0 {
-            let queued = self.zero_sized.load(Ordering::Acquire) & !ZERO_SIZED_CLOSED;
-            return if queued == 0 {
-                Poll::Ready(None)
-            } else {
-                // Only this consumer decrements, and producers can only add: the count
-                // observed above is a lower bound, so this cannot wrap.
-                self.zero_sized.fetch_sub(1, Ordering::AcqRel);
+            return if self.zero_sized.pop() {
                 // SAFETY: A queued value proves that this ZST is inhabited and owns one value.
                 Poll::Ready(Some(unsafe { Self::read_zero_sized() }))
+            } else {
+                Poll::Ready(None)
             };
         }
         let slot = self.slot(*head);
@@ -201,11 +237,7 @@ impl<T> Buffer<T> {
     pub unsafe fn close(&self, head: usize) -> Drain<'_, T> {
         self.closed.store(true, Ordering::Release);
         let remaining = if size_of::<T>() == 0 {
-            // Counting stops with the closed flag: a publication that raced ahead of it is
-            // included in the count, and every later one observes the flag and fails.
-            self.zero_sized
-                .fetch_or(ZERO_SIZED_CLOSED, Ordering::AcqRel)
-                & !ZERO_SIZED_CLOSED
+            self.zero_sized.close()
         } else {
             // Cover every physical slot: a producer may have passed the open check but not
             // obtained its ticket yet. Such a late claim must also find a CLOSED slot.
