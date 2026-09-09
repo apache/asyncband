@@ -126,7 +126,7 @@ impl CommandMiri {
 
 #[derive(Parser)]
 struct CommandTest {
-    #[arg(long, help = "Run tests serially and do not capture output.")]
+    #[arg(long, help = "Do not capture test output.")]
     no_capture: bool,
 }
 
