@@ -70,7 +70,7 @@ impl<T> std::panic::RefUnwindSafe for Slot<T> {}
 
 impl<T> Buffer<T> {
     pub fn new(capacity: usize) -> Self {
-        let slots = if mem::size_of::<T>() == 0 {
+        let slots = if size_of::<T>() == 0 {
             Box::default()
         } else {
             (0..capacity.next_power_of_two())
@@ -110,7 +110,7 @@ impl<T> Buffer<T> {
     /// Own one capacity permit before calling; release it only after a failed push or after
     /// the consumer reads the published value. No user code runs between claim and publication.
     pub unsafe fn push(&self, value: T) -> Result<(), T> {
-        if mem::size_of::<T>() == 0 {
+        if size_of::<T>() == 0 {
             let mut queued = self.zero_sized.lock();
             if self.closed.load(Ordering::Acquire) {
                 return Err(value);
@@ -153,7 +153,7 @@ impl<T> Buffer<T> {
     /// Only the exclusive consumer may call this, using its persistent cursor. Release one
     /// capacity permit after each successful pop, after the value has been read completely.
     pub unsafe fn pop(&self, head: &mut usize) -> Poll<Option<T>> {
-        if mem::size_of::<T>() == 0 {
+        if size_of::<T>() == 0 {
             let mut queued = self.zero_sized.lock();
             return if *queued == 0 {
                 Poll::Ready(None)
@@ -185,7 +185,7 @@ impl<T> Buffer<T> {
     /// Only the exclusive consumer may close the buffer, once, using its current cursor.
     pub unsafe fn close(&self, head: usize) -> Drain<'_, T> {
         self.closed.store(true, Ordering::Release);
-        let remaining = if mem::size_of::<T>() == 0 {
+        let remaining = if size_of::<T>() == 0 {
             mem::take(&mut *self.zero_sized.lock())
         } else {
             // Cover every physical slot: a producer may have passed the open check but not
@@ -220,7 +220,7 @@ impl<T> Iterator for Drain<'_, T> {
             let position = self.position;
             self.remaining -= 1;
             self.position = self.position.wrapping_add(1);
-            if mem::size_of::<T>() == 0 {
+            if size_of::<T>() == 0 {
                 // SAFETY: Closing transferred this many initialized ZST values to the drain.
                 return Some(unsafe { Buffer::<T>::read_zero_sized() });
             }

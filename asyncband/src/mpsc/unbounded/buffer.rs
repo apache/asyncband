@@ -38,10 +38,10 @@ impl<T> Buffer<T> {
     }
 
     fn segment_capacity() -> usize {
-        if mem::size_of::<T>() == 0 {
+        if size_of::<T>() == 0 {
             return usize::MAX;
         }
-        let limit = (SEGMENT_BYTES / mem::size_of::<T>()).max(1);
+        let limit = (SEGMENT_BYTES / size_of::<T>()).max(1);
         // Power-of-two limits let VecDeque grow naturally without exceeding the segment budget.
         1 << (usize::BITS - 1 - limit.leading_zeros())
     }
@@ -65,9 +65,7 @@ impl<T> Buffer<T> {
             // Keep one empty segment for the next producer rollover. Every other consumed
             // segment is released, so retained payload storage does not track peak occupancy.
             self.spare = mem::replace(batch, sealed);
-            if self.sealed.is_empty()
-                && self.sealed.capacity() * mem::size_of::<VecDeque<T>>() > 1024
-            {
+            if self.sealed.is_empty() && self.sealed.capacity() * size_of::<VecDeque<T>>() > 1024 {
                 self.sealed = VecDeque::new();
             }
         } else if !self.writable.is_empty() {
@@ -78,7 +76,7 @@ impl<T> Buffer<T> {
 }
 
 pub fn pop_batch<T>(batch: &mut VecDeque<T>) -> T {
-    if batch.len() == 1 && batch.capacity().saturating_mul(mem::size_of::<T>()) > SEGMENT_BYTES {
+    if batch.len() == 1 && batch.capacity().saturating_mul(size_of::<T>()) > SEGMENT_BYTES {
         // Retire the allocation on the last value, outside the inbox lock. Keep this as a tail
         // expression to avoid intermediate storage for large inline values.
         mem::take(batch).pop_front()
