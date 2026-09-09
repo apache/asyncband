@@ -21,7 +21,6 @@
 use std::fmt;
 use std::future::poll_fn;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -90,45 +89,89 @@ struct Shared<T> {
 /// rounded-up slot storage from overflowing a power of two.
 const MAX_CAPACITY: usize = usize::MAX >> 2;
 
-// This channel-local semaphore grants one permit at a time and can close its wait queue.
+// This channel-local semaphore packs its permit counter and channel state into one atomic.
 // The general-purpose semaphore has neither a close operation nor acquisition errors.
+//
+// `state` holds the available permits shifted left by two, plus two flag bits:
+//
+// * `CLOSED`: the receiver is gone. No permits are issued or returned, and waiters drain with an
+//   error.
+// * `WAITING`: the wait queue may be non-empty. Releases then take the locked path and grant the
+//   permit directly to the oldest waiter instead of returning it to the counter, so capacity is
+//   handed out in registration order and new arrivals cannot steal an already granted slot.
+//
+// With neither flag set, acquire and release are single lock-free operations on `state`.
+// Wait-queue mutations always hold the queue lock; a registration sets `WAITING` before its
+// final capacity recheck, which switches any racing release to the locked path and strands
+// no permit without a wake.
 struct Semaphore {
-    available: AtomicUsize,
-    closed: AtomicBool,
+    state: AtomicUsize,
     waiters: Mutex<WaitList<Waiter>>,
 }
+
+const CLOSED: usize = 0b01;
+const WAITING: usize = 0b10;
+const PERMIT: usize = 0b100;
 
 impl Semaphore {
     fn new(available: usize) -> Self {
         Self {
-            available: AtomicUsize::new(available),
-            closed: AtomicBool::new(false),
+            state: AtomicUsize::new(available * PERMIT),
             waiters: Mutex::new(WaitList::new()),
         }
     }
 
     fn try_acquire(&self) -> Result<(), TrySendError<()>> {
-        if self.closed.load(Ordering::Acquire) {
-            return Err(TrySendError::Disconnected(()));
-        }
-        let mut available = self.available.load(Ordering::Relaxed);
+        let mut state = self.state.load(Ordering::Acquire);
         loop {
-            if available == 0 {
+            if state & CLOSED != 0 {
+                return Err(TrySendError::Disconnected(()));
+            }
+            if state < PERMIT {
                 return Err(TrySendError::Full(()));
             }
-            match self.available.compare_exchange_weak(
-                available,
-                available - 1,
+            match self.state.compare_exchange_weak(
+                state,
+                state - PERMIT,
                 Ordering::Acquire,
-                Ordering::Relaxed,
+                Ordering::Acquire,
             ) {
                 Ok(_) => return Ok(()),
-                Err(actual) => available = actual,
+                Err(actual) => state = actual,
             }
         }
     }
 
+    fn is_closed(&self) -> bool {
+        self.state.load(Ordering::Acquire) & CLOSED != 0
+    }
+
+    fn set_waiting(&self) {
+        self.state.fetch_or(WAITING, Ordering::AcqRel);
+    }
+
+    fn clear_waiting(&self) {
+        self.state.fetch_and(!WAITING, Ordering::Release);
+    }
+
     fn release(&self) {
+        // Fast path: with no waiting sender and no close in sight, the permit goes straight
+        // back to the counter.
+        let mut state = self.state.load(Ordering::Relaxed);
+        loop {
+            if state & (WAITING | CLOSED) != 0 {
+                break;
+            }
+            match self.state.compare_exchange_weak(
+                state,
+                state + PERMIT,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(actual) => state = actual,
+            }
+        }
         let wake = self.release_locked(&mut self.waiters.lock());
         if let Some(waker) = wake {
             waker.wake();
@@ -136,23 +179,29 @@ impl Semaphore {
     }
 
     fn release_locked(&self, waiters: &mut WaitList<Waiter>) -> Option<Waker> {
-        if self.closed.load(Ordering::Relaxed) {
+        if self.is_closed() {
             return None;
         }
         if let Some((_, waiter)) = waiters.unlink_first_waiter(|_| true) {
             // Grant ownership before waking; new arrivals cannot steal this capacity.
             waiter.granted = true;
-            return waiter.waker.take();
+            let waker = waiter.waker.take();
+            if waiters.is_empty() {
+                self.clear_waiting();
+            }
+            return waker;
         }
-        // Only releases add permits, and all releases hold the wait queue lock. A linked
-        // waiter therefore always sees zero available permits until it receives its own grant.
-        self.available.fetch_add(1, Ordering::Release);
+        // The queue is empty. Only releases add permits, and the counter grows with the
+        // queue locked, so a linked waiter always sees zero available permits until it
+        // receives its own grant. An outstanding grant already owns its capacity.
+        self.state.fetch_add(PERMIT, Ordering::Release);
+        self.clear_waiting();
         None
     }
 
     fn close(&self) -> WakerBatch {
         let mut waiters = self.waiters.lock();
-        self.closed.store(true, Ordering::Release);
+        self.state.fetch_or(CLOSED, Ordering::AcqRel);
         let mut wakers = WakerBatch::new();
         while let Some((_, waiter)) = waiters.unlink_first_waiter(|_| true) {
             if let Some(waker) = waiter.waker.take() {
@@ -177,40 +226,33 @@ impl<'a, T> Reservation<'a, T> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Permit<'a, T>, SendError<()>>> {
         let semaphore = &self.sender.shared.tx_permits;
         let mut cloned_waker = None;
-        loop {
+        let result = loop {
             if self.index.is_none() {
                 match semaphore.try_acquire() {
                     Ok(()) => {
-                        let permit = Permit {
+                        break Ok(Permit {
                             sender: Some(self.sender),
-                        };
-                        // The permit owns capacity before an unused cloned waker can panic.
-                        drop(cloned_waker);
-                        return Poll::Ready(Ok(permit));
+                        });
                     }
-                    Err(TrySendError::Disconnected(())) => {
-                        return Poll::Ready(Err(SendError::new(())));
-                    }
+                    Err(TrySendError::Disconnected(())) => break Err(SendError::new(())),
                     Err(TrySendError::Full(())) => {}
                 }
             }
             let mut waiters = semaphore.waiters.lock();
-            if semaphore.closed.load(Ordering::Relaxed) {
+            if semaphore.is_closed() {
                 // Drop removes any remaining registration, including an unused grant.
-                return Poll::Ready(Err(SendError::new(())));
+                break Err(SendError::new(()));
             }
             if let Some(index) = self.index {
                 let waiter = waiters.waiter_mut(index);
                 if waiter.granted {
                     let waiter = waiters.remove_unlinked_waiter(index);
                     self.index = None;
-                    let permit = Permit {
-                        sender: Some(self.sender),
-                    };
                     drop(waiters);
                     drop(waiter);
-                    drop(cloned_waker);
-                    return Poll::Ready(Ok(permit));
+                    break Ok(Permit {
+                        sender: Some(self.sender),
+                    });
                 }
                 if waiter
                     .waker
@@ -225,26 +267,32 @@ impl<'a, T> Reservation<'a, T> {
                     drop(old);
                     return Poll::Pending;
                 }
-            } else if semaphore.try_acquire().is_ok() {
-                // A release may have raced with the fast path; recheck under the queue lock
-                // before committing to wait so no permit can be stranded without a wake.
-                let permit = Permit {
-                    sender: Some(self.sender),
-                };
-                drop(waiters);
-                drop(cloned_waker);
-                return Poll::Ready(Ok(permit));
-            } else if let Some(waker) = cloned_waker.take() {
-                self.index = Some(waiters.push_back(Waiter {
-                    granted: false,
-                    waker: Some(waker),
-                }));
-                return Poll::Pending;
+            } else {
+                // Set WAITING before the final capacity recheck: a racing release switches
+                // to the locked path, so no permit can be stranded without a wake. Waiting
+                // senders already in the queue take priority over this recheck.
+                semaphore.set_waiting();
+                if waiters.is_empty() && semaphore.try_acquire().is_ok() {
+                    semaphore.clear_waiting();
+                    break Ok(Permit {
+                        sender: Some(self.sender),
+                    });
+                }
+                if let Some(waker) = cloned_waker.take() {
+                    self.index = Some(waiters.push_back(Waiter {
+                        granted: false,
+                        waker: Some(waker),
+                    }));
+                    return Poll::Pending;
+                }
             }
             drop(waiters);
             // Clone outside the lock, then recheck capacity and closure before registering.
             cloned_waker = Some(cx.waker().clone());
-        }
+        };
+        // The permit owns capacity before an unused cloned waker can panic.
+        drop(cloned_waker);
+        Poll::Ready(result)
     }
 }
 
@@ -259,6 +307,9 @@ impl<T> Drop for Reservation<'_, T> {
             let wake = if waiter.granted {
                 semaphore.release_locked(&mut waiters)
             } else {
+                if waiters.is_empty() {
+                    semaphore.clear_waiting();
+                }
                 None
             };
             (waiter, wake)
