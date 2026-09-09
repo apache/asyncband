@@ -23,7 +23,6 @@ use super::adapters::AsyncChannel;
 use super::adapters::Asyncband;
 use super::adapters::BoundedMpsc;
 use super::adapters::Flume;
-use super::adapters::Kanal;
 use super::adapters::Tokio;
 use super::support::BATCH_MESSAGES;
 use super::support::BOUNDED_CAPACITY;
@@ -34,7 +33,7 @@ use super::support::RepeatedBatch;
 use super::support::RepeatedTasks;
 use crate::support::bench_context;
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume, Kanal])]
+#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
 fn try_round_trip<C: BoundedMpsc>(bencher: Bencher) {
     let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
 
@@ -44,7 +43,7 @@ fn try_round_trip<C: BoundedMpsc>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume, Kanal])]
+#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
 fn ready_round_trip<C: BoundedMpsc>(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
@@ -56,7 +55,7 @@ fn ready_round_trip<C: BoundedMpsc>(bencher: Bencher) {
 }
 
 #[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume, Kanal],
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
     args = PRODUCER_COUNTS,
     sample_count = 20,
     sample_size = 1,
@@ -69,7 +68,7 @@ fn concurrent<C: BoundedMpsc>(bencher: Bencher, producer_count: usize) {
 }
 
 #[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume, Kanal],
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
     args = PRODUCER_COUNTS,
     sample_count = 50,
     sample_size = 1,
@@ -81,14 +80,14 @@ fn sustained<C: BoundedMpsc>(bencher: Bencher, producer_count: usize) {
     bencher.bench_local(|| batch.run());
 }
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume, Kanal])]
+#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
 fn clone_drop_sender<C: BoundedMpsc>(bencher: Bencher) {
     let (sender, _receiver) = C::channel(BOUNDED_CAPACITY);
     bencher.bench_local(|| drop(black_box(sender.clone())));
 }
 
 #[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume, Kanal],
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
     consts = [1, 4096],
     args = PRODUCER_COUNTS,
     sample_count = 50,
@@ -105,7 +104,7 @@ fn sustained_capacity<C: BoundedMpsc, const CAPACITY: usize>(
 }
 
 #[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume, Kanal],
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
     consts = [1, 64, 4096],
     args = [(1, 0), (8, 0), (1, 4), (8, 4)],
     sample_count = 50,
@@ -122,7 +121,7 @@ fn scheduled<C: BoundedMpsc, const CAPACITY: usize>(
 }
 
 #[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume, Kanal],
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
     consts = [1, 64, 4096],
     args = [(1, 0), (8, 0), (1, 4), (8, 4)],
     sample_count = 50,
@@ -139,7 +138,7 @@ fn scheduled_inline<C: BoundedMpsc<[u8; 1024]>, const CAPACITY: usize>(
 }
 
 #[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume, Kanal],
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
     consts = [1, 64, 4096],
     args = [1, 8],
     sample_count = 50,
@@ -153,7 +152,7 @@ fn external_receiver<C: BoundedMpsc, const CAPACITY: usize>(bencher: Bencher, pr
 }
 
 #[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume, Kanal],
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
     consts = [1, 64, 4096],
     args = [1, 8],
     sample_count = 50,

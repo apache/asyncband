@@ -49,7 +49,6 @@ asyncband = { workspace = true, features = [
 ] }
 divan = { workspace = true }
 flume = { workspace = true, features = ["async"] }
-kanal = { workspace = true }
 pollster = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 waitgroup = { workspace = true }

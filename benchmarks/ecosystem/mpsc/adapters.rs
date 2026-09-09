@@ -25,7 +25,6 @@ pub struct Asyncband;
 pub struct Tokio;
 pub struct AsyncChannel;
 pub struct Flume;
-pub struct Kanal;
 
 pub trait BoundedMpsc<T = usize>: Send + Sync + 'static {
     type Sender: Clone + Send + Sync + 'static;
@@ -215,47 +214,6 @@ impl<T: Debug + Send + 'static> BoundedMpsc<T> for Flume {
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {
         pollster::block_on(receiver.recv_async()).unwrap()
-    }
-}
-
-impl<T: Debug + Send + 'static> BoundedMpsc<T> for Kanal {
-    type Receiver = kanal::AsyncReceiver<T>;
-    type Sender = kanal::AsyncSender<T>;
-
-    fn channel(capacity: usize) -> (Self::Sender, Self::Receiver) {
-        kanal::bounded_async(capacity)
-    }
-
-    fn try_send(sender: &Self::Sender, value: T) {
-        assert!(sender.try_send(value).unwrap());
-    }
-
-    fn try_recv(receiver: &mut Self::Receiver) -> T {
-        receiver.try_recv().unwrap().unwrap()
-    }
-
-    fn send_ready(sender: &Self::Sender, value: T, context: &mut Context<'_>) {
-        poll_ready(sender.send(value), context).unwrap();
-    }
-
-    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> T {
-        poll_ready(receiver.recv(), context).unwrap()
-    }
-
-    async fn send_async(sender: &Self::Sender, value: T) {
-        sender.send(value).await.unwrap();
-    }
-
-    async fn recv_async(receiver: &mut Self::Receiver) -> T {
-        receiver.recv().await.unwrap()
-    }
-
-    fn send_blocking(sender: &Self::Sender, value: T) {
-        pollster::block_on(sender.send(value)).unwrap();
-    }
-
-    fn recv_blocking(receiver: &mut Self::Receiver) -> T {
-        pollster::block_on(receiver.recv()).unwrap()
     }
 }
 
