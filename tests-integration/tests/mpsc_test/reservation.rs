@@ -77,6 +77,31 @@ fn zero_sized_messages_support_the_full_capacity_range() {
 }
 
 #[test]
+fn zero_sized_messages_are_dropped_once_when_received_or_discarded() {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+    struct Message;
+    impl Drop for Message {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let (tx, mut rx) = mpsc::bounded(usize::MAX);
+    for _ in 0..3 {
+        assert!(tx.try_send(Message).is_ok());
+    }
+    drop(rx.try_recv().unwrap());
+    assert_eq!(DROPS.load(Ordering::Relaxed), 1);
+    drop(rx);
+    assert_eq!(DROPS.load(Ordering::Relaxed), 3);
+    drop(tx.try_send(Message).err().unwrap().into_inner());
+    assert_eq!(DROPS.load(Ordering::Relaxed), 4);
+}
+
+#[test]
 fn released_capacity_is_granted_to_the_oldest_waiter() {
     let (tx, mut rx) = mpsc::bounded(1);
     let held = tx.try_reserve().unwrap();

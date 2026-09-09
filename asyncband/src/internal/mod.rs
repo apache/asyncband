@@ -49,6 +49,12 @@ pub(crate) fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
     }
 }
 
+#[cfg(feature = "mpsc")]
+pub(crate) mod atomic_waker;
+
+#[cfg(feature = "mpsc")]
+pub(crate) mod cache_padded;
+
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
