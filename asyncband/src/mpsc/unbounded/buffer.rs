@@ -25,7 +25,6 @@ pub const SEGMENT_BYTES: usize = 32 * 1024;
 pub struct Buffer<T> {
     writable: VecDeque<T>,
     sealed: VecDeque<VecDeque<T>>,
-    spare: VecDeque<T>,
 }
 
 impl<T> Buffer<T> {
@@ -33,7 +32,6 @@ impl<T> Buffer<T> {
         Self {
             writable: VecDeque::new(),
             sealed: VecDeque::new(),
-            spare: VecDeque::new(),
         }
     }
 
@@ -48,11 +46,7 @@ impl<T> Buffer<T> {
 
     pub fn push(&mut self, value: T) {
         if self.writable.len() == Self::segment_capacity() {
-            let next = if self.spare.capacity() == 0 {
-                VecDeque::with_capacity(Self::segment_capacity())
-            } else {
-                mem::take(&mut self.spare)
-            };
+            let next = VecDeque::with_capacity(Self::segment_capacity());
             let sealed = mem::replace(&mut self.writable, next);
             self.sealed.push_back(sealed);
         }
@@ -62,14 +56,11 @@ impl<T> Buffer<T> {
     pub fn refill(&mut self, batch: &mut VecDeque<T>) {
         debug_assert!(batch.is_empty());
         if let Some(sealed) = self.sealed.pop_front() {
-            // Keep one empty segment for the next producer rollover. Every other consumed
-            // segment is released, so retained payload storage does not track peak occupancy.
-            self.spare = mem::replace(batch, sealed);
+            *batch = sealed;
             if self.sealed.is_empty() && self.sealed.capacity() * size_of::<VecDeque<T>>() > 1024 {
                 self.sealed = VecDeque::new();
             }
         } else if !self.writable.is_empty() {
-            self.spare = VecDeque::new();
             mem::swap(batch, &mut self.writable);
         }
     }
@@ -77,7 +68,7 @@ impl<T> Buffer<T> {
 
 pub fn pop_batch<T>(batch: &mut VecDeque<T>) -> T {
     if batch.len() == 1 && batch.capacity().saturating_mul(size_of::<T>()) > SEGMENT_BYTES {
-        // Retire the allocation on the last value, outside the inbox lock. Keep this as a tail
+        // Retire the allocation on the last value, outside the shared lock. Keep this as a tail
         // expression to avoid intermediate storage for large inline values.
         mem::take(batch).pop_front()
     } else {

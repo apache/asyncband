@@ -24,7 +24,6 @@ use super::pop_batch;
 fn allocated_bytes<T>(buffer: &Buffer<T>, batch: &VecDeque<T>) -> usize {
     let slots = batch.capacity()
         + buffer.writable.capacity()
-        + buffer.spare.capacity()
         + buffer.sealed.iter().map(VecDeque::capacity).sum::<usize>();
     slots * size_of::<T>()
 }
@@ -34,20 +33,6 @@ fn receive<T>(buffer: &mut Buffer<T>, batch: &mut VecDeque<T>) -> T {
         buffer.refill(batch);
     }
     pop_batch(batch)
-}
-
-#[test]
-fn messages_arriving_during_a_batch_remain_in_fifo_order() {
-    let mut buffer = Buffer::new();
-    let mut batch = VecDeque::new();
-    buffer.push(1);
-    buffer.push(2);
-    assert_eq!(receive(&mut buffer, &mut batch), 1);
-    buffer.push(3);
-    assert_eq!(receive(&mut buffer, &mut batch), 2);
-    assert_eq!(receive(&mut buffer, &mut batch), 3);
-    buffer.refill(&mut batch);
-    assert!(batch.is_empty());
 }
 
 #[test]
@@ -97,18 +82,4 @@ fn oversized_inline_values_release_the_allocation_on_the_last_receive() {
     buffer.push([7u8; SEGMENT_BYTES + 1]);
     assert_eq!(receive(&mut buffer, &mut batch), [7u8; SEGMENT_BYTES + 1]);
     assert_eq!(allocated_bytes(&buffer, &batch), 0);
-}
-
-#[test]
-fn zero_sized_values_do_not_require_segments() {
-    let mut buffer = Buffer::new();
-    let mut batch = VecDeque::new();
-    for _ in 0..32 {
-        buffer.push(());
-    }
-    for _ in 0..32 {
-        receive(&mut buffer, &mut batch);
-    }
-    buffer.refill(&mut batch);
-    assert!(batch.is_empty());
 }

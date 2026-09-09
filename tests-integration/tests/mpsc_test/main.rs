@@ -42,7 +42,9 @@ fn unbounded_try_recv_preserves_order_and_reports_state() {
         tx.send(i).unwrap();
     }
 
-    for i in 0..4 {
+    assert_eq!(rx.try_recv(), Ok(0));
+    tx.send(4).unwrap();
+    for i in 1..5 {
         assert_eq!(rx.try_recv(), Ok(i));
     }
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
