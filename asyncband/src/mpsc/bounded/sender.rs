@@ -57,7 +57,7 @@ impl<T> Drop for BoundedSender<T> {
             let mut state = self.shared.lock();
             state.senders -= 1;
             if state.senders == 0 {
-                state.receiver_waker.take()
+                state.recv_waker.take()
             } else {
                 None
             }
@@ -89,7 +89,7 @@ impl<T> BoundedSender<T> {
             match state.acquire() {
                 Ok(()) => {
                     state.queue.push_back(value);
-                    let wake = state.receiver_waker.take();
+                    let wake = state.recv_waker.take();
                     drop(state);
                     if let Some(waker) = wake {
                         waker.wake();
@@ -137,11 +137,11 @@ impl<T> BoundedSender<T> {
     /// # }
     /// ```
     pub async fn reserve(&self) -> Result<Permit<'_, T>, SendError<()>> {
-        let mut reservation = Reservation {
+        let mut reserve = Reserve {
             shared: &self.shared,
             waiter: None,
         };
-        poll_fn(|cx| reservation.poll(cx)).await
+        poll_fn(|cx| reserve.poll(cx)).await
     }
 
     /// Reserves capacity for one message without waiting.
@@ -180,7 +180,7 @@ impl<T> BoundedSender<T> {
         match state.acquire() {
             Ok(()) => {
                 state.queue.push_back(value);
-                let wake = state.receiver_waker.take();
+                let wake = state.recv_waker.take();
                 drop(state);
                 if let Some(waker) = wake {
                     waker.wake();
@@ -215,13 +215,13 @@ impl<T> Permit<'_, T> {
     /// If the receiver has been dropped, the returned error contains the unsent value.
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
         let mut state = self.shared.lock();
-        if !state.receiver_open {
+        if !state.receiver {
             return Err(SendError::new(value));
         }
         state.queue.push_back(value);
         // The queued message now owns capacity, even if the wake callback panics.
         mem::forget(self);
-        let wake = state.receiver_waker.take();
+        let wake = state.recv_waker.take();
         drop(state);
         if let Some(waker) = wake {
             waker.wake();
@@ -239,24 +239,24 @@ impl<T> Drop for Permit<'_, T> {
     }
 }
 
-struct Reservation<'a, T> {
+struct Reserve<'a, T> {
     shared: &'a Mutex<State<T>>,
     waiter: Option<WaiterId>,
 }
 
-impl<'a, T> Reservation<'a, T> {
+impl<'a, T> Reserve<'a, T> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Permit<'a, T>, SendError<()>>> {
         let mut cloned_waker = None;
         let result = loop {
             let mut state = self.shared.lock();
-            if !state.receiver_open {
+            if !state.receiver {
                 // Drop removes any remaining registration, including an unused grant.
                 break Err(SendError::new(()));
             }
             if let Some(index) = self.waiter {
-                let waiter = state.waiters.waiter_mut(index);
-                if waiter.granted {
-                    let waiter = state.waiters.remove_unlinked_waiter(index);
+                let waiter = state.send_waiters.waiter_mut(index);
+                if waiter.grant {
+                    let waiter = state.send_waiters.remove_unlinked_waiter(index);
                     self.waiter = None;
                     let permit = Permit {
                         shared: self.shared,
@@ -284,8 +284,8 @@ impl<'a, T> Reservation<'a, T> {
                     shared: self.shared,
                 });
             } else if let Some(waker) = cloned_waker.take() {
-                self.waiter = Some(state.waiters.push_back(Waiter {
-                    granted: false,
+                self.waiter = Some(state.send_waiters.push_back(Waiter {
+                    grant: false,
                     waker: Some(waker),
                 }));
                 return Poll::Pending;
@@ -300,18 +300,14 @@ impl<'a, T> Reservation<'a, T> {
     }
 }
 
-impl<T> Drop for Reservation<'_, T> {
+impl<T> Drop for Reserve<'_, T> {
     fn drop(&mut self) {
         let Some(index) = self.waiter else { return };
         let (waiter, wake) = {
             let mut state = self.shared.lock();
-            state.waiters.unlink_waiter(index, |_| true);
-            let waiter = state.waiters.remove_unlinked_waiter(index);
-            let wake = if waiter.granted {
-                state.release()
-            } else {
-                None
-            };
+            state.send_waiters.unlink_waiter(index, |_| true);
+            let waiter = state.send_waiters.remove_unlinked_waiter(index);
+            let wake = if waiter.grant { state.release() } else { None };
             (waiter, wake)
         };
         if let Some(waker) = wake {

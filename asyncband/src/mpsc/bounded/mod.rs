@@ -49,27 +49,21 @@ pub use self::sender::Permit;
 ///
 /// # Panics
 ///
-/// Panics if `buffer` is zero or exceeds the maximum capacity of `usize::MAX >> 1`.
+/// Panics if `buffer` is zero or the preallocated message storage exceeds the allocation size
+/// limit.
 #[track_caller]
 pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
-    const MAX_CAPACITY: usize = usize::MAX >> 1;
-
     assert!(
         buffer > 0,
         "mpsc bounded channel capacity {buffer} must be nonzero",
     );
-    assert!(
-        buffer <= MAX_CAPACITY,
-        "mpsc bounded channel capacity {buffer} exceeds the maximum of {MAX_CAPACITY}",
-    );
-
     let shared = Arc::new(Mutex::new(State {
         queue: VecDeque::with_capacity(buffer),
         available: buffer,
         senders: 1,
-        receiver_open: true,
-        receiver_waker: None,
-        waiters: WaitList::new(),
+        receiver: true,
+        recv_waker: None,
+        send_waiters: WaitList::new(),
     }));
     (
         BoundedSender::new(shared.clone()),
@@ -83,14 +77,15 @@ struct State<T> {
     queue: VecDeque<T>,
     available: usize,
     senders: usize,
-    receiver_open: bool,
-    receiver_waker: Option<Waker>,
-    waiters: WaitList<Waiter>,
+    // True while the receiving endpoint is alive.
+    receiver: bool,
+    recv_waker: Option<Waker>,
+    send_waiters: WaitList<Waiter>,
 }
 
 impl<T> State<T> {
     fn acquire(&mut self) -> Result<(), TrySendError<()>> {
-        if !self.receiver_open {
+        if !self.receiver {
             Err(TrySendError::Disconnected(()))
         } else if self.available == 0 {
             Err(TrySendError::Full(()))
@@ -101,12 +96,12 @@ impl<T> State<T> {
     }
 
     fn release(&mut self) -> Option<Waker> {
-        if !self.receiver_open {
+        if !self.receiver {
             return None;
         }
-        if let Some((_, waiter)) = self.waiters.unlink_first_waiter(|_| true) {
+        if let Some((_, waiter)) = self.send_waiters.unlink_first_waiter(|_| true) {
             // The detached node owns capacity until its future claims or cancels the grant.
-            waiter.granted = true;
+            waiter.grant = true;
             return waiter.waker.take();
         }
         self.available += 1;
@@ -125,6 +120,6 @@ impl<T> State<T> {
 }
 
 struct Waiter {
-    granted: bool,
+    grant: bool,
     waker: Option<Waker>,
 }

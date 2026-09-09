@@ -45,22 +45,22 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        let (queue, receiver_waker, wakers) = {
+        let (queue, recv_waker, wakers) = {
             let mut state = self.shared.lock();
-            state.receiver_open = false;
+            state.receiver = false;
             let queue = mem::take(&mut state.queue);
-            let receiver_waker = state.receiver_waker.take();
+            let recv_waker = state.recv_waker.take();
             let mut wakers = WakerBatch::new();
-            while let Some((_, waiter)) = state.waiters.unlink_first_waiter(|_| true) {
+            while let Some((_, waiter)) = state.send_waiters.unlink_first_waiter(|_| true) {
                 if let Some(waker) = waiter.waker.take() {
                     wakers.push(waker);
                 }
             }
-            (queue, receiver_waker, wakers)
+            (queue, recv_waker, wakers)
         };
         // Local ownership also drains the queue if a wake or waker destructor unwinds.
         wake_all(wakers.into_iter());
-        drop(receiver_waker);
+        drop(recv_waker);
         drop(queue);
     }
 }
@@ -146,7 +146,7 @@ impl<T> BoundedReceiver<T> {
                     return Poll::Ready(Ok(value));
                 }
                 Err(TryRecvError::Disconnected) => {
-                    let old = state.receiver_waker.take();
+                    let old = state.recv_waker.take();
                     drop(state);
                     drop(old);
                     return Poll::Ready(Err(RecvError::Disconnected));
@@ -154,14 +154,14 @@ impl<T> BoundedReceiver<T> {
                 Err(TryRecvError::Empty) => {}
             }
             if state
-                .receiver_waker
+                .recv_waker
                 .as_ref()
                 .is_some_and(|w| w.will_wake(cx.waker()))
             {
                 return Poll::Pending;
             }
             if let Some(waker) = cloned_waker.take() {
-                let old = state.receiver_waker.replace(waker);
+                let old = state.recv_waker.replace(waker);
                 drop(state);
                 drop(old);
                 return Poll::Pending;

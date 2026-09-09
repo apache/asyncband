@@ -182,7 +182,11 @@ fn bounded_rejects_zero_capacity() {
 }
 
 #[test]
-#[should_panic(expected = "exceeds the maximum")]
-fn bounded_rejects_capacity_above_the_maximum() {
-    let _ = mpsc::bounded::<usize>((usize::MAX >> 1) + 1);
+fn bounded_supports_full_usize_capacity_for_zero_sized_messages() {
+    let (tx, mut rx) = mpsc::bounded::<()>(usize::MAX);
+    // Returning capacity at this boundary must not overflow the counter.
+    drop(tx.try_reserve().unwrap());
+    tx.try_reserve().unwrap().send(()).unwrap();
+    assert_eq!(rx.try_recv(), Ok(()));
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
 }
