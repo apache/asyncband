@@ -25,6 +25,8 @@ use std::task::Waker;
 use asyncband::semaphore::Semaphore;
 use tests_integration::PanicWake;
 use tests_integration::WakeCounter;
+use tests_integration::expect_ready;
+use tests_integration::poll_with;
 
 #[test]
 fn no_permits() {
@@ -45,27 +47,20 @@ fn try_acquire() {
     assert!(p3.is_some());
 }
 
-#[tokio::test]
-async fn acquire() {
-    let sem = Arc::new(Semaphore::new(1));
-    let p1 = sem.try_acquire(1).unwrap();
-    let sem_clone = sem.clone();
-    let j = tokio::spawn(async move {
-        let _p2 = sem_clone.acquire(1).await;
-    });
-    drop(p1);
-    j.await.unwrap();
-}
+#[test]
+fn released_permit_wakes_a_pending_acquire() {
+    let sem = Semaphore::new(1);
+    let held = sem.try_acquire(1).unwrap();
+    let mut acquire = pin!(sem.acquire(1));
+    let (waker, wakes) = WakeCounter::new();
+    assert!(poll_with(acquire.as_mut(), &waker).is_pending());
 
-#[tokio::test]
-async fn add_permits() {
-    let sem = Arc::new(Semaphore::new(0));
-    let sem_clone = sem.clone();
-    let j = tokio::spawn(async move {
-        let _p2 = sem_clone.acquire(1).await;
-    });
-    sem.release(1);
-    j.await.unwrap();
+    drop(held);
+    assert_eq!(wakes.count(), 1);
+    let permit = expect_ready(poll_with(acquire.as_mut(), &waker));
+    assert_eq!(sem.available_permits(), 0);
+    drop(permit);
+    assert_eq!(sem.available_permits(), 1);
 }
 
 #[test]
