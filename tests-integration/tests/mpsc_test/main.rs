@@ -21,11 +21,10 @@ use asyncband::mpsc;
 use asyncband::mpsc::RecvError;
 use asyncband::mpsc::TryRecvError;
 use asyncband::mpsc::TrySendError;
+use tests_integration::WakeCounter;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
-
-use self::support::WakeCounter;
-use self::support::expect_ready;
-use self::support::poll_with;
+use tests_integration::poll_with;
 
 // Public channel contracts. The other suites cover backpressure, callbacks, and concurrency.
 mod backpressure;

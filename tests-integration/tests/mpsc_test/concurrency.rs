@@ -29,12 +29,11 @@ use asyncband::mpsc;
 use asyncband::mpsc::RecvError;
 use asyncband::mpsc::TryRecvError;
 use asyncband::mpsc::TrySendError;
+use tests_integration::WakeCounter;
 use tests_integration::poll_once;
+use tests_integration::poll_with;
 use tests_integration::test_runtime;
 use tokio_test::assert_ok;
-
-use super::support::WakeCounter;
-use super::support::poll_with;
 
 #[test]
 fn publication_racing_with_close_drops_every_payload_once() {

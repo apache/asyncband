@@ -15,17 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
 
 use asyncband::semaphore::Semaphore;
+use tests_integration::PanicWake;
+use tests_integration::WakeCounter;
 
 #[test]
 fn no_permits() {
@@ -201,27 +200,11 @@ fn wake_then_drop() {
 
 #[test]
 fn release_attempts_every_waker_after_one_panics() {
-    struct PanicOnWake;
-
-    impl Wake for PanicOnWake {
-        fn wake(self: Arc<Self>) {
-            panic!("waker panicked");
-        }
-    }
-
-    struct CountWakes(AtomicUsize);
-
-    impl Wake for CountWakes {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
     let semaphore = Semaphore::new(0);
     let mut panicking = pin!(semaphore.acquire(1));
     let mut tracked = pin!(semaphore.acquire(1));
-    let panic_waker = Waker::from(Arc::new(PanicOnWake));
-    let wake_count = Arc::new(CountWakes(AtomicUsize::new(0)));
+    let panic_waker = Waker::from(Arc::new(PanicWake));
+    let wake_count = Arc::new(WakeCounter::default());
     let tracked_waker = Waker::from(wake_count.clone());
 
     assert!(
@@ -240,7 +223,7 @@ fn release_attempts_every_waker_after_one_panics() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| semaphore.release(2)));
 
     assert!(result.is_err());
-    assert_eq!(wake_count.0.load(Ordering::Relaxed), 1);
+    assert_eq!(wake_count.count(), 1);
     assert!(
         panicking
             .as_mut()

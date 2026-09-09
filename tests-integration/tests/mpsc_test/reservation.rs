@@ -20,17 +20,16 @@ use std::mem;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::sync::Arc;
-use std::task::Wake;
 use std::task::Waker;
 
 use asyncband::mpsc;
 use asyncband::mpsc::TryRecvError;
 use asyncband::mpsc::TrySendError;
+use tests_integration::PanicWake;
+use tests_integration::WakeCounter;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
-
-use super::support::WakeCounter;
-use super::support::expect_ready;
-use super::support::poll_with;
+use tests_integration::poll_with;
 
 #[test]
 fn held_permits_consume_capacity_without_claiming_message_order() {
@@ -153,15 +152,9 @@ fn a_permit_can_publish_send_only_payloads_from_another_thread() {
 
 #[test]
 fn a_panicking_publication_wake_cannot_return_capacity_twice() {
-    struct PanicOnWake;
-    impl Wake for PanicOnWake {
-        fn wake(self: Arc<Self>) {
-            panic!("publication wake");
-        }
-    }
     let (tx, mut rx) = mpsc::bounded(1);
     let permit = tx.try_reserve().unwrap();
-    let waker = Waker::from(Arc::new(PanicOnWake));
+    let waker = Waker::from(Arc::new(PanicWake));
     let mut receive = Box::pin(rx.recv());
     assert!(poll_with(receive.as_mut(), &waker).is_pending());
     assert!(catch_unwind(AssertUnwindSafe(|| permit.send(1))).is_err());

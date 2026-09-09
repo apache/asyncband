@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -28,14 +27,15 @@ use std::task::Waker;
 
 use asyncband::mpsc;
 use asyncband::mpsc::TryRecvError;
+use tests_integration::WakeCounter;
+use tests_integration::assert_completes_without_deadlock;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
+use tests_integration::poll_with;
+use tests_integration::waker_on_drop;
+use tests_integration::waker_on_wake;
 
-use super::support::WakeCounter;
-use super::support::assert_completes_without_deadlock;
-use super::support::expect_ready;
-use super::support::poll_with;
 use super::support::waker_on_clone;
-use super::support::waker_on_drop;
 
 struct HoldSender<S> {
     _sender: S,
@@ -184,29 +184,22 @@ fn receive_rechecks_messages_sent_by_waker_clone() {
 
 #[test]
 fn wake_callbacks_can_send_into_the_same_channel() {
-    struct SendOnWake(Box<dyn Fn() + Send + Sync>);
-    impl Wake for SendOnWake {
-        fn wake(self: Arc<Self>) {
-            (self.0)();
-        }
-    }
-
     assert_completes_without_deadlock(|| {
         let (tx, mut rx) = mpsc::bounded(2);
-        let waker = Waker::from(Arc::new(SendOnWake(Box::new({
+        let waker = waker_on_wake({
             let tx = tx.clone();
             move || tx.try_send(2).unwrap()
-        }))));
+        });
         assert!(poll_with(Box::pin(rx.recv()).as_mut(), &waker).is_pending());
         tx.try_send(1).unwrap();
         assert_eq!(rx.try_recv(), Ok(1));
         assert_eq!(rx.try_recv(), Ok(2));
 
         let (tx, mut rx) = mpsc::unbounded();
-        let waker = Waker::from(Arc::new(SendOnWake(Box::new({
+        let waker = waker_on_wake({
             let tx = tx.clone();
             move || tx.send(2).unwrap()
-        }))));
+        });
         assert!(poll_with(Box::pin(rx.recv()).as_mut(), &waker).is_pending());
         tx.send(1).unwrap();
         assert_eq!(rx.try_recv(), Ok(1));
