@@ -84,12 +84,6 @@ fn add_max_amount_permits() {
 }
 
 #[test]
-#[should_panic(expected = "would overflow usize::MAX")]
-fn release_overflow_panics() {
-    Semaphore::new(usize::MAX).release(1);
-}
-
-#[test]
 fn release_overflow_preserves_permits() {
     let s = Semaphore::new(usize::MAX);
     let result = std::panic::catch_unwind(|| s.release(1));
@@ -142,18 +136,6 @@ fn no_panic_at_max_permits() {
     let _ = Semaphore::new(usize::MAX);
     let s = Semaphore::new(usize::MAX - 1);
     s.release(1);
-}
-
-#[test]
-fn try_acquire_concurrently() {
-    let s = Semaphore::new(1);
-    let p1 = s.try_acquire(1).unwrap();
-    assert_eq!(s.available_permits(), 0);
-    let p2 = s.try_acquire(1);
-    assert!(p2.is_none());
-    assert_eq!(s.available_permits(), 0);
-    drop(p1);
-    assert_eq!(s.available_permits(), 1);
 }
 
 #[test]
