@@ -64,6 +64,47 @@ fn bounded_receive_racing_with_send_registration_cannot_lose_wakeup() {
 }
 
 #[test]
+fn bounded_competing_reservation_cannot_strand_a_waiting_send() {
+    for _ in 0..if cfg!(miri) { 32 } else { 512 } {
+        let (tx, mut rx) = mpsc::bounded(1);
+        tx.try_send(1).unwrap();
+        let start = Barrier::new(3);
+        let received = Barrier::new(2);
+        let (waker, notified) = WakeCounter::new();
+        let mut send = Box::pin(tx.send(2));
+
+        let poll = thread::scope(|scope| {
+            let receive = scope.spawn(|| {
+                start.wait();
+                assert_eq!(rx.try_recv(), Ok(1));
+                received.wait();
+            });
+            let competitor = scope.spawn(|| {
+                start.wait();
+                received.wait();
+                // Try to consume the returned capacity while the other sender registers.
+                tx.try_reserve().ok()
+            });
+            start.wait();
+            let poll = poll_with(send.as_mut(), &waker);
+            receive.join().unwrap();
+            // Keep any competing reservation until registration has completed. Its release
+            // must notify a pending sender even if it won capacity during that registration.
+            drop(competitor.join().unwrap());
+            poll
+        });
+
+        if poll.is_pending() {
+            assert!(notified.count() > 0, "available capacity stranded a sender");
+            assert_eq!(poll_once(send.as_mut()), Poll::Ready(Ok(())));
+        } else {
+            assert_eq!(poll, Poll::Ready(Ok(())));
+        }
+        assert_eq!(rx.try_recv(), Ok(2));
+    }
+}
+
+#[test]
 fn bounded_try_recv_does_not_report_empty_after_completed_sends() {
     const PRODUCERS: usize = 4;
     const MESSAGES_PER_PRODUCER: usize = if cfg!(miri) { 64 } else { 16_384 };

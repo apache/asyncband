@@ -44,21 +44,98 @@ const READY: u8 = 1;
 const CLOSED: u8 = 2;
 const CLOSED_BIT: usize = 1 << (usize::BITS - 1);
 
-pub struct Buffer<T> {
-    storage: Storage<T>,
-}
-
-/// Slotted and zero-sized queues share no storage beyond a message count. Splitting them into
-/// variants frees the zero-sized queue from a dead ticket, close flag, and slot allocation.
-/// Boxing the slotted variant keeps that saving: an unboxed enum reserves room for the larger
-/// variant either way. The variant tag sits beside the words every operation already loads,
-/// so the dispatch branch is as predictable as the size check it replaces.
-enum Storage<T> {
+/// Zero-sized messages need only a count. Boxing the slotted variant keeps its cursor and
+/// per-slot storage out of the zero-sized queue's allocation.
+pub enum Buffer<T> {
     Slots(Box<Slots<T>>),
     ZeroSized(ZeroSized),
 }
 
-struct Slots<T> {
+impl<T> Buffer<T> {
+    pub fn new(capacity: usize) -> Self {
+        if size_of::<T>() == 0 {
+            Self::ZeroSized(ZeroSized::new())
+        } else {
+            Self::Slots(Box::new(Slots::new(capacity)))
+        }
+    }
+
+    /// Writes and publishes one message. Closing may instead return the unsent value.
+    ///
+    /// # Safety
+    ///
+    /// Own one capacity permit before calling; release it only after a failed push or after
+    /// the consumer reads the published value. No user code runs between claim and publication.
+    pub unsafe fn push(&self, value: T) -> Result<(), T> {
+        match self {
+            Self::Slots(slots) => {
+                let Ok(position) = slots.claim() else {
+                    return Err(value);
+                };
+                // SAFETY: The caller owns capacity and the ticket assigned this position.
+                unsafe { slots.publish(position, value) }
+            }
+            Self::ZeroSized(zero_sized) => {
+                debug_assert_eq!(size_of::<T>(), 0);
+                if zero_sized.push() {
+                    mem::forget(value);
+                    Ok(())
+                } else {
+                    Err(value)
+                }
+            }
+        }
+    }
+
+    /// Pending means a producer claimed the head but has not published it yet.
+    ///
+    /// # Safety
+    ///
+    /// Only the exclusive consumer may call this, using its persistent cursor. Release one
+    /// capacity permit after each successful pop, after the value has been read completely.
+    pub unsafe fn pop(&self, head: &mut usize) -> Poll<Option<T>> {
+        match self {
+            // SAFETY: The caller's guarantee forwards unchanged.
+            Self::Slots(slots) => unsafe { slots.pop(head) },
+            Self::ZeroSized(zero_sized) => {
+                debug_assert_eq!(size_of::<T>(), 0);
+                if zero_sized.pop() {
+                    // SAFETY: A queued value proves that this ZST is inhabited and owns one value.
+                    Poll::Ready(Some(unsafe { read_zero_sized() }))
+                } else {
+                    Poll::Ready(None)
+                }
+            }
+        }
+    }
+
+    /// Stops new claims and returns ownership of published values to a drain guard.
+    ///
+    /// # Safety
+    ///
+    /// Only the exclusive consumer may close the buffer, once, using its current cursor.
+    pub unsafe fn close(&self, head: usize) -> Drain<'_, T> {
+        let remaining = match self {
+            Self::Slots(slots) => slots.close(),
+            Self::ZeroSized(zero_sized) => zero_sized.close(),
+        };
+        Drain {
+            buffer: self,
+            position: head,
+            remaining,
+        }
+    }
+
+    #[cfg(test)]
+    fn slots(&self) -> &Slots<T> {
+        match self {
+            Self::Slots(slots) => slots,
+            Self::ZeroSized(_) => unreachable!("zero-sized messages have no slots"),
+        }
+    }
+}
+
+pub struct Slots<T> {
     slots: Box<[Slot<T>]>,
     tail: CachePadded<AtomicUsize>,
     closed: AtomicBool,
@@ -78,62 +155,6 @@ unsafe impl<T: Send> Sync for Slot<T> {}
 // before running a callback or destructor that might panic.
 impl<T> std::panic::UnwindSafe for Slot<T> {}
 impl<T> std::panic::RefUnwindSafe for Slot<T> {}
-
-/// Queue storage for zero-sized messages, which need no slots, positions, or per-slot flags.
-/// Counting them separately also allows every nonzero usize capacity without allocating
-/// publication metadata for nonexistent bytes.
-///
-/// The queue is entirely its length. The count packs a closed flag into its top bit so that
-/// publication and close stay atomic: a publication that raced ahead of the flag is included
-/// in the drained count, and every later one observes the flag and fails.
-struct ZeroSized {
-    queued: AtomicUsize,
-}
-
-impl ZeroSized {
-    fn new() -> Self {
-        Self {
-            queued: AtomicUsize::new(0),
-        }
-    }
-
-    /// Accounts for one published message, returning `false` once the queue is closed.
-    fn push(&self) -> bool {
-        let mut queued = self.queued.load(Ordering::Acquire);
-        loop {
-            if queued & CLOSED_BIT != 0 {
-                return false;
-            }
-            // The capacity limit keeps the count far below the closed flag bit.
-            match self.queued.compare_exchange_weak(
-                queued,
-                queued + 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return true,
-                Err(actual) => queued = actual,
-            }
-        }
-    }
-
-    /// Accounts for one consumed message, returning `false` when the queue was observed empty.
-    fn pop(&self) -> bool {
-        let queued = self.queued.load(Ordering::Acquire) & !CLOSED_BIT;
-        if queued == 0 {
-            return false;
-        }
-        // Only the consumer decrements, and producers can only add: the count observed above
-        // is a lower bound, so this cannot wrap.
-        self.queued.fetch_sub(1, Ordering::AcqRel);
-        true
-    }
-
-    /// Stops publication and returns the queue length transferred to the drain.
-    fn close(&self) -> usize {
-        self.queued.fetch_or(CLOSED_BIT, Ordering::AcqRel) & !CLOSED_BIT
-    }
-}
 
 impl<T> Slots<T> {
     fn new(capacity: usize) -> Self {
@@ -220,88 +241,58 @@ impl<T> Slots<T> {
     }
 }
 
-impl<T> Buffer<T> {
-    pub fn new(capacity: usize) -> Self {
-        let storage = if size_of::<T>() == 0 {
-            Storage::ZeroSized(ZeroSized::new())
-        } else {
-            Storage::Slots(Box::new(Slots::new(capacity)))
-        };
-        Self { storage }
-    }
+/// Queue storage for zero-sized messages, which need no slots, positions, or per-slot flags.
+/// Counting them separately supports the full channel capacity limit without per-slot metadata.
+///
+/// The queue is entirely its length. The count packs a closed flag into its top bit so that
+/// publication and close stay atomic: a publication that raced ahead of the flag is included
+/// in the drained count, and every later one observes the flag and fails.
+pub struct ZeroSized {
+    queued: AtomicUsize,
+}
 
-    /// Writes and publishes one message. Closing may instead return the unsent value.
-    ///
-    /// # Safety
-    ///
-    /// Own one capacity permit before calling; release it only after a failed push or after
-    /// the consumer reads the published value. No user code runs between claim and publication.
-    pub unsafe fn push(&self, value: T) -> Result<(), T> {
-        match &self.storage {
-            Storage::Slots(slots) => {
-                let Ok(position) = slots.claim() else {
-                    return Err(value);
-                };
-                // SAFETY: The caller owns capacity and the ticket assigned this position.
-                unsafe { slots.publish(position, value) }
-            }
-            Storage::ZeroSized(zero_sized) => {
-                debug_assert_eq!(size_of::<T>(), 0);
-                if zero_sized.push() {
-                    mem::forget(value);
-                    Ok(())
-                } else {
-                    Err(value)
-                }
-            }
+impl ZeroSized {
+    fn new() -> Self {
+        Self {
+            queued: AtomicUsize::new(0),
         }
     }
 
-    /// Pending means a producer claimed the head but has not published it yet.
-    ///
-    /// # Safety
-    ///
-    /// Only the exclusive consumer may call this, using its persistent cursor. Release one
-    /// capacity permit after each successful pop, after the value has been read completely.
-    pub unsafe fn pop(&self, head: &mut usize) -> Poll<Option<T>> {
-        match &self.storage {
-            // SAFETY: The caller's guarantee forwards unchanged.
-            Storage::Slots(slots) => unsafe { slots.pop(head) },
-            Storage::ZeroSized(zero_sized) => {
-                debug_assert_eq!(size_of::<T>(), 0);
-                if zero_sized.pop() {
-                    // SAFETY: A queued value proves that this ZST is inhabited and owns one value.
-                    Poll::Ready(Some(unsafe { read_zero_sized() }))
-                } else {
-                    Poll::Ready(None)
-                }
+    /// Accounts for one published message, returning `false` once the queue is closed.
+    fn push(&self) -> bool {
+        let mut queued = self.queued.load(Ordering::Acquire);
+        loop {
+            if queued & CLOSED_BIT != 0 {
+                return false;
+            }
+            // The capacity limit keeps the count far below the closed flag bit.
+            match self.queued.compare_exchange_weak(
+                queued,
+                queued + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => queued = actual,
             }
         }
     }
 
-    /// Stops new claims and returns ownership of published values to a drain guard.
-    ///
-    /// # Safety
-    ///
-    /// Only the exclusive consumer may close the buffer, once, using its current cursor.
-    pub unsafe fn close(&self, head: usize) -> Drain<'_, T> {
-        let remaining = match &self.storage {
-            Storage::Slots(slots) => slots.close(),
-            Storage::ZeroSized(zero_sized) => zero_sized.close(),
-        };
-        Drain {
-            buffer: self,
-            position: head,
-            remaining,
+    /// Accounts for one consumed message, returning `false` when the queue was observed empty.
+    fn pop(&self) -> bool {
+        let queued = self.queued.load(Ordering::Acquire) & !CLOSED_BIT;
+        if queued == 0 {
+            return false;
         }
+        // Only the consumer decrements, and producers can only add: the count observed above
+        // is a lower bound, so this cannot wrap.
+        self.queued.fetch_sub(1, Ordering::AcqRel);
+        true
     }
 
-    #[cfg(test)]
-    fn slots(&self) -> &Slots<T> {
-        match &self.storage {
-            Storage::Slots(slots) => slots,
-            Storage::ZeroSized(_) => unreachable!("zero-sized messages have no slots"),
-        }
+    /// Stops publication and returns the queue length transferred to the drain.
+    fn close(&self) -> usize {
+        self.queued.fetch_or(CLOSED_BIT, Ordering::AcqRel) & !CLOSED_BIT
     }
 }
 
@@ -328,8 +319,8 @@ impl<T> Iterator for Drain<'_, T> {
             let position = self.position;
             self.remaining -= 1;
             self.position = self.position.wrapping_add(1);
-            match &self.buffer.storage {
-                Storage::Slots(slots) => {
+            match self.buffer {
+                Buffer::Slots(slots) => {
                     let slot = slots.slot(position);
                     if slot.state.swap(CLOSED, Ordering::AcqRel) == READY {
                         // SAFETY: The drain won ownership of a published value. The cursor and
@@ -340,7 +331,7 @@ impl<T> Iterator for Drain<'_, T> {
                     // and recover its value. The shared Arc keeps this allocation alive until then.
                 }
                 // SAFETY: Closing transferred this many initialized ZST values to the drain.
-                Storage::ZeroSized(_) => return Some(unsafe { read_zero_sized() }),
+                Buffer::ZeroSized(_) => return Some(unsafe { read_zero_sized() }),
             }
         }
         None
@@ -370,6 +361,8 @@ impl<T> Drop for Drain<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::pin;
     use std::sync::Arc;
     use std::sync::Barrier;
     use std::sync::atomic::AtomicUsize;
@@ -393,10 +386,10 @@ mod tests {
         value: T,
     ) -> Result<(), T> {
         // SAFETY: The test claimed this position while holding the same capacity permit.
-        unsafe { tx.shared.buffer.slots().publish(position, value) }?;
+        unsafe { tx.shared().buffer.slots().publish(position, value) }?;
         // Publication owns the capacity now; forgetting skips the permit's release on drop.
         std::mem::forget(permit);
-        tx.shared.rx_waker.wake();
+        tx.shared().rx_waker.wake();
         Ok(())
     }
 
@@ -406,7 +399,7 @@ mod tests {
             for initial in [0, usize::MAX - 1] {
                 let (tx, mut rx) = bounded(capacity);
                 // Start an empty ring near ticket overflow instead of running usize::MAX sends.
-                tx.shared
+                tx.shared()
                     .buffer
                     .slots()
                     .tail
@@ -415,12 +408,12 @@ mod tests {
                 let mut cx = Context::from_waker(Waker::noop());
                 for lap in 0..8 {
                     let permit = tx.try_reserve().unwrap();
-                    let position = tx.shared.buffer.slots().claim().unwrap();
+                    let position = tx.shared().buffer.slots().claim().unwrap();
                     for offset in 1..capacity {
                         tx.try_send(lap * capacity + offset).unwrap();
                     }
                     // A full ring must differ from an empty one even with no head value ready.
-                    assert!(rx.poll_recv(&mut cx).is_pending());
+                    assert!(pin!(rx.recv()).poll(&mut cx).is_pending());
                     publish_claimed(&tx, permit, position, lap * capacity).unwrap();
                     for offset in 0..capacity {
                         assert_eq!(rx.try_recv(), Ok(lap * capacity + offset));
@@ -441,11 +434,16 @@ mod tests {
             drops: drops.clone(),
             _sender: tx.clone(),
         };
-        let allocation = Arc::downgrade(&tx.shared);
+        let allocation = Arc::downgrade(tx.shared());
         // Pause after claim's open check, then resume its atomic ticket allocation after close.
-        assert!(!&tx.shared.buffer.slots().closed.load(Ordering::Acquire));
+        assert!(!tx.shared().buffer.slots().closed.load(Ordering::Acquire));
         drop(rx);
-        let position = tx.shared.buffer.slots().tail.fetch_add(1, Ordering::AcqRel);
+        let position = tx
+            .shared()
+            .buffer
+            .slots()
+            .tail
+            .fetch_add(1, Ordering::AcqRel);
         let unsent = publish_claimed(&tx, permit, position, value).unwrap_err();
         assert_eq!(unsent.bytes, [7; 1024]);
         drop(unsent);
@@ -472,7 +470,7 @@ mod tests {
     #[test]
     fn closing_reclaims_ready_values_without_waiting_for_a_paused_publisher() {
         let (tx, rx) = bounded(2);
-        let allocation = Arc::downgrade(&tx.shared);
+        let allocation = Arc::downgrade(tx.shared());
         let drops = Arc::new(AtomicUsize::new(0));
         let paused = Barrier::new(2);
         let (resume_tx, resume_rx) = std::sync::mpsc::channel();
@@ -484,7 +482,7 @@ mod tests {
             let paused = &paused;
             let publisher = scope.spawn(move || {
                 let permit = sender.try_reserve().unwrap();
-                let position = sender.shared.buffer.slots().claim().unwrap();
+                let position = sender.shared().buffer.slots().claim().unwrap();
                 let value = Payload {
                     bytes: [1; 1024],
                     drops: drops.clone(),
@@ -529,7 +527,7 @@ mod tests {
     fn publication_racing_with_close_drops_every_payload_once() {
         for _ in 0..if cfg!(miri) { 8 } else { 128 } {
             let (tx, rx) = bounded(3);
-            let allocation = Arc::downgrade(&tx.shared);
+            let allocation = Arc::downgrade(tx.shared());
             let drops = Arc::new(AtomicUsize::new(0));
             let start = Barrier::new(4);
             thread::scope(|scope| {
@@ -578,7 +576,7 @@ mod tests {
                 .unwrap();
         });
         assert_eq!(
-            rx.poll_recv(&mut Context::from_waker(Waker::noop())),
+            pin!(rx.recv()).poll(&mut Context::from_waker(Waker::noop())),
             Poll::Ready(Ok([42; 1024]))
         );
         assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));

@@ -23,10 +23,6 @@ use std::sync::atomic::AtomicUsize;
 
 use self::buffer::Buffer;
 use self::semaphore::Semaphore;
-use super::RecvError;
-use super::SendError;
-use super::TryRecvError;
-use super::TrySendError;
 use crate::internal::atomic_waker::AtomicWaker;
 use crate::internal::cache_padded::CachePadded;
 
@@ -34,6 +30,10 @@ mod buffer;
 mod receiver;
 mod semaphore;
 mod sender;
+
+pub use self::receiver::BoundedReceiver;
+pub use self::sender::BoundedSender;
+pub use self::sender::Permit;
 
 /// Creates a bounded mpsc channel with room for `buffer` queued messages.
 ///
@@ -71,38 +71,10 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
         rx_waker: AtomicWaker::new(),
         buffer: Buffer::new(buffer),
     });
-    let sender = BoundedSender {
-        shared: shared.clone(),
-    };
-    let receiver = BoundedReceiver { shared, head: 0 };
-    (sender, receiver)
-}
-
-/// The sending endpoint of a bounded mpsc channel.
-///
-/// Instances are created by the [`bounded`] function.
-pub struct BoundedSender<T> {
-    shared: Arc<Shared<T>>,
-}
-
-/// The receiving endpoint of a bounded mpsc channel.
-///
-/// Instances are created by the [`bounded`] function. Dropping the receiver discards queued values.
-/// The backing allocation remains alive until all endpoints are dropped, so a concurrent sender
-/// can safely finish returning an unsent value.
-pub struct BoundedReceiver<T> {
-    shared: Arc<Shared<T>>,
-    head: usize,
-}
-
-/// Capacity reserved for one message on a bounded channel.
-///
-/// Created by [`BoundedSender::reserve`] or [`BoundedSender::try_reserve`]. Holding a permit
-/// reduces available capacity but does not prevent other messages from being received. Dropping
-/// it without sending releases capacity and notifies a waiting sender.
-#[must_use = "dropping the permit releases its reserved capacity"]
-pub struct Permit<'a, T> {
-    sender: Option<&'a BoundedSender<T>>,
+    (
+        BoundedSender::new(shared.clone()),
+        BoundedReceiver::new(shared),
+    )
 }
 
 struct Shared<T> {

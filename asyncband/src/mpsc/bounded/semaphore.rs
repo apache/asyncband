@@ -31,9 +31,9 @@
 //!   and grants bypass the counter.
 //!
 //! With neither sentinel installed, acquire and release are single lock-free operations on `state`.
-//! Wait-queue mutations always hold the queue lock; a registration installs `WAITING` before its
-//! final capacity recheck, which switches any racing release to the locked path and strands no
-//! permit without a wake.
+//! Wait-queue mutations always hold the queue lock. A registration must install or observe
+//! `WAITING` before joining the queue, so every subsequent release takes the locked path. If a
+//! release wins that transition, acquisition retries instead of registering against a plain count.
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -41,12 +41,12 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-use super::SendError;
-use super::TrySendError;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::waker_batch::WakerBatch;
+use crate::mpsc::SendError;
+use crate::mpsc::TrySendError;
 
 pub struct Semaphore {
     state: AtomicUsize,
@@ -56,7 +56,7 @@ pub struct Semaphore {
 const CLOSED: usize = usize::MAX;
 const WAITING: usize = usize::MAX - 1;
 
-pub struct Waiter {
+struct Waiter {
     granted: bool,
     waker: Option<Waker>,
 }
@@ -69,7 +69,7 @@ impl Semaphore {
         }
     }
 
-    pub fn try_acquire(&self) -> Result<(), TrySendError<()>> {
+    pub fn try_acquire(&self) -> Result<Capacity<'_>, TrySendError<()>> {
         let mut state = self.state.load(Ordering::Acquire);
         loop {
             if state == CLOSED {
@@ -84,7 +84,7 @@ impl Semaphore {
                 Ordering::Acquire,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Ok(()),
+                Ok(_) => return Ok(Capacity { semaphore: self }),
                 Err(actual) => state = actual,
             }
         }
@@ -103,12 +103,14 @@ impl Semaphore {
         self.state.load(Ordering::Acquire) == CLOSED
     }
 
-    // Installs WAITING over an exhausted counter. A permit that arrived first wins the compare
-    // exchange, and the caller's recheck under the queue lock picks it up instead.
-    fn set_waiting(&self) {
-        let _ = self
-            .state
-            .compare_exchange(0, WAITING, Ordering::AcqRel, Ordering::Acquire);
+    // Called with the queue locked. A failed installation requires retrying acquisition: a
+    // racing sender may consume the returned capacity before a separate recheck can see it.
+    fn set_waiting(&self) -> bool {
+        matches!(
+            self.state
+                .compare_exchange(0, WAITING, Ordering::AcqRel, Ordering::Acquire),
+            Ok(_) | Err(WAITING)
+        )
     }
 
     // Removes WAITING, keeping whatever count a racing grant restoration left behind.
@@ -142,7 +144,7 @@ impl Semaphore {
         }
     }
 
-    pub fn release_locked(&self, waiters: &mut WaitList<Waiter>) -> Option<Waker> {
+    fn release_locked(&self, waiters: &mut WaitList<Waiter>) -> Option<Waker> {
         if self.is_closed() {
             return None;
         }
@@ -183,6 +185,24 @@ impl Semaphore {
     }
 }
 
+/// Owns one capacity unit until publication transfers it to a queued message.
+#[must_use = "dropping the guard releases its capacity"]
+pub struct Capacity<'a> {
+    semaphore: &'a Semaphore,
+}
+
+impl Capacity<'_> {
+    pub fn forget(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for Capacity<'_> {
+    fn drop(&mut self) {
+        self.semaphore.release();
+    }
+}
+
 /// An in-flight [`Semaphore::acquire`] operation.
 ///
 /// Dropping the operation removes its wait-queue registration; a capacity grant that already
@@ -192,14 +212,14 @@ pub struct Acquire<'a> {
     waiter: Option<WaiterId>,
 }
 
-impl Acquire<'_> {
-    pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SendError<()>>> {
+impl<'a> Acquire<'a> {
+    pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Capacity<'a>, SendError<()>>> {
         let semaphore = self.semaphore;
         let mut cloned_waker = None;
         let result = loop {
             if self.waiter.is_none() {
                 match semaphore.try_acquire() {
-                    Ok(()) => break Ok(()),
+                    Ok(capacity) => break Ok(capacity),
                     Err(TrySendError::Disconnected(())) => break Err(SendError::new(())),
                     Err(TrySendError::Full(())) => {}
                 }
@@ -214,9 +234,10 @@ impl Acquire<'_> {
                 if waiter.granted {
                     let waiter = waiters.remove_unlinked_waiter(index);
                     self.waiter = None;
+                    let capacity = Capacity { semaphore };
                     drop(waiters);
                     drop(waiter);
-                    break Ok(());
+                    break Ok(capacity);
                 }
                 if waiter
                     .waker
@@ -232,15 +253,9 @@ impl Acquire<'_> {
                     return Poll::Pending;
                 }
             } else {
-                // Install WAITING before the final capacity recheck: if a permit arrived
-                // first, the installation loses the compare exchange and the recheck picks
-                // the permit up; otherwise a racing release switches to the locked path, so
-                // no permit can be stranded without a wake. Waiting senders already in the
-                // queue take priority over this recheck.
-                semaphore.set_waiting();
-                if waiters.is_empty() && semaphore.try_acquire().is_ok() {
-                    semaphore.clear_waiting();
-                    break Ok(());
+                if !semaphore.set_waiting() {
+                    drop(waiters);
+                    continue;
                 }
                 if let Some(waker) = cloned_waker.take() {
                     self.waiter = Some(waiters.push_back(Waiter {
@@ -254,7 +269,8 @@ impl Acquire<'_> {
             // Clone outside the lock, then recheck capacity and closure before registering.
             cloned_waker = Some(cx.waker().clone());
         };
-        // The permit owns capacity before an unused cloned waker can panic.
+        // A successful result already owns a guard, so a panicking waker destructor returns
+        // capacity even before the caller has constructed its public permit.
         drop(cloned_waker);
         Poll::Ready(result)
     }

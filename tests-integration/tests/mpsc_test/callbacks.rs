@@ -104,6 +104,65 @@ fn bounded_send_rechecks_capacity_freed_by_waker_clone() {
     });
 }
 
+#[cfg(panic = "unwind")]
+#[test]
+fn bounded_send_returns_capacity_when_an_unused_waker_panics_on_drop() {
+    use std::task::RawWaker;
+    use std::task::RawWakerVTable;
+
+    struct Callbacks {
+        receiver: Mutex<mpsc::BoundedReceiver<usize>>,
+        drop_panics: AtomicBool,
+    }
+
+    unsafe fn clone(data: *const ()) -> RawWaker {
+        let pointer = data.cast::<Callbacks>();
+        // SAFETY: The input waker owns a live Arc. The returned clone gains its own reference.
+        unsafe {
+            assert_eq!((*pointer).receiver.lock().unwrap().try_recv(), Ok(1));
+            Arc::increment_strong_count(pointer);
+        }
+        RawWaker::new(data, &VTABLE)
+    }
+
+    unsafe fn release(data: *const ()) {
+        // SAFETY: Consumes this waker's Arc reference, including if the callback unwinds.
+        let callbacks = unsafe { Arc::from_raw(data.cast::<Callbacks>()) };
+        assert!(
+            !callbacks.drop_panics.swap(false, Ordering::Relaxed),
+            "unused cloned waker panicked on drop"
+        );
+    }
+
+    // A raw vtable is needed to run callbacks for cloning and dropping each waker reference.
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, release, |_| {}, release);
+
+    let (tx, rx) = mpsc::bounded(1);
+    tx.try_send(1).unwrap();
+    let callbacks = Arc::new(Callbacks {
+        receiver: Mutex::new(rx),
+        drop_panics: AtomicBool::new(true),
+    });
+    let data = Arc::into_raw(callbacks.clone()).cast();
+    // SAFETY: Every waker owns an Arc reference. All callbacks preserve ownership and use only
+    // synchronized state; wake_by_ref does not touch the reference count.
+    let waker = unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) };
+
+    let mut send = Box::pin(tx.send(2));
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            poll_with(send.as_mut(), &waker)
+        }))
+        .is_err()
+    );
+    drop(send);
+    let mut receiver = callbacks.receiver.lock().unwrap();
+    assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
+    tx.try_send(3)
+        .expect("unwinding must return acquired capacity");
+    assert_eq!(receiver.try_recv(), Ok(3));
+}
+
 #[test]
 fn receive_rechecks_messages_sent_by_waker_clone() {
     assert_completes_without_deadlock(|| {

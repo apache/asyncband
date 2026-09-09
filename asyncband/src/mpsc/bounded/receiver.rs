@@ -17,14 +17,26 @@
 
 use std::fmt;
 use std::future::poll_fn;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use super::BoundedReceiver;
-use super::RecvError;
-use super::TryRecvError;
+use super::Shared;
 use crate::internal::wake_all;
+use crate::mpsc::RecvError;
+use crate::mpsc::TryRecvError;
+
+/// The receiving endpoint of a bounded mpsc channel.
+///
+/// Instances are created by the [`bounded`](crate::mpsc::bounded) function. Dropping the receiver
+/// discards queued values.
+/// The backing allocation remains alive until all endpoints are dropped, so a concurrent sender
+/// can safely finish returning an unsent value.
+pub struct BoundedReceiver<T> {
+    shared: Arc<Shared<T>>,
+    head: usize,
+}
 
 impl<T> fmt::Debug for BoundedReceiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -46,6 +58,10 @@ impl<T> Drop for BoundedReceiver<T> {
 }
 
 impl<T> BoundedReceiver<T> {
+    pub(super) fn new(shared: Arc<Shared<T>>) -> Self {
+        Self { shared, head: 0 }
+    }
+
     /// Attempts to receive the next queued value without waiting for a new message.
     ///
     /// Receiving a value frees one buffer slot. An empty channel returns [`TryRecvError::Empty`]
@@ -90,31 +106,6 @@ impl<T> BoundedReceiver<T> {
         }
     }
 
-    /// One attempt to take the head value: a message, an empty-or-disconnected classification,
-    /// or `Pending` while a claimed head waits for its publication.
-    fn pull(&mut self) -> Poll<Result<T, TryRecvError>> {
-        let mut disconnected = false;
-        loop {
-            // SAFETY: Only this receiver owns head. Capacity is released after the buffer
-            // finishes reading and advances the cursor, so no producer can overwrite the value.
-            match unsafe { self.shared.buffer.pop(&mut self.head) } {
-                Poll::Ready(Some(value)) => {
-                    self.shared.tx_permits.release();
-                    return Poll::Ready(Ok(value));
-                }
-                Poll::Ready(None) if disconnected => {
-                    return Poll::Ready(Err(TryRecvError::Disconnected));
-                }
-                Poll::Ready(None) if self.shared.senders.load(Ordering::Acquire) == 0 => {
-                    // Acquire the last sender's completed publications before checking again.
-                    disconnected = true;
-                }
-                Poll::Ready(None) => return Poll::Ready(Err(TryRecvError::Empty)),
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-    }
-
     /// Waits for and receives the next value, freeing one buffer slot.
     ///
     /// If no value is queued, this method waits until a sender adds one or the last sender is
@@ -148,7 +139,32 @@ impl<T> BoundedReceiver<T> {
         poll_fn(|cx| self.poll_recv(cx)).await
     }
 
-    pub(crate) fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
+    /// One attempt to take the head value: a message, an empty-or-disconnected classification,
+    /// or `Pending` while a claimed head waits for its publication.
+    fn pull(&mut self) -> Poll<Result<T, TryRecvError>> {
+        let mut disconnected = false;
+        loop {
+            // SAFETY: Only this receiver owns head. Capacity is released after the buffer
+            // finishes reading and advances the cursor, so no producer can overwrite the value.
+            match unsafe { self.shared.buffer.pop(&mut self.head) } {
+                Poll::Ready(Some(value)) => {
+                    self.shared.tx_permits.release();
+                    return Poll::Ready(Ok(value));
+                }
+                Poll::Ready(None) if disconnected => {
+                    return Poll::Ready(Err(TryRecvError::Disconnected));
+                }
+                Poll::Ready(None) if self.shared.senders.load(Ordering::Acquire) == 0 => {
+                    // Acquire the last sender's completed publications before checking again.
+                    disconnected = true;
+                }
+                Poll::Ready(None) => return Poll::Ready(Err(TryRecvError::Empty)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
         for registered in [false, true] {
             match self.pull() {
                 Poll::Ready(Ok(value)) => return Poll::Ready(Ok(value)),
@@ -164,9 +180,8 @@ impl<T> BoundedReceiver<T> {
         }
         Poll::Pending
     }
-
     #[cfg(test)]
-    pub(crate) fn set_head(&mut self, head: usize) {
+    pub(super) fn set_head(&mut self, head: usize) {
         self.head = head;
     }
 }

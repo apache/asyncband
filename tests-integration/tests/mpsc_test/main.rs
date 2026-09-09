@@ -176,7 +176,7 @@ fn receives_wake_for_messages_and_the_last_sender_drop() {
 }
 
 #[test]
-#[should_panic(expected = "mpsc bounded channel requires buffer > 0")]
+#[should_panic(expected = "must be nonzero")]
 fn bounded_rejects_zero_capacity() {
     let _ = mpsc::bounded::<usize>(0);
 }

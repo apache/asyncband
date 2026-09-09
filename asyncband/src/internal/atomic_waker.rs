@@ -57,7 +57,7 @@ const WAKING: usize = 0b10;
 ///           REGISTERING ------------AcqRel CAS----------------> WAITING
 ///
 /// wake:     WAITING ----------------AcqRel fetch_or-----------> WAKING
-///           WAKING -----------------Release store-------------> WAITING
+///           WAKING -----------------Release swap--------------> WAITING
 ///
 /// race:     REGISTERING ------------AcqRel fetch_or-----------> REGISTERING | WAKING
 ///           REGISTERING | WAKING ---AcqRel swap---------------> WAITING
@@ -221,19 +221,7 @@ impl AtomicWaker {
             WAITING => {
                 // SAFETY: changing WAITING to WAKING grants this thread exclusive access to the
                 // waker slot until the state is returned to WAITING.
-                let waker = unsafe { (*self.waker.get()).take() };
-
-                // ORDERING: Release publishes the emptied slot before another operation acquires
-                // it. The fetch_or above already performed the required Acquire operation. A
-                // plain store suffices: only this claim moves the state out of WAKING, because
-                // registration enters from WAITING and concurrent wakes keep the bit set. Debug
-                // builds pay for a swap to assert that invariant.
-                if cfg!(debug_assertions) {
-                    debug_assert_eq!(self.state.swap(WAITING, Ordering::Release), WAKING);
-                } else {
-                    self.state.store(WAITING, Ordering::Release);
-                }
-                waker
+                unsafe { self.take_locked() }
             }
             state => {
                 // The thread registering a waker observes WAKING and completes this notification,
@@ -244,6 +232,25 @@ impl AtomicWaker {
                 None
             }
         }
+    }
+
+    /// Removes the waker after this thread has acquired the WAKING state.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have changed `state` from WAITING to WAKING and must be the only thread
+    /// accessing `waker`.
+    #[inline]
+    unsafe fn take_locked(&self) -> Option<Waker> {
+        // SAFETY: The caller owns the waker slot until returning the state to WAITING.
+        let waker = unsafe { (*self.waker.get()).take() };
+
+        // ORDERING: Release publishes the emptied slot. The RMW also preserves the release
+        // sequence of coalesced wakes, including ones after this thread acquired WAKING. A
+        // plain store would sever those publications from the next registration's Acquire.
+        let previous = self.state.swap(WAITING, Ordering::Release);
+        debug_assert_eq!(previous, WAKING);
+        waker
     }
 }
 
@@ -350,26 +357,40 @@ mod tests {
 
     #[test]
     fn failed_wake_synchronizes_with_next_registration() {
-        for _ in 0..1_000 {
-            let did_publish = AtomicBool::new(false);
-            let atomic_waker = AtomicWaker::new();
-            atomic_waker.register(Waker::noop());
+        struct Publication(UnsafeCell<usize>);
+        // SAFETY: The notifier's write precedes its wake. The read follows a registration that
+        // acquires that wake's publication; the relaxed scheduling flag adds no synchronization.
+        unsafe impl Sync for Publication {}
 
-            std::thread::scope(|scope| {
-                let wake = scope.spawn(|| {
-                    did_publish.store(true, Ordering::Relaxed);
-                    atomic_waker.take()
-                });
+        let publication = Arc::new(Publication(UnsafeCell::new(0)));
+        let did_wake = AtomicBool::new(false);
+        let atomic_waker = AtomicWaker::new();
+        atomic_waker.register(Waker::noop());
+        assert_eq!(
+            atomic_waker.state.fetch_or(WAKING, Ordering::AcqRel),
+            WAITING
+        );
 
-                let local_waker = atomic_waker.take();
-                atomic_waker.register(Waker::noop());
-
-                let publication_is_visible = did_publish.load(Ordering::Relaxed);
-                let concurrent_thread_took_waker = wake.join().unwrap().is_some();
-                assert!(publication_is_visible || concurrent_thread_took_waker);
-                drop(local_waker);
+        std::thread::scope(|scope| {
+            let wake = scope.spawn(|| {
+                // SAFETY: The reader waits for this write's publication through AtomicWaker.
+                unsafe { *publication.0.get() = 42 };
+                assert!(atomic_waker.take().is_none());
+                did_wake.store(true, Ordering::Relaxed);
             });
-        }
+            while !did_wake.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+
+            // SAFETY: This thread acquired WAKING above. The coalesced notifier never touches
+            // the slot. Complete the first wake only after the second has published its update.
+            drop(unsafe { atomic_waker.take_locked() });
+            atomic_waker.register(Waker::noop());
+            // SAFETY: Registration acquires the coalesced wake through the release sequence.
+            // Miri detects a data race here if restoring WAITING severs that sequence.
+            assert_eq!(unsafe { *publication.0.get() }, 42);
+            wake.join().unwrap();
+        });
     }
 
     #[cfg(panic = "unwind")]

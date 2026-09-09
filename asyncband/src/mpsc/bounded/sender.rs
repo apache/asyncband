@@ -17,12 +17,20 @@
 
 use std::fmt;
 use std::future::poll_fn;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use super::BoundedSender;
-use super::Permit;
-use super::SendError;
-use super::TrySendError;
+use super::Shared;
+use super::semaphore::Capacity;
+use crate::mpsc::SendError;
+use crate::mpsc::TrySendError;
+
+/// The sending endpoint of a bounded mpsc channel.
+///
+/// Instances are created by the [`bounded`](crate::mpsc::bounded) function.
+pub struct BoundedSender<T> {
+    shared: Arc<Shared<T>>,
+}
 
 impl<T> Clone for BoundedSender<T> {
     fn clone(&self) -> Self {
@@ -48,6 +56,10 @@ impl<T> Drop for BoundedSender<T> {
 }
 
 impl<T> BoundedSender<T> {
+    pub(super) fn new(shared: Arc<Shared<T>>) -> Self {
+        Self { shared }
+    }
+
     /// Sends a message, waiting until the channel has capacity when necessary.
     ///
     /// If the receiver has been dropped, the returned error contains `value`.
@@ -97,8 +109,11 @@ impl<T> BoundedSender<T> {
     /// ```
     pub async fn reserve(&self) -> Result<Permit<'_, T>, SendError<()>> {
         let mut acquire = self.shared.tx_permits.acquire();
-        poll_fn(|cx| acquire.poll(cx)).await?;
-        Ok(Permit { sender: Some(self) })
+        let capacity = poll_fn(|cx| acquire.poll(cx)).await?;
+        Ok(Permit {
+            shared: &self.shared,
+            capacity,
+        })
     }
 
     /// Reserves capacity for one message without waiting.
@@ -106,8 +121,11 @@ impl<T> BoundedSender<T> {
     /// Returns [`TrySendError::Full`] if queued messages and outstanding permits occupy the
     /// buffer, or [`TrySendError::Disconnected`] if the receiver has been dropped.
     pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
-        self.shared.tx_permits.try_acquire()?;
-        Ok(Permit { sender: Some(self) })
+        let capacity = self.shared.tx_permits.try_acquire()?;
+        Ok(Permit {
+            shared: &self.shared,
+            capacity,
+        })
     }
 
     /// Attempts to send a message without waiting for capacity.
@@ -139,6 +157,22 @@ impl<T> BoundedSender<T> {
             Err(TrySendError::Disconnected(())) => Err(TrySendError::Disconnected(value)),
         }
     }
+
+    #[cfg(test)]
+    pub(super) fn shared(&self) -> &Arc<Shared<T>> {
+        &self.shared
+    }
+}
+
+/// Capacity reserved for one message on a bounded channel.
+///
+/// Created by [`BoundedSender::reserve`] or [`BoundedSender::try_reserve`]. Holding a permit
+/// reduces available capacity but does not prevent other messages from being received. Dropping
+/// it without sending releases capacity and notifies a waiting sender.
+#[must_use = "dropping the permit releases its reserved capacity"]
+pub struct Permit<'a, T> {
+    shared: &'a Shared<T>,
+    capacity: Capacity<'a>,
 }
 
 impl<T> fmt::Debug for Permit<'_, T> {
@@ -151,22 +185,14 @@ impl<T> Permit<'_, T> {
     /// Publishes a message using this permit, without waiting for capacity.
     ///
     /// If the receiver has been dropped, the returned error contains the unsent value.
-    pub fn send(mut self, value: T) -> Result<(), SendError<T>> {
-        let shared = &self.sender.unwrap().shared;
+    pub fn send(self, value: T) -> Result<(), SendError<T>> {
+        let Self { shared, capacity } = self;
         // SAFETY: This permit owns one capacity unit. Claiming a slot and writing it is a
         // synchronous operation with no user callbacks or await points between the two.
         unsafe { shared.buffer.push(value) }.map_err(SendError::new)?;
         // Publication owns the capacity before a wake callback can panic.
-        self.sender = None;
+        capacity.forget();
         shared.rx_waker.wake();
         Ok(())
-    }
-}
-
-impl<T> Drop for Permit<'_, T> {
-    fn drop(&mut self) {
-        if let Some(sender) = self.sender {
-            sender.shared.tx_permits.release();
-        }
     }
 }
