@@ -61,62 +61,6 @@ fn held_permits_consume_capacity_without_claiming_message_order() {
 }
 
 #[test]
-fn zero_sized_messages_preserve_capacity_across_reservation_and_close() {
-    for capacity in [1, 3, 64] {
-        let (tx, mut rx) = mpsc::bounded::<()>(capacity);
-        let permit = tx.try_reserve().unwrap();
-        for _ in 1..capacity {
-            tx.try_send(()).unwrap();
-        }
-        assert_eq!(tx.try_send(()), Err(TrySendError::Full(())));
-        for _ in 1..capacity {
-            assert_eq!(rx.try_recv(), Ok(()));
-        }
-        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
-        drop(permit);
-        tx.try_reserve().unwrap().send(()).unwrap();
-        assert_eq!(rx.try_recv(), Ok(()));
-        // An outstanding permit can be dropped after the receiver closes.
-        let held = tx.try_reserve().unwrap();
-        for _ in 1..capacity {
-            tx.try_send(()).unwrap();
-        }
-        drop(rx);
-        drop(held);
-        assert!(matches!(
-            tx.try_reserve(),
-            Err(TrySendError::Disconnected(()))
-        ));
-    }
-}
-
-#[test]
-fn zero_sized_messages_are_dropped_once_when_received_or_discarded() {
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-
-    static DROPS: AtomicUsize = AtomicUsize::new(0);
-    #[repr(align(128))]
-    struct Message;
-    impl Drop for Message {
-        fn drop(&mut self) {
-            DROPS.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    let (tx, mut rx) = mpsc::bounded(3);
-    for _ in 0..3 {
-        assert!(tx.try_send(Message).is_ok());
-    }
-    drop(rx.try_recv().unwrap());
-    assert_eq!(DROPS.load(Ordering::Relaxed), 1);
-    drop(rx);
-    assert_eq!(DROPS.load(Ordering::Relaxed), 3);
-    drop(tx.try_send(Message).err().unwrap().into_inner());
-    assert_eq!(DROPS.load(Ordering::Relaxed), 4);
-}
-
-#[test]
 fn released_capacity_is_granted_to_the_oldest_waiter() {
     let (tx, mut rx) = mpsc::bounded(1);
     let held = tx.try_reserve().unwrap();

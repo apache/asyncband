@@ -84,22 +84,11 @@ impl<T> BoundedSender<T> {
     /// the caller must retain ownership if capacity is unavailable, or [`reserve`](Self::reserve)
     /// to wait for capacity before constructing the message.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
-        {
-            let mut state = self.shared.lock();
-            match state.acquire() {
-                Ok(()) => {
-                    state.queue.push_back(value);
-                    let wake = state.recv_waker.take();
-                    drop(state);
-                    if let Some(waker) = wake {
-                        waker.wake();
-                    }
-                    return Ok(());
-                }
-                Err(TrySendError::Disconnected(())) => return Err(SendError::new(value)),
-                Err(TrySendError::Full(())) => {}
-            }
-        }
+        let value = match self.try_send(value) {
+            Ok(()) => return Ok(()),
+            Err(TrySendError::Disconnected(value)) => return Err(SendError::new(value)),
+            Err(TrySendError::Full(value)) => value,
+        };
         match self.reserve().await {
             Ok(permit) => permit.send(value),
             Err(_) => Err(SendError::new(value)),
@@ -246,57 +235,43 @@ struct Reserve<'a, T> {
 
 impl<'a, T> Reserve<'a, T> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Permit<'a, T>, SendError<()>>> {
-        let mut cloned_waker = None;
-        let result = loop {
-            let mut state = self.shared.lock();
-            if !state.receiver {
-                // Drop removes any remaining registration, including an unused grant.
-                break Err(SendError::new(()));
-            }
-            if let Some(index) = self.waiter {
-                let waiter = state.send_waiters.waiter_mut(index);
-                if waiter.grant {
-                    let waiter = state.send_waiters.remove_unlinked_waiter(index);
-                    self.waiter = None;
-                    let permit = Permit {
-                        shared: self.shared,
-                    };
-                    drop(state);
-                    drop(waiter);
-                    break Ok(permit);
-                }
-                if waiter
-                    .waker
-                    .as_ref()
-                    .is_some_and(|w| w.will_wake(cx.waker()))
-                {
-                    return Poll::Pending;
-                }
-                if let Some(waker) = cloned_waker.take() {
-                    let old = waiter.waker.replace(waker);
-                    drop(state);
-                    drop(old);
-                    return Poll::Pending;
-                }
-            } else if state.available != 0 {
-                state.available -= 1;
-                break Ok(Permit {
+        let waker = cx.waker().clone();
+        let mut state = self.shared.lock();
+        if !state.receiver {
+            return Poll::Ready(Err(SendError::new(())));
+        }
+        if let Some(index) = self.waiter {
+            let waiter = state.send_waiters.waiter_mut(index);
+            if waiter.grant {
+                let waiter = state.send_waiters.remove_unlinked_waiter(index);
+                self.waiter = None;
+                let permit = Permit {
                     shared: self.shared,
-                });
-            } else if let Some(waker) = cloned_waker.take() {
-                self.waiter = Some(state.send_waiters.push_back(Waiter {
-                    grant: false,
-                    waker: Some(waker),
-                }));
-                return Poll::Pending;
+                };
+                drop(state);
+                drop(waiter);
+                drop(waker);
+                return Poll::Ready(Ok(permit));
             }
+            let old = waiter.waker.replace(waker);
             drop(state);
-            // Clone outside the lock, then recheck capacity and closure before registering.
-            cloned_waker = Some(cx.waker().clone());
-        };
-        // The permit already owns capacity if dropping an unused clone unwinds.
-        drop(cloned_waker);
-        Poll::Ready(result)
+            drop(old);
+            return Poll::Pending;
+        }
+        if state.available != 0 {
+            state.available -= 1;
+            let permit = Permit {
+                shared: self.shared,
+            };
+            drop(state);
+            drop(waker);
+            return Poll::Ready(Ok(permit));
+        }
+        self.waiter = Some(state.send_waiters.push_back(Waiter {
+            grant: false,
+            waker: Some(waker),
+        }));
+        Poll::Pending
     }
 }
 

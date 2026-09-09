@@ -134,41 +134,28 @@ impl<T> BoundedReceiver<T> {
     }
 
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
-        let mut cloned_waker = None;
-        loop {
-            let mut state = self.shared.lock();
-            match state.pop() {
-                Ok((value, wake)) => {
-                    drop(state);
-                    if let Some(waker) = wake {
-                        waker.wake();
-                    }
-                    return Poll::Ready(Ok(value));
+        let waker = cx.waker().clone();
+        let mut state = self.shared.lock();
+        match state.pop() {
+            Ok((value, wake)) => {
+                drop(state);
+                if let Some(waker) = wake {
+                    waker.wake();
                 }
-                Err(TryRecvError::Disconnected) => {
-                    let old = state.recv_waker.take();
-                    drop(state);
-                    drop(old);
-                    return Poll::Ready(Err(RecvError::Disconnected));
-                }
-                Err(TryRecvError::Empty) => {}
+                Poll::Ready(Ok(value))
             }
-            if state
-                .recv_waker
-                .as_ref()
-                .is_some_and(|w| w.will_wake(cx.waker()))
-            {
-                return Poll::Pending;
+            Err(TryRecvError::Disconnected) => {
+                let old = state.recv_waker.take();
+                drop(state);
+                drop(old);
+                Poll::Ready(Err(RecvError::Disconnected))
             }
-            if let Some(waker) = cloned_waker.take() {
+            Err(TryRecvError::Empty) => {
                 let old = state.recv_waker.replace(waker);
                 drop(state);
                 drop(old);
-                return Poll::Pending;
+                Poll::Pending
             }
-            drop(state);
-            // Clone can reenter the channel, so check the queue again after acquiring the lock.
-            cloned_waker = Some(cx.waker().clone());
         }
     }
 }
