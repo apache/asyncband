@@ -80,9 +80,9 @@ impl<T> BoundedSender<T> {
     /// # Cancel safety
     ///
     /// Dropping a pending `send` loses its place waiting for capacity and drops `value`; a call
-    /// that has returned `Pending` has not sent the message. Use [`Self::try_send`] when the
-    /// caller must retain ownership if capacity is unavailable, or [`Self::reserve`] to wait for
-    /// capacity before constructing the message.
+    /// that has returned `Pending` has not sent the message. Use [`try_send`](Self::try_send) when
+    /// the caller must retain ownership if capacity is unavailable, or [`reserve`](Self::reserve)
+    /// to wait for capacity before constructing the message.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
         {
             let mut state = self.shared.lock();
