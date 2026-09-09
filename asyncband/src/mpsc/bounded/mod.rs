@@ -64,7 +64,7 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     let shared = Arc::new(Shared {
         senders: AtomicUsize::new(1),
         tx_permits: CachePadded::new(Semaphore::new(buffer)),
-        rx_waker: CachePadded::new(AtomicWaker::new()),
+        rx_waker: AtomicWaker::new(),
         buffer: Buffer::new(buffer),
     });
     let sender = BoundedSender {
@@ -77,7 +77,7 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
 struct Shared<T> {
     senders: AtomicUsize,
     tx_permits: CachePadded<Semaphore>,
-    rx_waker: CachePadded<AtomicWaker>,
+    rx_waker: AtomicWaker,
     buffer: Buffer<T>,
 }
 
