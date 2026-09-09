@@ -84,6 +84,7 @@ fn cancel_reserved_capacity<C: Reservable>(bencher: Bencher) {
 struct Reserved<C, const CAPACITY: usize>(PhantomData<C>);
 
 impl<C: Reservable, const CAPACITY: usize> ConcurrentMpsc for Reserved<C, CAPACITY> {
+    type Message = usize;
     type Sender = C::Sender;
     type Receiver = C::Receiver;
     fn channel() -> (Self::Sender, Self::Receiver) {
@@ -105,8 +106,8 @@ impl<C: Reservable, const CAPACITY: usize> ConcurrentMpsc for Reserved<C, CAPACI
 
 #[divan::bench(
     types = [Asyncband, Tokio],
-    consts = [64, 4096],
-    args = [(1, 0), (8, 4)],
+    consts = [1, 64, 4096],
+    args = [(1, 0), (8, 0), (1, 4), (8, 4)],
     sample_count = 50,
     sample_size = 1,
     counter = ItemsCount::new(BATCH_MESSAGES),
