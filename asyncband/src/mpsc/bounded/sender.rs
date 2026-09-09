@@ -20,16 +20,11 @@ use std::future::poll_fn;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use super::BoundedSender;
+use super::Permit;
 use super::SendError;
 use super::Shared;
 use super::TrySendError;
-
-/// The sending endpoint of a bounded mpsc channel.
-///
-/// Instances are created by the [`bounded`](super::bounded) function.
-pub struct BoundedSender<T> {
-    shared: Arc<Shared<T>>,
-}
 
 impl<T> Clone for BoundedSender<T> {
     fn clone(&self) -> Self {
@@ -155,16 +150,6 @@ impl<T> BoundedSender<T> {
     pub(crate) fn shared(&self) -> &Arc<Shared<T>> {
         &self.shared
     }
-}
-
-/// Capacity reserved for one message on a bounded channel.
-///
-/// Created by [`BoundedSender::reserve`] or [`BoundedSender::try_reserve`]. Holding a permit
-/// reduces available capacity but does not prevent other messages from being received. Dropping
-/// it without sending releases capacity and notifies a waiting sender.
-#[must_use = "dropping the permit releases its reserved capacity"]
-pub struct Permit<'a, T> {
-    sender: Option<&'a BoundedSender<T>>,
 }
 
 impl<T> fmt::Debug for Permit<'_, T> {

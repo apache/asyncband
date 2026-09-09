@@ -25,17 +25,8 @@ use std::task::Poll;
 use super::RecvError;
 use super::Shared;
 use super::TryRecvError;
+use super::BoundedReceiver;
 use crate::internal::wake_all;
-
-/// The receiving endpoint of a bounded mpsc channel.
-///
-/// Instances are created by the [`bounded`](super::bounded) function.
-/// Dropping the receiver discards queued values. The backing allocation remains alive until
-/// all endpoints are dropped, so a concurrent sender can safely finish returning an unsent value.
-pub struct BoundedReceiver<T> {
-    shared: Arc<Shared<T>>,
-    head: usize,
-}
 
 impl<T> fmt::Debug for BoundedReceiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
