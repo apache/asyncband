@@ -20,11 +20,6 @@
 // continuing. The recv adapter combines Tokio's changed and borrow_and_update operations to match
 // Asyncband's owned receive contract.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::task::Context;
-use std::task::Poll;
-
 use divan::Bencher;
 use divan::black_box;
 
@@ -32,23 +27,11 @@ use super::adapters::Asyncband;
 use super::adapters::Tokio;
 use super::adapters::Watch;
 use crate::support::bench_context;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
 use crate::support::poll_ready;
 
 const RECEIVER_COUNTS: &[usize] = &[1, 2, 4, 8, 32];
-
-fn poll_erased_pending<T>(mut future: Pin<&mut dyn Future<Output = T>>, context: &mut Context<'_>) {
-    assert!(future.as_mut().poll(context).is_pending());
-}
-
-fn poll_erased_ready<T>(
-    mut future: Pin<&mut dyn Future<Output = T>>,
-    context: &mut Context<'_>,
-) -> T {
-    match future.as_mut().poll(context) {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("benchmark future should be ready"),
-    }
-}
 
 #[divan::bench(types = [Asyncband, Tokio])]
 fn get_current<C: Watch>(bencher: Bencher) {
@@ -96,14 +79,17 @@ fn notify_pending_fanout<C: Watch>(bencher: Bencher, receiver_count: usize) {
     let (sender, mut receivers) = C::channel(receiver_count);
 
     bencher.bench_local(|| {
-        let mut changed = receivers.iter_mut().map(C::changed).collect::<Vec<_>>();
+        let mut changed = receivers
+            .iter_mut()
+            .map(|receiver| Box::pin(C::changed(receiver)))
+            .collect::<Vec<_>>();
         for future in &mut changed {
-            poll_erased_pending(future.as_mut(), &mut context);
+            poll_pending(future.as_mut(), &mut context);
         }
 
         C::send(&sender, black_box(1));
         for mut future in changed {
-            poll_erased_ready(future.as_mut(), &mut context);
+            poll_pinned_ready(future.as_mut(), &mut context);
         }
     });
 }
