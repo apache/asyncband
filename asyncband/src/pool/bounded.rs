@@ -1,19 +1,21 @@
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
+// Copyright 2025 FastLabs Developers
 //
-//   http://www.apache.org/licenses/LICENSE-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// This file contains code ported from Fastpool 1.1.1.
+// The incorporated code has been modified for use in Apache Asyncband.
+// Upstream source:
+// https://github.com/fast/fastpool/blob/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool/src/bounded.rs
 
 //! Bounded object pools.
 //!
@@ -91,7 +93,7 @@ use crate::semaphore::Semaphore;
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct PoolConfig {
-    /// Maximum size of the [`Pool`].
+    /// Maximum size of the [`Pool`]. Must be greater than zero.
     pub max_size: usize,
 
     /// Queue strategy of the [`Pool`].
@@ -104,7 +106,9 @@ pub struct PoolConfig {
 }
 
 impl PoolConfig {
-    /// Creates a new [`PoolConfig`].
+    /// Creates a new [`PoolConfig`] for a pool with the given maximum size.
+    ///
+    /// [`Pool::new`] panics if `max_size` is zero.
     pub fn new(max_size: usize) -> Self {
         Self {
             max_size,
@@ -114,12 +118,14 @@ impl PoolConfig {
     }
 
     /// Returns a new [`PoolConfig`] with the specified queue strategy.
+    #[must_use = "this method returns the updated pool configuration"]
     pub fn with_queue_strategy(mut self, queue_strategy: QueueStrategy) -> Self {
         self.queue_strategy = queue_strategy;
         self
     }
 
     /// Returns a new [`PoolConfig`] with the specified recycle cancelled strategy.
+    #[must_use = "this method returns the updated pool configuration"]
     pub fn with_recycle_cancelled_strategy(
         mut self,
         recycle_cancelled_strategy: RecycleCancelledStrategy,
@@ -174,7 +180,16 @@ where
 
 impl<M: ManageObject> Pool<M> {
     /// Creates a new [`Pool`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `config.max_size` is zero.
     pub fn new(config: PoolConfig, manager: M) -> Arc<Self> {
+        assert!(
+            config.max_size > 0,
+            "bounded pool max_size must be greater than zero"
+        );
+
         let permits = Arc::new(Semaphore::new(config.max_size));
         let slots = Mutex::new(PoolState::new());
 
@@ -192,10 +207,16 @@ impl<M: ManageObject> Pool<M> {
     /// checked-out objects. Existing idle objects count toward the target, and the pool's
     /// maximum size is never exceeded. Targets above the maximum size are treated as the maximum.
     /// Concurrent calls and checkouts can change the observed idle count while this method is
-    /// running, so the target is best effort rather than a postcondition.
+    /// running, so the target is the best effort rather than a postcondition.
     ///
     /// Returns the number of objects created. If [`ManageObject::create`] fails, objects created by
     /// this call before the failure remain in the pool and the error is returned.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancelling this operation releases all reserved capacity. Objects created before
+    /// cancellation remain idle in the pool; the in-progress [`ManageObject::create`] future is
+    /// dropped.
     pub async fn replenish_to(&self, target_idle: usize) -> Result<usize, M::Error> {
         let target_idle = target_idle.min(self.config.max_size);
         let Some(mut reservation) = ReplenishReservation::reserve_up_to(&self.permits, target_idle)
@@ -242,6 +263,12 @@ impl<M: ManageObject> Pool<M> {
     ///
     /// If the pool has reached its maximum size and has no idle object, this method waits until an
     /// object is returned to or detached from the pool.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancelling while waiting for capacity or creating a new object restores the reserved pool
+    /// capacity. Cancelling while [`ManageObject::is_recyclable`] is checking an idle object
+    /// follows [`PoolConfig::recycle_cancelled_strategy`].
     pub async fn get(self: &Arc<Self>) -> Result<Object<M>, M::Error> {
         let permit = self.permits.clone().acquire_owned(1).await;
 
@@ -288,19 +315,45 @@ impl<M: ManageObject> Pool<M> {
         Ok(object)
     }
 
-    /// Retains only the objects that pass the given predicate.
+    /// Retains idle objects for which `f` returns `true`.
     ///
-    /// The predicate runs while the idle-object lock is held and therefore must not block or call
-    /// back into the pool. Detachment hooks for removed objects run after the lock is released.
+    /// Checked-out objects are skipped and may return to the pool later. The predicate runs while
+    /// the pool is locked and must not call back into it; detachment hooks run after the lock is
+    /// released.
     ///
     /// The following example starts a background task that runs every 30 seconds and removes
     /// objects from the pool that have not been used for more than one minute. The task will
     /// terminate if the pool is dropped.
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// # use std::convert::Infallible;
+    /// # use std::sync::Arc;
+    /// # use std::time::Duration;
+    /// # use asyncband::pool::ManageObject;
+    /// # use asyncband::pool::ObjectStatus;
+    /// # use asyncband::pool::bounded::Pool;
+    /// # use asyncband::pool::bounded::PoolConfig;
     /// let interval = Duration::from_secs(30);
     /// let max_age = Duration::from_secs(60);
     ///
+    /// # struct Manager;
+    /// # impl ManageObject for Manager {
+    /// #     type Object = u32;
+    /// #     type Error = Infallible;
+    /// #
+    /// #     async fn create(&self) -> Result<Self::Object, Self::Error> {
+    /// #         Ok(0)
+    /// #     }
+    /// #
+    /// #     async fn is_recyclable(
+    /// #         &self,
+    /// #         _object: &mut Self::Object,
+    /// #         _status: &ObjectStatus,
+    /// #     ) -> Result<(), Self::Error> {
+    /// #         Ok(())
+    /// #     }
+    /// # }
+    /// # let pool = Pool::new(PoolConfig::new(16), Manager);
     /// let weak_pool = Arc::downgrade(&pool);
     /// tokio::spawn(async move {
     ///     loop {
@@ -446,14 +499,14 @@ impl<M: ManageObject> Drop for Object<M> {
 impl<M: ManageObject> Deref for Object<M> {
     type Target = M::Object;
     fn deref(&self) -> &M::Object {
-        // SAFETY: `state` is always `Some` when `Object` is owned.
+        // INVARIANT: `state` is `Some` until this object is detached or dropped.
         &self.state.as_ref().unwrap().o
     }
 }
 
 impl<M: ManageObject> DerefMut for Object<M> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: `state` is always `Some` when `Object` is owned.
+        // INVARIANT: `state` is `Some` until this object is detached or dropped.
         &mut self.state.as_mut().unwrap().o
     }
 }
@@ -474,8 +527,11 @@ impl<M: ManageObject> Object<M> {
     /// Detaches the object from the [`Pool`].
     ///
     /// This reduces the size of the pool by one.
+    ///
+    /// If the pool still exists, its manager may modify the detached object in
+    /// [`ManageObject::on_detached`].
     pub fn detach(mut self) -> M::Object {
-        // SAFETY: `state` is always `Some` when `Object` is owned.
+        // INVARIANT: `state` is `Some` until this object is detached or dropped.
         let mut o = self.state.take().unwrap().o;
         if let Some(pool) = self.pool.upgrade() {
             pool.detach_object(&mut o);
@@ -485,7 +541,7 @@ impl<M: ManageObject> Object<M> {
 
     /// Returns the status of the object.
     pub fn status(&self) -> ObjectStatus {
-        // SAFETY: `state` is always `Some` when `Object` is owned.
+        // INVARIANT: `state` is `Some` until this object is detached or dropped.
         self.state.as_ref().unwrap().status
     }
 }
@@ -521,7 +577,7 @@ impl<M: ManageObject> Drop for UnreadyObject<M> {
 
 impl<M: ManageObject> UnreadyObject<M> {
     fn ready(mut self, permit: OwnedSemaphorePermit) -> Object<M> {
-        // SAFETY: `state` is always `Some` when `UnreadyObject` is owned.
+        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
         let state = Some(self.state.take().unwrap());
         let pool = self.pool.clone();
         Object {
@@ -540,7 +596,7 @@ impl<M: ManageObject> UnreadyObject<M> {
     }
 
     fn state(&mut self) -> &mut ObjectState<M::Object> {
-        // SAFETY: `state` is always `Some` when `UnreadyObject` is owned.
+        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
         self.state.as_mut().unwrap()
     }
 }

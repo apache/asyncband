@@ -15,17 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A synchronization primitive that enables multiple tasks to wait for each other.
+//! Synchronize a fixed number of tasks at a reusable rendezvous point.
 //!
-//! The barrier ensures that no task proceeds past a certain point until all tasks have reached it.
-//! This is useful for scenarios where multiple tasks need to proceed together after reaching a
-//! certain point in their execution.
-//!
-//! A barrier enables multiple tasks to synchronize the beginning of some computation.
-//! When a barrier is created, it is initialized with a count of the number of tasks
-//! that will synchronize on the barrier. Each task can then call [`wait()`] on the
-//! barrier to indicate it is ready to proceed. The barrier ensures that no task
-//! proceeds past the barrier point until all tasks have made the call.
+//! A [`Barrier`] releases one generation after the configured number of participants have awaited
+//! [`Barrier::wait`]. It can then be reused for the next generation. Exactly one participant in
+//! each generation receives a [`BarrierWaitResult`] marked as the leader.
 //!
 //! # Examples
 //!
@@ -37,38 +31,21 @@
 //! use asyncband::barrier::Barrier;
 //!
 //! let barrier = Arc::new(Barrier::new(3));
-//! let mut handles = Vec::new();
+//! let mut tasks = vec![];
 //!
-//! for i in 0..3 {
+//! for _ in 0..3 {
 //!     let barrier = barrier.clone();
-//!     handles.push(tokio::spawn(async move {
-//!         println!("Task {} before barrier", i);
-//!         let result = barrier.wait().await;
-//!         println!("Task {} after barrier (leader: {})", i, result.is_leader());
-//!     }));
+//!     let task = tokio::spawn(async move { barrier.wait().await.is_leader() });
+//!     tasks.push(task);
 //! }
 //!
-//! for handle in std::mem::take(&mut handles) {
-//!     handle.await.unwrap();
+//! let mut leaders = 0;
+//! for task in tasks {
+//!     leaders += usize::from(task.await.unwrap());
 //! }
-//!
-//! // The barrier can be reused (generation is increased).
-//! for i in 0..3 {
-//!     let barrier = barrier.clone();
-//!     handles.push(tokio::spawn(async move {
-//!         println!("Task {} before barrier", i);
-//!         let result = barrier.wait().await;
-//!         println!("Task {} after barrier (leader: {})", i, result.is_leader());
-//!     }));
-//! }
-//!
-//! for handle in handles {
-//!     handle.await.unwrap();
-//! }
+//! assert_eq!(leaders, 1);
 //! # }
 //! ```
-//!
-//! [`wait()`]: Barrier::wait
 
 use std::fmt;
 use std::future::Future;
@@ -77,8 +54,9 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::WaitSet;
-use crate::internal::waitset::WakerToken;
+use crate::internal::wake_all;
+use crate::internal::wakerset::WakerSet;
+use crate::internal::wakerset::WakerToken;
 
 /// A synchronization primitive for multiple tasks that need to wait for each other.
 ///
@@ -92,7 +70,7 @@ pub struct Barrier {
 struct BarrierState {
     arrived: u32,
     generation: usize,
-    waiters: WaitSet,
+    waiters: WakerSet,
 }
 
 impl fmt::Debug for BarrierState {
@@ -104,20 +82,9 @@ impl fmt::Debug for BarrierState {
     }
 }
 
-/// A `BarrierWaitResult` is returned by [`Barrier::wait()`] when all threads
-/// in the [`Barrier`] have rendezvoused.
+/// The result of participating in one [`Barrier`] generation.
 ///
-/// # Examples
-///
-/// ```
-/// # #[tokio::main]
-/// # async fn main() {
-/// use asyncband::barrier::Barrier;
-///
-/// let barrier = Barrier::new(1);
-/// let barrier_wait_result = barrier.wait().await;
-/// # }
-/// ```
+/// Exactly one participant in each completed generation is designated as the leader.
 pub struct BarrierWaitResult(bool);
 
 impl fmt::Debug for BarrierWaitResult {
@@ -129,10 +96,9 @@ impl fmt::Debug for BarrierWaitResult {
 }
 
 impl BarrierWaitResult {
-    /// Returns `true` if this worker is the "leader" for the call to [`Barrier::wait()`].
+    /// Returns `true` if this participant is the leader for its barrier generation.
     ///
-    /// Only one worker will have `true` returned from their result, all other
-    /// workers will have `false` returned.
+    /// Exactly one participant per generation returns `true`.
     ///
     /// # Examples
     ///
@@ -142,8 +108,7 @@ impl BarrierWaitResult {
     /// use asyncband::barrier::Barrier;
     ///
     /// let barrier = Barrier::new(1);
-    /// let barrier_wait_result = barrier.wait().await;
-    /// println!("{:?}", barrier_wait_result.is_leader());
+    /// assert!(barrier.wait().await.is_leader());
     /// # }
     /// ```
     #[must_use]
@@ -153,25 +118,20 @@ impl BarrierWaitResult {
 }
 
 impl Barrier {
-    /// Creates a new barrier that can block the specified number of tasks.
+    /// Creates a barrier for `n` participants.
     ///
-    /// A barrier will block `n-1` tasks and release them all at once when the `n`th task arrives.
-    ///
-    /// # Arguments
-    ///
-    /// * `n`: The number of tasks to wait for. If `n` is 0, it will be treated as 1.
+    /// Each generation completes when `n` calls to [`wait`](Self::wait) have arrived. Passing zero
+    /// selects the same immediately completing behavior as passing one.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::barrier::Barrier;
     ///
-    /// let barrier = Barrier::new(3); // Creates a barrier for 3 tasks
+    /// let barrier = Barrier::new(3);
     /// ```
     pub fn new(n: u32) -> Self {
-        // If n is 0, it's not clear what behavior the user wants.
-        // std::sync::Barrier works with n = 0 the same as n = 1,
-        // where every .wait() immediately unblocks, so we adopt that here as well.
+        // Normalize an empty group to one participant so every wait completes its own generation.
         let n = if n > 0 { n } else { 1 };
 
         Self {
@@ -179,16 +139,16 @@ impl Barrier {
             state: Mutex::new(BarrierState {
                 arrived: 0,
                 generation: 0,
-                waiters: WaitSet::with_capacity(n as usize),
+                // The final participant completes the generation without parking.
+                waiters: WakerSet::with_capacity((n - 1) as usize),
             }),
         }
     }
 
     /// Waits for all tasks to reach this point.
     ///
-    /// The barrier will block the current task until all `n` tasks have called `wait()`.
-    /// The last task to call `wait()` will be designated as the leader and receive `true`
-    /// as the return value. All other tasks will receive `false`.
+    /// The barrier holds the current task until all `n` participants have arrived. The final
+    /// participant is designated as the leader for this generation.
     ///
     /// # Cancel safety
     ///
@@ -204,32 +164,17 @@ impl Barrier {
     /// wait futures. Callers that need to keep waiting after another operation completes first
     /// should retain and continue polling the same `wait` future instead of creating a new one.
     ///
-    /// # Returns
-    ///
-    /// Returns a `Future` that resolves to:
-    /// * `true` if this task is the last (leader) task to arrive at the barrier
-    /// * `false` for all other tasks
+    /// Returns a [`BarrierWaitResult`] that identifies whether this participant is the leader.
     ///
     /// # Examples
     ///
     /// ```
     /// # #[tokio::main]
     /// # async fn main() {
-    /// use std::sync::Arc;
-    ///
     /// use asyncband::barrier::Barrier;
     ///
-    /// let barrier = Arc::new(Barrier::new(2));
-    /// let barrier2 = barrier.clone();
-    ///
-    /// let handle = tokio::spawn(async move {
-    ///     let result = barrier2.wait().await;
-    ///     println!("Task 1: leader = {}", result.is_leader());
-    /// });
-    ///
-    /// let result = barrier.wait().await;
-    /// println!("Task 2: leader = {}", result.is_leader());
-    /// handle.await.unwrap();
+    /// let barrier = Barrier::new(1);
+    /// assert!(barrier.wait().await.is_leader());
     /// # }
     /// ```
     pub async fn wait(&self) -> BarrierWaitResult {
@@ -238,16 +183,14 @@ impl Barrier {
             let generation = state.generation;
             state.arrived += 1;
 
-            // the last arriver is the leader;
-            // wake up other waiters, increment the generation, and return
+            // The final arrival completes this generation. Advance the generation while holding
+            // the state lock, then wake the drained followers after releasing it.
             if state.arrived == self.n {
                 state.arrived = 0;
                 state.generation += 1;
-                let wakers = state.waiters.take_wakers();
+                let wakers = state.waiters.drain();
                 drop(state);
-                for waker in wakers {
-                    waker.wake();
-                }
+                wake_all(wakers);
                 return BarrierWaitResult(true);
             }
 
@@ -292,28 +235,37 @@ impl Future for BarrierWait<'_> {
             barrier,
         } = self.get_mut();
 
-        let replaced_waker = {
-            let mut state = barrier.state.lock();
-            if *generation < state.generation {
-                // Advancing the generation drains its registrations under this same lock.
-                *token = None;
-                return Poll::Ready(());
-            }
-            state.waiters.register_waker(token, cx)
-        };
-        drop(replaced_waker);
+        let mut state = barrier.state.lock();
+        if *generation < state.generation {
+            // Completion advances the generation and drains its old waiters under this same lock,
+            // so no registration represented by this token remains in the waker set.
+            *token = None;
+            return Poll::Ready(());
+        }
+
+        let retired_waker = state.waiters.register(token, cx.waker());
+        drop(state);
+        drop(retired_waker);
         Poll::Pending
     }
 }
 
 impl Drop for BarrierWait<'_> {
     fn drop(&mut self) {
-        if self.token.is_some() {
-            let removed_waker = {
-                let mut state = self.barrier.state.lock();
-                state.waiters.unregister_waker(&mut self.token)
-            };
-            drop(removed_waker);
+        if self.token.is_none() {
+            return;
         }
+
+        let mut state = self.barrier.state.lock();
+        if self.generation != state.generation {
+            // Advancing the generation detached this registration before making the new generation
+            // visible under the same lock.
+            self.token = None;
+            return;
+        }
+
+        let removed_waker = state.waiters.unregister(&mut self.token);
+        drop(state);
+        drop(removed_waker);
     }
 }

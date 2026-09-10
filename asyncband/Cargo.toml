@@ -17,7 +17,7 @@
 
 [package]
 name = "asyncband"
-version = "0.6.7"
+version = "0.7.2"
 
 categories = ["asynchronous", "concurrency"]
 description = "Composable, runtime-agnostic concurrency building blocks for async Rust."
@@ -47,7 +47,9 @@ default = []
 barrier = []
 blocking = []
 broadcast = []
+completion = []
 condvar = ["mutex"]
+event = []
 latch = []
 lazy-cell = ["mutex"]
 mpsc = []
@@ -62,6 +64,7 @@ semaphore = []
 shutdown = ["latch", "waitgroup"]
 singleflight = ["dep:hashbrown", "once-cell"]
 waitgroup = []
+watch = []
 
 [dependencies]
 hashbrown = { workspace = true, default-features = false, features = [

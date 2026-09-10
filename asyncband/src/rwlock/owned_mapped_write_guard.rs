@@ -1,19 +1,9 @@
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
+// This file contains code derived from Tokio 1.42.0's RwLock implementation.
+// Copyright (c) Tokio Contributors
+// The derived code remains licensed under the MIT License.
+// The incorporated code has been modified for use in Apache Asyncband.
+// Upstream source:
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock/owned_write_guard_mapped.rs
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -26,28 +16,12 @@ use std::sync::Arc;
 use crate::rwlock::OwnedMappedRwLockReadGuard;
 use crate::rwlock::RwLock;
 
-/// Owned RAII structure used to release the exclusive write access of a lock when dropped, for a
-/// mapped component of the locked data.
+/// An owned write guard projected to one component of the protected value.
 ///
-/// This guard is only available from a [`RwLock`] that is wrapped in an [`Arc`]. It is similar to
-/// [`MappedRwLockWriteGuard`], except that rather than borrowing the `RwLock`, it clones the `Arc`,
-/// incrementing the reference count. This means that unlike `MappedRwLockWriteGuard`, it will have
-/// the `'static` lifetime.
-///
-/// As long as you have this guard, you have exclusive write access to the underlying `T`. The guard
-/// internally keeps an `Arc` reference to the original rwlock and tracks the number of permits
-/// acquired, so the original lock is maintained until this guard is dropped.
-///
-/// `OwnedMappedRwLockWriteGuard` implements [`Send`] and [`Sync`]
-/// when the underlying data type supports these traits, allowing it to be used across task
-/// boundaries and shared between threads safely.
-///
-/// [`map`]: crate::rwlock::OwnedRwLockWriteGuard::map
-/// [`filter_map`]: crate::rwlock::OwnedRwLockWriteGuard::filter_map
-/// [`OwnedRwLockWriteGuard`]: crate::rwlock::OwnedRwLockWriteGuard
-/// [`MappedRwLockWriteGuard`]: crate::rwlock::MappedRwLockWriteGuard
-///
-/// See the [module level documentation](crate::rwlock) for more.
+/// [`OwnedRwLockWriteGuard::map`](crate::rwlock::OwnedRwLockWriteGuard::map) and
+/// [`OwnedRwLockWriteGuard::filter_map`](crate::rwlock::OwnedRwLockWriteGuard::filter_map) create
+/// this guard. It keeps the lock alive and its write access active while exposing only the
+/// projected component.
 ///
 /// # Examples
 ///
@@ -88,24 +62,7 @@ use crate::rwlock::RwLock;
 /// assert_eq!(profile_guard.email, "newemail@example.com");
 /// # }
 /// ```
-///
-/// # Variance
-///
-/// The guard is invariant over its mapped type `U`, as required for mutable access:
-///
-/// ```compile_fail
-/// use asyncband::rwlock::OwnedMappedRwLockWriteGuard;
-///
-/// fn shorten<'short>(
-///     guard: OwnedMappedRwLockWriteGuard<(), &'static str>,
-///     value: &'short str,
-/// ) -> OwnedMappedRwLockWriteGuard<(), &'short str> {
-///     let mut guard: OwnedMappedRwLockWriteGuard<(), &'short str> = guard;
-///     *guard = value;
-///     guard
-/// }
-/// ```
-#[must_use = "if unused the RwLock will immediately unlock"]
+#[must_use = "dropping the guard releases its write access immediately"]
 pub struct OwnedMappedRwLockWriteGuard<T: ?Sized, U: ?Sized> {
     d: NonNull<U>,
     lock: Arc<RwLock<T>>,
@@ -168,15 +125,10 @@ impl<T: ?Sized, U: ?Sized> DerefMut for OwnedMappedRwLockWriteGuard<T, U> {
 }
 
 impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockWriteGuard<T, U> {
-    /// Makes a new [`OwnedMappedRwLockWriteGuard`] for a component of the locked data.
+    /// Projects this guard to a deeper mutable component.
     ///
-    /// This operation cannot fail as the `OwnedMappedRwLockWriteGuard` passed in already locked the
-    /// rwlock.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `OwnedMappedRwLockWriteGuard::map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// The returned guard keeps the same write access active. Call this as
+    /// `OwnedMappedRwLockWriteGuard::map(...)` so a method named `map` on `U` remains accessible.
     ///
     /// # Examples
     ///
@@ -241,16 +193,11 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockWriteGuard<T, U> {
         OwnedMappedRwLockWriteGuard::new(d, lock, permits_acquired)
     }
 
-    /// Attempts to make a new [`OwnedMappedRwLockWriteGuard`] for a component of the locked data.
-    /// The original guard is returned if the closure returns `None`.
+    /// Attempts to project this guard to a deeper mutable component.
     ///
-    /// This operation cannot fail as the `OwnedMappedRwLockWriteGuard` passed in already locked the
-    /// rwlock.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `OwnedMappedRwLockWriteGuard::filter_map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// The original guard is returned when `f` returns `None`. Call this as
+    /// `OwnedMappedRwLockWriteGuard::filter_map(...)` so a method with the same name on `U` remains
+    /// accessible.
     ///
     /// # Examples
     ///

@@ -1,19 +1,10 @@
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
+// This file contains code derived from Tokio 1.42.0's RwLock implementation.
+// Copyright (c) Tokio Contributors
+// The derived code remains licensed under the MIT License.
+// The incorporated code has been modified for use in Apache Asyncband.
+// Upstream sources:
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock/read_guard.rs
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock/write_guard_mapped.rs
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -22,26 +13,11 @@ use std::ptr::NonNull;
 
 use crate::internal::semaphore;
 
-/// RAII structure used to release the shared read access of a lock when dropped, for a mapped
-/// component of the locked data.
+/// A borrowed read guard projected to one component of the protected value.
 ///
-/// This structure is created by the [`map`] and [`filter_map`] methods on [`RwLockReadGuard`]. It
-/// allows you to hold a read lock on a subfield of the protected data, enabling more fine-grained
-/// access control while maintaining the same locking semantics.
-///
-/// As long as you have this guard, you have shared read access to the underlying `T`. The guard
-/// internally keeps a reference to the original rwlock's semaphore, so the original lock is
-/// maintained until this guard is dropped.
-///
-/// `MappedRwLockReadGuard` implements [`Send`] and [`Sync`] when `T: Sync`, allowing it to be
-/// used across task boundaries and shared between threads safely. Note that [`Send`] does not
-/// require `T: Send` because the read guard only borrows the data rather than owning it.
-///
-/// [`map`]: crate::rwlock::RwLockReadGuard::map
-/// [`filter_map`]: crate::rwlock::RwLockReadGuard::filter_map
-/// [`RwLockReadGuard`]: crate::rwlock::RwLockReadGuard
-///
-/// See the [module level documentation](crate::rwlock) for more.
+/// [`RwLockReadGuard::map`](crate::rwlock::RwLockReadGuard::map) and
+/// [`RwLockReadGuard::filter_map`](crate::rwlock::RwLockReadGuard::filter_map) create this guard.
+/// It keeps the original read access active while exposing only the projected component.
 ///
 /// # Examples
 ///
@@ -79,7 +55,7 @@ use crate::internal::semaphore;
 /// assert_eq!(profile_guard.email, "user@example.com");
 /// # }
 /// ```
-#[must_use = "if unused the RwLock will immediately unlock"]
+#[must_use = "dropping the guard releases its read access immediately"]
 pub struct MappedRwLockReadGuard<'a, T: ?Sized> {
     d: NonNull<T>,
     s: &'a semaphore::Semaphore,
@@ -134,14 +110,10 @@ impl<T: ?Sized> Deref for MappedRwLockReadGuard<'_, T> {
 }
 
 impl<'a, T: ?Sized> MappedRwLockReadGuard<'a, T> {
-    /// Makes a new [`MappedRwLockReadGuard`] for a component of the locked data.
+    /// Projects this guard to a deeper shared component.
     ///
-    /// This operation cannot fail as the `MappedRwLockReadGuard` passed in already locked the
-    /// rwlock.
-    ///
-    /// This is an associated function that needs to be used as `MappedRwLockReadGuard::map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// The returned guard keeps the same read access active. Call this as
+    /// `MappedRwLockReadGuard::map(...)` so a method named `map` on `T` remains accessible.
     ///
     /// # Examples
     ///
@@ -195,16 +167,11 @@ impl<'a, T: ?Sized> MappedRwLockReadGuard<'a, T> {
         MappedRwLockReadGuard::new(d, orig.s)
     }
 
-    /// Attempts to make a new [`MappedRwLockReadGuard`] for a component of the locked data. The
-    /// original guard is returned if the closure returns `None`.
+    /// Attempts to project this guard to a deeper shared component.
     ///
-    /// This operation cannot fail as the `MappedRwLockReadGuard` passed in already locked the
-    /// rwlock.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `MappedRwLockReadGuard::filter_map(...)`.
-    ///
-    /// A method would interfere with methods of the same name on the contents of the locked data.
+    /// The original guard is returned when `f` returns `None`. Call this as
+    /// `MappedRwLockReadGuard::filter_map(...)` so a method with the same name on `T` remains
+    /// accessible.
     ///
     /// # Examples
     ///

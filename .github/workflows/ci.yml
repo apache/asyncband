@@ -57,12 +57,14 @@ jobs:
           --allow-downgrade
           --no-self-update
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@6cd13508893c0e7eab5f273c2575d3859bd7229a # v2.86.6
+      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:
           tool: typos-cli,taplo-cli,hawkeye
       - run: cargo x lint
       - name: Check feature matrix
         run: cargo x check
+      - name: Compile benchmarks
+        run: cargo x bench --no-run
 
   test:
     name: Run tests
@@ -87,36 +89,45 @@ jobs:
         run: cargo x test --no-capture
         shell: bash
 
-  benchmark:
-    name: Run benchmarks
+  miri:
+    name: Run Miri tests
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      RUSTUP_TOOLCHAIN: stable
+      RUSTUP_TOOLCHAIN: nightly
+      MIRIFLAGS: >-
+        -Zmiri-strict-provenance
+        -Zmiri-symbolic-alignment-check
+        -Zmiri-many-seeds=0..4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install stable toolchain
+      - name: Install nightly toolchain
         run: >-
-          rustup toolchain install stable
+          rustup toolchain install nightly
           --profile minimal
+          --component miri
+          --allow-downgrade
           --no-self-update
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo x bench
+      - name: Set up Miri
+        run: cargo +nightly miri setup
+      - name: Run Miri tests
+        run: cargo x miri
 
   required:
     name: Required
     runs-on: ubuntu-24.04
     if: ${{ always() }}
     needs:
-      - benchmark
       - check
+      - miri
       - test
     steps:
       - name: Guardian
         run: |
           if [[ ! ( \
-                 "${{ needs.benchmark.result }}" == "success" \
-              && "${{ needs.check.result }}" == "success" \
+                 "${{ needs.check.result }}" == "success" \
+              && "${{ needs.miri.result }}" == "success" \
               && "${{ needs.test.result }}" == "success" \
               ) ]]; then
             echo "Required jobs haven't been completed successfully."

@@ -16,6 +16,20 @@
 // under the License.
 
 //! Asynchronous primitives for one-time coordination.
+//!
+//! # Choosing a primitive
+//!
+//! * `Once` runs a side-effecting initializer successfully once without storing a value. A
+//!   cancelled or panicked attempt leaves it available for another caller to retry.
+//! * `OnceCell` stores one value from an initializer supplied at access time. Failed, cancelled, or
+//!   panicked attempts leave the cell empty and retryable.
+//! * `LazyCell` owns one initializer and preserves the same in-flight future across caller
+//!   cancellation. A panic poisons the cell instead of starting another attempt.
+//! * `OnceMap` applies retryable `OnceCell` initialization per key and retains successful values
+//!   until they are explicitly removed.
+//!
+//! These primitives retain completed state. Use `singleflight::Group` when only overlapping calls
+//! for a key should share work and later calls should execute again.
 
 #[cfg(feature = "lazy-cell")]
 mod lazy_cell;

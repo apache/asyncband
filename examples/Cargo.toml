@@ -27,6 +27,7 @@ release = false
 
 [dependencies]
 asyncband = { workspace = true, features = [
+  "completion",
   "lazy-cell",
   "once-cell",
   "shutdown",
@@ -53,3 +54,7 @@ path = "src/lazy_cell_boxed_vs_inline.rs"
 [[example]]
 name = "graceful_shutdown"
 path = "src/graceful_shutdown.rs"
+
+[[example]]
+name = "shared_completion"
+path = "src/shared_completion.rs"

@@ -15,4 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod work;
+// SingleFlight does not retain completed values. Cold benchmarks create a leader for an absent
+// key; hot benchmarks join coordination state that is already in flight.
+mod cold;
+mod hot;
+mod support;

@@ -17,6 +17,8 @@
 
 mod broadcast;
 mod mpsc;
+mod waitgroup;
+mod watch;
 
 #[allow(dead_code)]
 #[path = "../asyncband/support.rs"]

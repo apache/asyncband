@@ -18,7 +18,9 @@
 mod barrier;
 mod blocking;
 mod broadcast;
+mod completion;
 mod condvar;
+mod event;
 mod latch;
 mod mpsc;
 mod mutex;

@@ -29,7 +29,9 @@ asyncband = { workspace = true, features = [
   "barrier",
   "blocking",
   "broadcast",
+  "completion",
   "condvar",
+  "event",
   "latch",
   "mpsc",
   "mutex",
@@ -43,12 +45,14 @@ asyncband = { workspace = true, features = [
   "shutdown",
   "singleflight",
   "waitgroup",
+  "watch",
 ] }
 crossbeam-channel = { workspace = true }
 divan = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 pollster = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+waitgroup = { workspace = true }
 
 [[bench]]
 harness = false

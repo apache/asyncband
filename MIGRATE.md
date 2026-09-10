@@ -1,7 +1,5 @@
 # Migrating from MEA
 
-> Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Please read the [DISCLAIMER](DISCLAIMER).
-
 Asyncband continues the codebase formerly published as [`mea`](https://crates.io/crates/mea), but it uses a new Cargo package and Rust crate name. Existing `mea` releases remain available for builds that have not migrated, but they receive no further development.
 
 ## Recommended migration path
@@ -20,6 +18,6 @@ asyncband = "0.6.7"
 
 Asyncband 0.6.7 is the compatibility point for the rename, so the dependency name and Rust paths are the only changes expected in this step. No compatibility package or re-export keeps the `mea` crate name available; downstream crates must update those names directly.
 
-Once the project builds with Asyncband 0.6.7, upgrade through later Asyncband releases separately. Follow the [Asyncband changelog](CHANGELOG.md) and apply the migration notes for each release instead of combining later breaking changes with the rename.
+Once the project builds with Asyncband 0.6.7, follow the [Asyncband changelog](CHANGELOG.md) when upgrading to later releases.
 
 For the background to the rename, see the [Asyncband proposal discussion](https://lists.apache.org/thread/f31qd3jm3odomjwy3lqkk21coyqsr9xs).

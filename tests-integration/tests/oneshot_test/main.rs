@@ -15,6 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// This file contains tests adapted from the oneshot crate.
+// Asyncband uses the upstream crate's Apache-2.0 license option for that code.
+// The incorporated code has been modified for use in Apache Asyncband.
+// Upstream tests (oneshot v0.1.11):
+// https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/tests/async.rs
+// https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/tests/future.rs
+// https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/tests/sync.rs
+
 use std::future::Future;
 use std::future::IntoFuture;
 use std::pin::Pin;
@@ -120,7 +128,7 @@ fn dropping_receiver_after_send_drops_message() {
 }
 
 #[test]
-fn dropping_unpolled_recv_closes_channel() {
+fn dropping_unpolled_recv_disconnects_channel() {
     let (sender, receiver) = oneshot::channel::<u128>();
     let receiver = receiver.into_future();
 
@@ -249,7 +257,7 @@ fn poll_with_different_wakers_across_threads() {
 }
 
 #[test]
-fn drop_pending_receiver_closes_channel_and_drops_waker() {
+fn drop_pending_receiver_disconnects_channel_and_drops_waker() {
     let (sender, receiver) = oneshot::channel::<u128>();
     let mut receiver = receiver.into_future();
 
@@ -300,7 +308,7 @@ fn concurrent_send_and_try_recv_to_completion() {
             Ok(999) => true,
             Ok(value) => panic!("unexpected value: {value}"),
             Err(TryRecvError::Empty) => false,
-            Err(TryRecvError::Disconnected) => panic!("unexpected disconnect"),
+            Err(TryRecvError::Disconnected) => panic!("unexpected channel disconnection"),
         });
     });
 
@@ -317,7 +325,7 @@ fn concurrent_drop_sender_and_try_recv_to_completion() {
     let (sender, receiver) = oneshot::channel::<i32>();
 
     let receiver_thread = spawn_named("receiver", move || {
-        spin_until("sender disconnect", || match receiver.try_recv() {
+        spin_until("channel disconnection", || match receiver.try_recv() {
             Ok(value) => panic!("unexpected value: {value}"),
             Err(TryRecvError::Empty) => false,
             Err(TryRecvError::Disconnected) => true,
@@ -367,7 +375,7 @@ fn concurrent_drop_sender_and_poll_to_completion() {
         let (waker, _waker_probe) = WakerProbe::new();
         let mut context = Context::from_waker(&waker);
 
-        spin_until("poll ready with disconnect", || {
+        spin_until("poll ready with disconnection", || {
             match Pin::new(&mut receiver).poll(&mut context) {
                 Poll::Ready(Err(oneshot::RecvError::Disconnected)) => true,
                 Poll::Ready(result) => panic!("unexpected result: {result:?}"),

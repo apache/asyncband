@@ -36,6 +36,7 @@
 //! Then use the selected APIs directly:
 //!
 //! ```
+//! # #[cfg(feature = "mutex")]
 //! # #[tokio::main]
 //! # async fn main() {
 //! use asyncband::mutex::Mutex;
@@ -47,30 +48,35 @@
 //! }
 //! assert_eq!(*counter.lock().await, 1);
 //! # }
+//! # #[cfg(not(feature = "mutex"))]
+//! # fn main() {}
 //! ```
 //!
 //! # API map
 //!
-//! | Area                  | API                                 | Feature        | Use                                                                                                    |
-//! |-----------------------|-------------------------------------|----------------|--------------------------------------------------------------------------------------------------------|
-//! | Shared state          | [`Mutex`](mutex::Mutex)             | `mutex`        | Protect shared data with asynchronous mutual exclusion.                                                |
-//! |                       | [`RwLock`](rwlock::RwLock)          | `rwlock`       | Allow multiple readers or one writer.                                                                  |
-//! |                       | [`Condvar`](condvar::Condvar)       | `condvar`      | Wait for notifications while releasing a mutex.                                                        |
-//! | Initialization        | [`Once`](once::Once)                | `once`         | Run asynchronous initialization exactly once.                                                          |
-//! |                       | [`OnceCell`](once::OnceCell)        | `once-cell`    | Initialize and store one asynchronous value.                                                           |
-//! |                       | [`LazyCell`](once::LazyCell)        | `lazy-cell`    | Lazily initialize a value with a stored asynchronous function.                                         |
-//! |                       | [`OnceMap`](once::OnceMap)          | `once-map`     | Initialize and store one value per key.                                                                |
-//! | Task coordination     | [`Barrier`](barrier::Barrier)       | `barrier`      | Wait until all participants reach a synchronization point.                                             |
-//! |                       | [`Latch`](latch::Latch)             | `latch`        | Wait until a one-way countdown completes.                                                              |
-//! |                       | [`WaitGroup`](waitgroup::WaitGroup) | `waitgroup`    | Wait for a dynamic group of tasks to finish.                                                           |
-//! |                       | [`Shutdown`](shutdown::Shutdown)    | `shutdown`     | Coordinate shutdown signals and completion.                                                            |
-//! | Channels              | [`oneshot`]                         | `oneshot`      | Send one value between two tasks.                                                                      |
-//! |                       | [`mpsc`]                            | `mpsc`         | Send each value from multiple producers to one receiver.                                               |
-//! |                       | [`broadcast`]                       | `broadcast`    | Broadcast values from one or more producers and retain them until every active receiver consumes them. |
-//! | Resource reuse        | [`pool`]                            | `pool`         | Reuse objects through bounded or unbounded pool variants.                                              |
-//! | Workload coordination | [`Semaphore`](semaphore::Semaphore) | `semaphore`    | Control concurrent access with permits.                                                                |
-//! |                       | [`Group`](singleflight::Group)      | `singleflight` | Coalesce concurrent calls for the same key.                                                            |
-//! | Sync interop          | [`FutureExt`](blocking::FutureExt)  | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                              |
+//! | Area                       | API                                           | Feature        | Use                                                                                                           |
+//! |----------------------------|-----------------------------------------------|----------------|---------------------------------------------------------------------------------------------------------------|
+//! | Locks and conditions       | [`Mutex`](mutex::Mutex)                       | `mutex`        | Protect shared data with asynchronous mutual exclusion.                                                       |
+//! |                            | [`RwLock`](rwlock::RwLock)                    | `rwlock`       | Allow multiple readers or one writer.                                                                         |
+//! |                            | [`Condvar`](condvar::Condvar)                 | `condvar`      | Wait for notifications while releasing a mutex.                                                               |
+//! | Coordination               | [`Semaphore`](semaphore::Semaphore)           | `semaphore`    | Limit concurrent work by acquiring permits.                                                                   |
+//! |                            | [`Barrier`](barrier::Barrier)                 | `barrier`      | Synchronize a fixed number of participants at a reusable rendezvous.                                          |
+//! |                            | [`ManualResetEvent`](event::ManualResetEvent) | `event`        | Signal current and future waits until explicitly reset.                                                       |
+//! |                            | [`Latch`](latch::Latch)                       | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                            |
+//! |                            | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Dynamically register participants and wait until all have completed.                                          |
+//! |                            | [`Shutdown`](shutdown::Shutdown)              | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                            |
+//! | Work coalescing            | [`Once`](once::Once)                          | `once`         | Complete one asynchronous initialization; cancelled or panicked attempts may be retried.                       |
+//! |                            | [`OnceCell`](once::OnceCell)                  | `once-cell`    | Store one value from an access-time initializer; failed, cancelled, or panicked attempts may be retried.       |
+//! |                            | [`LazyCell`](once::LazyCell)                  | `lazy-cell`    | Initialize one value with a stored function and resume the same in-flight future after caller cancellation.   |
+//! |                            | [`OnceMap`](once::OnceMap)                    | `once-map`     | Coalesce work per key and retain each successful value until explicitly removed.                              |
+//! |                            | [`Group`](singleflight::Group)                | `singleflight` | Coalesce overlapping work per key without retaining completed values.                                         |
+//! | Communication              | [`Completion`](completion::Completion)       | `completion`   | Publish one shared result to any number of current and future observers.                                       |
+//! |                            | [`oneshot`]                                   | `oneshot`      | Send one value from one sender to one receiver.                                                               |
+//! |                            | [`mpsc`]                                      | `mpsc`         | Send each value from multiple producers to one receiver with bounded backpressure or an unbounded queue.      |
+//! |                            | [`broadcast`]                                 | `broadcast`    | Deliver every value to receivers active at send time; retain an unbounded backlog until each consumes or drops. |
+//! |                            | [`watch`]                                     | `watch`        | Publish cloneable latest state from one or more senders; receivers independently coalesce intermediate updates. |
+//! | Object reuse               | [`pool`]                                      | `pool`         | Reuse objects through bounded or unbounded pool variants.                                                     |
+//! | Sync interop               | [`FutureExt`](blocking::FutureExt)            | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                                     |
 //!
 //! # Scope and runtime model
 //!
@@ -90,10 +96,9 @@
 //! instead of duplicating synchronous methods across every type. Sync-first implementations can
 //! exploit OS- or platform-specific facilities and remain the domain of dedicated libraries.
 //!
-//! The adapter's single-future executor parks the calling thread and resumes it through the
-//! future's waker. It is not a general-purpose async runtime, and futures that depend on a
-//! runtime-specific timer or I/O driver may not make progress. See the module documentation for the
-//! full execution constraints.
+//! The adapter polls one future on the calling thread. It is not a general-purpose async runtime,
+//! and futures that depend on a runtime-specific timer or I/O driver may not make progress. See the
+//! module documentation for the full execution constraints.
 //!
 //! # Thread safety
 //!
@@ -106,12 +111,11 @@
 //! Foundation (ASF), sponsored by the Apache Incubator PMC.
 //!
 //! Incubation is required of all newly accepted projects until a further review indicates that the
-//! infrastructure, communications, and decision making process have stabilized in a manner
+//! infrastructure, communications, and decision-making process have stabilized in a manner
 //! consistent with other successful ASF projects.
 //!
 //! While incubation status is not necessarily a reflection of the completeness or stability of the
 //! code, it does indicate that the project has yet to be fully endorsed by the ASF.
-mod channel;
 mod internal;
 
 #[cfg(feature = "barrier")]
@@ -119,13 +123,17 @@ pub mod barrier;
 #[cfg(feature = "blocking")]
 pub mod blocking;
 #[cfg(feature = "broadcast")]
-pub use self::channel::broadcast;
+pub mod broadcast;
+#[cfg(feature = "completion")]
+pub mod completion;
 #[cfg(feature = "condvar")]
 pub mod condvar;
+#[cfg(feature = "event")]
+pub mod event;
 #[cfg(feature = "latch")]
 pub mod latch;
 #[cfg(feature = "mpsc")]
-pub use self::channel::mpsc;
+pub mod mpsc;
 #[cfg(feature = "mutex")]
 pub mod mutex;
 #[cfg(any(
@@ -136,7 +144,7 @@ pub mod mutex;
 ))]
 pub mod once;
 #[cfg(feature = "oneshot")]
-pub use self::channel::oneshot;
+pub mod oneshot;
 #[cfg(feature = "pool")]
 pub mod pool;
 #[cfg(feature = "rwlock")]
@@ -149,6 +157,8 @@ pub mod shutdown;
 pub mod singleflight;
 #[cfg(feature = "waitgroup")]
 pub mod waitgroup;
+#[cfg(feature = "watch")]
+pub mod watch;
 
 #[cfg(all(test, any(feature = "once-map", feature = "singleflight")))]
 mod test_support;

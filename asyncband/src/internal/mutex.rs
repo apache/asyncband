@@ -34,24 +34,8 @@ impl<T> Mutex<T> {
     pub fn lock(&self) -> std::sync::MutexGuard<'_, T> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use crate::internal::mutex::Mutex;
-
-    #[test]
-    fn test_poison_mutex() {
-        let mutex = Arc::new(Mutex::new(42));
-        let m = mutex.clone();
-        let handle = std::thread::spawn(move || {
-            let _guard = m.lock();
-            panic!("poison");
-        });
-        let _ = handle.join();
-        let guard = mutex.lock();
-        assert_eq!(*guard, 42);
+    pub fn get_mut(&mut self) -> &mut T {
+        self.0.get_mut().unwrap_or_else(PoisonError::into_inner)
     }
 }

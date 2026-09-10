@@ -15,6 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Portions of the permit-accounting algorithm originated from Tokio 1.42.0's batch semaphore.
+// Copyright (c) Tokio Contributors
+// The Tokio-derived portions remain licensed under the MIT License.
+// Asyncband substantially replaced the waiter lifecycle with queue-owned WaitList nodes, supports
+// queue-head permit debt for exact reductions, has no closed state or reserved flag bits, and uses
+// its own cancellation, detachment, and batched-waking machinery.
+// Upstream source:
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/batch_semaphore.rs
+
 use std::future::Future;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
@@ -29,6 +38,7 @@ use std::task::Waker;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
+use crate::internal::wake_all;
 
 /// The internal semaphore that provides low-level async primitives.
 #[derive(Debug)]
@@ -77,12 +87,16 @@ impl WakeBatch {
     }
 
     fn wake_all(&mut self) {
-        while self.start < self.end {
+        wake_all(std::iter::from_fn(|| {
+            if self.start == self.end {
+                return None;
+            }
+
             let index = self.start;
             self.start += 1;
             // SAFETY: `index` was within the initialized range before advancing `start`.
-            unsafe { self.wakers[index].assume_init_read() }.wake();
-        }
+            Some(unsafe { self.wakers[index].assume_init_read() })
+        }));
         self.start = 0;
         self.end = 0;
     }
@@ -191,41 +205,6 @@ impl Semaphore {
         }
     }
 
-    /// Adds `n` permits to the semaphore if there is any waiter.
-    pub fn release_if_nonempty(&self, n: usize) {
-        let waiters = self.waiters.lock();
-        if !waiters.is_empty() {
-            self.insert_permits_with_lock(n, waiters);
-        }
-    }
-
-    /// Adds as many permits until there is no waiter.
-    pub fn notify_all(&self) {
-        let mut waiters = self.waiters.lock();
-        let mut wakers = Vec::new();
-        loop {
-            match waiters.unlink_first_waiter(|node| {
-                node.permits = 0;
-                true
-            }) {
-                None => break,
-                Some((id, waiter)) => {
-                    let remove_now = waiter.waker.is_none();
-                    if let Some(waker) = waiter.waker.take() {
-                        wakers.push(waker);
-                    }
-                    if remove_now {
-                        waiters.remove_unlinked_waiter(id);
-                    }
-                }
-            }
-        }
-        drop(waiters);
-        for w in wakers.drain(..) {
-            w.wake();
-        }
-    }
-
     fn insert_permits_with_lock(
         &self,
         mut rem: usize,
@@ -276,11 +255,6 @@ impl Semaphore {
             drop(waiters);
             wakers.wake_all();
         }
-    }
-
-    #[cfg(test)]
-    pub fn num_waiter_nodes(&self) -> usize {
-        self.waiters.lock().occupied_len()
     }
 }
 
@@ -449,5 +423,61 @@ fn acquired_or_enqueue(
         }
 
         return false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Wake;
+
+    use super::*;
+
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn fulfilled_reduce_permits_debt_reclaims_its_waiter_node() {
+        let semaphore = Semaphore::new(0);
+
+        for _ in 0..3 {
+            semaphore.reduce_permits(1);
+            assert_eq!(semaphore.waiters.lock().occupied_len(), 1);
+
+            semaphore.release(1);
+            assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
+        }
+    }
+
+    #[test]
+    fn release_drains_more_than_one_wake_batch() {
+        const WAITER_COUNT: usize = WAKE_BATCH_SIZE + 3;
+
+        let semaphore = Semaphore::new(0);
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(counter.clone());
+        let mut acquires = (0..WAITER_COUNT)
+            .map(|_| semaphore.poll_acquire(1))
+            .collect::<Vec<_>>();
+
+        for acquire in &mut acquires {
+            assert!(acquire.poll_once(&waker).is_pending());
+        }
+        assert_eq!(semaphore.waiters.lock().occupied_len(), WAITER_COUNT);
+
+        semaphore.release(WAITER_COUNT);
+        assert_eq!(counter.0.load(Ordering::Relaxed), WAITER_COUNT);
+
+        for acquire in &mut acquires {
+            assert!(acquire.poll_once(&waker).is_ready());
+        }
+        assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
     }
 }

@@ -57,6 +57,18 @@ impl ManageObject for CountingManager {
 }
 
 #[test]
+#[should_panic(expected = "bounded pool max_size must be greater than zero")]
+fn bounded_pool_rejects_zero_capacity() {
+    bounded::Pool::new(
+        bounded::PoolConfig::new(0),
+        CountingManager {
+            next: Arc::new(AtomicUsize::new(0)),
+            detached: Arc::new(AtomicUsize::new(0)),
+        },
+    );
+}
+
+#[test]
 fn bounded_construction_allocates_idle_storage_lazily() {
     let pool = bounded::Pool::new(
         bounded::PoolConfig::new(usize::MAX),
@@ -101,7 +113,7 @@ async fn retain_invokes_detachment_hook_once_per_removed_object() {
         },
     );
 
-    let mut objects = Vec::new();
+    let mut objects = vec![];
     for _ in 0..4 {
         objects.push(pool.get().await.unwrap());
     }

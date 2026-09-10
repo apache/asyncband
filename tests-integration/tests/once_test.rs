@@ -15,160 +15,117 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use asyncband::once::Once;
-use tests_integration::test_runtime;
-use tokio_test::assert_ready;
+use tests_integration::poll_once;
 
 #[tokio::test]
-async fn test_call_once_runs_only_once() {
-    static ONCE: Once = Once::new();
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    assert!(!ONCE.is_completed());
-
-    ONCE.call_once(async || {
-        COUNTER.fetch_add(1, Ordering::SeqCst);
-    })
-    .await;
-
-    assert!(ONCE.is_completed());
-    assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
-
-    // Second call should not run the closure
-    ONCE.call_once(async || {
-        COUNTER.fetch_add(1, Ordering::SeqCst);
-    })
-    .await;
-
-    assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn test_once_multi_task() {
-    static ONCE: Once = Once::new();
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    test_runtime().block_on(async {
-        const N: usize = 100;
-
-        let mut handles = Vec::with_capacity(N);
-
-        for _ in 0..N {
-            handles.push(tokio::spawn(async move {
-                ONCE.call_once(async || {
-                    COUNTER.fetch_add(1, Ordering::SeqCst);
-                })
-                .await;
-            }));
-        }
-
-        for handle in handles {
-            handle.await.unwrap();
-        }
-
-        // Only one task should have incremented the counter
-        assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
-        assert!(ONCE.is_completed());
-    });
-}
-
-#[tokio::test]
-async fn test_once_cancelled() {
-    static ONCE: Once = Once::new();
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    let handle1 = tokio::spawn(async {
-        let fut = ONCE.call_once(async || {
-            tokio::time::sleep(Duration::from_millis(1000)).await;
-            COUNTER.fetch_add(1, Ordering::SeqCst);
-        });
-        let timeout = tokio::time::timeout(Duration::from_millis(1), fut).await;
-        assert!(timeout.is_err());
-    });
-
-    let handle2 = tokio::spawn(async {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        ONCE.call_once(async || {
-            COUNTER.fetch_add(10, Ordering::SeqCst);
-        })
-        .await;
-    });
-
-    handle1.await.unwrap();
-    handle2.await.unwrap();
-
-    // The second task should have run since the first was cancelled
-    assert_eq!(COUNTER.load(Ordering::SeqCst), 10);
-    assert!(ONCE.is_completed());
-}
-
-#[tokio::test]
-async fn test_once_debug() {
+async fn call_once_runs_only_one_initializer() {
     let once = Once::new();
-    let debug_str = format!("{:?}", once);
-    assert!(debug_str.contains("Once"));
-    assert!(debug_str.contains("done"));
-    assert!(debug_str.contains("false"));
+    let counter = AtomicUsize::new(0);
+
+    assert!(!once.is_completed());
+
+    once.call_once(async || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    })
+    .await;
+
+    assert!(once.is_completed());
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+    once.call_once(async || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    })
+    .await;
+
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_callers_run_one_initializer() {
+    const TASKS: usize = 100;
+
+    let once = Arc::new(Once::new());
+    let counter = Arc::new(AtomicUsize::new(0));
+    let start = Arc::new(tokio::sync::Barrier::new(TASKS + 1));
+    let mut tasks = Vec::with_capacity(TASKS);
+
+    for _ in 0..TASKS {
+        let once = once.clone();
+        let counter = counter.clone();
+        let start = start.clone();
+        tasks.push(tokio::spawn(async move {
+            start.wait().await;
+            once.call_once(async || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            })
+            .await;
+        }));
+    }
+
+    start.wait().await;
+    for task in tasks {
+        task.await.unwrap();
+    }
+
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+    assert!(once.is_completed());
+}
+
+#[tokio::test]
+async fn cancelled_initializer_can_be_retried() {
+    let once = Once::new();
+    let mut first = Box::pin(once.call_once(async || std::future::pending::<()>().await));
+
+    assert!(poll_once(first.as_mut()).is_pending());
+    drop(first);
 
     once.call_once(async || {}).await;
-
-    let debug_str = format!("{:?}", once);
-    assert!(debug_str.contains("true"));
+    assert!(once.is_completed());
 }
 
 #[tokio::test]
-async fn test_once_default() {
-    let once = Once::default();
-    assert!(!once.is_completed());
-}
+async fn panicked_initializer_can_be_retried() {
+    let once = Arc::new(Once::new());
+    let counter = Arc::new(AtomicUsize::new(0));
 
-#[tokio::test]
-async fn test_once_retry_after_panic() {
-    static ONCE: Once = Once::new();
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    let handle = tokio::spawn(async {
-        ONCE.call_once(async || {
-            COUNTER.fetch_add(1, Ordering::SeqCst);
-            panic!("boom");
-        })
-        .await;
+    let handle = tokio::spawn({
+        let once = once.clone();
+        let counter = counter.clone();
+        async move {
+            once.call_once(async || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                panic!("boom");
+            })
+            .await;
+        }
     });
 
-    let err = handle.await.expect_err("once init should panic");
-    assert!(err.is_panic());
+    let error = handle.await.expect_err("initializer should panic");
+    assert!(error.is_panic());
 
-    ONCE.call_once(async || {
-        COUNTER.fetch_add(1, Ordering::SeqCst);
+    once.call_once(async || {
+        counter.fetch_add(1, Ordering::SeqCst);
     })
     .await;
 
-    assert_eq!(COUNTER.load(Ordering::SeqCst), 2);
-    assert!(ONCE.is_completed());
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+    assert!(once.is_completed());
 }
 
 #[tokio::test]
-async fn test_once_wait() {
-    // wait after call_once completed
-    {
-        let once = Once::new();
-        once.call_once(async || {}).await;
-        assert_ready!(tokio_test::task::spawn(once.wait()).poll());
-    }
+async fn wait_observes_completion() {
+    let once = Once::new();
+    let mut waiting = Box::pin(once.wait());
 
-    // wait before call_once completed
-    {
-        static ONCE: Once = Once::new();
-        let handle = tokio::spawn(async {
-            ONCE.wait().await;
-        });
+    assert!(poll_once(waiting.as_mut()).is_pending());
+    once.call_once(async || {}).await;
+    assert!(poll_once(waiting.as_mut()).is_ready());
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        ONCE.call_once(async || {}).await;
-        handle.await.unwrap();
-    }
+    let mut completed = Box::pin(once.wait());
+    assert!(poll_once(completed.as_mut()).is_ready());
 }

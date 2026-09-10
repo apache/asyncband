@@ -17,6 +17,7 @@
 
 use std::path::Path;
 use std::process::Command as StdCommand;
+use std::process::ExitStatus;
 use std::time::Duration;
 
 use clap::Parser;
@@ -25,6 +26,8 @@ use semver::Version;
 use serde::Deserialize;
 
 const PACKAGE_NAME: &str = "asyncband";
+// cargo-semver-checks reserves exit code 100 for completed checks that found deny-level violations.
+const SEMVER_VIOLATIONS_EXIT_CODE: i32 = 100;
 
 #[derive(Parser)]
 struct Command {
@@ -39,6 +42,7 @@ impl Command {
             SubCommand::Build(cmd) => cmd.run(),
             SubCommand::Check(cmd) => cmd.run(),
             SubCommand::Lint(cmd) => cmd.run(),
+            SubCommand::Miri(cmd) => cmd.run(),
             SubCommand::Semver(cmd) => cmd.run(),
             SubCommand::Test(cmd) => cmd.run(),
         }
@@ -55,6 +59,8 @@ enum SubCommand {
     Check(CommandCheck),
     #[clap(about = "Run workspace quality checks.")]
     Lint(CommandLint),
+    #[clap(about = "Check memory safety with Miri.")]
+    Miri(CommandMiri),
     #[clap(about = "Verify API compatibility for a planned release.")]
     Semver(CommandSemver),
     #[clap(about = "Run unit tests.")]
@@ -62,11 +68,14 @@ enum SubCommand {
 }
 
 #[derive(Parser)]
-struct CommandBench;
+struct CommandBench {
+    #[arg(long, help = "Compile benchmarks without running them.")]
+    no_run: bool,
+}
 
 impl CommandBench {
     fn run(self) {
-        run_command(make_bench_cmd());
+        run_command(make_bench_cmd(self.no_run));
     }
 }
 
@@ -98,8 +107,26 @@ impl CommandCheck {
 }
 
 #[derive(Parser)]
+struct CommandMiri;
+
+impl CommandMiri {
+    fn run(self) {
+        run_command(make_miri_cmd(PACKAGE_NAME, &["--lib", "--all-features"]));
+        run_command(make_miri_cmd(
+            "tests-integration",
+            &["--test", "oneshot_test"],
+        ));
+        run_command(make_miri_cmd(
+            "tests-integration",
+            &["--test", "unsafe_paths_test"],
+        ));
+        run_command(make_miri_cmd("tests-integration", &["--test", "mpsc_test"]));
+    }
+}
+
+#[derive(Parser)]
 struct CommandTest {
-    #[arg(long, help = "Run tests serially and do not capture output.")]
+    #[arg(long, help = "Do not capture test output.")]
     no_capture: bool,
 }
 
@@ -136,6 +163,12 @@ fn asyncband_features() -> Vec<String> {
 struct CommandSemver {
     #[arg(long, value_name = "VERSION", help = "Version that will be released.")]
     release_version: Version,
+
+    #[arg(
+        long,
+        help = "Accept reviewed breaking API changes for a semver-major release."
+    )]
+    acknowledge_breaking_changes: bool,
 }
 
 impl CommandSemver {
@@ -148,12 +181,44 @@ impl CommandSemver {
         };
 
         let release_type = classify_release_type(&baseline_version, &self.release_version);
+        assert!(
+            release_type == SemverReleaseType::Major || !self.acknowledge_breaking_changes,
+            "--acknowledge-breaking-changes is only valid for a semver-major release"
+        );
+
+        let audit_release_type = release_type.audit_release_type();
         println!(
             "Checking release {} against {PACKAGE_NAME}@{baseline_version} as a {} release.",
             self.release_version,
             release_type.as_str()
         );
-        run_command(make_semver_check_cmd(&baseline_version, release_type));
+        if audit_release_type != release_type {
+            println!(
+                "Auditing with minor compatibility rules so breaking API changes remain visible."
+            );
+        }
+
+        let status = command_status(make_semver_check_cmd(&baseline_version, audit_release_type));
+        if status.success() {
+            return;
+        }
+
+        if release_type == SemverReleaseType::Major
+            && status.code() == Some(SEMVER_VIOLATIONS_EXIT_CODE)
+        {
+            assert!(
+                self.acknowledge_breaking_changes,
+                "breaking API changes were reported; document and review them, then rerun with \
+                 --acknowledge-breaking-changes"
+            );
+            println!(
+                "The breaking API changes reported above are acknowledged for release {}.",
+                self.release_version
+            );
+            return;
+        }
+
+        panic!("command failed: {status}");
     }
 }
 
@@ -190,6 +255,13 @@ impl SemverReleaseType {
             Self::Patch => "patch",
         }
     }
+
+    fn audit_release_type(self) -> Self {
+        match self {
+            Self::Major => Self::Minor,
+            release_type => release_type,
+        }
+    }
 }
 
 fn find_command(cmd: &str) -> StdCommand {
@@ -213,10 +285,14 @@ fn ensure_installed(bin: &str, crate_name: &str) {
     }
 }
 
-fn run_command(mut cmd: StdCommand) {
-    println!("{cmd:?}");
-    let status = cmd.status().expect("failed to execute process");
+fn run_command(cmd: StdCommand) {
+    let status = command_status(cmd);
     assert!(status.success(), "command failed: {status}");
+}
+
+fn command_status(mut cmd: StdCommand) -> ExitStatus {
+    println!("{cmd:?}");
+    cmd.status().expect("failed to execute process")
 }
 
 fn find_latest_release() -> Option<Version> {
@@ -283,9 +359,12 @@ fn classify_release_type(baseline: &Version, release: &Version) -> SemverRelease
     }
 }
 
-fn make_bench_cmd() -> StdCommand {
+fn make_bench_cmd(no_run: bool) -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.args(["bench", "--workspace", "--all-features", "--bench", "*"]);
+    if no_run {
+        cmd.arg("--no-run");
+    }
     cmd
 }
 
@@ -332,6 +411,13 @@ fn make_check_cmd(features: &[String]) -> StdCommand {
     for feature in features {
         cmd.args(["--features", feature]);
     }
+    cmd
+}
+
+fn make_miri_cmd(package: &str, target: &[&str]) -> StdCommand {
+    let mut cmd = find_command("cargo");
+    cmd.args(["+nightly", "miri", "test", "--package", package]);
+    cmd.args(target);
     cmd
 }
 
@@ -451,5 +537,21 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn audit_major_releases_with_minor_compatibility_rules() {
+        assert_eq!(
+            SemverReleaseType::Major.audit_release_type(),
+            SemverReleaseType::Minor
+        );
+        assert_eq!(
+            SemverReleaseType::Minor.audit_release_type(),
+            SemverReleaseType::Minor
+        );
+        assert_eq!(
+            SemverReleaseType::Patch.audit_release_type(),
+            SemverReleaseType::Patch
+        );
     }
 }

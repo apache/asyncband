@@ -27,7 +27,7 @@ use asyncband::oneshot;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_primitives_compose_across_modules() {
     let barrier = Arc::new(Barrier::new(3));
-    let values = Arc::new(Mutex::new(Vec::new()));
+    let values = Arc::new(Mutex::new(vec![]));
     let (done_tx, done_rx) = oneshot::channel();
 
     let first_barrier = barrier.clone();
