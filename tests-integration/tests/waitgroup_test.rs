@@ -15,25 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
-use std::future::IntoFuture;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 use std::task::Context;
-use std::task::Wake;
 use std::task::Waker;
 
 use asyncband::waitgroup::WaitGroup;
+use tests_integration::WakeCounter;
 use tests_integration::poll_once;
-
-struct WakeCount(AtomicUsize);
-
-impl Wake for WakeCount {
-    fn wake(self: Arc<Self>) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn waits_for_all_worker_handles() {
@@ -130,8 +118,8 @@ fn repolling_replaces_the_registered_waker() {
     let wg = WaitGroup::new();
     let worker = wg.clone();
     let mut wait = Box::pin(wg.into_future());
-    let first = Arc::new(WakeCount(AtomicUsize::new(0)));
-    let second = Arc::new(WakeCount(AtomicUsize::new(0)));
+    let first = Arc::new(WakeCounter::default());
+    let second = Arc::new(WakeCounter::default());
     let first_waker = Waker::from(first.clone());
     let second_waker = Waker::from(second.clone());
 
@@ -147,6 +135,6 @@ fn repolling_replaces_the_registered_waker() {
     );
     drop(worker);
 
-    assert_eq!(first.0.load(Ordering::Relaxed), 0);
-    assert_eq!(second.0.load(Ordering::Relaxed), 1);
+    assert_eq!(first.count(), 0);
+    assert_eq!(second.count(), 1);
 }

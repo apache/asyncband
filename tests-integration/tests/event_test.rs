@@ -23,25 +23,16 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc;
 use std::task::Context;
 use std::task::Wake;
 use std::task::Waker;
-use std::thread;
-use std::time::Duration;
 
 use asyncband::event::ManualResetEvent;
+use tests_integration::PanicWake;
+use tests_integration::WakeCounter;
+use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
-
-struct TrackWake(AtomicUsize);
-
-impl Wake for TrackWake {
-    fn wake(self: Arc<Self>) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
 
 #[test]
 fn set_is_sticky_and_reset_blocks_new_waiters() {
@@ -71,8 +62,8 @@ fn an_unpolled_wait_is_not_a_waiter_of_a_preceding_set() {
 #[test]
 fn polling_with_a_new_waker_replaces_the_registration() {
     let event = ManualResetEvent::new();
-    let first = Arc::new(TrackWake(AtomicUsize::new(0)));
-    let second = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let first = Arc::new(WakeCounter::default());
+    let second = Arc::new(WakeCounter::default());
     let first_waker = Waker::from(first.clone());
     let second_waker = Waker::from(second.clone());
     let baseline = Arc::strong_count(&first);
@@ -93,14 +84,14 @@ fn polling_with_a_new_waker_replaces_the_registration() {
     assert_eq!(Arc::strong_count(&first), baseline);
 
     event.set();
-    assert_eq!(first.0.load(Ordering::Relaxed), 0);
-    assert_eq!(second.0.load(Ordering::Relaxed), 1);
+    assert_eq!(first.count(), 0);
+    assert_eq!(second.count(), 1);
 }
 
 #[test]
 fn cancelling_a_committed_waiter_leaves_the_others_committed() {
     let event = ManualResetEvent::new();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let mut context = Context::from_waker(&waker);
     let mut cancelled = Box::pin(event.wait());
@@ -111,7 +102,7 @@ fn cancelling_a_committed_waiter_leaves_the_others_committed() {
 
     event.set();
     event.reset();
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 2);
+    assert_eq!(tracker.count(), 2);
 
     // A committed waiter holds no consumable permit, so dropping it hands nothing on.
     drop(cancelled);
@@ -119,22 +110,14 @@ fn cancelling_a_committed_waiter_leaves_the_others_committed() {
     assert!(!event.is_set());
 }
 
-struct PanicOnWake;
-
-impl Wake for PanicOnWake {
-    fn wake(self: Arc<Self>) {
-        panic!("waker panicked");
-    }
-}
-
 // `set` releases every waiter registered for the current unset period, so one broken waker must
 // not strand the waiters queued behind it.
 #[test]
 fn a_panicking_waker_still_releases_the_remaining_waiters() {
     let event = ManualResetEvent::new();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let tracking_waker = Waker::from(tracker.clone());
-    let panicking_waker = Waker::from(Arc::new(PanicOnWake));
+    let panicking_waker = Waker::from(Arc::new(PanicWake));
 
     let mut first = Box::pin(event.wait());
     let mut exploding = Box::pin(event.wait());
@@ -161,7 +144,7 @@ fn a_panicking_waker_still_releases_the_remaining_waiters() {
 
     assert!(panicked.is_err(), "the waker panic must reach the caller");
     assert_eq!(
-        tracker.0.load(Ordering::Relaxed),
+        tracker.count(),
         2,
         "the waiter queued behind the panicking waker was never woken"
     );
@@ -190,14 +173,9 @@ impl Drop for ReentrantWaker {
 }
 
 // Wakers must be invoked and dropped after the internal lock is released.
-//
-// The scenario runs on a worker thread so that a regression surfaces as a bounded failure here
-// rather than hanging until the harness times out.
 #[test]
 fn wakers_are_woken_and_dropped_outside_the_internal_lock() {
-    let (done, finished) = mpsc::channel();
-
-    thread::spawn(move || {
+    assert_completes_without_deadlock(|| {
         let event = Arc::new(ManualResetEvent::new());
 
         // `set` wakes the waiter, and the waker re-enters `reset`.
@@ -245,13 +223,7 @@ fn wakers_are_woken_and_dropped_outside_the_internal_lock() {
         // Cancelling a pending wait drops the registered waker, which re-enters `is_set`. The
         // registration holds the last reference, so the drop runs here.
         drop(replaced);
-
-        done.send(()).unwrap();
     });
-
-    finished
-        .recv_timeout(Duration::from_secs(10))
-        .expect("a waker was invoked or dropped while the internal lock was held");
 }
 
 // A waker that resets the event and registers a fresh waiter from inside the wake callback.
@@ -336,7 +308,7 @@ fn a_wait_registered_from_a_wake_callback_belongs_to_the_next_period() {
 #[test]
 fn set_then_reset_commits_registered_waiters() {
     let event = ManualResetEvent::new();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let mut context = Context::from_waker(&waker);
     let mut wait = pin!(event.wait());
@@ -345,7 +317,7 @@ fn set_then_reset_commits_registered_waiters() {
     event.set();
     event.reset();
 
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(tracker.count(), 1);
     assert!(wait.as_mut().poll(&mut context).is_ready());
 
     let mut next_generation = pin!(event.wait());
@@ -355,7 +327,7 @@ fn set_then_reset_commits_registered_waiters() {
 #[test]
 fn repeated_set_is_coalesced() {
     let event = ManualResetEvent::new();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let mut context = Context::from_waker(&waker);
     let mut wait = pin!(event.wait());
@@ -364,14 +336,14 @@ fn repeated_set_is_coalesced() {
     event.set();
     event.set();
 
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(tracker.count(), 1);
     assert!(wait.as_mut().poll(&mut context).is_ready());
 }
 
 #[test]
 fn cancelling_a_waiter_releases_its_waker() {
     let event = ManualResetEvent::new();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let baseline = Arc::strong_count(&tracker);
     let mut context = Context::from_waker(&waker);
@@ -383,13 +355,13 @@ fn cancelling_a_waiter_releases_its_waker() {
     drop(wait);
     assert_eq!(Arc::strong_count(&tracker), baseline);
     event.set();
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 0);
+    assert_eq!(tracker.count(), 0);
 }
 
 #[test]
 fn cancelling_an_owned_waiter_releases_its_waker_and_event_handle() {
     let event = Arc::new(ManualResetEvent::new());
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let baseline = Arc::strong_count(&tracker);
     let mut context = Context::from_waker(&waker);
@@ -403,5 +375,5 @@ fn cancelling_an_owned_waiter_releases_its_waker_and_event_handle() {
     assert_eq!(Arc::strong_count(&event), 1);
 
     event.set();
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 0);
+    assert_eq!(tracker.count(), 0);
 }

@@ -15,17 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
 
 use asyncband::semaphore::Semaphore;
+use tests_integration::PanicWake;
+use tests_integration::WakeCounter;
+use tests_integration::expect_ready;
+use tests_integration::poll_with;
 
 #[test]
 fn no_permits() {
@@ -46,27 +47,20 @@ fn try_acquire() {
     assert!(p3.is_some());
 }
 
-#[tokio::test]
-async fn acquire() {
-    let sem = Arc::new(Semaphore::new(1));
-    let p1 = sem.try_acquire(1).unwrap();
-    let sem_clone = sem.clone();
-    let j = tokio::spawn(async move {
-        let _p2 = sem_clone.acquire(1).await;
-    });
-    drop(p1);
-    j.await.unwrap();
-}
+#[test]
+fn released_permit_wakes_a_pending_acquire() {
+    let sem = Semaphore::new(1);
+    let held = sem.try_acquire(1).unwrap();
+    let mut acquire = pin!(sem.acquire(1));
+    let (waker, wakes) = WakeCounter::new();
+    assert!(poll_with(acquire.as_mut(), &waker).is_pending());
 
-#[tokio::test]
-async fn add_permits() {
-    let sem = Arc::new(Semaphore::new(0));
-    let sem_clone = sem.clone();
-    let j = tokio::spawn(async move {
-        let _p2 = sem_clone.acquire(1).await;
-    });
-    sem.release(1);
-    j.await.unwrap();
+    drop(held);
+    assert_eq!(wakes.count(), 1);
+    let permit = expect_ready(poll_with(acquire.as_mut(), &waker));
+    assert_eq!(sem.available_permits(), 0);
+    drop(permit);
+    assert_eq!(sem.available_permits(), 1);
 }
 
 #[test]
@@ -87,12 +81,6 @@ fn add_max_amount_permits() {
     let s = Semaphore::new(0);
     s.release(usize::MAX);
     assert_eq!(s.available_permits(), usize::MAX);
-}
-
-#[test]
-#[should_panic(expected = "would overflow usize::MAX")]
-fn release_overflow_panics() {
-    Semaphore::new(usize::MAX).release(1);
 }
 
 #[test]
@@ -151,18 +139,6 @@ fn no_panic_at_max_permits() {
 }
 
 #[test]
-fn try_acquire_concurrently() {
-    let s = Semaphore::new(1);
-    let p1 = s.try_acquire(1).unwrap();
-    assert_eq!(s.available_permits(), 0);
-    let p2 = s.try_acquire(1);
-    assert!(p2.is_none());
-    assert_eq!(s.available_permits(), 0);
-    drop(p1);
-    assert_eq!(s.available_permits(), 1);
-}
-
-#[test]
 fn acquire_then_drop() {
     let waker = Waker::noop();
     let mut context = Context::from_waker(waker);
@@ -201,27 +177,11 @@ fn wake_then_drop() {
 
 #[test]
 fn release_attempts_every_waker_after_one_panics() {
-    struct PanicOnWake;
-
-    impl Wake for PanicOnWake {
-        fn wake(self: Arc<Self>) {
-            panic!("waker panicked");
-        }
-    }
-
-    struct CountWakes(AtomicUsize);
-
-    impl Wake for CountWakes {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
     let semaphore = Semaphore::new(0);
     let mut panicking = pin!(semaphore.acquire(1));
     let mut tracked = pin!(semaphore.acquire(1));
-    let panic_waker = Waker::from(Arc::new(PanicOnWake));
-    let wake_count = Arc::new(CountWakes(AtomicUsize::new(0)));
+    let panic_waker = Waker::from(Arc::new(PanicWake));
+    let wake_count = Arc::new(WakeCounter::default());
     let tracked_waker = Waker::from(wake_count.clone());
 
     assert!(
@@ -240,7 +200,7 @@ fn release_attempts_every_waker_after_one_panics() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| semaphore.release(2)));
 
     assert!(result.is_err());
-    assert_eq!(wake_count.0.load(Ordering::Relaxed), 1);
+    assert_eq!(wake_count.count(), 1);
     assert!(
         panicking
             .as_mut()

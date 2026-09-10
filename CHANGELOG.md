@@ -7,6 +7,19 @@ All notable changes to this project will be documented in this file.
 ### New features
 
 * Add an opt-in runtime-agnostic `Phaser` with dynamic RAII participants, reusable phases, and cancellation-resilient arrival semantics.
+* Add bounded MPSC `reserve` and `try_reserve` methods returning a `Permit`, allowing callers to wait for capacity before constructing a message; pending sends and reservations receive capacity in wait-queue order, and unused permits release capacity without claiming message order.
+
+### Bug fixes
+
+* Release MPSC receiver wakers when the receiver is dropped, avoiding retained tasks and ownership cycles when a waker holds a sender.
+* Notify all blocked bounded MPSC senders on receiver disconnection even when a buffered message destructor panics.
+* Avoid deadlocks when a bounded MPSC sender's waker clone callback receives from the same channel.
+
+### Improvements
+
+* Finish releasing buffered bounded MPSC messages even if one message destructor panics.
+* Improve unbounded MPSC throughput with batched receiving and incremental storage reclamation; empty-buffer retention is bounded independently of previous peak occupancy.
+* Make completed and abandoned `Completion` waits lock-free while preserving cancellable pending registration.
 
 ## v0.7.2
 

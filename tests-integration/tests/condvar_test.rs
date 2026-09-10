@@ -15,32 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::Context;
-use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
-use std::thread;
-use std::time::Duration;
 
 use asyncband::condvar::Condvar;
 use asyncband::mutex::Mutex;
+use tests_integration::assert_completes_without_deadlock;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
+use tests_integration::poll_with;
 use tests_integration::test_runtime;
 use tokio::task::JoinHandle;
-
-fn expect_ready<T>(poll: Poll<T>) -> T {
-    match poll {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("future should be ready"),
-    }
-}
-
-fn poll_with<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
-    future.poll(&mut Context::from_waker(waker))
-}
 
 struct NotifyOnDrop(Arc<Condvar>);
 
@@ -177,8 +163,7 @@ fn notify_all_wakes_current_waiters_using_a_predicate_loop() {
 
 #[test]
 fn cancelling_waiter_drops_its_waker_outside_the_waiter_lock() {
-    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-    let worker = thread::spawn(move || {
+    assert_completes_without_deadlock(|| {
         let mutex = Mutex::new(());
         let condvar = Arc::new(Condvar::new());
         let waker = Waker::from(Arc::new(NotifyOnDrop(condvar.clone())));
@@ -187,13 +172,7 @@ fn cancelling_waiter_drops_its_waker_outside_the_waiter_lock() {
         assert!(poll_with(wait.as_mut(), &waker).is_pending());
         drop(waker);
         drop(wait);
-        finished_tx.send(()).unwrap();
     });
-
-    finished_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("dropping a cancelled waiter deadlocked against the condvar waiter lock");
-    worker.join().unwrap();
 }
 
 #[test]

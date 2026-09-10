@@ -26,7 +26,7 @@ use crate::support::poll_pending;
 use crate::support::poll_pinned_ready;
 use crate::support::poll_ready;
 
-const OBSERVER_COUNTS: &[usize] = &[1, 2, 4, 8, 32];
+const OBSERVER_COUNTS: &[usize] = &[2, 8, 32];
 
 #[divan::bench]
 fn ready_wait(bencher: Bencher) {
@@ -35,6 +35,25 @@ fn ready_wait(bencher: Bencher) {
     completer.complete(1usize).unwrap();
 
     bencher.bench_local(|| black_box(*poll_ready(completion.wait(), &mut context).unwrap()));
+}
+
+#[divan::bench]
+fn abandoned_wait(bencher: Bencher) {
+    let mut context = bench_context();
+    let (completer, completion) = completion::new::<usize>();
+    drop(completer);
+
+    bencher.bench_local(|| black_box(poll_ready(completion.wait(), &mut context).unwrap_err()));
+}
+
+#[divan::bench]
+fn repoll_pending(bencher: Bencher) {
+    let mut context = bench_context();
+    let (_completer, completion) = completion::new::<usize>();
+    let mut wait = pin!(completion.wait());
+    poll_pending(wait.as_mut(), &mut context);
+
+    bencher.bench_local(|| poll_pending(wait.as_mut(), &mut context));
 }
 
 #[divan::bench]
@@ -79,15 +98,9 @@ fn notify_pending_fanout(bencher: Bencher, observer_count: usize) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let (completer, first) = black_box(completion::new());
-        let mut observers = Vec::with_capacity(observer_count);
-        observers.push(first);
-        for _ in 1..observer_count {
-            observers.push(observers[0].clone());
-        }
-        let mut waiters = observers
-            .iter()
-            .map(|observer| Box::pin(observer.wait()))
+        let (completer, completion) = black_box(completion::new());
+        let mut waiters = (0..observer_count)
+            .map(|_| Box::pin(completion.wait()))
             .collect::<Vec<_>>();
         for waiter in &mut waiters {
             poll_pending(waiter.as_mut(), &mut context);

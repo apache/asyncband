@@ -65,11 +65,8 @@ use crate::internal::wakerset::WakerToken;
 /// Creates a single-use [`Completer`] and a cloneable [`Completion`] observer.
 pub fn new<T>() -> (Completer<T>, Completion<T>) {
     let shared = Arc::new(Shared {
-        value: OnceLock::new(),
-        state: Mutex::new(State {
-            status: Status::Pending,
-            waiters: WakerSet::new(),
-        }),
+        result: OnceLock::new(),
+        waiters: Mutex::new(WakerSet::new()),
     });
     let completer = Completer {
         shared: Arc::downgrade(&shared),
@@ -79,20 +76,9 @@ pub fn new<T>() -> (Completer<T>, Completion<T>) {
 }
 
 struct Shared<T> {
-    value: OnceLock<T>,
-    state: Mutex<State>,
-}
-
-struct State {
-    status: Status,
-    waiters: WakerSet,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Status {
-    Pending,
-    Completed,
-    Abandoned,
+    // A stored None means abandonment. Initialization also publishes waiter detachment.
+    result: OnceLock<Option<T>>,
+    waiters: Mutex<WakerSet>,
 }
 
 /// The error returned by [`Completion::wait`] when the completer was dropped without a value.
@@ -117,9 +103,9 @@ pub struct Completer<T> {
 }
 
 // SAFETY: The completer can only move an owned `T` into the shared `OnceLock` while holding the
-// state mutex; it never exposes or accesses the stored value afterward. `Completion<T>` retains its
-// ordinary auto traits, so observers cannot cross threads unless `T` can be shared. `T: Send` also
-// permits the shared allocation and its value to be destroyed by the completing thread if its
+// waiter mutex; it never exposes or accesses the stored value afterward. `Completion<T>` retains
+// its ordinary auto traits, so observers cannot cross threads unless `T` can be shared. `T: Send`
+// also permits the shared allocation and its value to be destroyed by the completing thread if its
 // temporary strong reference is the last one.
 unsafe impl<T: Send> Send for Completer<T> {}
 unsafe impl<T: Send> Sync for Completer<T> {}
@@ -145,21 +131,11 @@ impl<T> Completer<T> {
             return Err(value);
         };
         let wakers = {
-            let mut state = shared.state.lock();
-            assert_eq!(
-                state.status,
-                Status::Pending,
-                "a live completer must refer to a pending completion"
-            );
-
-            if let Err(value) = shared.value.set(value) {
-                drop(state);
-                drop(value);
-                panic!("pending completion value must be unset");
-            }
-            // Publish the value before making completion observable and detaching its waiters.
-            state.status = Status::Completed;
-            state.waiters.take_all()
+            let mut waiters = shared.waiters.lock();
+            let wakers = waiters.take_all();
+            // The single completer publishes only after every waiter token has been invalidated.
+            assert!(shared.result.set(Some(value)).is_ok());
+            wakers
         };
         // `complete` consumes the only completer. Disarm its destructor before invoking arbitrary
         // wake callbacks; the completed state no longer needs abandonment handling.
@@ -175,13 +151,10 @@ impl<T> Drop for Completer<T> {
             return;
         };
         let wakers = {
-            let mut state = shared.state.lock();
-            if state.status != Status::Pending {
-                return;
-            }
-            // Publish abandonment and detach its waiters atomically with respect to registration.
-            state.status = Status::Abandoned;
-            state.waiters.take_all()
+            let mut waiters = shared.waiters.lock();
+            let wakers = waiters.take_all();
+            assert!(shared.result.set(None).is_ok());
+            wakers
         };
         wake_all(wakers);
     }
@@ -221,7 +194,7 @@ impl<T> Completion<T> {
     /// not affect this observer, another wait, or the eventual result.
     pub async fn wait(&self) -> Result<&T, Abandoned> {
         Wait {
-            completion: self,
+            shared: &self.shared,
             token: None,
         }
         .await
@@ -229,7 +202,7 @@ impl<T> Completion<T> {
 }
 
 struct Wait<'a, T> {
-    completion: &'a Completion<T>,
+    shared: &'a Shared<T>,
     token: Option<WakerToken>,
 }
 
@@ -238,33 +211,23 @@ impl<'a, T> Future for Wait<'a, T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let mut state = this.completion.shared.state.lock();
-        let (poll, retired_waker) = match state.status {
-            Status::Pending => {
-                let retired = state.waiters.register(&mut this.token, cx.waker());
-                (Poll::Pending, retired)
-            }
-            Status::Completed => {
-                // Completion detaches every registration under this same lock before another poll
-                // can observe the terminal status.
-                this.token = None;
-                let completion: &'a Completion<T> = this.completion;
-                let value = completion
-                    .shared
-                    .value
-                    .get()
-                    .expect("completed value must be initialized");
-                (Poll::Ready(Ok(value)), None)
-            }
-            Status::Abandoned => {
-                // Abandonment uses the same terminal detach protocol as completion.
-                this.token = None;
-                (Poll::Ready(Err(Abandoned(()))), None)
+        let shared = this.shared;
+        let result = if let Some(result) = shared.result.get() {
+            result
+        } else {
+            let mut waiters = shared.waiters.lock();
+            if let Some(result) = shared.result.get() {
+                result
+            } else {
+                let retired = waiters.register(&mut this.token, cx.waker());
+                drop(waiters);
+                drop(retired);
+                return Poll::Pending;
             }
         };
-        drop(state);
-        drop(retired_waker);
-        poll
+
+        this.token = None;
+        Poll::Ready(result.as_ref().ok_or(Abandoned(())))
     }
 }
 
@@ -274,15 +237,17 @@ impl<T> Drop for Wait<'_, T> {
             return;
         }
 
-        let mut state = self.completion.shared.state.lock();
-        if state.status != Status::Pending {
-            // The terminal transition already detached this registration.
-            self.token = None;
+        if self.shared.result.get().is_some() {
             return;
         }
 
-        let waker = state.waiters.unregister(&mut self.token);
-        drop(state);
+        let mut waiters = self.shared.waiters.lock();
+        if self.shared.result.get().is_some() {
+            return;
+        }
+
+        let waker = waiters.unregister(&mut self.token);
+        drop(waiters);
         drop(waker);
     }
 }

@@ -49,9 +49,6 @@ pub(crate) fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
     }
 }
 
-#[cfg(feature = "mpsc")]
-pub(crate) mod atomic_waker;
-
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
@@ -94,17 +91,13 @@ pub(crate) mod value_cell;
     feature = "waitgroup",
     feature = "watch",
 ))]
+// Some primitives use only shared access, leaving `Mutex::get_mut` unused.
+#[allow(dead_code)]
 pub(crate) mod mutex;
 
-#[cfg(any(
-    feature = "mpsc",
-    feature = "mutex",
-    feature = "rwlock",
-    feature = "semaphore",
-))]
-// `mpsc` uses `poll_acquire`, `release_if_nonempty`, and `notify_all`; mutexes and rwlocks use
-// `acquire`, `try_acquire`, and `release`; the public semaphore also uses the accounting methods.
-// Each single-primitive build intentionally leaves the other groups unused.
+#[cfg(any(feature = "mutex", feature = "rwlock", feature = "semaphore"))]
+// Mutexes and rwlocks use the acquire/release operations; the public semaphore also exposes
+// permit accounting. Each single-primitive build leaves part of this shared API unused.
 #[allow(dead_code)]
 pub(crate) mod semaphore;
 

@@ -117,21 +117,6 @@ fn cancel_pending<C: WaitGroup>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, WaitgroupRs])]
-fn worker_round_trip<C: WaitGroup>(bencher: Bencher) {
-    let group = C::new();
-
-    bencher.bench_local(|| black_box(C::worker(&group)));
-}
-
-#[divan::bench(types = [Asyncband, WaitgroupRs])]
-fn nested_worker_round_trip<C: WaitGroup>(bencher: Bencher) {
-    let group = C::new();
-    let worker = C::worker(&group);
-
-    bencher.bench_local(|| black_box(worker.clone()));
-}
-
 #[divan::bench(types = [Asyncband, WaitgroupRs], args = WORKER_COUNTS)]
 fn worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
     bencher.bench_local(|| {
