@@ -29,7 +29,10 @@ release = false
 asyncband = { workspace = true, features = [
   "completion",
   "lazy-cell",
+  "mpsc",
   "once-cell",
+  "oneshot",
+  "select",
   "shutdown",
 ] }
 tokio = { workspace = true, features = [
@@ -58,3 +61,7 @@ path = "src/graceful_shutdown.rs"
 [[example]]
 name = "shared_completion"
 path = "src/shared_completion.rs"
+
+[[example]]
+name = "select_messages"
+path = "src/select_messages.rs"

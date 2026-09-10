@@ -60,6 +60,7 @@ once-map = ["dep:hashbrown", "once-cell"]
 oneshot = []
 pool = ["semaphore"]
 rwlock = []
+select = ["dep:fastrand"]
 semaphore = []
 shutdown = ["latch", "waitgroup"]
 singleflight = ["dep:hashbrown", "once-cell"]
@@ -67,6 +68,7 @@ waitgroup = []
 watch = []
 
 [dependencies]
+fastrand = { workspace = true, optional = true }
 hashbrown = { workspace = true, default-features = false, features = [
   "inline-more",
 ], optional = true }
