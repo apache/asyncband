@@ -76,6 +76,7 @@
 //! |                            | [`broadcast`]                                 | `broadcast`    | Deliver every value to receivers active at send time; retain an unbounded backlog until each consumes or drops. |
 //! |                            | [`watch`]                                     | `watch`        | Publish cloneable latest state from one or more senders; receivers independently coalesce intermediate updates. |
 //! | Object reuse               | [`pool`]                                      | `pool`         | Reuse objects through bounded or unbounded pool variants.                                                     |
+//! | Future composition         | [`select!`]                                   | `select`       | Wait for one asynchronous branch, with explicit cancellation and polling order.                               |
 //! | Sync interop               | [`FutureExt`](blocking::FutureExt)            | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                                     |
 //!
 //! # Scope and runtime model
@@ -117,6 +118,12 @@
 //! While incubation status is not necessarily a reflection of the completeness or stability of the
 //! code, it does indicate that the project has yet to be fully endorsed by the ASF.
 mod internal;
+
+#[cfg(feature = "select")]
+mod select;
+#[cfg(feature = "select")]
+#[doc(hidden)]
+pub use select::random_start as __select_random_start;
 
 #[cfg(feature = "barrier")]
 pub mod barrier;

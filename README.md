@@ -58,7 +58,7 @@ Public paths stay direct—such as `asyncband::mutex`, `asyncband::pool`, and `a
 
 ## Examples
 
-Runnable examples live in the [`examples`](examples) workspace crate. They demonstrate how to choose and compose Asyncband primitives in complete programs.
+Runnable examples live in the [`examples`](examples) workspace crate. They demonstrate how to choose and compose Asyncband primitives in complete programs. The [`select_messages`](examples/src/select_messages.rs) example combines message reception, a retained stop notification, and a caller-owned deadline using `select!`.
 
 ## API map
 
@@ -84,6 +84,7 @@ Runnable examples live in the [`examples`](examples) workspace crate. They demon
 |                            | [`broadcast`](https://docs.rs/asyncband/*/asyncband/broadcast/)                                | `broadcast`    | Deliver every value to receivers active at send time; retain an unbounded backlog until each consumes or drops. |
 |                            | [`watch`](https://docs.rs/asyncband/*/asyncband/watch/)                                        | `watch`        | Publish cloneable latest state from one or more senders; receivers independently coalesce intermediate updates. |
 | Object reuse               | [`pool`](https://docs.rs/asyncband/*/asyncband/pool/)                                          | `pool`         | Reuse objects through bounded or unbounded pool variants.                                                     |
+| Future composition         | [`select!`](https://docs.rs/asyncband/*/asyncband/macro.select.html)                        | `select`       | Wait for one asynchronous branch, with explicit cancellation and polling order.                               |
 | Sync interop               | [`FutureExt`](https://docs.rs/asyncband/*/asyncband/blocking/trait.FutureExt.html)             | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                                     |
 
 ## Synchronous interoperability

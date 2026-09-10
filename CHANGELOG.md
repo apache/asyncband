@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
+* Add the opt-in `select!` macro to wait for one of several `IntoFuture` branches, with random starting order, explicit `biased;` priority, branch conditions, and an all-disabled `else` fallback; owned futures are dropped before the selected handler runs, while borrowed futures can be retained across selections.
 * Add bounded MPSC `reserve` and `try_reserve` methods returning a `Permit`, allowing callers to wait for capacity before constructing a message; pending sends and reservations receive capacity in wait-queue order, and unused permits release capacity without claiming message order.
 
 ### Bug fixes
