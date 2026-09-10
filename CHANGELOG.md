@@ -18,7 +18,7 @@ All notable changes to this project will be documented in this file.
 
 * Finish releasing buffered bounded MPSC messages even if one message destructor panics.
 * Improve unbounded MPSC throughput with batched receiving and incremental storage reclamation; empty-buffer retention is bounded independently of previous peak occupancy.
-* Make completed and abandoned `Completion` waits lock-free while preserving cancellable pending registration and unlocked waker callbacks.
+* Make completed and abandoned `Completion` waits lock-free while preserving cancellable pending registration.
 
 ## v0.7.2
 

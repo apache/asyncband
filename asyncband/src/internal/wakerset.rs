@@ -102,32 +102,6 @@ impl WakerSet {
         None
     }
 
-    /// Registers or updates an already-owned waker.
-    ///
-    /// If the supplied waker is unused or replaces an existing waker, the retired waker is
-    /// returned so the caller can drop it after releasing the lock that protects this set.
-    #[inline]
-    #[must_use = "drop the returned waker after releasing the waker set's state lock"]
-    pub fn register_owned(
-        &mut self,
-        token: &mut Option<WakerToken>,
-        waker: Waker,
-    ) -> Option<Waker> {
-        if let Some(current) = token.as_ref().map(|token| {
-            self.wakers
-                .get_mut(token.0)
-                .expect("waker token must refer to an occupied slot")
-        }) {
-            if current.will_wake(&waker) {
-                return Some(waker);
-            }
-            return Some(mem::replace(current, waker));
-        }
-
-        *token = Some(WakerToken(self.wakers.insert(waker)));
-        None
-    }
-
     /// Removes the waker identified by `token`.
     ///
     /// The owner must clear stale tokens without calling this method after detaching the set. The

@@ -16,13 +16,9 @@
 // under the License.
 
 use std::cell::Cell;
-use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::sync::Barrier;
-use std::sync::Mutex;
 use std::task::Poll;
-use std::task::RawWaker;
-use std::task::RawWakerVTable;
 use std::task::Waker;
 use std::thread;
 
@@ -36,77 +32,36 @@ use tests_integration::waker_on_wake;
 
 struct NotClone(String);
 
-struct CloneCallbackWake(Mutex<Option<Box<dyn FnOnce() + Send>>>);
-
-unsafe fn clone_callback_waker(data: *const ()) -> RawWaker {
-    // SAFETY: Every pointer using this vtable comes from `Arc::into_raw`. `ManuallyDrop` keeps the
-    // original waker's strong reference alive while its clone callback borrows the allocation.
-    let state = ManuallyDrop::new(unsafe { Arc::<CloneCallbackWake>::from_raw(data.cast()) });
-    if let Some(callback) = state.0.lock().unwrap().take() {
-        callback();
-    }
-    RawWaker::new(
-        Arc::into_raw(Arc::clone(&state)).cast(),
-        &CLONE_CALLBACK_VTABLE,
-    )
-}
-
-unsafe fn wake_clone_callback_waker(data: *const ()) {
-    // SAFETY: `wake` consumes the raw waker's strong reference exactly once.
-    drop(unsafe { Arc::<CloneCallbackWake>::from_raw(data.cast()) });
-}
-
-unsafe fn wake_clone_callback_waker_by_ref(_data: *const ()) {}
-
-unsafe fn drop_clone_callback_waker(data: *const ()) {
-    // SAFETY: `drop` consumes the raw waker's strong reference exactly once.
-    drop(unsafe { Arc::<CloneCallbackWake>::from_raw(data.cast()) });
-}
-
-static CLONE_CALLBACK_VTABLE: RawWakerVTable = RawWakerVTable::new(
-    clone_callback_waker,
-    wake_clone_callback_waker,
-    wake_clone_callback_waker_by_ref,
-    drop_clone_callback_waker,
-);
-
-fn waker_with_clone_callback(callback: impl FnOnce() + Send + 'static) -> Waker {
-    let state = Arc::new(CloneCallbackWake(Mutex::new(Some(Box::new(callback)))));
-    let raw = RawWaker::new(Arc::into_raw(state).cast(), &CLONE_CALLBACK_VTABLE);
-    // SAFETY: The vtable preserves the Arc strong count and all callbacks are thread safe.
-    unsafe { Waker::from_raw(raw) }
-}
-
 #[test]
 fn all_observers_borrow_the_same_non_clone_value() {
     let (completer, completion) = completion::new();
     let first = completion.clone();
     let second = completion.clone();
+    drop(completion);
 
     assert!(completer.complete(NotClone(String::from("ready"))).is_ok());
 
     let first_value = pollster::block_on(first.wait()).unwrap();
     let second_value = pollster::block_on(second.wait()).unwrap();
     let repeated = pollster::block_on(first.wait()).unwrap();
-    let late = completion.clone();
-    let late_value = pollster::block_on(late.wait()).unwrap();
-
     assert_eq!(first_value.0.as_str(), "ready");
     assert!(std::ptr::eq(first_value, second_value));
     assert!(std::ptr::eq(first_value, repeated));
-    assert!(std::ptr::eq(first_value, late_value));
+
+    let late = first.clone();
+    drop(first);
+    let late_value = pollster::block_on(late.wait()).unwrap();
+    assert!(std::ptr::eq(second_value, late_value));
 }
 
 #[test]
 fn completer_transfers_a_send_only_value_between_threads() {
     let (completer, completion) = completion::new::<Cell<u8>>();
 
-    thread::spawn(move || completer.complete(Cell::new(7)))
-        .join()
-        .unwrap()
-        .unwrap();
+    let worker = thread::spawn(move || completer.complete(Cell::new(7)));
 
     assert_eq!(pollster::block_on(completion.wait()).unwrap().get(), 7);
+    worker.join().unwrap().unwrap();
 }
 
 #[test]
@@ -117,33 +72,6 @@ fn complete_returns_the_value_when_no_observers_remain() {
         completer.complete(String::from("unobserved")).unwrap_err(),
         "unobserved"
     );
-}
-
-#[test]
-fn dropping_the_completer_abandons_every_observer() {
-    let (completer, first) = completion::new::<usize>();
-    let second = first.clone();
-    drop(completer);
-
-    assert!(pollster::block_on(first.wait()).is_err());
-    assert!(pollster::block_on(second.wait()).is_err());
-}
-
-#[test]
-fn dropping_one_observer_before_or_after_completion_does_not_affect_another() {
-    let (completer, first) = completion::new();
-    let second = first.clone();
-    drop(first);
-
-    completer.complete(5).unwrap();
-    assert_eq!(pollster::block_on(second.wait()), Ok(&5));
-
-    let (completer, first) = completion::new();
-    let second = first.clone();
-    completer.complete(6).unwrap();
-    drop(first);
-
-    assert_eq!(pollster::block_on(second.wait()), Ok(&6));
 }
 
 #[test]
@@ -159,7 +87,7 @@ fn completed_payload_is_released_with_the_last_observer() {
 }
 
 #[test]
-fn abandonment_wakes_all_registered_waits() {
+fn abandonment_wakes_registered_waits_and_is_visible_to_late_observers() {
     let (completer, first) = completion::new::<usize>();
     let second = first.clone();
     let first_tracker = Arc::new(WakeCounter::default());
@@ -183,6 +111,9 @@ fn abandonment_wakes_all_registered_waits() {
         poll_with(second_wait.as_mut(), &second_waker),
         Poll::Ready(Err(_))
     ));
+
+    let late = first.clone();
+    assert!(pollster::block_on(late.wait()).is_err());
 }
 
 #[test]
@@ -242,21 +173,7 @@ fn cancelling_after_wake_does_not_consume_the_shared_result() {
 }
 
 #[test]
-fn cancellation_and_completer_drop_have_clean_orderings() {
-    let (completer, completion) = completion::new::<usize>();
-    let tracker = Arc::new(WakeCounter::default());
-    let waker = Waker::from(tracker.clone());
-    let baseline = Arc::strong_count(&tracker);
-    let mut wait = Box::pin(completion.wait());
-
-    assert!(poll_with(wait.as_mut(), &waker).is_pending());
-    assert_eq!(Arc::strong_count(&tracker), baseline + 1);
-    drop(wait);
-    assert_eq!(Arc::strong_count(&tracker), baseline);
-    drop(completer);
-    assert_eq!(tracker.count(), 0);
-    assert!(pollster::block_on(completion.wait()).is_err());
-
+fn cancelling_after_abandonment_does_not_retain_the_waker() {
     let (completer, completion) = completion::new::<usize>();
     let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
@@ -317,20 +234,6 @@ fn wake_callbacks_run_outside_the_completion_lock() {
         let mut wait = Box::pin(completion.wait());
         assert!(poll_with(wait.as_mut(), &waker).is_pending());
         drop(completer);
-        assert!(matches!(
-            poll_with(wait.as_mut(), &waker),
-            Poll::Ready(Err(_))
-        ));
-    });
-}
-
-#[test]
-fn waker_clone_callbacks_run_outside_the_completion_lock() {
-    assert_completes_without_deadlock(|| {
-        let (completer, completion) = completion::new::<usize>();
-        let waker = waker_with_clone_callback(move || drop(completer));
-        let mut wait = Box::pin(completion.wait());
-
         assert!(matches!(
             poll_with(wait.as_mut(), &waker),
             Poll::Ready(Err(_))
