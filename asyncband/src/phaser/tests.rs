@@ -25,11 +25,8 @@ use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
 
-use tokio_test::assert_pending;
-use tokio_test::assert_ready;
-use tokio_test::task::spawn;
-
 use super::Phaser;
+use crate::test_support::poll_once;
 
 struct CountWake(AtomicUsize);
 
@@ -107,8 +104,8 @@ fn cancelled_arrive_and_wait_retry_waits_for_original_phase_after_advance() {
     let mut second = phaser.register();
 
     {
-        let mut cancelled = spawn(first.arrive_and_wait());
-        assert_pending!(cancelled.poll());
+        let mut cancelled = Box::pin(first.arrive_and_wait());
+        assert!(poll_once(cancelled.as_mut()).is_pending());
     }
 
     assert_eq!(phaser.arrived_parties(), 1);
@@ -117,8 +114,8 @@ fn cancelled_arrive_and_wait_retry_waits_for_original_phase_after_advance() {
     assert_ne!(phase1, phase0);
     assert_eq!(phaser.arrived_parties(), 0);
 
-    let mut retry = spawn(first.arrive_and_wait());
-    assert_eq!(assert_ready!(retry.poll()), phase1);
+    let mut retry = Box::pin(first.arrive_and_wait());
+    assert_eq!(poll_once(retry.as_mut()), Poll::Ready(phase1));
     assert_eq!(phaser.arrived_parties(), 0);
 }
 
@@ -129,16 +126,16 @@ fn cancelled_arrive_and_wait_retry_before_advance_does_not_arrive_twice() {
     let mut second = phaser.register();
 
     {
-        let mut cancelled = spawn(first.arrive_and_wait());
-        assert_pending!(cancelled.poll());
+        let mut cancelled = Box::pin(first.arrive_and_wait());
+        assert!(poll_once(cancelled.as_mut()).is_pending());
     }
 
-    let mut retry = spawn(first.arrive_and_wait());
-    assert_pending!(retry.poll());
+    let mut retry = Box::pin(first.arrive_and_wait());
+    assert!(poll_once(retry.as_mut()).is_pending());
     assert_eq!(phaser.arrived_parties(), 1);
 
     second.arrive();
-    assert_ready!(retry.poll());
+    assert!(poll_once(retry.as_mut()).is_ready());
 }
 
 #[test]
@@ -367,8 +364,8 @@ fn panicking_waker_does_not_lose_an_arrive_and_wait_phase() {
     assert_ne!(phase1, phase0);
     assert_eq!(phaser.arrived_parties(), 0);
 
-    let mut retry = spawn(second.arrive_and_wait());
-    assert_eq!(assert_ready!(retry.poll()), phase1);
+    let mut retry = Box::pin(second.arrive_and_wait());
+    assert_eq!(poll_once(retry.as_mut()), Poll::Ready(phase1));
     assert_eq!(phaser.arrived_parties(), 0);
 }
 
@@ -379,8 +376,8 @@ fn a_late_waiter_for_a_completed_phase_is_immediately_ready() {
     let participant = phaser.register();
     drop(participant);
 
-    let mut wait = spawn(phaser.wait_for_advance(observed));
-    assert_eq!(assert_ready!(wait.poll()), phaser.phase());
+    let mut wait = Box::pin(phaser.wait_for_advance(observed));
+    assert_eq!(poll_once(wait.as_mut()), Poll::Ready(phaser.phase()));
 }
 
 #[test]

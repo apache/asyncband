@@ -74,7 +74,6 @@ hashbrown = { workspace = true, default-features = false, features = [
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-tokio-test = { workspace = true }
 
 [lints]
 workspace = true

@@ -163,5 +163,8 @@ pub mod waitgroup;
 #[cfg(feature = "watch")]
 pub mod watch;
 
-#[cfg(all(test, any(feature = "once-map", feature = "singleflight")))]
+#[cfg(all(
+    test,
+    any(feature = "once-map", feature = "phaser", feature = "singleflight")
+))]
 mod test_support;
