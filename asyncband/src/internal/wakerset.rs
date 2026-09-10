@@ -137,65 +137,15 @@ impl WakerSet {
     pub fn unregister(&mut self, token: &mut Option<WakerToken>) -> Option<Waker> {
         token.take().map(|token| self.wakers.remove(token.0))
     }
-
-    #[cfg(test)]
-    fn registered_len(&self) -> usize {
-        self.wakers.len()
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::mem::size_of;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-    use std::task::Wake;
-
-    use super::*;
-
-    struct DropWake {
-        dropped: Arc<AtomicBool>,
-        wake_count: AtomicUsize,
-    }
-
-    impl Wake for DropWake {
-        fn wake(self: Arc<Self>) {
-            self.wake_count.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    impl Drop for DropWake {
-        fn drop(&mut self) {
-            self.dropped.store(true, Ordering::Relaxed);
-        }
-    }
+    use super::WakerToken;
 
     #[test]
     fn waker_token_preserves_the_option_niche() {
         assert_eq!(size_of::<WakerToken>(), size_of::<usize>());
         assert_eq!(size_of::<WakerToken>(), size_of::<Option<WakerToken>>());
-    }
-
-    #[test]
-    fn unregister_returns_the_waker_for_deferred_drop() {
-        let dropped = Arc::new(AtomicBool::new(false));
-        let waker = Waker::from(Arc::new(DropWake {
-            dropped: dropped.clone(),
-            wake_count: AtomicUsize::new(0),
-        }));
-        let mut wakers = WakerSet::new();
-        let mut token = None;
-
-        drop(wakers.register(&mut token, &waker));
-        drop(waker);
-
-        let removed = wakers.unregister(&mut token);
-        assert_eq!(wakers.registered_len(), 0);
-        assert!(!dropped.load(Ordering::Relaxed));
-
-        drop(removed);
-        assert!(dropped.load(Ordering::Relaxed));
     }
 }

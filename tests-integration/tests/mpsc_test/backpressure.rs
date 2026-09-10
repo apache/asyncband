@@ -16,11 +16,10 @@
 // under the License.
 
 use asyncband::mpsc;
+use tests_integration::WakeCounter;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
-
-use super::support::WakeCounter;
-use super::support::expect_ready;
-use super::support::poll_with;
+use tests_integration::poll_with;
 
 #[test]
 fn bounded_wakes_blocked_senders_one_at_a_time() {
@@ -67,6 +66,10 @@ fn cancelling_a_sender_preserves_capacity_and_notifies_the_next_waiter() {
             assert_eq!(second_wakes.count(), 0);
         }
         drop(first);
+        // Even a granted send must not publish its value until it is polled to completion.
+        if cancel_after_notification {
+            assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+        }
         if !cancel_after_notification {
             assert_eq!(first_wakes.count(), 0);
             assert_eq!(second_wakes.count(), 0);

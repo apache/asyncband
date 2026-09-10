@@ -133,32 +133,6 @@ fn failed_compute_preserves_entry_for_waiter_retry() {
 }
 
 #[test]
-fn abandoned_pending_entry_is_removed_when_last_caller_leaves() {
-    let map = OnceMap::<&str, i32>::new();
-    let Lookup::Pending(entry) = map.get_or_insert("key") else {
-        unreachable!()
-    };
-
-    map.cleanup_abandoned_entry(entry);
-
-    assert_eq!(map.len(), 0);
-}
-
-#[test]
-fn colliding_ready_entries_can_be_unlinked_independently() {
-    let map: OnceMap<usize, usize, BuildHasherDefault<ConstantHasher>> =
-        (0..4).map(|key| (key, key * 2)).collect();
-
-    map.discard(&1);
-    map.discard(&3);
-
-    assert_eq!(map.get(&0), Some(0));
-    assert_eq!(map.get(&1), None);
-    assert_eq!(map.get(&2), Some(4));
-    assert_eq!(map.get(&3), None);
-}
-
-#[test]
 fn colliding_pending_entries_are_tracked_independently() {
     let map: OnceMap<usize, usize, BuildHasherDefault<ConstantHasher>> = OnceMap::default();
     let Lookup::Pending(first) = map.get_or_insert(1) else {

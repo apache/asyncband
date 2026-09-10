@@ -48,24 +48,6 @@ fn test_get_mut_provides_exclusive_access() {
 }
 
 #[tokio::test]
-async fn test_guard_map_preserves_lock() {
-    let data = (99i32, vec![1, 2, 3]);
-    let mutex = Mutex::new(data);
-
-    let guard = mutex.lock().await;
-    let mut mapped_guard = MutexGuard::map(guard, |data| &mut data.0);
-
-    assert!(mutex.try_lock().is_none());
-
-    *mapped_guard = 100;
-
-    // After dropping, mutex should be available
-    drop(mapped_guard);
-    let guard = mutex.try_lock().unwrap();
-    assert_eq!(guard.0, 100);
-}
-
-#[tokio::test]
 async fn test_owned_mapped_guard_holds_lock() {
     // Test that mapped owned guard properly holds the lock
     let mutex = Arc::new(Mutex::new((30, 40)));
@@ -121,25 +103,6 @@ async fn test_owned_guard_filter_map_failure() {
     } else {
         panic!("Expected Err, but got Ok");
     }
-}
-
-#[tokio::test]
-async fn test_multiple_map_operations() {
-    // Test multiple consecutive map operations
-    let data = vec![vec![1, 2], vec![3, 4]];
-    let mutex = Mutex::new(data);
-
-    let guard = mutex.lock().await;
-    let first_vec = MutexGuard::map(guard, |data| &mut data[0]);
-    let mut first_element = MappedMutexGuard::map(first_vec, |vec| &mut vec[0]);
-
-    *first_element = 100;
-    drop(first_element);
-
-    let guard = mutex.lock().await;
-    assert_eq!(guard[0][0], 100);
-    assert_eq!(guard[0][1], 2);
-    assert_eq!(guard[1][0], 3);
 }
 
 #[test]

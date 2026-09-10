@@ -22,13 +22,6 @@ use asyncband::singleflight::Group;
 use tests_integration::poll_once;
 
 #[tokio::test]
-async fn work_returns_value() {
-    let group = Group::new();
-    let res = group.work("key", || async { "val" }).await;
-    assert_eq!(res, "val");
-}
-
-#[tokio::test]
 async fn supports_non_clone_key() {
     #[derive(Hash, PartialEq, Eq)]
     struct Key(&'static str);

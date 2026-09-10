@@ -15,23 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 use std::task::Context;
-use std::task::Wake;
 use std::task::Waker;
 
 use asyncband::latch::Latch;
-
-struct TrackWake(AtomicUsize);
-
-impl Wake for TrackWake {
-    fn wake(self: Arc<Self>) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
+use tests_integration::WakeCounter;
 
 #[test]
 fn countdown_operations_saturate_at_zero() {
@@ -55,7 +44,7 @@ fn countdown_operations_saturate_at_zero() {
 #[test]
 fn cancelled_wait_releases_its_waker() {
     let latch = Latch::new(1);
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let baseline = Arc::strong_count(&tracker);
     let mut context = Context::from_waker(&waker);
@@ -71,8 +60,8 @@ fn cancelled_wait_releases_its_waker() {
 #[test]
 fn final_arrival_wakes_every_waiter() {
     let latch = Latch::new(2);
-    let first_tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
-    let second_tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let first_tracker = Arc::new(WakeCounter::default());
+    let second_tracker = Arc::new(WakeCounter::default());
     let first_waker = Waker::from(first_tracker.clone());
     let second_waker = Waker::from(second_tracker.clone());
     let mut first_context = Context::from_waker(&first_waker);
@@ -84,12 +73,12 @@ fn final_arrival_wakes_every_waiter() {
     assert!(second.as_mut().poll(&mut second_context).is_pending());
 
     latch.count_down();
-    assert_eq!(first_tracker.0.load(Ordering::Relaxed), 0);
-    assert_eq!(second_tracker.0.load(Ordering::Relaxed), 0);
+    assert_eq!(first_tracker.count(), 0);
+    assert_eq!(second_tracker.count(), 0);
 
     latch.count_down();
-    assert_eq!(first_tracker.0.load(Ordering::Relaxed), 1);
-    assert_eq!(second_tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(first_tracker.count(), 1);
+    assert_eq!(second_tracker.count(), 1);
     assert!(first.as_mut().poll(&mut first_context).is_ready());
     assert!(second.as_mut().poll(&mut second_context).is_ready());
 }

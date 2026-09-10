@@ -68,11 +68,14 @@ enum SubCommand {
 }
 
 #[derive(Parser)]
-struct CommandBench;
+struct CommandBench {
+    #[arg(long, help = "Compile benchmarks without running them.")]
+    no_run: bool,
+}
 
 impl CommandBench {
     fn run(self) {
-        run_command(make_bench_cmd());
+        run_command(make_bench_cmd(self.no_run));
     }
 }
 
@@ -123,7 +126,7 @@ impl CommandMiri {
 
 #[derive(Parser)]
 struct CommandTest {
-    #[arg(long, help = "Run tests serially and do not capture output.")]
+    #[arg(long, help = "Do not capture test output.")]
     no_capture: bool,
 }
 
@@ -356,9 +359,12 @@ fn classify_release_type(baseline: &Version, release: &Version) -> SemverRelease
     }
 }
 
-fn make_bench_cmd() -> StdCommand {
+fn make_bench_cmd(no_run: bool) -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.args(["bench", "--workspace", "--all-features", "--bench", "*"]);
+    if no_run {
+        cmd.arg("--no-run");
+    }
     cmd
 }
 

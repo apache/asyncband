@@ -16,71 +16,27 @@
 // under the License.
 
 use std::cell::Cell;
-use std::future::Future;
 use std::mem::ManuallyDrop;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
-use std::task::Context;
 use std::task::Poll;
 use std::task::RawWaker;
 use std::task::RawWakerVTable;
-use std::task::Wake;
 use std::task::Waker;
 use std::thread;
-use std::time::Duration;
 
 use asyncband::completion;
+use tests_integration::PanicWake;
+use tests_integration::WakeCounter;
+use tests_integration::assert_completes_without_deadlock;
+use tests_integration::poll_with;
+use tests_integration::waker_on_drop;
+use tests_integration::waker_on_wake;
 
 struct NotClone(String);
 
-struct TrackWake(AtomicUsize);
-
-impl Wake for TrackWake {
-    fn wake(self: Arc<Self>) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-struct PanicWake;
-
-impl Wake for PanicWake {
-    fn wake(self: Arc<Self>) {
-        panic!("wake failed");
-    }
-}
-
-struct WakeCallback(Mutex<Option<Box<dyn FnOnce() + Send>>>);
-
-impl Wake for WakeCallback {
-    fn wake(self: Arc<Self>) {
-        let callback = self.0.lock().unwrap().take();
-        if let Some(callback) = callback {
-            callback();
-        }
-    }
-}
-
-struct DropCallbackWake(Mutex<Option<Box<dyn FnOnce() + Send>>>);
-
 struct CloneCallbackWake(Mutex<Option<Box<dyn FnOnce() + Send>>>);
-
-// This test needs a custom waker whose final `Arc` drop is observable.
-#[allow(clippy::manual_noop_waker)]
-impl Wake for DropCallbackWake {
-    fn wake(self: Arc<Self>) {}
-}
-
-impl Drop for DropCallbackWake {
-    fn drop(&mut self) {
-        if let Some(callback) = self.0.get_mut().unwrap().take() {
-            callback();
-        }
-    }
-}
 
 unsafe fn clone_callback_waker(data: *const ()) -> RawWaker {
     // SAFETY: Every pointer using this vtable comes from `Arc::into_raw`. `ManuallyDrop` keeps the
@@ -119,26 +75,6 @@ fn waker_with_clone_callback(callback: impl FnOnce() + Send + 'static) -> Waker 
     let raw = RawWaker::new(Arc::into_raw(state).cast(), &CLONE_CALLBACK_VTABLE);
     // SAFETY: The vtable preserves the Arc strong count and all callbacks are thread safe.
     unsafe { Waker::from_raw(raw) }
-}
-
-fn poll_with<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
-    future.poll(&mut Context::from_waker(waker))
-}
-
-fn assert_completes_without_deadlock(message: &'static str, test: impl FnOnce() + Send + 'static) {
-    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-    let worker = thread::spawn(move || {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
-        finished_tx.send(()).unwrap();
-        if let Err(payload) = result {
-            std::panic::resume_unwind(payload);
-        }
-    });
-
-    finished_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect(message);
-    worker.join().unwrap();
 }
 
 #[test]
@@ -226,8 +162,8 @@ fn completed_payload_is_released_with_the_last_observer() {
 fn abandonment_wakes_all_registered_waits() {
     let (completer, first) = completion::new::<usize>();
     let second = first.clone();
-    let first_tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
-    let second_tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let first_tracker = Arc::new(WakeCounter::default());
+    let second_tracker = Arc::new(WakeCounter::default());
     let first_waker = Waker::from(first_tracker.clone());
     let second_waker = Waker::from(second_tracker.clone());
     let mut first_wait = Box::pin(first.wait());
@@ -237,8 +173,8 @@ fn abandonment_wakes_all_registered_waits() {
     assert!(poll_with(second_wait.as_mut(), &second_waker).is_pending());
     drop(completer);
 
-    assert_eq!(first_tracker.0.load(Ordering::Relaxed), 1);
-    assert_eq!(second_tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(first_tracker.count(), 1);
+    assert_eq!(second_tracker.count(), 1);
     assert!(matches!(
         poll_with(first_wait.as_mut(), &first_waker),
         Poll::Ready(Err(_))
@@ -266,8 +202,8 @@ fn payload_errors_remain_distinct_from_abandonment() {
 #[test]
 fn cancelling_a_wait_releases_only_its_waker() {
     let (completer, completion) = completion::new();
-    let cancelled_tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
-    let waiting_tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let cancelled_tracker = Arc::new(WakeCounter::default());
+    let waiting_tracker = Arc::new(WakeCounter::default());
     let cancelled_waker = Waker::from(cancelled_tracker.clone());
     let waiting_waker = Waker::from(waiting_tracker.clone());
     let baseline = Arc::strong_count(&cancelled_tracker);
@@ -281,8 +217,8 @@ fn cancelling_a_wait_releases_only_its_waker() {
     assert_eq!(Arc::strong_count(&cancelled_tracker), baseline);
 
     completer.complete(7).unwrap();
-    assert_eq!(cancelled_tracker.0.load(Ordering::Relaxed), 0);
-    assert_eq!(waiting_tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(cancelled_tracker.count(), 0);
+    assert_eq!(waiting_tracker.count(), 1);
     assert_eq!(
         poll_with(waiting.as_mut(), &waiting_waker),
         Poll::Ready(Ok(&7))
@@ -293,13 +229,13 @@ fn cancelling_a_wait_releases_only_its_waker() {
 fn cancelling_after_wake_does_not_consume_the_shared_result() {
     let (completer, first) = completion::new();
     let second = first.clone();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let mut wait = Box::pin(first.wait());
 
     assert!(poll_with(wait.as_mut(), &waker).is_pending());
     completer.complete(9).unwrap();
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(tracker.count(), 1);
     drop(wait);
 
     assert_eq!(pollster::block_on(second.wait()), Ok(&9));
@@ -308,7 +244,7 @@ fn cancelling_after_wake_does_not_consume_the_shared_result() {
 #[test]
 fn cancellation_and_completer_drop_have_clean_orderings() {
     let (completer, completion) = completion::new::<usize>();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let baseline = Arc::strong_count(&tracker);
     let mut wait = Box::pin(completion.wait());
@@ -318,18 +254,18 @@ fn cancellation_and_completer_drop_have_clean_orderings() {
     drop(wait);
     assert_eq!(Arc::strong_count(&tracker), baseline);
     drop(completer);
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 0);
+    assert_eq!(tracker.count(), 0);
     assert!(pollster::block_on(completion.wait()).is_err());
 
     let (completer, completion) = completion::new::<usize>();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let baseline = Arc::strong_count(&tracker);
     let mut wait = Box::pin(completion.wait());
 
     assert!(poll_with(wait.as_mut(), &waker).is_pending());
     drop(completer);
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(tracker.count(), 1);
     assert_eq!(Arc::strong_count(&tracker), baseline);
     drop(wait);
     assert_eq!(Arc::strong_count(&tracker), baseline);
@@ -341,7 +277,7 @@ fn completion_attempts_every_waker_after_one_panics() {
     let (completer, first) = completion::new();
     let second = first.clone();
     let panicking = Waker::from(Arc::new(PanicWake));
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let tracked = Waker::from(tracker.clone());
     let mut first_wait = Box::pin(first.wait());
     let mut second_wait = Box::pin(second.wait());
@@ -351,7 +287,7 @@ fn completion_attempts_every_waker_after_one_panics() {
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| completer.complete(11)));
     assert!(result.is_err());
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(tracker.count(), 1);
     assert_eq!(
         poll_with(second_wait.as_mut(), &tracked),
         Poll::Ready(Ok(&11))
@@ -360,99 +296,79 @@ fn completion_attempts_every_waker_after_one_panics() {
 
 #[test]
 fn wake_callbacks_run_outside_the_completion_lock() {
-    assert_completes_without_deadlock(
-        "wake callback deadlocked against the completion lock",
-        || {
-            let (completer, completion) = completion::new();
-            let callback_completion = completion.clone();
-            let waker = Waker::from(Arc::new(WakeCallback(Mutex::new(Some(Box::new(
-                move || {
-                    assert_eq!(pollster::block_on(callback_completion.wait()), Ok(&13));
-                },
-            ))))));
-            let mut wait = Box::pin(completion.wait());
+    assert_completes_without_deadlock(|| {
+        let (completer, completion) = completion::new();
+        let callback_completion = completion.clone();
+        let waker = waker_on_wake(move || {
+            assert_eq!(pollster::block_on(callback_completion.wait()), Ok(&13));
+        });
+        let mut wait = Box::pin(completion.wait());
 
-            assert!(poll_with(wait.as_mut(), &waker).is_pending());
-            completer.complete(13).unwrap();
-            assert_eq!(poll_with(wait.as_mut(), &waker), Poll::Ready(Ok(&13)));
-            drop(wait);
+        assert!(poll_with(wait.as_mut(), &waker).is_pending());
+        completer.complete(13).unwrap();
+        assert_eq!(poll_with(wait.as_mut(), &waker), Poll::Ready(Ok(&13)));
+        drop(wait);
 
-            let (completer, completion) = completion::new::<usize>();
-            let callback_completion = completion.clone();
-            let waker = Waker::from(Arc::new(WakeCallback(Mutex::new(Some(Box::new(
-                move || {
-                    assert!(pollster::block_on(callback_completion.wait()).is_err());
-                },
-            ))))));
-            let mut wait = Box::pin(completion.wait());
-            assert!(poll_with(wait.as_mut(), &waker).is_pending());
-            drop(completer);
-            assert!(matches!(
-                poll_with(wait.as_mut(), &waker),
-                Poll::Ready(Err(_))
-            ));
-        },
-    );
+        let (completer, completion) = completion::new::<usize>();
+        let callback_completion = completion.clone();
+        let waker = waker_on_wake(move || {
+            assert!(pollster::block_on(callback_completion.wait()).is_err());
+        });
+        let mut wait = Box::pin(completion.wait());
+        assert!(poll_with(wait.as_mut(), &waker).is_pending());
+        drop(completer);
+        assert!(matches!(
+            poll_with(wait.as_mut(), &waker),
+            Poll::Ready(Err(_))
+        ));
+    });
 }
 
 #[test]
 fn waker_clone_callbacks_run_outside_the_completion_lock() {
-    assert_completes_without_deadlock(
-        "waker clone callback deadlocked against the completion lock",
-        || {
-            let (completer, completion) = completion::new::<usize>();
-            let waker = waker_with_clone_callback(move || drop(completer));
-            let mut wait = Box::pin(completion.wait());
+    assert_completes_without_deadlock(|| {
+        let (completer, completion) = completion::new::<usize>();
+        let waker = waker_with_clone_callback(move || drop(completer));
+        let mut wait = Box::pin(completion.wait());
 
-            assert!(matches!(
-                poll_with(wait.as_mut(), &waker),
-                Poll::Ready(Err(_))
-            ));
-        },
-    );
+        assert!(matches!(
+            poll_with(wait.as_mut(), &waker),
+            Poll::Ready(Err(_))
+        ));
+    });
 }
 
 #[test]
 fn replaced_wakers_are_dropped_outside_the_completion_lock() {
-    assert_completes_without_deadlock(
-        "replaced waker destructor deadlocked against the completion lock",
-        || {
-            let (completer, completion) = completion::new::<usize>();
-            let old_waker = Waker::from(Arc::new(DropCallbackWake(Mutex::new(Some(Box::new(
-                move || drop(completer),
-            ))))));
-            let mut wait = Box::pin(completion.wait());
-            assert!(poll_with(wait.as_mut(), &old_waker).is_pending());
-            drop(old_waker);
+    assert_completes_without_deadlock(|| {
+        let (completer, completion) = completion::new::<usize>();
+        let old_waker = waker_on_drop(move || drop(completer));
+        let mut wait = Box::pin(completion.wait());
+        assert!(poll_with(wait.as_mut(), &old_waker).is_pending());
+        drop(old_waker);
 
-            let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
-            let replacement = Waker::from(tracker.clone());
-            assert!(poll_with(wait.as_mut(), &replacement).is_pending());
-            assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
-            assert!(matches!(
-                poll_with(wait.as_mut(), &replacement),
-                Poll::Ready(Err(_))
-            ));
-        },
-    );
+        let tracker = Arc::new(WakeCounter::default());
+        let replacement = Waker::from(tracker.clone());
+        assert!(poll_with(wait.as_mut(), &replacement).is_pending());
+        assert_eq!(tracker.count(), 1);
+        assert!(matches!(
+            poll_with(wait.as_mut(), &replacement),
+            Poll::Ready(Err(_))
+        ));
+    });
 }
 
 #[test]
 fn cancelled_wakers_are_dropped_outside_the_completion_lock() {
-    assert_completes_without_deadlock(
-        "cancelled waker destructor deadlocked against the completion lock",
-        || {
-            let (completer, completion) = completion::new::<usize>();
-            let waker = Waker::from(Arc::new(DropCallbackWake(Mutex::new(Some(Box::new(
-                move || drop(completer),
-            ))))));
-            let mut wait = Box::pin(completion.wait());
-            assert!(poll_with(wait.as_mut(), &waker).is_pending());
-            drop(waker);
-            drop(wait);
-            assert!(pollster::block_on(completion.wait()).is_err());
-        },
-    );
+    assert_completes_without_deadlock(|| {
+        let (completer, completion) = completion::new::<usize>();
+        let waker = waker_on_drop(move || drop(completer));
+        let mut wait = Box::pin(completion.wait());
+        assert!(poll_with(wait.as_mut(), &waker).is_pending());
+        drop(waker);
+        drop(wait);
+        assert!(pollster::block_on(completion.wait()).is_err());
+    });
 }
 
 #[test]
