@@ -53,16 +53,28 @@ impl<T> Buffer<T> {
         self.writable.push_back(value);
     }
 
-    pub fn refill(&mut self, batch: &mut VecDeque<T>) {
+    /// Returns retired allocations so the receiver can release them after unlocking.
+    #[must_use = "retired allocations must be dropped after releasing the shared lock"]
+    pub fn refill(
+        &mut self,
+        batch: &mut VecDeque<T>,
+    ) -> Option<(VecDeque<T>, VecDeque<VecDeque<T>>)> {
         debug_assert!(batch.is_empty());
         if let Some(sealed) = self.sealed.pop_front() {
-            *batch = sealed;
-            if self.sealed.is_empty() && self.sealed.capacity() * size_of::<VecDeque<T>>() > 1024 {
-                self.sealed = VecDeque::new();
-            }
-        } else if !self.writable.is_empty() {
+            let retired_batch = mem::replace(batch, sealed);
+            let retired_sealed = if self.sealed.is_empty()
+                && self.sealed.capacity() * size_of::<VecDeque<T>>() > 1024
+            {
+                mem::take(&mut self.sealed)
+            } else {
+                VecDeque::new()
+            };
+            return Some((retired_batch, retired_sealed));
+        }
+        if !self.writable.is_empty() {
             mem::swap(batch, &mut self.writable);
         }
+        None
     }
 }
 
@@ -94,7 +106,7 @@ mod tests {
 
     fn receive<T>(buffer: &mut Buffer<T>, batch: &mut VecDeque<T>) -> T {
         if batch.is_empty() {
-            buffer.refill(batch);
+            drop(buffer.refill(batch));
         }
         pop_batch(batch)
     }
@@ -117,7 +129,7 @@ mod tests {
             assert_eq!(receive(&mut buffer, &mut batch), [value; 128]);
         }
         assert!(allocated_bytes(&buffer, &batch) <= 2 * SEGMENT_BYTES);
-        buffer.refill(&mut batch);
+        drop(buffer.refill(&mut batch));
         assert!(batch.is_empty());
     }
 

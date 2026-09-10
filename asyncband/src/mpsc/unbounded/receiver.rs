@@ -96,9 +96,12 @@ impl<T> UnboundedReceiver<T> {
         let batch = self.batch.get_mut();
         if batch.is_empty() {
             let mut state = self.shared.lock();
-            state.buffer.refill(batch);
+            let retired = state.buffer.refill(batch);
+            let disconnected = state.senders == 0;
+            drop(state);
+            drop(retired);
             if batch.is_empty() {
-                return Err(if state.senders == 0 {
+                return Err(if disconnected {
                     TryRecvError::Disconnected
                 } else {
                     TryRecvError::Empty
@@ -149,19 +152,22 @@ impl<T> UnboundedReceiver<T> {
         // Waker clone/drop callbacks can send into this channel, so run them outside the lock.
         let waker = cx.waker().clone();
         let mut state = self.shared.lock();
-        state.buffer.refill(batch);
+        let retired = state.buffer.refill(batch);
         if !batch.is_empty() {
             drop(state);
+            drop(retired);
             return Poll::Ready(Ok(pop_batch(batch)));
         }
         if state.senders == 0 {
             let old = state.recv_waker.take();
             drop(state);
+            drop(retired);
             drop(old);
             return Poll::Ready(Err(RecvError::Disconnected));
         }
         let old = state.recv_waker.replace(waker);
         drop(state);
+        drop(retired);
         drop(old);
         Poll::Pending
     }
