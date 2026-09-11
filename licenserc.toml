@@ -23,6 +23,7 @@ excludes = [
   # Skill discovery requires YAML frontmatter first. Its ASF header follows the frontmatter,
   # which HawkEye currently cannot skip when checking or inserting headers.
   ".agents/skills/license-audit/SKILL.md",
+  ".agents/skills/release/SKILL.md",
   # These third-party-derived files retain the applicable upstream license and copyright notices.
   "asyncband/src/blocking/executor.rs",
   "asyncband/src/blocking/parker.rs",

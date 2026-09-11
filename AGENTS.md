@@ -23,6 +23,8 @@ under the License.
 
 Use `cargo x` as the source of truth for repository workflows. Read `cargo x --help` and the relevant subcommand's `--help` before running build, test, lint, or formatting commands.
 
+Use the shared [release skill](.agents/skills/release/SKILL.md) for release preparation, status checks, publication, and recovery. Its phase guides are the maintained release procedure; resume from the established candidate and completed steps. For an independent candidate check, use the [`release_verifier`](.codex/agents/release_verifier.toml) agent or follow the same verification guide directly.
+
 Use the shared [license-audit skill](.agents/skills/license-audit/SKILL.md) for license audits and release licensing checks. For a delegated Codex review, use the [`license_auditor`](.codex/agents/license_auditor.toml) agent, which reads the same skill. Other agents can follow the skill directly.
 
 ## Rust Style
@@ -39,7 +41,7 @@ Decision: [#257](https://github.com/apache/asyncband/pull/257).
 
 ## Documentation
 
-Keep each Markdown prose paragraph and list item on one source line. Format Markdown tables so their columns and separators align in the source.
+Keep each Markdown prose paragraph and list item on one source line. Format Markdown tables so their columns and separators align in the source. Keep skill resource links within the skill directory; reference other skills or agents by name and resolve repository paths from the supplied repository root.
 
 ## Changelog
 
