@@ -25,6 +25,7 @@ use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
 
+use super::Closed;
 use super::Phaser;
 use crate::test_support::poll_once;
 
@@ -46,8 +47,8 @@ impl Wake for PanicWake {
 
 #[test]
 fn register_many_joins_one_observed_phase() {
-    let phaser = Arc::new(Phaser::new());
-    let participants = phaser.register_many(3);
+    let phaser = Phaser::new();
+    let participants = phaser.register_many(3).unwrap();
 
     assert_eq!(participants.len(), 3);
     assert_eq!(phaser.registered_parties(), 3);
@@ -56,10 +57,10 @@ fn register_many_joins_one_observed_phase() {
 
 #[test]
 fn registering_zero_parties_is_a_noop() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let phase = phaser.phase();
 
-    assert!(phaser.register_many(0).is_empty());
+    assert!(phaser.register_many(0).unwrap().is_empty());
     assert_eq!(phaser.phase(), phase);
     assert_eq!(phaser.registered_parties(), 0);
     assert_eq!(phaser.unarrived_parties(), 0);
@@ -67,29 +68,29 @@ fn registering_zero_parties_is_a_noop() {
 
 #[test]
 fn participants_advance_across_repeated_phases() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let phase0 = phaser.phase();
-    let mut first = phaser.register();
-    let mut second = phaser.register();
+    let mut first = phaser.register().unwrap();
+    let mut second = phaser.register().unwrap();
 
-    assert_eq!(first.arrive(), phase0);
+    assert_eq!(first.arrive().unwrap(), phase0);
     assert_eq!(phaser.arrived_parties(), 1);
-    assert_eq!(second.arrive(), phase0);
+    assert_eq!(second.arrive().unwrap(), phase0);
     let phase1 = phaser.phase();
     assert_ne!(phase1, phase0);
     assert_eq!(phaser.arrived_parties(), 0);
 
-    assert_eq!(first.arrive(), phase1);
-    assert_eq!(second.arrive(), phase1);
+    assert_eq!(first.arrive().unwrap(), phase1);
+    assert_eq!(second.arrive().unwrap(), phase1);
     assert_ne!(phaser.phase(), phase1);
 }
 
 #[test]
-fn unpolled_arrive_and_wait_future_does_not_arrive() {
-    let phaser = Arc::new(Phaser::new());
-    let mut participant = phaser.register();
+fn unpolled_wait_future_does_not_arrive() {
+    let phaser = Phaser::new();
+    let mut participant = phaser.register().unwrap();
 
-    let wait = participant.arrive_and_wait();
+    let wait = participant.wait();
 
     assert_eq!(phaser.arrived_parties(), 0);
     drop(wait);
@@ -97,52 +98,52 @@ fn unpolled_arrive_and_wait_future_does_not_arrive() {
 }
 
 #[test]
-fn cancelled_arrive_and_wait_retry_waits_for_original_phase_after_advance() {
-    let phaser = Arc::new(Phaser::new());
+fn cancelled_wait_retry_waits_for_original_phase_after_advance() {
+    let phaser = Phaser::new();
     let phase0 = phaser.phase();
-    let mut first = phaser.register();
-    let mut second = phaser.register();
+    let mut first = phaser.register().unwrap();
+    let mut second = phaser.register().unwrap();
 
     {
-        let mut cancelled = Box::pin(first.arrive_and_wait());
+        let mut cancelled = Box::pin(first.wait());
         assert!(poll_once(cancelled.as_mut()).is_pending());
     }
 
     assert_eq!(phaser.arrived_parties(), 1);
-    assert_eq!(second.arrive(), phase0);
+    assert_eq!(second.arrive().unwrap(), phase0);
     let phase1 = phaser.phase();
     assert_ne!(phase1, phase0);
     assert_eq!(phaser.arrived_parties(), 0);
 
-    let mut retry = Box::pin(first.arrive_and_wait());
-    assert_eq!(poll_once(retry.as_mut()), Poll::Ready(phase1));
+    let mut retry = Box::pin(first.wait());
+    assert_eq!(poll_once(retry.as_mut()), Poll::Ready(Ok(phase1)));
     assert_eq!(phaser.arrived_parties(), 0);
 }
 
 #[test]
-fn cancelled_arrive_and_wait_retry_before_advance_does_not_arrive_twice() {
-    let phaser = Arc::new(Phaser::new());
-    let mut first = phaser.register();
-    let mut second = phaser.register();
+fn cancelled_wait_retry_before_advance_does_not_arrive_twice() {
+    let phaser = Phaser::new();
+    let mut first = phaser.register().unwrap();
+    let mut second = phaser.register().unwrap();
 
     {
-        let mut cancelled = Box::pin(first.arrive_and_wait());
+        let mut cancelled = Box::pin(first.wait());
         assert!(poll_once(cancelled.as_mut()).is_pending());
     }
 
-    let mut retry = Box::pin(first.arrive_and_wait());
+    let mut retry = Box::pin(first.wait());
     assert!(poll_once(retry.as_mut()).is_pending());
     assert_eq!(phaser.arrived_parties(), 1);
 
-    second.arrive();
+    second.arrive().unwrap();
     assert!(poll_once(retry.as_mut()).is_ready());
 }
 
 #[test]
 fn dropping_last_participant_advances_once_and_dormant_phaser_can_be_reused() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let phase0 = phaser.phase();
-    let participant = phaser.register();
+    let participant = phaser.register().unwrap();
 
     drop(participant);
     let phase1 = phaser.phase();
@@ -150,98 +151,98 @@ fn dropping_last_participant_advances_once_and_dormant_phaser_can_be_reused() {
     assert_eq!(phaser.registered_parties(), 0);
     assert_eq!(phaser.arrived_parties(), 0);
 
-    let mut participant = phaser.register();
-    assert_eq!(participant.arrive(), phase1);
+    let mut participant = phaser.register().unwrap();
+    assert_eq!(participant.arrive().unwrap(), phase1);
     assert_ne!(phaser.phase(), phase1);
 }
 
 #[test]
 fn dropping_an_arrived_participant_only_removes_its_next_phase_registration() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let phase0 = phaser.phase();
-    let mut first = phaser.register();
-    let mut second = phaser.register();
+    let mut first = phaser.register().unwrap();
+    let mut second = phaser.register().unwrap();
 
-    first.arrive();
+    first.arrive().unwrap();
     drop(first);
     assert_eq!(phaser.phase(), phase0);
     assert_eq!(phaser.registered_parties(), 1);
     assert_eq!(phaser.unarrived_parties(), 1);
 
-    second.arrive();
+    second.arrive().unwrap();
     assert_ne!(phaser.phase(), phase0);
 }
 
 #[test]
 fn registration_before_last_arrival_joins_and_delays_current_phase() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let phase = phaser.phase();
-    let mut first = phaser.register();
-    let mut second = phaser.register();
+    let mut first = phaser.register().unwrap();
+    let mut second = phaser.register().unwrap();
 
-    first.arrive();
-    let mut joining = phaser.register();
-    second.arrive();
+    first.arrive().unwrap();
+    let mut joining = phaser.register().unwrap();
+    second.arrive().unwrap();
 
     assert_eq!(phaser.phase(), phase);
     assert_eq!(phaser.unarrived_parties(), 1);
-    joining.arrive();
+    joining.arrive().unwrap();
     assert_ne!(phaser.phase(), phase);
 }
 
 #[test]
 fn registration_after_last_arrival_joins_the_advanced_phase() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let phase0 = phaser.phase();
-    let mut first = phaser.register();
+    let mut first = phaser.register().unwrap();
 
-    first.arrive();
+    first.arrive().unwrap();
     let phase1 = phaser.phase();
     assert_ne!(phase1, phase0);
 
-    let mut joining = phaser.register();
+    let mut joining = phaser.register().unwrap();
     assert_eq!(phaser.registered_parties(), 2);
     assert_eq!(phaser.unarrived_parties(), 2);
-    assert_eq!(joining.arrive(), phase1);
+    assert_eq!(joining.arrive().unwrap(), phase1);
     assert_eq!(phaser.phase(), phase1);
 }
 
 #[test]
 fn registration_before_last_participant_drop_joins_the_current_phase() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let phase0 = phaser.phase();
-    let participant = phaser.register();
-    let joining = phaser.register();
+    let participant = phaser.register().unwrap();
+    let joining = phaser.register().unwrap();
 
     drop(participant);
 
     assert_eq!(phaser.phase(), phase0);
     assert_eq!(phaser.registered_parties(), 1);
     assert_eq!(phaser.unarrived_parties(), 1);
-    assert_eq!(joining.arrive_and_deregister(), phase0);
+    assert_eq!(joining.deregister().unwrap(), phase0);
     assert_ne!(phaser.phase(), phase0);
 }
 
 #[test]
 fn registration_after_last_participant_drop_joins_the_advanced_phase() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let phase0 = phaser.phase();
-    let participant = phaser.register();
+    let participant = phaser.register().unwrap();
 
     drop(participant);
     let phase1 = phaser.phase();
-    let joining = phaser.register();
+    let joining = phaser.register().unwrap();
 
     assert_ne!(phase1, phase0);
     assert_eq!(phaser.registered_parties(), 1);
     assert_eq!(phaser.unarrived_parties(), 1);
-    assert_eq!(joining.arrive_and_deregister(), phase1);
+    assert_eq!(joining.deregister().unwrap(), phase1);
     assert_ne!(phaser.phase(), phase1);
 }
 
 #[test]
 fn wait_for_advance_is_a_cancel_safe_non_participant_observer() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let phase = phaser.phase();
     let counter = Arc::new(CountWake(AtomicUsize::new(0)));
     let waker = Waker::from(Arc::clone(&counter));
@@ -254,16 +255,16 @@ fn wait_for_advance_is_a_cancel_safe_non_participant_observer() {
     }
 
     assert_eq!(phaser.registered_parties(), 0);
-    let participant = phaser.register();
+    let participant = phaser.register().unwrap();
     drop(participant);
     assert_eq!(counter.0.load(Ordering::Relaxed), 0);
 }
 
 #[test]
 fn advancing_a_phase_wakes_every_registered_waiter_once() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let observed = phaser.phase();
-    let participant = phaser.register();
+    let participant = phaser.register().unwrap();
     let first_counter = Arc::new(CountWake(AtomicUsize::new(0)));
     let second_counter = Arc::new(CountWake(AtomicUsize::new(0)));
     let first_waker = Waker::from(Arc::clone(&first_counter));
@@ -297,9 +298,9 @@ fn advancing_a_phase_wakes_every_registered_waiter_once() {
 
 #[test]
 fn cancelling_a_woken_waiter_does_not_unregister_a_next_phase_waiter() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let phase0 = phaser.phase();
-    let participant = phaser.register();
+    let participant = phaser.register().unwrap();
     let stale_counter = Arc::new(CountWake(AtomicUsize::new(0)));
     let stale_waker = Waker::from(Arc::clone(&stale_counter));
     let mut stale_context = Context::from_waker(&stale_waker);
@@ -314,7 +315,7 @@ fn cancelling_a_woken_waiter_does_not_unregister_a_next_phase_waiter() {
     assert_ne!(phase1, phase0);
     assert_eq!(stale_counter.0.load(Ordering::Relaxed), 1);
 
-    let participant = phaser.register();
+    let participant = phaser.register().unwrap();
     let current_counter = Arc::new(CountWake(AtomicUsize::new(0)));
     let current_waker = Waker::from(Arc::clone(&current_counter));
     let mut current_context = Context::from_waker(&current_waker);
@@ -334,11 +335,11 @@ fn cancelling_a_woken_waiter_does_not_unregister_a_next_phase_waiter() {
 }
 
 #[test]
-fn panicking_waker_does_not_lose_an_arrive_and_wait_phase() {
-    let phaser = Arc::new(Phaser::new());
+fn panicking_waker_does_not_lose_a_pending_phase() {
+    let phaser = Phaser::new();
     let phase0 = phaser.phase();
-    let mut first = phaser.register();
-    let mut second = phaser.register();
+    let mut first = phaser.register().unwrap();
+    let mut second = phaser.register().unwrap();
     let panic_waker = Waker::from(Arc::new(PanicWake));
     let mut panic_context = Context::from_waker(&panic_waker);
     let mut observer = Box::pin(phaser.wait_for_advance(phase0));
@@ -347,11 +348,11 @@ fn panicking_waker_does_not_lose_an_arrive_and_wait_phase() {
         Future::poll(observer.as_mut(), &mut panic_context),
         Poll::Pending
     );
-    assert_eq!(first.arrive(), phase0);
+    assert_eq!(first.arrive().unwrap(), phase0);
 
     let polling_waker = Waker::from(Arc::new(CountWake(AtomicUsize::new(0))));
     let mut polling_context = Context::from_waker(&polling_waker);
-    let mut wait = Box::pin(second.arrive_and_wait());
+    let mut wait = Box::pin(second.wait());
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         Future::poll(wait.as_mut(), &mut polling_context)
     }));
@@ -364,44 +365,233 @@ fn panicking_waker_does_not_lose_an_arrive_and_wait_phase() {
     assert_ne!(phase1, phase0);
     assert_eq!(phaser.arrived_parties(), 0);
 
-    let mut retry = Box::pin(second.arrive_and_wait());
-    assert_eq!(poll_once(retry.as_mut()), Poll::Ready(phase1));
+    let mut retry = Box::pin(second.wait());
+    assert_eq!(poll_once(retry.as_mut()), Poll::Ready(Ok(phase1)));
     assert_eq!(phaser.arrived_parties(), 0);
 }
 
 #[test]
 fn a_late_waiter_for_a_completed_phase_is_immediately_ready() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let observed = phaser.phase();
-    let participant = phaser.register();
+    let participant = phaser.register().unwrap();
     drop(participant);
 
     let mut wait = Box::pin(phaser.wait_for_advance(observed));
-    assert_eq!(poll_once(wait.as_mut()), Poll::Ready(phaser.phase()));
+    assert_eq!(poll_once(wait.as_mut()), Poll::Ready(Ok(phaser.phase())));
 }
 
 #[test]
 fn phase_identity_wraps_without_an_ordering_contract() {
-    let phaser = Arc::new(Phaser::new());
-    phaser.state.lock().phase = super::Phase(u64::MAX);
+    let phaser = Phaser::new();
+    phaser.state.lock().phase = u64::MAX;
     let observed = phaser.phase();
-    let mut participant = phaser.register();
+    let mut participant = phaser.register().unwrap();
 
-    assert_eq!(participant.arrive(), observed);
-    assert_eq!(phaser.phase().get(), 0);
+    assert_eq!(participant.arrive().unwrap(), observed);
+    assert_eq!(phaser.phase(), 0);
     assert_ne!(phaser.phase(), observed);
 }
 
 #[test]
 fn registration_overflow_panics_without_partially_updating_state() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     {
         let mut state = phaser.state.lock();
         state.registered = u32::MAX;
         state.unarrived = u32::MAX;
     }
 
-    assert!(panic::catch_unwind(|| phaser.register()).is_err());
+    assert!(panic::catch_unwind(|| phaser.register().unwrap()).is_err());
     assert_eq!(phaser.registered_parties(), u32::MAX);
     assert_eq!(phaser.unarrived_parties(), u32::MAX);
+}
+
+#[test]
+fn explicit_arrival_and_wait_observe_the_same_completed_phase() {
+    let phaser = Phaser::new();
+    let mut first = phaser.register().unwrap();
+    let mut second = phaser.register().unwrap();
+    let observed = first.arrive().unwrap();
+    second.arrive().unwrap();
+    let next = phaser.phase();
+
+    assert_ne!(observed, next);
+    assert_eq!(
+        poll_once(Box::pin(first.wait()).as_mut()),
+        Poll::Ready(Ok(next))
+    );
+    assert_eq!(
+        poll_once(Box::pin(second.wait()).as_mut()),
+        Poll::Ready(Ok(next))
+    );
+    assert_eq!(phaser.arrived_parties(), 0);
+
+    let mut wait = Box::pin(first.wait());
+    assert!(poll_once(wait.as_mut()).is_pending());
+    second.arrive().unwrap();
+    assert_eq!(poll_once(wait.as_mut()), Poll::Ready(Ok(phaser.phase())));
+}
+
+#[test]
+fn explicit_arrival_replaces_a_cancelled_pending_observation() {
+    let phaser = Phaser::new();
+    let mut first = phaser.register().unwrap();
+    let mut second = phaser.register().unwrap();
+    assert!(poll_once(Box::pin(first.wait()).as_mut()).is_pending());
+    second.arrive().unwrap();
+    let next = first.arrive().unwrap();
+    assert_eq!(next, phaser.phase());
+
+    let mut wait = Box::pin(first.wait());
+    assert!(poll_once(wait.as_mut()).is_pending());
+    second.arrive().unwrap();
+    assert_eq!(poll_once(wait.as_mut()), Poll::Ready(Ok(phaser.phase())));
+}
+
+#[test]
+fn cloned_handles_observe_without_registering_and_participants_own_the_state() {
+    let phaser = Phaser::new();
+    let observer = phaser.clone();
+    let mut participant = phaser.register().unwrap();
+    drop(phaser);
+    assert_eq!(observer.registered_parties(), 1);
+    let observed = observer.phase();
+    participant.arrive().unwrap();
+    assert_eq!(
+        poll_once(Box::pin(observer.wait_for_advance(observed)).as_mut()),
+        Poll::Ready(Ok(observer.phase()))
+    );
+}
+
+#[test]
+fn closing_wakes_all_waiters_once_and_rejects_new_obligations() {
+    let phaser = Phaser::new();
+    let mut first = phaser.register().unwrap();
+    let second = phaser.register().unwrap();
+    let observed = first.arrive().unwrap();
+    let counter = Arc::new(CountWake(AtomicUsize::new(0)));
+    let waker = Waker::from(counter.clone());
+    let mut context = Context::from_waker(&waker);
+    let mut observer = Box::pin(phaser.wait_for_advance(observed));
+    let mut wait = Box::pin(first.wait());
+    assert!(observer.as_mut().poll(&mut context).is_pending());
+    assert!(wait.as_mut().poll(&mut context).is_pending());
+
+    phaser.clone().close();
+    phaser.close();
+    assert!(phaser.is_closed());
+    assert_eq!(counter.0.load(Ordering::Relaxed), 2);
+    assert_eq!(poll_once(observer.as_mut()), Poll::Ready(Err(Closed)));
+    assert_eq!(poll_once(wait.as_mut()), Poll::Ready(Err(Closed)));
+    drop(wait);
+    assert_eq!(first.arrive(), Err(Closed));
+    assert!(matches!(phaser.register(), Err(Closed)));
+    assert!(matches!(phaser.register_many(2), Err(Closed)));
+    assert!(matches!(phaser.register_many(0), Err(Closed)));
+    assert_eq!(first.deregister(), Err(Closed));
+    drop(second);
+    assert_eq!(phaser.registered_parties(), 0);
+    assert_eq!(phaser.unarrived_parties(), 0);
+    assert_eq!(phaser.phase(), observed);
+}
+
+#[test]
+fn completed_arrival_remains_successful_after_close_but_cannot_start_another_round() {
+    let phaser = Phaser::new();
+    let mut first = phaser.register().unwrap();
+    let mut second = phaser.register().unwrap();
+    let observed = first.arrive().unwrap();
+    let mut observer = Box::pin(phaser.wait_for_advance(observed));
+    assert!(poll_once(observer.as_mut()).is_pending());
+    second.arrive().unwrap();
+    let completed = phaser.phase();
+    phaser.close();
+
+    assert_eq!(poll_once(observer.as_mut()), Poll::Ready(Ok(completed)));
+    assert_eq!(
+        poll_once(Box::pin(first.wait()).as_mut()),
+        Poll::Ready(Ok(completed))
+    );
+    assert_eq!(
+        poll_once(Box::pin(first.wait()).as_mut()),
+        Poll::Ready(Err(Closed))
+    );
+    drop(first);
+    drop(second);
+    assert_eq!(phaser.phase(), completed);
+}
+
+#[test]
+fn close_survives_a_panicking_waker_and_notifies_other_waiters() {
+    let phaser = Phaser::new();
+    let observed = phaser.phase();
+    let panic_waker = Waker::from(Arc::new(PanicWake));
+    let counter = Arc::new(CountWake(AtomicUsize::new(0)));
+    let count_waker = Waker::from(counter.clone());
+    let mut first = Box::pin(phaser.wait_for_advance(observed));
+    let mut second = Box::pin(phaser.wait_for_advance(observed));
+    assert!(
+        first
+            .as_mut()
+            .poll(&mut Context::from_waker(&panic_waker))
+            .is_pending()
+    );
+    assert!(
+        second
+            .as_mut()
+            .poll(&mut Context::from_waker(&count_waker))
+            .is_pending()
+    );
+
+    assert!(panic::catch_unwind(|| phaser.close()).is_err());
+    assert!(phaser.is_closed());
+    assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+    assert_eq!(poll_once(first.as_mut()), Poll::Ready(Err(Closed)));
+    assert_eq!(poll_once(second.as_mut()), Poll::Ready(Err(Closed)));
+}
+
+#[test]
+fn a_late_waiter_observes_completion_across_counter_wraparound() {
+    let phaser = Phaser::new();
+    phaser.state.lock().phase = u64::MAX;
+    let mut participant = phaser.register().unwrap();
+    participant.arrive().unwrap();
+    phaser.close();
+    assert_eq!(
+        poll_once(Box::pin(participant.wait()).as_mut()),
+        Poll::Ready(Ok(0))
+    );
+}
+
+#[test]
+fn closing_during_waker_clone_does_not_register_after_close() {
+    use std::mem::ManuallyDrop;
+    use std::task::RawWaker;
+    use std::task::RawWakerVTable;
+
+    unsafe fn clone_waker(data: *const ()) -> RawWaker {
+        // SAFETY: Each raw waker owns an Arc<Phaser>; ManuallyDrop preserves this one's reference.
+        let phaser = ManuallyDrop::new(unsafe { Arc::<Phaser>::from_raw(data.cast()) });
+        phaser.close();
+        RawWaker::new(Arc::into_raw(Arc::clone(&phaser)).cast(), &VTABLE)
+    }
+    unsafe fn drop_waker(data: *const ()) {
+        // SAFETY: Consuming a raw waker releases exactly its one owned Arc reference.
+        drop(unsafe { Arc::<Phaser>::from_raw(data.cast()) });
+    }
+    unsafe fn wake_by_ref(_: *const ()) {}
+    static VTABLE: RawWakerVTable =
+        RawWakerVTable::new(clone_waker, drop_waker, wake_by_ref, drop_waker);
+
+    let phaser = Phaser::new();
+    let data = Arc::into_raw(Arc::new(phaser.clone())).cast();
+    // SAFETY: The vtable maintains Arc ownership and every callback is thread-safe.
+    let waker = unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) };
+    let mut wait = Box::pin(phaser.wait_for_advance(phaser.phase()));
+    assert_eq!(
+        wait.as_mut().poll(&mut Context::from_waker(&waker)),
+        Poll::Ready(Err(Closed))
+    );
+    assert!(phaser.is_closed());
 }

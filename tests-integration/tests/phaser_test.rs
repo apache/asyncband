@@ -15,38 +15,88 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
-
 use asyncband::phaser::Phaser;
 
 #[tokio::test]
 async fn participant_can_wait_from_a_spawned_task() {
-    let phaser = Arc::new(Phaser::new());
-    let mut first = phaser.register();
-    let mut second = phaser.register();
+    let phaser = Phaser::new();
+    let mut first = phaser.register().unwrap();
+    let mut second = phaser.register().unwrap();
 
-    let first_wait = tokio::spawn(async move { first.arrive_and_wait().await });
+    let first_wait = tokio::spawn(async move { first.wait().await });
 
     tokio::task::yield_now().await;
-    let phase = second.arrive();
-    assert_eq!(first_wait.await.unwrap(), phaser.phase());
+    let phase = second.arrive().unwrap();
+    assert_eq!(first_wait.await.unwrap().unwrap(), phaser.phase());
     assert_ne!(phase, phaser.phase());
 }
 
 #[tokio::test]
 async fn observer_waits_without_becoming_a_party() {
-    let phaser = Arc::new(Phaser::new());
+    let phaser = Phaser::new();
     let observed = phaser.phase();
-    let mut first = phaser.register();
-    let second = phaser.register();
-    let observer_phaser = Arc::clone(&phaser);
+    let mut first = phaser.register().unwrap();
+    let second = phaser.register().unwrap();
+    let observer_phaser = phaser.clone();
     let observer = tokio::spawn(async move { observer_phaser.wait_for_advance(observed).await });
 
     tokio::task::yield_now().await;
     assert_eq!(phaser.registered_parties(), 2);
-    first.arrive();
-    second.arrive_and_deregister();
+    first.arrive().unwrap();
+    second.deregister().unwrap();
 
-    assert_eq!(observer.await.unwrap(), phaser.phase());
+    assert_eq!(observer.await.unwrap().unwrap(), phaser.phase());
     assert_eq!(phaser.registered_parties(), 1);
+}
+
+#[test]
+fn arrivals_publish_each_workers_writes_across_threads() {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    let phaser = Phaser::new();
+    let values = std::array::from_fn::<_, 4, _>(|_| AtomicUsize::new(0));
+    let participants = phaser.register_many(4).unwrap();
+    std::thread::scope(|scope| {
+        for (id, mut participant) in participants.into_iter().enumerate() {
+            let values = &values;
+            scope.spawn(move || {
+                pollster::block_on(async {
+                    for round in 1..=16 {
+                        values[id].store(round, Ordering::Relaxed);
+                        participant.wait().await.unwrap();
+                        assert!(
+                            values
+                                .iter()
+                                .all(|value| value.load(Ordering::Relaxed) == round)
+                        );
+                        // Keep the next round's writers behind this read-side rendezvous.
+                        participant.wait().await.unwrap();
+                    }
+                });
+            });
+        }
+    });
+}
+
+#[tokio::test]
+async fn a_failed_task_can_close_the_group_without_reporting_phase_completion() {
+    use asyncband::phaser::Closed;
+
+    let phaser = Phaser::new();
+    let mut worker = phaser.register().unwrap();
+    let failing = phaser.register().unwrap();
+    let observed = phaser.phase();
+    let (arrived, arrival) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        worker.arrive().unwrap();
+        arrived.send(()).unwrap();
+        worker.wait().await
+    });
+    arrival.await.unwrap();
+    failing.phaser().close();
+    drop(failing);
+    assert_eq!(task.await.unwrap(), Err(Closed));
+    assert_eq!(phaser.phase(), observed);
+    assert_eq!(phaser.registered_parties(), 0);
 }

@@ -34,7 +34,7 @@ use asyncband::once::Once;
 use asyncband::once::OnceCell;
 use asyncband::once::OnceMap;
 use asyncband::oneshot;
-use asyncband::phaser::Phase;
+use asyncband::phaser::Closed;
 use asyncband::phaser::Phaser;
 use asyncband::phaser::PhaserParticipant;
 use asyncband::pool;
@@ -106,7 +106,7 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<broadcast::mpmc::TryRecvError>();
     assert_send_and_sync::<oneshot::SendError<i64>>();
     assert_send_and_sync::<oneshot::Sender<i64>>();
-    assert_send_and_sync::<Phase>();
+    assert_send_and_sync::<Closed>();
     assert_send_and_sync::<Phaser>();
     assert_send_and_sync::<PhaserParticipant>();
     assert_send_and_sync::<pool::bounded::Pool<PoolManager>>();
@@ -178,7 +178,7 @@ fn public_types_are_unpin() {
     assert_unpin::<oneshot::SendError<i64>>();
     assert_unpin::<oneshot::Receiver<i64>>();
     assert_unpin::<oneshot::Recv<i64>>();
-    assert_unpin::<Phase>();
+    assert_unpin::<Closed>();
     assert_unpin::<Phaser>();
     assert_unpin::<PhaserParticipant>();
     assert_unpin::<pool::bounded::Pool<PoolManager>>();

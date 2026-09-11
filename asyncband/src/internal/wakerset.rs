@@ -102,6 +102,28 @@ impl WakerSet {
         None
     }
 
+    /// Registers or replaces a waker cloned before taking the owner's state lock.
+    ///
+    /// Returns the previous waker so its destructor can run after releasing that lock.
+    #[inline]
+    #[must_use = "drop the returned waker after releasing the state lock"]
+    pub fn register_owned(
+        &mut self,
+        token: &mut Option<WakerToken>,
+        waker: Waker,
+    ) -> Option<Waker> {
+        if let Some(token) = token {
+            let current = self
+                .wakers
+                .get_mut(token.0)
+                .expect("waker token must refer to an occupied slot");
+            return Some(mem::replace(current, waker));
+        }
+
+        *token = Some(WakerToken(self.wakers.insert(waker)));
+        None
+    }
+
     /// Removes the waker identified by `token`.
     ///
     /// The owner must clear stale tokens without calling this method after detaching the set. The
