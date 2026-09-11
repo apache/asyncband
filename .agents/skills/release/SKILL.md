@@ -37,8 +37,8 @@ Keep these values and supporting links in the conversation so work can resume ac
 - `VERSION`: the final crate version, such as `0.7.2`; RCs do not change the package version.
 - `RC`: the positive candidate number; `RC_TAG` is `v${VERSION}-rc.${RC}`.
 - `RELEASE_COMMIT`: the merged release pull request commit bound to the candidate.
-- `RELEASE_DIR`: an absolute working directory outside the repository for artifacts, verification, and SVN checkouts; reuse it while continuing the same candidate.
-- Candidate tag and artifact location, checksum/signature results, relevant CI runs, PPMC/IPMC vote threads and results, and completed publication steps.
+- `RELEASE_DIR`: an absolute working directory outside the repository for artifacts and verification; reuse it while continuing the same candidate.
+- Staging service and candidate URL, ATR revision when applicable, checksum/signature results, relevant CI runs, PPMC/IPMC vote threads and results, and completed publication steps. ATR uses `VERSION` as its release version; its revision serial is separate from the Git RC number.
 
 Report completed work with evidence, the next useful step, and any input still needed. Distinguish pending, failed, and unverified steps. Keep handoff notes in the conversation unless the user requests a file.
 
