@@ -22,6 +22,7 @@ use std::task::Poll;
 use std::task::Waker;
 use std::thread;
 
+use asyncband::blocking::FutureExt;
 use asyncband::completion;
 use tests_integration::PanicWake;
 use tests_integration::WakeCounter;
@@ -41,16 +42,16 @@ fn all_observers_borrow_the_same_non_clone_value() {
 
     assert!(completer.complete(NotClone(String::from("ready"))).is_ok());
 
-    let first_value = pollster::block_on(first.wait()).unwrap();
-    let second_value = pollster::block_on(second.wait()).unwrap();
-    let repeated = pollster::block_on(first.wait()).unwrap();
+    let first_value = FutureExt::block_on(first.wait()).unwrap();
+    let second_value = FutureExt::block_on(second.wait()).unwrap();
+    let repeated = FutureExt::block_on(first.wait()).unwrap();
     assert_eq!(first_value.0.as_str(), "ready");
     assert!(std::ptr::eq(first_value, second_value));
     assert!(std::ptr::eq(first_value, repeated));
 
     let late = first.clone();
     drop(first);
-    let late_value = pollster::block_on(late.wait()).unwrap();
+    let late_value = FutureExt::block_on(late.wait()).unwrap();
     assert!(std::ptr::eq(second_value, late_value));
 }
 
@@ -60,7 +61,7 @@ fn completer_transfers_a_send_only_value_between_threads() {
 
     let worker = thread::spawn(move || completer.complete(Cell::new(7)));
 
-    assert_eq!(pollster::block_on(completion.wait()).unwrap().get(), 7);
+    assert_eq!(FutureExt::block_on(completion.wait()).unwrap().get(), 7);
     worker.join().unwrap().unwrap();
 }
 
@@ -113,7 +114,7 @@ fn abandonment_wakes_registered_waits_and_is_visible_to_late_observers() {
     ));
 
     let late = first.clone();
-    assert!(pollster::block_on(late.wait()).is_err());
+    assert!(FutureExt::block_on(late.wait()).is_err());
 }
 
 #[test]
@@ -121,13 +122,13 @@ fn payload_errors_remain_distinct_from_abandonment() {
     let (completer, completion) = completion::new::<Result<u8, &'static str>>();
     completer.complete(Err("domain error")).unwrap();
     assert_eq!(
-        pollster::block_on(completion.wait()),
+        FutureExt::block_on(completion.wait()),
         Ok(&Err("domain error"))
     );
 
     let (completer, completion) = completion::new::<Result<u8, &'static str>>();
     drop(completer);
-    assert!(pollster::block_on(completion.wait()).is_err());
+    assert!(FutureExt::block_on(completion.wait()).is_err());
 }
 
 #[test]
@@ -169,7 +170,7 @@ fn cancelling_after_wake_does_not_consume_the_shared_result() {
     assert_eq!(tracker.count(), 1);
     drop(wait);
 
-    assert_eq!(pollster::block_on(second.wait()), Ok(&9));
+    assert_eq!(FutureExt::block_on(second.wait()), Ok(&9));
 }
 
 #[test]
@@ -186,7 +187,7 @@ fn cancelling_after_abandonment_does_not_retain_the_waker() {
     assert_eq!(Arc::strong_count(&tracker), baseline);
     drop(wait);
     assert_eq!(Arc::strong_count(&tracker), baseline);
-    assert!(pollster::block_on(completion.wait()).is_err());
+    assert!(FutureExt::block_on(completion.wait()).is_err());
 }
 
 #[test]
@@ -217,7 +218,7 @@ fn wake_callbacks_run_outside_the_completion_lock() {
         let (completer, completion) = completion::new();
         let callback_completion = completion.clone();
         let waker = waker_on_wake(move || {
-            assert_eq!(pollster::block_on(callback_completion.wait()), Ok(&13));
+            assert_eq!(FutureExt::block_on(callback_completion.wait()), Ok(&13));
         });
         let mut wait = Box::pin(completion.wait());
 
@@ -229,7 +230,7 @@ fn wake_callbacks_run_outside_the_completion_lock() {
         let (completer, completion) = completion::new::<usize>();
         let callback_completion = completion.clone();
         let waker = waker_on_wake(move || {
-            assert!(pollster::block_on(callback_completion.wait()).is_err());
+            assert!(FutureExt::block_on(callback_completion.wait()).is_err());
         });
         let mut wait = Box::pin(completion.wait());
         assert!(poll_with(wait.as_mut(), &waker).is_pending());
@@ -270,7 +271,7 @@ fn cancelled_wakers_are_dropped_outside_the_completion_lock() {
         assert!(poll_with(wait.as_mut(), &waker).is_pending());
         drop(waker);
         drop(wait);
-        assert!(pollster::block_on(completion.wait()).is_err());
+        assert!(FutureExt::block_on(completion.wait()).is_err());
     });
 }
 

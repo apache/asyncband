@@ -20,14 +20,11 @@ use std::thread;
 use std::time::Duration;
 
 #[allow(dead_code)]
-#[path = "../ecosystem/mpmc/adapters.rs"]
-mod adapters;
-#[allow(dead_code)]
-#[path = "../asyncband/mpmc/support.rs"]
-mod asyncband_support;
-#[allow(dead_code)]
-#[path = "../ecosystem/mpmc/support.rs"]
-mod ecosystem_support;
+#[path = "../mpmc/mod.rs"]
+mod mpmc_support;
+
+use mpmc_support::adapters;
+use mpmc_support::support;
 
 // Deliberately drain only after the last producer drops its sender. This makes
 // retaining senders across the completion barrier deadlock deterministically.
@@ -43,6 +40,13 @@ impl adapters::UnboundedMpmc for DrainAfterClose {
 
     fn send(sender: &Self::Sender, value: usize) {
         sender.send(value).unwrap();
+    }
+
+    async fn recv_async(receiver: &Self::Receiver) -> Option<usize> {
+        while !receiver.is_disconnected() {
+            tokio::task::yield_now().await;
+        }
+        receiver.try_recv().ok()
     }
 
     fn recv(receiver: &Self::Receiver) -> usize {
@@ -66,30 +70,10 @@ fn assert_completes(run: impl FnOnce() + Send + 'static) {
 }
 
 #[test]
-fn ecosystem_batch_closes_before_waiting_for_consumers() {
+fn thread_batch_closes_before_waiting_for_consumers() {
     assert_completes(|| {
-        for &topology in ecosystem_support::TOPOLOGIES {
-            let batch =
-                ecosystem_support::ConcurrentBatch::new_unbounded::<DrainAfterClose>(topology);
-            batch.run();
-        }
-    });
-}
-
-#[test]
-fn asyncband_batch_closes_before_waiting_for_consumers() {
-    use adapters::UnboundedMpmc;
-
-    assert_completes(|| {
-        for &topology in asyncband_support::TOPOLOGIES {
-            let (sender, receiver) = DrainAfterClose::channel();
-            let batch = asyncband_support::ConcurrentBatch::new(
-                sender,
-                receiver,
-                topology,
-                DrainAfterClose::send,
-                DrainAfterClose::recv,
-            );
+        for &topology in support::TOPOLOGIES {
+            let batch = support::ThreadBatch::new_unbounded::<DrainAfterClose>(topology);
             batch.run();
         }
     });
@@ -99,13 +83,42 @@ fn asyncband_batch_closes_before_waiting_for_consumers() {
 fn flume_batches_complete_with_competing_consumers() {
     assert_completes(|| {
         for _ in 0..100 {
-            let batch = ecosystem_support::ConcurrentBatch::new_unbounded::<adapters::Flume>(
-                ecosystem_support::Topology {
-                    producers: 1,
-                    consumers: 8,
-                },
-            );
+            let batch = support::ThreadBatch::new_unbounded::<adapters::Flume>(support::Topology {
+                producers: 1,
+                consumers: 8,
+            });
             batch.run();
+        }
+    });
+}
+
+#[test]
+fn tokio_batches_drain_all_messages_before_completion() {
+    fn check<C: support::ConcurrentMpmc>(runtime: &tokio::runtime::Runtime) {
+        for topology in support::TOPOLOGIES
+            .iter()
+            .copied()
+            .chain([support::Topology {
+                producers: 1,
+                consumers: 3,
+            }])
+        {
+            // Three consumers cannot receive equal quotas from a 16,384-message batch.
+            let mut batch = support::TaskBatch::new::<C>(runtime, topology);
+            runtime.block_on(batch.run());
+        }
+    }
+
+    assert_completes(|| {
+        for workers in [0, 4] {
+            let runtime = support::runtime(workers);
+            check::<support::Bounded<adapters::Asyncband, 1>>(&runtime);
+            check::<support::Bounded<adapters::AsyncChannel, 1>>(&runtime);
+            check::<support::Bounded<adapters::Flume, 1>>(&runtime);
+            check::<support::Unbounded<adapters::Asyncband>>(&runtime);
+            check::<support::Unbounded<adapters::AsyncChannel>>(&runtime);
+            check::<support::Unbounded<adapters::Flume>>(&runtime);
+            check::<support::Unbounded<DrainAfterClose>>(&runtime);
         }
     });
 }

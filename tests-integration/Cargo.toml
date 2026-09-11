@@ -51,7 +51,6 @@ asyncband = { workspace = true, features = [
   "waitgroup",
   "watch",
 ] }
-pollster = { workspace = true, features = ["macro"] }
 tokio-test = { workspace = true }
 
 [lib]

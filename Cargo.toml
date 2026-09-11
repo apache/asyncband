@@ -41,7 +41,6 @@ cargo_metadata = { version = "0.23.1" }
 clap = { version = "4.6.5" }
 divan = { version = "0.1.21" }
 flume = { version = "0.12.0", default-features = false }
-pollster = { version = "1.0.1" }
 semver = { version = "1.0.28" }
 serde = { version = "1.0.229" }
 tokio = { version = "1.53.1" }

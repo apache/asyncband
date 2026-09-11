@@ -21,6 +21,7 @@ use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::task::Waker;
 
+use asyncband::blocking::FutureExt;
 use asyncband::watch;
 use tests_integration::PanicWake;
 use tests_integration::WakeCounter;
@@ -69,7 +70,7 @@ fn initial_value_is_observed_and_updates_coalesce() {
     tx.send(2).unwrap();
 
     assert_eq!(rx.has_changed(), Ok(true));
-    assert_eq!(pollster::block_on(rx.recv()).unwrap(), 2);
+    assert_eq!(FutureExt::block_on(rx.recv()).unwrap(), 2);
     assert_eq!(rx.has_changed(), Ok(false));
 }
 
@@ -80,7 +81,7 @@ fn equal_values_still_create_a_new_version() {
     tx.send(1).unwrap();
 
     assert_eq!(rx.has_changed(), Ok(true));
-    assert_eq!(pollster::block_on(rx.recv()).unwrap(), 1);
+    assert_eq!(FutureExt::block_on(rx.recv()).unwrap(), 1);
 }
 
 #[test]
@@ -90,7 +91,7 @@ fn get_does_not_consume_but_recv_does() {
 
     assert_eq!(rx.get(), 1);
     assert_eq!(rx.has_changed(), Ok(true));
-    assert_eq!(pollster::block_on(rx.recv()).unwrap(), 1);
+    assert_eq!(FutureExt::block_on(rx.recv()).unwrap(), 1);
     assert_eq!(rx.has_changed(), Ok(false));
 }
 
@@ -109,12 +110,12 @@ fn panicking_clone_leaves_the_update_unseen() {
     panic_next.store(true, Ordering::Relaxed);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        pollster::block_on(rx.recv())
+        FutureExt::block_on(rx.recv())
     }));
 
     assert!(result.is_err());
     assert_eq!(rx.has_changed(), Ok(true));
-    assert_eq!(pollster::block_on(rx.recv()).unwrap().value, 1);
+    assert_eq!(FutureExt::block_on(rx.recv()).unwrap().value, 1);
 }
 
 #[test]
@@ -123,13 +124,13 @@ fn cloned_receivers_inherit_then_advance_independently() {
     tx.send(1).unwrap();
     let mut second = first.clone();
 
-    assert_eq!(pollster::block_on(first.recv()).unwrap(), 1);
+    assert_eq!(FutureExt::block_on(first.recv()).unwrap(), 1);
     assert_eq!(first.has_changed(), Ok(false));
     assert_eq!(second.has_changed(), Ok(true));
-    assert_eq!(pollster::block_on(second.recv()).unwrap(), 1);
+    assert_eq!(FutureExt::block_on(second.recv()).unwrap(), 1);
 
     tx.send(2).unwrap();
-    assert_eq!(pollster::block_on(first.recv()).unwrap(), 2);
+    assert_eq!(FutureExt::block_on(first.recv()).unwrap(), 2);
     assert_eq!(second.has_changed(), Ok(true));
 }
 
@@ -143,7 +144,7 @@ fn subscriptions_start_at_the_current_version() {
     assert_eq!(subscribed.has_changed(), Ok(false));
 
     tx.send(2).unwrap();
-    assert_eq!(pollster::block_on(subscribed.recv()).unwrap(), 2);
+    assert_eq!(FutureExt::block_on(subscribed.recv()).unwrap(), 2);
 }
 
 #[test]
@@ -157,12 +158,12 @@ fn final_unseen_value_is_reported_before_disconnection() {
     assert_eq!(first.has_changed(), Ok(true));
     assert_eq!(first.get(), 1);
     assert_eq!(first.has_changed(), Ok(true));
-    assert_eq!(pollster::block_on(first.recv()).unwrap(), 1);
+    assert_eq!(FutureExt::block_on(first.recv()).unwrap(), 1);
     assert_eq!(first.has_changed(), Err(watch::RecvError::Disconnected));
 
-    assert_eq!(pollster::block_on(second.recv()).unwrap(), 1);
+    assert_eq!(FutureExt::block_on(second.recv()).unwrap(), 1);
     assert_eq!(
-        pollster::block_on(second.recv()),
+        FutureExt::block_on(second.recv()),
         Err(watch::RecvError::Disconnected)
     );
 }
@@ -181,7 +182,7 @@ fn sending_without_receivers_returns_the_value_and_preserves_current() {
     assert_eq!(replacement.has_changed(), Ok(false));
 
     tx.send(String::from("accepted")).unwrap();
-    assert_eq!(pollster::block_on(replacement.recv()).unwrap(), "accepted");
+    assert_eq!(FutureExt::block_on(replacement.recv()).unwrap(), "accepted");
 }
 
 #[test]
@@ -189,7 +190,7 @@ fn send_replace_returns_previous_and_publishes_without_receivers() {
     let (tx, mut rx) = watch::channel(String::from("initial"));
 
     assert_eq!(tx.send_replace(String::from("first")), "initial");
-    assert_eq!(pollster::block_on(rx.recv()).unwrap(), "first");
+    assert_eq!(FutureExt::block_on(rx.recv()).unwrap(), "first");
 
     drop(rx);
     assert_eq!(tx.send_replace(String::from("retained")), "first");
@@ -199,7 +200,7 @@ fn send_replace_returns_previous_and_publishes_without_receivers() {
     assert_eq!(subscribed.has_changed(), Ok(false));
 
     assert_eq!(tx.send_replace(String::from("next")), "retained");
-    assert_eq!(pollster::block_on(subscribed.recv()).unwrap(), "next");
+    assert_eq!(FutureExt::block_on(subscribed.recv()).unwrap(), "next");
 }
 
 #[test]
@@ -217,7 +218,7 @@ fn cancelling_changed_releases_its_waker_without_consuming() {
 
     tx.send(1).unwrap();
     assert_eq!(tracker.count(), 0);
-    assert_eq!(pollster::block_on(rx.recv()).unwrap(), 1);
+    assert_eq!(FutureExt::block_on(rx.recv()).unwrap(), 1);
 }
 
 #[test]
@@ -232,7 +233,7 @@ fn cancelling_after_wake_still_leaves_the_update_unseen() {
     assert_eq!(tracker.count(), 1);
     drop(changed);
 
-    assert_eq!(pollster::block_on(rx.recv()).unwrap(), 1);
+    assert_eq!(FutureExt::block_on(rx.recv()).unwrap(), 1);
 }
 
 #[test]
@@ -247,7 +248,7 @@ fn cancelling_recv_after_wake_still_leaves_the_update_unseen() {
     assert_eq!(tracker.count(), 1);
     drop(recv);
 
-    assert_eq!(pollster::block_on(rx.recv()).unwrap(), 1);
+    assert_eq!(FutureExt::block_on(rx.recv()).unwrap(), 1);
 }
 
 #[test]
@@ -334,7 +335,7 @@ fn dropping_a_stale_changed_future_keeps_a_new_waiter_registered() {
     tx.send(1).unwrap();
     assert_eq!(first_tracker.count(), 1);
 
-    assert_eq!(pollster::block_on(second.recv()).unwrap(), 1);
+    assert_eq!(FutureExt::block_on(second.recv()).unwrap(), 1);
     let second_tracker = Arc::new(WakeCounter::default());
     let second_waker = Waker::from(second_tracker.clone());
     let mut second_changed = Box::pin(second.changed());
