@@ -17,10 +17,8 @@
 
 //! A start gate, changing membership, split arrival/wait, observers, and cancellation retry.
 //!
-//! Java mappings: register/bulkRegister become owned participant handles; arriveAndAwaitAdvance
-//! becomes participant.wait; arrive/awaitAdvance become arrive/wait or an independent observer.
 //! The setup participant prevents early workers from completing the initial phase before the
-//! whole batch is registered. Unlike Java's default policy, an empty phaser stays reusable.
+//! whole batch is registered. An empty phaser stays reusable after all participants leave.
 //!
 //! Run: cargo run -p examples --example phaser_rounds
 
@@ -38,9 +36,9 @@ async fn main() -> Result<(), Closed> {
 
 async fn start_gate() -> Result<(), Closed> {
     let phaser = Phaser::new();
-    let setup = phaser.register()?;
+    let setup = phaser.register_one()?;
     let mut tasks = Vec::new();
-    for mut participant in phaser.register_many(3)? {
+    for mut participant in phaser.register(3)? {
         tasks.push(tokio::spawn(async move {
             participant.wait().await?;
             // Initialization is complete; real work may now start.
@@ -71,8 +69,8 @@ async fn work(mut participant: PhaserParticipant, rounds: usize) -> Result<(), C
 
 async fn changing_membership() -> Result<(), Closed> {
     let phaser = Phaser::new();
-    let mut coordinator = phaser.register()?;
-    let worker = tokio::spawn(work(phaser.register()?, 3));
+    let mut coordinator = phaser.register_one()?;
+    let worker = tokio::spawn(work(phaser.register_one()?, 3));
 
     let progress = phaser.clone();
     let observer = tokio::spawn(async move {
@@ -88,7 +86,7 @@ async fn changing_membership() -> Result<(), Closed> {
 
     coordinator.wait().await?;
     // The coordinator has not arrived in the next phase, so this registration joins that phase.
-    let joining_worker = tokio::spawn(work(phaser.register()?, 2));
+    let joining_worker = tokio::spawn(work(phaser.register_one()?, 2));
     assert_eq!(phaser.registered_parties(), 3);
     coordinator.wait().await?;
     coordinator.wait().await?;
@@ -104,8 +102,8 @@ async fn changing_membership() -> Result<(), Closed> {
 }
 
 /// A caller-side numeric threshold, for a run known not to cross counter wraparound.
-/// Java's awaitPhase example uses the same loop over observed advances. This observer does not
-/// register, drive the computation, or guarantee one notification for every intermediate phase.
+/// This observer does not register, drive the computation, or guarantee one notification for
+/// every intermediate phase.
 async fn wait_until(phaser: &Phaser, target: u64) -> Result<u64, Closed> {
     let mut observed = phaser.phase();
     while observed < target {
@@ -116,8 +114,8 @@ async fn wait_until(phaser: &Phaser, target: u64) -> Result<u64, Closed> {
 
 async fn cancellation_retry() -> Result<(), Closed> {
     let phaser = Phaser::new();
-    let mut participant = phaser.register()?;
-    let mut peer = phaser.register()?;
+    let mut participant = phaser.register_one()?;
+    let mut peer = phaser.register_one()?;
     let observed = phaser.phase();
 
     tokio::select! {

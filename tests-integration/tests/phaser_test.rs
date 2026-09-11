@@ -20,8 +20,8 @@ use asyncband::phaser::Phaser;
 #[tokio::test]
 async fn participant_can_wait_from_a_spawned_task() {
     let phaser = Phaser::new();
-    let mut first = phaser.register().unwrap();
-    let mut second = phaser.register().unwrap();
+    let mut first = phaser.register_one().unwrap();
+    let mut second = phaser.register_one().unwrap();
 
     let first_wait = tokio::spawn(async move { first.wait().await });
 
@@ -35,8 +35,8 @@ async fn participant_can_wait_from_a_spawned_task() {
 async fn observer_waits_without_becoming_a_party() {
     let phaser = Phaser::new();
     let observed = phaser.phase();
-    let mut first = phaser.register().unwrap();
-    let second = phaser.register().unwrap();
+    let mut first = phaser.register_one().unwrap();
+    let second = phaser.register_one().unwrap();
     let observer_phaser = phaser.clone();
     let observer = tokio::spawn(async move { observer_phaser.wait_for_advance(observed).await });
 
@@ -56,9 +56,9 @@ fn arrivals_publish_each_workers_writes_across_threads() {
 
     let phaser = Phaser::new();
     let values = std::array::from_fn::<_, 4, _>(|_| AtomicUsize::new(0));
-    let participants = phaser.register_many(4).unwrap();
+    let participants = phaser.register(values.len()).unwrap();
     std::thread::scope(|scope| {
-        for (id, mut participant) in participants.into_iter().enumerate() {
+        for (id, mut participant) in participants.enumerate() {
             let values = &values;
             scope.spawn(move || {
                 pollster::block_on(async {
@@ -84,8 +84,8 @@ async fn a_failed_task_can_close_the_group_without_reporting_phase_completion() 
     use asyncband::phaser::Closed;
 
     let phaser = Phaser::new();
-    let mut worker = phaser.register().unwrap();
-    let failing = phaser.register().unwrap();
+    let mut worker = phaser.register_one().unwrap();
+    let failing = phaser.register_one().unwrap();
     let observed = phaser.phase();
     let (arrived, arrival) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {

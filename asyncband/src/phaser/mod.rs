@@ -36,9 +36,8 @@
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<(), asyncband::phaser::Closed> {
 //! let phaser = Phaser::new();
-//! let mut participants = phaser.register_many(2)?;
-//! let mut worker = participants.pop().unwrap();
-//! let mut coordinator = participants.pop().unwrap();
+//! let mut worker = phaser.register_one()?;
+//! let mut coordinator = phaser.register_one()?;
 //!
 //! let task = tokio::spawn(async move {
 //!     for _ in 0..3 {
@@ -61,7 +60,7 @@
 //! # Membership and cancellation
 //!
 //! Registration joins the phase current at the registration's synchronization point. In
-//! particular, [`register_many`](Phaser::register_many) registers its entire batch in one phase.
+//! particular, [`register`](Phaser::register) registers its entire batch in one phase.
 //! Dropping or [`deregistering`](PhaserParticipant::deregister) a participant removes its future
 //! obligations and discharges any outstanding arrival in the current phase. An empty phaser is
 //! dormant and can be reused; it does not advance repeatedly or close automatically.
@@ -89,32 +88,10 @@
 //! Phase numbers start at zero and wrap from `u64::MAX` to zero. Pass a value previously obtained
 //! from the same phaser to `wait_for_advance`; it tests for a different phase, not a target number
 //! or numeric threshold. An observation must not be retained across a full counter cycle.
-//!
-//! # Java Phaser use cases
-//!
-//! The following examples are in the repository's `examples` package. Run one with
-//! `cargo run -p examples --example <name>`.
-//!
-//! | Use case | Rust expression | Runnable example |
-//! |----------|-----------------|------------------|
-//! | Dynamic registration, repeated rounds, and a one-shot start gate | Shared handles, `register_many`, participant `wait`, and `deregister` | `phaser_rounds` |
-//! | Split arrival/wait, progress observation, numeric targets, and cancellation retry | `arrive`, participant `wait`, and `wait_for_advance` | `phaser_rounds` |
-//! | `onAdvance` aggregation, asynchronous finalization, and stopping at convergence | A coordinator and separate ready/resume phasers | `phaser_completion` |
-//! | Aborting the group after a worker fails | `close`, including an application-owned abort guard | `phaser_completion` |
-//! | Grouped fan-in before global release | Local ready/resume phasers and one root participant per group | `phaser_groups` |
-//!
-//! These compositions do not supply Java's native parent/child phasers, automatic parent
-//! registration, a globally shared phase counter across nodes, or an in-primitive `onAdvance`
-//! hook. The grouped example has an explicit coordinator task per group; local counters are not
-//! global phase numbers. Membership changes in the ready/resume protocols must be applied at
-//! coordinated round boundaries. A slow observer cannot run an exactly-once completion hook.
-//! Timeouts and task scheduling remain with the caller's runtime.
-//!
-//! For the Java contracts being mapped, see the
-//! [Java Phaser documentation](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Phaser.html).
 
 use std::fmt;
 use std::future::Future;
+use std::iter::FusedIterator;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -143,7 +120,7 @@ impl std::error::Error for Closed {}
 
 /// A shared handle to a reusable phase barrier with dynamic participants.
 ///
-/// Cloning this handle does not register a participant. Use [`register`](Self::register) to
+/// Cloning this handle does not register a participant. Use [`register_one`](Self::register_one) to
 /// create a participant that can be moved into an independently spawned task.
 #[derive(Clone)]
 pub struct Phaser {
@@ -153,8 +130,8 @@ pub struct Phaser {
 struct State {
     phase: u64,
     closed: bool,
-    registered: u32,
-    unarrived: u32,
+    registered: usize,
+    unarrived: usize,
     waiters: WakerSet,
 }
 
@@ -246,18 +223,18 @@ impl Phaser {
     /// Returns an instantaneous count of registered participants, including those already arrived.
     ///
     /// Counts can change between separate queries. This is not a synchronization operation.
-    pub fn registered_parties(&self) -> u32 {
+    pub fn registered_parties(&self) -> usize {
         self.state.lock().registered
     }
 
     /// Returns an instantaneous count of participants that have arrived in the current phase.
-    pub fn arrived_parties(&self) -> u32 {
+    pub fn arrived_parties(&self) -> usize {
         let state = self.state.lock();
         state.registered - state.unarrived
     }
 
     /// Returns an instantaneous count of outstanding arrivals in the current phase.
-    pub fn unarrived_parties(&self) -> u32 {
+    pub fn unarrived_parties(&self) -> usize {
         self.state.lock().unarrived
     }
 
@@ -268,31 +245,44 @@ impl Phaser {
     ///
     /// # Panics
     ///
-    /// Panics if the registered count would exceed `u32::MAX`.
-    pub fn register(&self) -> Result<PhaserParticipant, Closed> {
+    /// Panics if the registered count would exceed `usize::MAX`.
+    pub fn register_one(&self) -> Result<PhaserParticipant, Closed> {
         let phaser = self.clone();
-        self.register_inner(1)?;
+        self.do_register(1)?;
         Ok(PhaserParticipant::new(phaser))
     }
 
-    /// Registers an entire batch in one phase, or returns [`Closed`] without registering anyone.
+    /// Registers an entire batch in one phase and returns an iterator over its participants.
     ///
-    /// On an open phaser, a zero-sized batch does nothing. The batch is reserved before any
-    /// participant count is changed. Every returned handle must be used or dropped.
+    /// Registration is immediate, including participants not yet yielded by the iterator. No
+    /// storage is allocated for the batch. Dropping the iterator withdraws its remaining
+    /// participants; yielded handles keep their registrations. The iterator owns a shared handle
+    /// and does not borrow this phaser.
+    ///
+    /// Returns [`Closed`] without registering anyone if the phaser is closed. On an open phaser,
+    /// a zero-sized batch does nothing. Collect this iterator into a collection of your choice.
+    ///
+    /// ```
+    /// use asyncband::phaser::Phaser;
+    ///
+    /// let phaser = Phaser::new();
+    /// let participants: Vec<_> = phaser.register(3)?.collect();
+    /// # Ok::<(), asyncband::phaser::Closed>(())
+    /// ```
     ///
     /// # Panics
     ///
-    /// Panics if the batch cannot fit in a vector or the registered count would exceed `u32::MAX`.
-    pub fn register_many(&self, parties: u32) -> Result<Vec<PhaserParticipant>, Closed> {
-        let capacity = usize::try_from(parties)
-            .expect("Phaser participant count must fit in the platform's usize");
-        let mut participants = Vec::with_capacity(capacity);
-        self.register_inner(parties)?;
-        participants.extend((0..parties).map(|_| PhaserParticipant::new(self.clone())));
-        Ok(participants)
+    /// Panics if the registered count would exceed `usize::MAX`.
+    pub fn register(&self, parties: usize) -> Result<PhaserParticipants, Closed> {
+        let phaser = self.clone();
+        self.do_register(parties)?;
+        Ok(PhaserParticipants {
+            phaser,
+            remaining: parties,
+        })
     }
 
-    fn register_inner(&self, parties: u32) -> Result<(), Closed> {
+    fn do_register(&self, parties: usize) -> Result<(), Closed> {
         let mut state = self.state.lock();
         if state.closed {
             return Err(Closed);
@@ -330,6 +320,59 @@ impl Phaser {
             token: None,
         }
         .await
+    }
+}
+
+/// An owning iterator over a batch registered by [`Phaser::register`].
+///
+/// All participants are already registered, so even those not yet yielded hold back phase
+/// advancement. Dropping this iterator withdraws the remaining participants in one state
+/// transition. Yielded participants are independent and retain their registrations.
+///
+/// Closure does not prevent iteration over this existing batch, but arrival and waiting on the
+/// yielded participants return [`Closed`]. This iterator is not cloneable.
+#[must_use = "dropping the iterator withdraws participants that have not been yielded"]
+#[derive(Debug)]
+pub struct PhaserParticipants {
+    phaser: Phaser,
+    remaining: usize,
+}
+
+impl Iterator for PhaserParticipants {
+    type Item = PhaserParticipant;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let participant = PhaserParticipant::new(self.phaser.clone());
+        self.remaining -= 1;
+        Some(participant)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for PhaserParticipants {}
+
+impl FusedIterator for PhaserParticipants {}
+
+impl Drop for PhaserParticipants {
+    fn drop(&mut self) {
+        if self.remaining == 0 {
+            return;
+        }
+        let wakers = {
+            let mut state = self.phaser.state.lock();
+            // Unyielded participants have never arrived and prevent their phase from advancing.
+            state.registered -= self.remaining;
+            state.unarrived -= self.remaining;
+            self.remaining = 0;
+            state.advance_if_ready()
+        };
+        wake_all(wakers.into_iter().flatten());
     }
 }
 
@@ -413,10 +456,10 @@ impl PhaserParticipant {
     /// twice. This always removes the registration, including after closure. The pending
     /// observation is abandoned. Dropping a participant has the same membership effect.
     pub fn deregister(mut self) -> Result<u64, Closed> {
-        self.deregister_inner()
+        self.do_deregister()
     }
 
-    fn deregister_inner(&mut self) -> Result<u64, Closed> {
+    fn do_deregister(&mut self) -> Result<u64, Closed> {
         let (result, wakers) = {
             let mut state = self.phaser.state.lock();
             self.registered = false;
@@ -439,7 +482,7 @@ impl PhaserParticipant {
 impl Drop for PhaserParticipant {
     fn drop(&mut self) {
         if self.registered {
-            let _ = self.deregister_inner();
+            let _ = self.do_deregister();
         }
     }
 }

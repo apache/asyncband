@@ -17,9 +17,9 @@
 
 //! Finalize each round before releasing workers, and close the group on failure or cancellation.
 //!
-//! Java mapping: onAdvance aggregation and convergence become an application coordinator between
-//! two rendezvous points. The coordinator may await I/O. Merely running code after one wait, even
-//! in a barrier leader, would not stop other workers from starting their next round.
+//! An application coordinator aggregates results and checks convergence between two rendezvous
+//! points. The coordinator may await I/O. Merely running code after one wait, even in a barrier
+//! leader, would not stop other workers from starting their next round.
 //!
 //! Membership is fixed within this protocol; changes must update both groups at a common round
 //! boundary. Each phaser has its own counter, distinct from the application's iteration number.
@@ -56,8 +56,8 @@ impl Member {
     fn register(ready: &Phaser, resume: &Phaser) -> Result<Self, Closed> {
         Ok(Self {
             _close: CloseOnDrop([ready.clone(), resume.clone()]),
-            ready: ready.register()?,
-            resume: resume.register()?,
+            ready: ready.register_one()?,
+            resume: resume.register_one()?,
         })
     }
 }

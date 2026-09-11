@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
-* Add an opt-in runtime-agnostic `Phaser` with shared observer handles, dynamic RAII participants, `u64` phase numbers, split arrival/wait with cancellation-resilient retries, and explicit closure that releases unfinished waits with `Closed`.
+* Add an opt-in runtime-agnostic `Phaser` with shared observer handles, dynamic RAII participants registered individually or in batches through an owning iterator, `u64` phase numbers, split arrival/wait with cancellation-resilient retries, and explicit closure that releases unfinished waits with `Closed`.
 * Add bounded MPSC `reserve` and `try_reserve` methods returning a `Permit`, allowing callers to wait for capacity before constructing a message; pending sends and reservations receive capacity in wait-queue order, and unused permits release capacity without claiming message order.
 
 ### Bug fixes

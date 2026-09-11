@@ -17,9 +17,9 @@
 
 //! Group local arrivals before one global rendezvous, then release the local workers.
 //!
-//! Java mapping: a group representative contributes one root participant. Unlike a native child
-//! Phaser, this composition runs an explicit driver task and uses separate local counters. A
-//! local ready phase must never authorize the next round until the root has also completed.
+//! A group representative contributes one root participant. Each group runs an explicit driver
+//! task and uses separate local counters. A local ready phase must never authorize the next round
+//! until the root has also completed.
 //! The example uses a fixed cohort for three rounds; automatic parent registration and arbitrary
 //! concurrent changes to a hierarchical participant set are not provided by this composition.
 //! No performance advantage over a flat Phaser is claimed without workload-specific measurement.
@@ -67,8 +67,8 @@ impl LocalMember {
                 phasers: [root.clone(), ready.clone(), resume.clone()],
                 armed: true,
             },
-            ready: ready.register()?,
-            resume: resume.register()?,
+            ready: ready.register_one()?,
+            resume: resume.register_one()?,
         })
     }
 }
@@ -132,7 +132,7 @@ async fn main() -> Result<(), Closed> {
 
 async fn run_groups(fail_one_worker: bool) -> Result<(), Closed> {
     let root = Phaser::new();
-    let mut coordinator = root.register()?;
+    let mut coordinator = root.register_one()?;
     // Created after the participant so cancellation closes the root before withdrawing it.
     let _close_root = CloseRootOnDrop(root.clone());
     let values = Arc::new(
@@ -145,7 +145,7 @@ async fn run_groups(fail_one_worker: bool) -> Result<(), Closed> {
         let ready = Phaser::new();
         let resume = Phaser::new();
         let driver = LocalMember::register(&root, &ready, &resume)?;
-        let representative = root.register()?;
+        let representative = root.register_one()?;
         for worker_id in 0..WORKERS_PER_GROUP {
             let member = LocalMember::register(&root, &ready, &resume)?;
             let id = group * WORKERS_PER_GROUP + worker_id;
@@ -161,7 +161,7 @@ async fn run_groups(fail_one_worker: bool) -> Result<(), Closed> {
             root: representative,
         })));
     }
-    assert_eq!(root.registered_parties(), GROUPS as u32 + 1);
+    assert_eq!(root.registered_parties(), GROUPS + 1);
 
     for round in 1..=ROUNDS {
         if let Err(error) = coordinator.wait().await {

@@ -37,6 +37,7 @@ use asyncband::oneshot;
 use asyncband::phaser::Closed;
 use asyncband::phaser::Phaser;
 use asyncband::phaser::PhaserParticipant;
+use asyncband::phaser::PhaserParticipants;
 use asyncband::pool;
 use asyncband::pool::ManageObject;
 use asyncband::pool::ObjectStatus;
@@ -109,6 +110,7 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<Closed>();
     assert_send_and_sync::<Phaser>();
     assert_send_and_sync::<PhaserParticipant>();
+    assert_send_and_sync::<PhaserParticipants>();
     assert_send_and_sync::<pool::bounded::Pool<PoolManager>>();
     assert_send_and_sync::<pool::bounded::Object<PoolManager>>();
     assert_send_and_sync::<pool::unbounded::Pool<i64>>();
@@ -181,6 +183,7 @@ fn public_types_are_unpin() {
     assert_unpin::<Closed>();
     assert_unpin::<Phaser>();
     assert_unpin::<PhaserParticipant>();
+    assert_unpin::<PhaserParticipants>();
     assert_unpin::<pool::bounded::Pool<PoolManager>>();
     assert_unpin::<pool::bounded::Object<PoolManager>>();
     assert_unpin::<pool::unbounded::Pool<i64>>();
