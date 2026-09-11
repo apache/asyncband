@@ -8,6 +8,14 @@ Use `cargo x` as the source of truth for repository workflows. Read `cargo x --h
 
 Declare restricted visibility at the module boundary and use `pub` for items in that module's API.
 
+## Waker Contract
+
+- Allow normal executor `Waker::clone` inside short state critical sections. Custom clone panic recovery and reentrancy are not general guarantees; do not require them in reviews unless an explicit local contract does.
+- Reuse borrowed-waker registration and avoid redundant clones.
+- Keep wake callbacks and replaced or cancelled waker destruction outside primitive locks. If a batch wake panics, attempt the remaining wakes and propagate the first panic.
+
+Decision: [#257](https://github.com/apache/asyncband/pull/257).
+
 ## Documentation
 
 Keep each Markdown prose paragraph and list item on one source line.

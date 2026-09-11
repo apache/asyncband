@@ -35,6 +35,7 @@ asyncband = { workspace = true, features = [
   "event",
   "latch",
   "lazy-cell",
+  "mpmc",
   "mpsc",
   "mutex",
   "once",
