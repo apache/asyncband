@@ -33,12 +33,14 @@ asyncband = { workspace = true, features = [
   "condvar",
   "event",
   "latch",
+  "mpmc",
   "mpsc",
   "mutex",
   "once",
   "once-cell",
   "once-map",
   "oneshot",
+  "phaser",
   "pool",
   "rwlock",
   "semaphore",
@@ -49,8 +51,8 @@ asyncband = { workspace = true, features = [
 ] }
 divan = { workspace = true }
 flume = { workspace = true, features = ["async"] }
-pollster = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+waitgroup = { workspace = true }
 
 [[bench]]
 harness = false

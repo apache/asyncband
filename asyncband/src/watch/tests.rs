@@ -26,6 +26,14 @@ fn send_panics_on_version_overflow() {
 }
 
 #[test]
+#[should_panic(expected = "watch channel version counter overflowed")]
+fn send_replace_panics_on_version_overflow() {
+    let (tx, _rx) = channel(0);
+    tx.shared.state.lock().version = u64::MAX;
+    tx.send_replace(1);
+}
+
+#[test]
 fn concurrent_senders_commit_every_version() {
     const SENDERS: usize = 4;
     const SENDS_PER_THREAD: usize = 1_000;
@@ -50,5 +58,5 @@ fn concurrent_senders_commit_every_version() {
         tx.shared.state.lock().version,
         (SENDERS * SENDS_PER_THREAD) as u64
     );
-    assert!(*rx.borrow() < SENDERS * SENDS_PER_THREAD);
+    assert!(rx.get() < SENDERS * SENDS_PER_THREAD);
 }

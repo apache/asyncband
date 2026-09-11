@@ -25,6 +25,7 @@ use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 
+use asyncband::blocking::FutureExt;
 use asyncband::broadcast::mpmc::*;
 use tests_integration::poll_once;
 
@@ -483,6 +484,34 @@ fn cancelled_recv_releases_its_waker() {
 // Disconnection
 // ---------------------------------------------------------------------------------------------
 
+#[test]
+fn dropping_a_woken_recv_keeps_another_receivers_waiter() {
+    let (tx, mut rx1) = bounded::<i32>(2);
+    let mut rx2 = tx.subscribe();
+    let first = TrackWake::new();
+    let waker = Waker::from(first.clone());
+    let mut context = Context::from_waker(&waker);
+    let mut recv1 = Box::pin(rx1.recv());
+
+    assert!(recv1.as_mut().poll(&mut context).is_pending());
+
+    tx.try_send(1).unwrap();
+    assert_eq!(first.count(), 1);
+    assert_eq!(rx2.try_recv(), Ok(1));
+
+    let second = TrackWake::new();
+    let waker = Waker::from(second.clone());
+    let mut context = Context::from_waker(&waker);
+    let mut recv2 = Box::pin(rx2.recv());
+    assert!(recv2.as_mut().poll(&mut context).is_pending());
+
+    // `recv1` was already woken, so dropping it must not release the slot `recv2` now owns.
+    drop(recv1);
+    tx.try_send(2).unwrap();
+
+    assert_eq!(second.count(), 1);
+}
+
 #[tokio::test]
 async fn bounded_recv_drains_buffered_messages_before_reporting_disconnection() {
     let (tx, mut rx) = bounded(4);
@@ -646,7 +675,7 @@ fn dropping_the_last_receiver_never_strands_a_racing_producer() {
             let producers = (0..PRODUCERS)
                 .map(|producer| {
                     let tx = tx.clone();
-                    thread::spawn(move || pollster::block_on(tx.send(round * 10 + producer + 1)))
+                    thread::spawn(move || FutureExt::block_on(tx.send(round * 10 + producer + 1)))
                 })
                 .collect::<Vec<_>>();
 
@@ -689,7 +718,7 @@ fn bounded_concurrent_producers_commit_one_order_seen_by_every_receiver() {
             thread::spawn(move || {
                 let mut seen = Vec::with_capacity(TOTAL as usize);
                 for _ in 0..TOTAL {
-                    seen.push(pollster::block_on(receiver.recv()).expect("sender dropped early"));
+                    seen.push(FutureExt::block_on(receiver.recv()).expect("sender dropped early"));
                 }
                 seen
             })
@@ -701,7 +730,7 @@ fn bounded_concurrent_producers_commit_one_order_seen_by_every_receiver() {
             let tx = tx.clone();
             thread::spawn(move || {
                 for value in 0..PER_PRODUCER {
-                    pollster::block_on(tx.send(worker * PER_PRODUCER + value));
+                    FutureExt::block_on(tx.send(worker * PER_PRODUCER + value));
                 }
             })
         })

@@ -1,19 +1,21 @@
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
+// Copyright 2025 FastLabs Developers
 //
-//   http://www.apache.org/licenses/LICENSE-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// This file contains code ported from Fastpool 1.1.1.
+// The incorporated code has been modified for use in Apache Asyncband.
+// Upstream source:
+// https://github.com/fast/fastpool/blob/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool/src/unbounded.rs
 
 //! Unbounded object pools.
 //!
@@ -131,12 +133,14 @@ impl PoolConfig {
     }
 
     /// Returns a new [`PoolConfig`] with the specified queue strategy.
+    #[must_use = "this method returns the updated pool configuration"]
     pub fn with_queue_strategy(mut self, queue_strategy: QueueStrategy) -> Self {
         self.queue_strategy = queue_strategy;
         self
     }
 
     /// Returns a new [`PoolConfig`] with the specified recycle cancelled strategy.
+    #[must_use = "this method returns the updated pool configuration"]
     pub fn with_recycle_cancelled_strategy(
         mut self,
         recycle_cancelled_strategy: RecycleCancelledStrategy,
@@ -195,13 +199,13 @@ pub struct PoolIsEmpty(());
 
 impl std::fmt::Debug for PoolIsEmpty {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unbounded pool is empty")
+        f.write_str("unbounded pool is empty")
     }
 }
 
 impl std::fmt::Display for PoolIsEmpty {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(self, f)
+        f.write_str("unbounded pool is empty")
     }
 }
 
@@ -274,6 +278,10 @@ impl<T: Send> Pool<T> {
     /// This method only exists for [`NeverManageObject`] pools. If you provide a custom
     /// [`ManageObject`] implementation, you should use [`Pool::get`] instead, and it will call
     /// [`ManageObject::create`] to create a new object if the pool is empty.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancelling while the provided future is pending leaves the pool unchanged.
     pub async fn get_or_create<E, F>(self: &Arc<Self>, f: F) -> Result<Object<T>, E>
     where
         F: AsyncFnOnce() -> Result<T, E> + Send,
@@ -307,6 +315,12 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// Retrieves an [`Object`] from this [`Pool`].
     ///
     /// If no idle object is available, this method calls [`ManageObject::create`].
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancelling while creating a new object leaves the pool unchanged. Cancelling while
+    /// [`ManageObject::is_recyclable`] is checking an idle object follows
+    /// [`PoolConfig::recycle_cancelled_strategy`].
     pub async fn get(self: &Arc<Self>) -> Result<Object<T, M>, M::Error> {
         let object = loop {
             let existing = self.slots.lock().pop(self.config.queue_strategy);
@@ -391,10 +405,11 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
         }
     }
 
-    /// Retains only the objects that pass the given predicate.
+    /// Retains idle objects for which `f` returns `true`.
     ///
-    /// The predicate runs while the idle-object lock is held and therefore must not block or call
-    /// back into the pool. Detachment hooks for removed objects run after the lock is released.
+    /// Checked-out objects are skipped and may return to the pool later. The predicate runs while
+    /// the pool is locked and must not call back into it; detachment hooks run after the lock is
+    /// released.
     ///
     /// The following example starts a background task that runs every 30 seconds and removes
     /// objects from the pool that have not been used for more than one minute. The task will
@@ -527,6 +542,9 @@ impl<T, M: ManageObject<Object = T>> Object<T, M> {
     /// Detaches the object from the [`Pool`].
     ///
     /// This reduces the size of the pool by one.
+    ///
+    /// If the pool still exists, its manager may modify the detached object in
+    /// [`ManageObject::on_detached`].
     pub fn detach(mut self) -> M::Object {
         // INVARIANT: `state` is `Some` until this object is detached or dropped.
         let mut o = self.state.take().unwrap().o;

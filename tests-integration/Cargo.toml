@@ -35,12 +35,14 @@ asyncband = { workspace = true, features = [
   "event",
   "latch",
   "lazy-cell",
+  "mpmc",
   "mpsc",
   "mutex",
   "once",
   "once-cell",
   "once-map",
   "oneshot",
+  "phaser",
   "pool",
   "rwlock",
   "semaphore",
@@ -49,7 +51,6 @@ asyncband = { workspace = true, features = [
   "waitgroup",
   "watch",
 ] }
-pollster = { workspace = true, features = ["macro"] }
 tokio-test = { workspace = true }
 
 [lib]

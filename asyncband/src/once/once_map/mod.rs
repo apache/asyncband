@@ -45,8 +45,8 @@ enum Lookup<K, V> {
 
 /// A hash map that runs computation only once for each key and stores the result.
 ///
-/// Note that this always clones the value out of the underlying map. Because of this, it's common
-/// to wrap the `V` in an `Arc<V>` to make cloning cheap.
+/// Every successful lookup returns an owned clone of `V`. Choose a cheaply cloned value type, such
+/// as `Arc<T>`, when entries are large or frequently shared.
 pub struct OnceMap<K, V, S = RandomState> {
     // Hashbrown allocates the table lazily, and computation always runs after releasing this lock.
     entries: Mutex<Entries<K, V>>,
@@ -67,13 +67,6 @@ impl<K, V, S> fmt::Debug for OnceMap<K, V, S> {
             .field("len", &len)
             .field("pending", &pending)
             .finish()
-    }
-}
-
-impl<K, V, S> OnceMap<K, V, S> {
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.entries.lock().len()
     }
 }
 
@@ -305,6 +298,11 @@ where
     ///
     /// If the computation is cancelled or panics, another caller waiting for the same key may retry
     /// it.
+    ///
+    /// # Deadlocks
+    ///
+    /// The computation must not call `compute` or `try_compute` for an equivalent key on this map
+    /// because it would wait for its own result. Operations on other keys remain independent.
     pub async fn compute<F>(&self, key: K, func: F) -> V
     where
         F: AsyncFnOnce() -> V,
@@ -327,6 +325,11 @@ where
     ///
     /// If the computation returns an error, it is returned to that caller and the value is not
     /// stored. After an error, cancellation, or panic, another caller may retry the computation.
+    ///
+    /// # Deadlocks
+    ///
+    /// The computation must not call `compute` or `try_compute` for an equivalent key on this map
+    /// because it would wait for its own result. Operations on other keys remain independent.
     pub async fn try_compute<E, F>(&self, key: K, func: F) -> Result<V, E>
     where
         F: AsyncFnOnce() -> Result<V, E>,
@@ -342,7 +345,9 @@ where
         Ok(result)
     }
 
-    /// Get a clone of the value for the given key if exists.
+    /// Gets a clone of the value for the given key without waiting.
+    ///
+    /// Returns `None` when the key is absent or its computation is still in flight.
     pub fn get<Q>(&self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
@@ -367,13 +372,14 @@ where
         drop(self.remove_entry(key));
     }
 
-    /// Remove the given key from the map and return a *clone* of the value if exists.
+    /// Removes the given key from the map and returns a *clone* of its completed value.
     ///
     /// If you do not need to get the value that has been removed, use the [`discard`] method
     /// instead.
     ///
-    /// An in-flight computation is detached but continues for callers that already joined it; its
-    /// result is not stored in the map.
+    /// Returns `None` when the key is absent or its computation is still in flight. An in-flight
+    /// computation is detached but continues for callers that already joined it; its result is not
+    /// stored in the map.
     ///
     /// [`discard`]: Self::discard
     pub fn remove<Q>(&self, key: &Q) -> Option<V>

@@ -26,7 +26,7 @@ use super::support::distributed_absent_key;
 use super::support::distributed_ready_key;
 use super::support::ready_map;
 use crate::support::bench_context;
-use crate::support::spin_poll_ready;
+use crate::support::poll_ready;
 
 #[divan::bench(threads = THREAD_COUNTS, sample_size = CONTENDED_SAMPLE_SIZE)]
 fn get_hit_same_key(bencher: Bencher) {
@@ -65,7 +65,7 @@ fn compute_hit_same_key(bencher: Bencher) {
     let map = ready_map(1);
     bencher.bench(|| {
         let mut context = bench_context();
-        black_box(spin_poll_ready(
+        black_box(poll_ready(
             map.compute(black_box(0), || async { unreachable!() }),
             &mut context,
         ))
@@ -83,7 +83,7 @@ fn compute_hit_distributed(bencher: Bencher, ready_entries: usize) {
         .with_inputs(|| distributed_ready_key(ready_entries))
         .bench_values(|key| {
             let mut context = bench_context();
-            black_box(spin_poll_ready(
+            black_box(poll_ready(
                 map.compute(black_box(key), || async { unreachable!() }),
                 &mut context,
             ))

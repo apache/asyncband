@@ -16,18 +16,29 @@
 // under the License.
 
 use std::sync::Arc;
-use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
 
 use asyncband::condvar::Condvar;
 use asyncband::mutex::Mutex;
+use tests_integration::assert_completes_without_deadlock;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
+use tests_integration::poll_with;
 use tests_integration::test_runtime;
 use tokio::task::JoinHandle;
 
-fn expect_ready<T>(poll: Poll<T>) -> T {
-    match poll {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("future should be ready"),
+struct NotifyOnDrop(Arc<Condvar>);
+
+impl Wake for NotifyOnDrop {
+    fn wake(self: Arc<Self>) {
+        self.0.notify_one();
+    }
+}
+
+impl Drop for NotifyOnDrop {
+    fn drop(&mut self) {
+        self.0.notify_one();
     }
 }
 
@@ -147,6 +158,20 @@ fn notify_all_wakes_current_waiters_using_a_predicate_loop() {
         for task in tasks {
             task.await.unwrap();
         }
+    });
+}
+
+#[test]
+fn cancelling_waiter_drops_its_waker_outside_the_waiter_lock() {
+    assert_completes_without_deadlock(|| {
+        let mutex = Mutex::new(());
+        let condvar = Arc::new(Condvar::new());
+        let waker = Waker::from(Arc::new(NotifyOnDrop(condvar.clone())));
+        let mut wait = Box::pin(condvar.wait(mutex.try_lock().unwrap()));
+
+        assert!(poll_with(wait.as_mut(), &waker).is_pending());
+        drop(waker);
+        drop(wait);
     });
 }
 

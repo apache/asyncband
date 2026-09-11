@@ -17,6 +17,8 @@
 
 use std::task::Context;
 
+use asyncband::blocking::FutureExt;
+
 use crate::support::poll_ready;
 
 pub struct Asyncband;
@@ -169,7 +171,7 @@ impl BoundedBroadcastMpmc for Asyncband {
     }
 
     fn send_blocking(sender: &Self::Sender, value: usize) {
-        pollster::block_on(sender.send(value));
+        FutureExt::block_on(sender.send(value));
     }
 
     fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
@@ -187,7 +189,7 @@ impl BoundedBroadcastMpmc for Asyncband {
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> usize {
-        pollster::block_on(receiver.recv()).unwrap()
+        FutureExt::block_on(receiver.recv()).unwrap()
     }
 }
 
@@ -216,7 +218,7 @@ impl BoundedBroadcastMpmc for AsyncBroadcast {
     }
 
     fn send_blocking(sender: &Self::Sender, value: usize) {
-        pollster::block_on(sender.broadcast_direct(value))
+        FutureExt::block_on(sender.broadcast_direct(value))
             .expect("async-broadcast lost every receiver during benchmark");
     }
 
@@ -233,6 +235,6 @@ impl BoundedBroadcastMpmc for AsyncBroadcast {
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> usize {
-        pollster::block_on(receiver.recv_direct()).unwrap()
+        FutureExt::block_on(receiver.recv_direct()).unwrap()
     }
 }

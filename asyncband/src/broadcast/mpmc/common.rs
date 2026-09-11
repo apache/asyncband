@@ -37,9 +37,9 @@ use super::error::TryRecvError;
 use crate::internal::arena::Arena;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::WaitSet;
-use crate::internal::waitset::WakerToken;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
+use crate::internal::wakerset::WakerSet;
+use crate::internal::wakerset::WakerToken;
 
 /// Retained capacity below which an elastic backlog is never shrunk back.
 pub const MIN_RETAINED_CAPACITY: usize = 64;
@@ -389,7 +389,7 @@ impl<T> Backlog<T> {
 /// between the two steps and skip the wake-up.
 pub struct Inner<T> {
     pub log: Backlog<T>,
-    pub waiters: WaitSet,
+    pub waiters: WakerSet,
 }
 
 impl<T> Inner<T> {
@@ -399,7 +399,7 @@ impl<T> Inner<T> {
         let key = log.subscribe();
         let inner = Mutex::new(Self {
             log,
-            waiters: WaitSet::new(),
+            waiters: WakerSet::new(),
         });
         (inner, key)
     }
@@ -411,17 +411,27 @@ impl<T> Inner<T> {
 pub fn disconnect<T>(inner: &Mutex<Inner<T>>) {
     let wakers = {
         let mut inner = inner.lock();
-        inner.waiters.drain()
+        inner.waiters.take_all()
     };
     wake_all(wakers);
 }
 
 /// Releases a cancelled receive's waker registration, dropping the waker unlocked.
-pub fn unregister<T>(inner: &Mutex<Inner<T>>, token: &mut Option<WakerToken>) {
-    let waker = {
-        let mut inner = inner.lock();
-        inner.waiters.unregister(token)
-    };
+pub fn unregister<T>(
+    inner: &Mutex<Inner<T>>,
+    senders: &AtomicUsize,
+    key: SlotId,
+    token: &mut Option<WakerToken>,
+) {
+    let mut inner = inner.lock();
+    if inner.log.unread(key) != 0 || senders.load(Ordering::Acquire) == 0 {
+        // Publication or disconnection detached this registration under the channel lock.
+        *token = None;
+        return;
+    }
+
+    let waker = inner.waiters.unregister(token);
+    drop(inner);
     drop(waker);
 }
 
@@ -447,11 +457,9 @@ pub fn try_receive<T>(
 
 /// The one poll step behind `recv` on both channels.
 ///
-/// Buffered messages and repeated polls with the same task waker require no clone. If the pending
-/// path needs a new waker, this releases the lock, clones, and repeats the full state check before
-/// registration. Senders publish messages and drain waiters under the same lock, so the recheck
-/// cannot miss a send, disconnection, or state change made by a reentrant clone callback. The loop
-/// executes at most twice.
+/// Checking the backlog and registering a waker under the same lock prevents a publication from
+/// landing between those steps. Publication and disconnection detach all registrations, so their
+/// ready paths clear the token without unregistering it.
 pub fn poll_receive<T>(
     inner: &Mutex<Inner<T>>,
     senders: &AtomicUsize,
@@ -459,44 +467,22 @@ pub fn poll_receive<T>(
     token: &mut Option<WakerToken>,
     cx: &mut Context<'_>,
 ) -> Poll<Result<Received<T>, RecvError>> {
-    let mut prepared_waker = None;
-    loop {
-        let mut guard = inner.lock();
-
-        match guard.log.receive(key) {
-            Some(received) => {
-                drop(guard);
-                drop(prepared_waker);
-                // Clearing the token without unregistering is safe, and it is what keeps the
-                // ready path off a second lock acquisition. A message can only become readable
-                // through a publish, and a publish drains the wait set in the same critical
-                // section that made the message visible — so any registration this future still
-                // held was already taken by that drain, and the token is stale. `Drop` reads the
-                // cleared token and skips its own lock for the same reason.
+    let mut inner = inner.lock();
+    match inner.log.receive(key) {
+        Some(received) => {
+            *token = None;
+            Poll::Ready(Ok(received))
+        }
+        None => {
+            if senders.load(Ordering::Acquire) == 0 {
                 *token = None;
-                return Poll::Ready(Ok(received));
+                return Poll::Ready(Err(RecvError::Disconnected));
             }
-            None => {
-                if senders.load(Ordering::Acquire) == 0 {
-                    *token = None;
-                    drop(guard);
-                    drop(prepared_waker);
-                    return Poll::Ready(Err(RecvError::Disconnected));
-                }
 
-                if prepared_waker.is_none() && guard.waiters.will_wake(token, cx.waker()) {
-                    return Poll::Pending;
-                }
-                let Some(waker) = prepared_waker.take() else {
-                    drop(guard);
-                    prepared_waker = Some(cx.waker().clone());
-                    continue;
-                };
-                let retired_waker = guard.waiters.register(token, waker);
-                drop(guard);
-                drop(retired_waker);
-                return Poll::Pending;
-            }
+            let retired_waker = inner.waiters.register(token, cx.waker());
+            drop(inner);
+            drop(retired_waker);
+            Poll::Pending
         }
     }
 }

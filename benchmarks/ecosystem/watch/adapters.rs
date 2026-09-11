@@ -16,7 +16,6 @@
 // under the License.
 
 use std::future::Future;
-use std::pin::Pin;
 
 pub struct Asyncband;
 pub struct Tokio;
@@ -27,9 +26,9 @@ pub trait Watch: Send + Sync + 'static {
 
     fn channel(receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>);
     fn send(sender: &Self::Sender, value: usize);
-    fn borrow(receiver: &Self::Receiver) -> usize;
-    fn borrow_and_update(receiver: &mut Self::Receiver) -> usize;
-    fn changed(receiver: &mut Self::Receiver) -> Pin<Box<dyn Future<Output = usize> + '_>>;
+    fn get(receiver: &Self::Receiver) -> usize;
+    fn recv(receiver: &mut Self::Receiver) -> impl Future<Output = usize>;
+    fn changed(receiver: &mut Self::Receiver) -> impl Future<Output = ()>;
 }
 
 impl Watch for Asyncband {
@@ -48,16 +47,16 @@ impl Watch for Asyncband {
         sender.send(value).unwrap();
     }
 
-    fn borrow(receiver: &Self::Receiver) -> usize {
-        *receiver.borrow()
+    fn get(receiver: &Self::Receiver) -> usize {
+        receiver.get()
     }
 
-    fn borrow_and_update(receiver: &mut Self::Receiver) -> usize {
-        *receiver.borrow_and_update()
+    async fn recv(receiver: &mut Self::Receiver) -> usize {
+        receiver.recv().await.unwrap()
     }
 
-    fn changed(receiver: &mut Self::Receiver) -> Pin<Box<dyn Future<Output = usize> + '_>> {
-        Box::pin(async move { *receiver.changed().await.unwrap() })
+    async fn changed(receiver: &mut Self::Receiver) {
+        receiver.changed().await.unwrap();
     }
 }
 
@@ -77,18 +76,16 @@ impl Watch for Tokio {
         sender.send(value).unwrap();
     }
 
-    fn borrow(receiver: &Self::Receiver) -> usize {
+    fn get(receiver: &Self::Receiver) -> usize {
         *receiver.borrow()
     }
 
-    fn borrow_and_update(receiver: &mut Self::Receiver) -> usize {
+    async fn recv(receiver: &mut Self::Receiver) -> usize {
+        receiver.changed().await.unwrap();
         *receiver.borrow_and_update()
     }
 
-    fn changed(receiver: &mut Self::Receiver) -> Pin<Box<dyn Future<Output = usize> + '_>> {
-        Box::pin(async move {
-            receiver.changed().await.unwrap();
-            *receiver.borrow()
-        })
+    async fn changed(receiver: &mut Self::Receiver) {
+        receiver.changed().await.unwrap();
     }
 }

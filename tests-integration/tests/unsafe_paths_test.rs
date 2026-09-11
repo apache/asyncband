@@ -24,7 +24,6 @@ use std::ptr;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
 use asyncband::mutex::MappedMutexGuard;
 use asyncband::mutex::Mutex;
@@ -41,10 +40,7 @@ use asyncband::rwlock::OwnedRwLockWriteGuard;
 use asyncband::rwlock::RwLock;
 use asyncband::rwlock::RwLockReadGuard;
 use asyncband::rwlock::RwLockWriteGuard;
-
-fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
-    future.poll(&mut Context::from_waker(Waker::noop()))
-}
+use tests_integration::poll_once;
 
 #[test]
 fn mapped_mutex_guards_preserve_lock_ownership() {

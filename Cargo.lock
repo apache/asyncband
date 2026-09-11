@@ -78,11 +78,17 @@ dependencies = [
 
 [[package]]
 name = "asyncband"
-version = "0.6.7"
+version = "0.7.2"
 dependencies = [
  "hashbrown",
  "tokio",
 ]
+
+[[package]]
+name = "atomic-waker"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "base64"
@@ -99,8 +105,8 @@ dependencies = [
  "asyncband",
  "divan",
  "flume",
- "pollster",
  "tokio",
+ "waitgroup",
 ]
 
 [[package]]
@@ -673,26 +679,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
-name = "pollster"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc6355899e1c9462875b6757c79f3caa011a1fdae12bbb1a2e72dd1f234f8336"
-dependencies = [
- "pollster-macro",
-]
-
-[[package]]
-name = "pollster-macro"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79af046f3496a2db85e4c2fb04f2e9ff77e6b82f29bd43012b398290ce2c811c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "potential_utf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -968,7 +954,6 @@ name = "tests-integration"
 version = "0.0.0"
 dependencies = [
  "asyncband",
- "pollster",
  "tokio",
  "tokio-test",
 ]
@@ -1161,6 +1146,15 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "waitgroup"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1f50000a783467e6c0200f9d10642f4bc424e39efc1b770203e88b488f79292"
+dependencies = [
+ "atomic-waker",
+]
 
 [[package]]
 name = "wasi"

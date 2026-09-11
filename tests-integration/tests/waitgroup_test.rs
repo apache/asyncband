@@ -15,9 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::IntoFuture;
+use std::sync::Arc;
+use std::task::Context;
+use std::task::Waker;
 
 use asyncband::waitgroup::WaitGroup;
+use tests_integration::WakeCounter;
 use tests_integration::poll_once;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -62,4 +65,76 @@ fn cancelling_one_wait_does_not_cancel_another() {
 
     drop(worker);
     assert!(poll_once(second.as_mut()).is_ready());
+}
+
+#[test]
+fn multiple_handles_can_wait_for_the_same_completion() {
+    let wg = WaitGroup::new();
+    let worker = wg.clone();
+    let mut first = Box::pin(wg.clone().into_future());
+    let mut second = Box::pin(wg.into_future());
+
+    assert!(poll_once(first.as_mut()).is_pending());
+    assert!(poll_once(second.as_mut()).is_pending());
+
+    drop(worker);
+    assert!(poll_once(first.as_mut()).is_ready());
+    assert!(poll_once(second.as_mut()).is_ready());
+}
+
+#[test]
+fn handle_clones_register_nested_work() {
+    let wg = WaitGroup::new();
+    let worker = wg.clone();
+    let nested = worker.clone();
+    let mut wait = Box::pin(wg.into_future());
+
+    drop(worker);
+    assert!(poll_once(wait.as_mut()).is_pending());
+    drop(nested);
+    assert!(poll_once(wait.as_mut()).is_ready());
+}
+
+#[test]
+fn a_consumed_initial_handle_is_immediately_ready() {
+    let mut wait = Box::pin(WaitGroup::new().into_future());
+
+    assert!(poll_once(wait.as_mut()).is_ready());
+}
+
+#[test]
+fn a_completed_wait_can_be_cancelled_before_it_is_polled_again() {
+    let wg = WaitGroup::new();
+    let worker = wg.clone();
+    let mut wait = Box::pin(wg.into_future());
+
+    assert!(poll_once(wait.as_mut()).is_pending());
+    drop(worker);
+    drop(wait);
+}
+
+#[test]
+fn repolling_replaces_the_registered_waker() {
+    let wg = WaitGroup::new();
+    let worker = wg.clone();
+    let mut wait = Box::pin(wg.into_future());
+    let first = Arc::new(WakeCounter::default());
+    let second = Arc::new(WakeCounter::default());
+    let first_waker = Waker::from(first.clone());
+    let second_waker = Waker::from(second.clone());
+
+    assert!(
+        wait.as_mut()
+            .poll(&mut Context::from_waker(&first_waker))
+            .is_pending()
+    );
+    assert!(
+        wait.as_mut()
+            .poll(&mut Context::from_waker(&second_waker))
+            .is_pending()
+    );
+    drop(worker);
+
+    assert_eq!(first.count(), 0);
+    assert_eq!(second.count(), 1);
 }

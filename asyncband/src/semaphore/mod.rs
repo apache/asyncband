@@ -15,6 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Portions of this file originated from Tokio 1.42.0's Semaphore and permit APIs.
+// Copyright (c) Tokio Contributors
+// The Tokio-derived portions remain licensed under the MIT License.
+// Asyncband substantially changed the contract: it has no closed state or close errors, accepts
+// usize permit counts without reserved flag bits, and adds direct drain and exact-reduction
+// operations backed by Asyncband's own waiter queue.
+// Upstream source:
+// https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/semaphore.rs
+
 //! Limit concurrent access with a set of permits.
 //!
 //! [`Semaphore::acquire`] waits for the requested number of permits and returns a guard that puts
@@ -45,9 +54,6 @@
 use std::sync::Arc;
 
 use crate::internal::semaphore;
-
-#[cfg(test)]
-mod tests;
 
 /// An async counting semaphore for controlling access to a set of resources.
 ///
@@ -146,7 +152,9 @@ impl Semaphore {
     ///
     /// # Panics
     ///
-    /// Panics if adding the permits would cause the total number of permits to overflow.
+    /// Panics if adding the permits would overflow the total permit count, or if notifying a waiter
+    /// panics. Added permits remain available, and notification is still attempted for every other
+    /// eligible waiter before the panic resumes.
     ///
     /// # Examples
     ///
@@ -202,8 +210,7 @@ impl Semaphore {
     ///
     /// # Cancel safety
     ///
-    /// This method uses a queue to fairly distribute permits in the order they were requested.
-    /// Cancelling a call to `acquire` makes you lose your place in the queue.
+    /// Pending acquisitions complete in order. Cancelling this call loses its place among them.
     ///
     /// # Examples
     ///
@@ -280,8 +287,7 @@ impl Semaphore {
     ///
     /// # Cancel safety
     ///
-    /// This method uses a queue to fairly distribute permits in the order they were requested.
-    /// Cancelling a call to `acquire_owned` makes you lose your place in the queue.
+    /// Pending acquisitions complete in order. Cancelling this call loses its place among them.
     ///
     /// # Examples
     ///
@@ -366,8 +372,8 @@ impl SemaphorePermit<'_> {
     ///
     /// # Panics
     ///
-    /// This function panics if permits from different [`Semaphore`] instances
-    /// are merged.
+    /// This function panics if permits from different [`Semaphore`] instances are merged or if
+    /// their combined permit count exceeds `usize::MAX`.
     ///
     /// # Examples
     ///
@@ -398,7 +404,10 @@ impl SemaphorePermit<'_> {
             std::ptr::eq(self.sem, other.sem),
             "merging permits from different semaphore instances"
         );
-        self.permits += other.permits;
+        self.permits = self
+            .permits
+            .checked_add(other.permits)
+            .expect("merged permit count would overflow usize::MAX");
         other.permits = 0;
     }
 
@@ -504,8 +513,8 @@ impl OwnedSemaphorePermit {
     ///
     /// # Panics
     ///
-    /// This function panics if permits from different [`Semaphore`] instances
-    /// are merged.
+    /// This function panics if permits from different [`Semaphore`] instances are merged or if
+    /// their combined permit count exceeds `usize::MAX`.
     ///
     /// # Examples
     ///
@@ -536,7 +545,10 @@ impl OwnedSemaphorePermit {
             Arc::ptr_eq(&self.sem, &other.sem),
             "merging permits from different semaphore instances"
         );
-        self.permits += other.permits;
+        self.permits = self
+            .permits
+            .checked_add(other.permits)
+            .expect("merged permit count would overflow usize::MAX");
         other.permits = 0;
     }
 

@@ -18,29 +18,29 @@
 use std::any::type_name;
 use std::fmt;
 
-/// An error returned when trying to send on a disconnected channel.
+/// A send or capacity reservation failed because the receiver has been dropped.
 ///
-/// Returned from [`UnboundedSender::send`] or [`BoundedSender::send`] if the
-/// corresponding [`UnboundedReceiver`] or [`BoundedReceiver`] has already been
-/// dropped.
+/// Returned by [`UnboundedSender::send`], [`BoundedSender::send`], [`Permit::send`], and
+/// [`reserve`].
 ///
-/// The message that could not be sent can be retrieved again with
-/// [`SendError::into_inner`].
+/// A failed send retains the unsent message. A failed reservation carries `()` because no
+/// message has been provided yet. Access the value with [`as_inner`](Self::as_inner) or
+/// [`into_inner`](Self::into_inner).
 ///
 /// [`UnboundedSender::send`]: crate::mpsc::UnboundedSender::send
 /// [`BoundedSender::send`]: crate::mpsc::BoundedSender::send
-/// [`UnboundedReceiver`]: crate::mpsc::UnboundedReceiver
-/// [`BoundedReceiver`]: crate::mpsc::BoundedReceiver
+/// [`reserve`]: crate::mpsc::BoundedSender::reserve
+/// [`Permit::send`]: crate::mpsc::Permit::send
 #[derive(Clone, PartialEq, Eq)]
 pub struct SendError<T>(T);
 
 impl<T> SendError<T> {
-    /// Get a reference to the message that failed to be sent.
+    /// Gets a reference to the unsent message, or `()` for a failed reservation.
     pub fn as_inner(&self) -> &T {
         &self.0
     }
 
-    /// Consumes the error and returns the message that failed to be sent.
+    /// Consumes the error and returns the unsent message, or `()` for a failed reservation.
     pub fn into_inner(self) -> T {
         self.0
     }
@@ -65,24 +65,28 @@ impl<T> fmt::Debug for SendError<T> {
 
 impl<T> std::error::Error for SendError<T> {}
 
-/// Error returned by `try_send`.
+/// An attempt to send or reserve capacity failed.
+///
+/// Returned by [`try_send`](crate::mpsc::BoundedSender::try_send) and
+/// [`try_reserve`](crate::mpsc::BoundedSender::try_reserve). A failed send retains the unsent
+/// message; a failed reservation carries `()` because no message has been provided yet.
 #[derive(Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
-    /// The channel is full, so the message cannot be sent without waiting for capacity.
+    /// No capacity is available for sending or reserving a message.
     Full(T),
-    /// The receiver has been dropped, so the message can never be received.
+    /// The receiver has been dropped.
     Disconnected(T),
 }
 
 impl<T> TrySendError<T> {
-    /// Gets a reference to the message that failed to be sent.
+    /// Gets a reference to the unsent message, or `()` for a failed reservation.
     pub fn as_inner(&self) -> &T {
         match self {
             TrySendError::Full(msg) | TrySendError::Disconnected(msg) => msg,
         }
     }
 
-    /// Consumes the error and returns the message that failed to be sent.
+    /// Consumes the error and returns the unsent message, or `()` for a failed reservation.
     pub fn into_inner(self) -> T {
         match self {
             TrySendError::Full(msg) | TrySendError::Disconnected(msg) => msg,
@@ -111,7 +115,7 @@ impl<T> fmt::Debug for TrySendError<T> {
 
 impl<T> std::error::Error for TrySendError<T> {}
 
-/// Error returned by `recv`.
+/// A receive operation cannot produce another value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecvError {
     /// All senders have been dropped, and no buffered messages remain.
@@ -126,7 +130,7 @@ impl fmt::Display for RecvError {
 
 impl std::error::Error for RecvError {}
 
-/// Error returned by `try_recv`.
+/// A non-blocking receive did not produce a value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TryRecvError {
     /// No message is currently available, but at least one sender remains.

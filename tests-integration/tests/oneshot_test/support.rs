@@ -15,6 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// This file contains test support adapted from the oneshot crate.
+// Asyncband uses the upstream crate's Apache-2.0 license option for that code.
+// The incorporated code has been modified for use in Apache Asyncband.
+// Upstream test support (oneshot v0.1.11):
+// https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/tests/helpers/mod.rs
+// https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/tests/helpers/waker.rs
+
 use std::hint::spin_loop;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;

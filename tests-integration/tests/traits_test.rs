@@ -16,6 +16,9 @@
 // under the License.
 
 use std::cell::Cell;
+use std::marker::PhantomPinned;
+use std::panic::RefUnwindSafe;
+use std::panic::UnwindSafe;
 
 use asyncband::barrier::Barrier;
 use asyncband::broadcast;
@@ -23,6 +26,7 @@ use asyncband::completion;
 use asyncband::condvar::Condvar;
 use asyncband::event::ManualResetEvent;
 use asyncband::latch::Latch;
+use asyncband::mpmc;
 use asyncband::mpsc;
 use asyncband::mutex::Mutex;
 use asyncband::mutex::MutexGuard;
@@ -31,6 +35,10 @@ use asyncband::once::Once;
 use asyncband::once::OnceCell;
 use asyncband::once::OnceMap;
 use asyncband::oneshot;
+use asyncband::phaser::Closed;
+use asyncband::phaser::Phaser;
+use asyncband::phaser::PhaserParticipant;
+use asyncband::phaser::PhaserParticipants;
 use asyncband::pool;
 use asyncband::pool::ManageObject;
 use asyncband::pool::ObjectStatus;
@@ -103,6 +111,10 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<broadcast::mpmc::TrySendError<i64>>();
     assert_send_and_sync::<oneshot::SendError<i64>>();
     assert_send_and_sync::<oneshot::Sender<i64>>();
+    assert_send_and_sync::<Closed>();
+    assert_send_and_sync::<Phaser>();
+    assert_send_and_sync::<PhaserParticipant>();
+    assert_send_and_sync::<PhaserParticipants>();
     assert_send_and_sync::<pool::bounded::Pool<PoolManager>>();
     assert_send_and_sync::<pool::bounded::Object<PoolManager>>();
     assert_send_and_sync::<pool::unbounded::Pool<i64>>();
@@ -113,6 +125,15 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<mpsc::UnboundedReceiver<i64>>();
     assert_send_and_sync::<mpsc::BoundedSender<i64>>();
     assert_send_and_sync::<mpsc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<mpmc::SendError<i64>>();
+    assert_send_and_sync::<mpmc::UnboundedSender<i64>>();
+    assert_send_and_sync::<mpmc::UnboundedReceiver<i64>>();
+    assert_send_and_sync::<mpmc::BoundedSender<i64>>();
+    assert_send_and_sync::<mpmc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<mpmc::UnboundedSender<Cell<u8>>>();
+    assert_send_and_sync::<mpmc::UnboundedReceiver<Cell<u8>>>();
+    assert_send_and_sync::<mpmc::BoundedSender<Cell<u8>>>();
+    assert_send_and_sync::<mpmc::BoundedReceiver<Cell<u8>>>();
     assert_send_and_sync::<watch::Sender<i64>>();
     assert_send_and_sync::<watch::Receiver<i64>>();
     assert_send_and_sync::<watch::SendError<i64>>();
@@ -131,9 +152,18 @@ fn movable_public_types_are_send() {
 
     let (_tx, mut rx) = watch::channel(0);
     assert_send_value(rx.changed());
+    assert_send_value(rx.recv());
 
     let (_completer, completion) = completion::new::<i64>();
     assert_send_value(completion.wait());
+
+    let (unbounded_sender, unbounded_receiver) = mpmc::unbounded::<Cell<u8>>();
+    assert_send_value(unbounded_receiver.recv());
+    drop(unbounded_sender);
+
+    let (bounded_sender, bounded_receiver) = mpmc::bounded::<Cell<u8>>(1);
+    assert_send_value(bounded_sender.send(Cell::new(0)));
+    assert_send_value(bounded_receiver.recv());
 }
 
 #[test]
@@ -174,6 +204,10 @@ fn public_types_are_unpin() {
     assert_unpin::<oneshot::SendError<i64>>();
     assert_unpin::<oneshot::Receiver<i64>>();
     assert_unpin::<oneshot::Recv<i64>>();
+    assert_unpin::<Closed>();
+    assert_unpin::<Phaser>();
+    assert_unpin::<PhaserParticipant>();
+    assert_unpin::<PhaserParticipants>();
     assert_unpin::<pool::bounded::Pool<PoolManager>>();
     assert_unpin::<pool::bounded::Object<PoolManager>>();
     assert_unpin::<pool::unbounded::Pool<i64>>();
@@ -183,10 +217,49 @@ fn public_types_are_unpin() {
     assert_unpin::<mpsc::UnboundedReceiver<i64>>();
     assert_unpin::<mpsc::BoundedSender<i64>>();
     assert_unpin::<mpsc::BoundedReceiver<i64>>();
+    assert_unpin::<mpmc::SendError<i64>>();
+    assert_unpin::<mpmc::UnboundedSender<i64>>();
+    assert_unpin::<mpmc::UnboundedReceiver<i64>>();
+    assert_unpin::<mpmc::BoundedSender<i64>>();
+    assert_unpin::<mpmc::BoundedReceiver<i64>>();
     assert_unpin::<watch::Sender<i64>>();
     assert_unpin::<watch::Receiver<i64>>();
     assert_unpin::<watch::SendError<i64>>();
     assert_unpin::<watch::RecvError>();
+}
+
+#[test]
+fn mpsc_endpoints_keep_legacy_traits_regardless_of_payload() {
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+    fn assert_unpin<T: Unpin>() {}
+    fn assert_unwind_safe<T: UnwindSafe>() {}
+    fn assert_ref_unwind_safe<T: RefUnwindSafe>() {}
+
+    macro_rules! assert_endpoint_traits {
+        ($endpoint:ident, $payload:ty) => {
+            assert_send::<mpsc::$endpoint<$payload>>();
+            assert_sync::<mpsc::$endpoint<$payload>>();
+            assert_unpin::<mpsc::$endpoint<$payload>>();
+            assert_unwind_safe::<mpsc::$endpoint<$payload>>();
+            assert_ref_unwind_safe::<mpsc::$endpoint<$payload>>();
+        };
+    }
+
+    macro_rules! assert_payload_traits {
+        ($endpoint:ident) => {
+            assert_endpoint_traits!($endpoint, i32);
+            assert_endpoint_traits!($endpoint, Cell<u8>);
+            assert_endpoint_traits!($endpoint, &'static mut i32);
+            assert_endpoint_traits!($endpoint, PhantomPinned);
+        };
+    }
+
+    // Four endpoint types × four payloads × five traits = 80 compile-time assertions.
+    assert_payload_traits!(BoundedSender);
+    assert_payload_traits!(BoundedReceiver);
+    assert_payload_traits!(UnboundedSender);
+    assert_payload_traits!(UnboundedReceiver);
 }
 
 #[test]

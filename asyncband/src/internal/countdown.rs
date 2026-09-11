@@ -21,21 +21,21 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::waitset::WaitSet;
-use crate::internal::waitset::WakerToken;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
+use crate::internal::wakerset::WakerSet;
+use crate::internal::wakerset::WakerToken;
 
 #[derive(Debug)]
 pub struct CountdownState {
     state: AtomicU32,
-    waiters: Mutex<WaitSet>,
+    waiters: Mutex<WakerSet>,
 }
 
 impl CountdownState {
     pub const fn new(count: u32) -> Self {
         Self {
             state: AtomicU32::new(count),
-            waiters: Mutex::new(WaitSet::new()),
+            waiters: Mutex::new(WakerSet::new()),
         }
     }
 
@@ -57,7 +57,7 @@ impl CountdownState {
     pub fn wake_all(&self) {
         let wakers = {
             let mut waiters = self.waiters.lock();
-            waiters.drain()
+            waiters.take_all()
         };
 
         wake_all(wakers);
@@ -65,28 +65,21 @@ impl CountdownState {
 
     /// Polls for zero, registering the current waker if the countdown is still active.
     pub fn poll_wait(&self, token: &mut Option<WakerToken>, cx: &mut Context<'_>) -> Poll<()> {
-        if self.spin_wait(16).is_ok() {
-            // The zero transition owns draining this wake epoch. Avoid taking the waiter lock
+        if self.try_wait().is_ok() {
+            // The zero transition owns detaching every registration. Avoid taking the waiter lock
             // again when the completed future is dropped.
             *token = None;
             return Poll::Ready(());
         }
 
-        // The atomic probe keeps an already-ready poll free of both waker cloning and waiter
-        // locking. An active countdown normally parks, so eagerly clone before the waiter lock to
-        // keep that path to one acquisition. Rechecking afterward observes a zero transition made
-        // concurrently or by a reentrant clone callback.
-        let waker = cx.waker().clone();
         let mut waiters = self.waiters.lock();
         if self.state() == 0 {
             // A concurrent zero transition will drain after this lock is released.
             *token = None;
-            drop(waiters);
-            drop(waker);
             return Poll::Ready(());
         }
 
-        let retired_waker = waiters.register(token, waker);
+        let retired_waker = waiters.register(token, cx.waker());
         drop(waiters);
         drop(retired_waker);
         Poll::Pending
@@ -94,44 +87,28 @@ impl CountdownState {
 
     #[inline]
     pub fn unregister(&self, token: &mut Option<WakerToken>) {
-        if token.is_some() {
-            let removed_waker = {
-                let mut waiters = self.waiters.lock();
-                waiters.unregister(token)
-            };
-            drop(removed_waker);
+        if token.is_none() {
+            return;
         }
+
+        let mut waiters = self.waiters.lock();
+        if self.state() == 0 {
+            // The terminal zero transition owns this registration or has already detached it. No
+            // later countdown generation can reuse its slot.
+            *token = None;
+            return;
+        }
+
+        let removed_waker = waiters.unregister(token);
+        drop(waiters);
+        drop(removed_waker);
     }
 
-    /// Returns `Ok(())` if the counter is zero, otherwise returns `Err(s)` where `s` is the current
-    /// counter value.
-    pub fn spin_wait(&self, n: usize) -> Result<(), u32> {
-        for _ in 0..n {
-            if self.state() == 0 {
-                return Ok(());
-            }
-            std::hint::spin_loop();
-        }
-
+    /// Returns `Ok(())` if the counter is zero, otherwise returns the current counter value.
+    pub fn try_wait(&self) -> Result<(), u32> {
         match self.state() {
             0 => Ok(()),
             s => Err(s),
-        }
-    }
-
-    /// Increments the counter by `n`.
-    ///
-    /// Returns `true` without changing the counter if the operation would overflow.
-    pub fn increment(&self, n: u32) -> bool {
-        let mut cnt = self.state();
-        loop {
-            let Some(new_cnt) = cnt.checked_add(n) else {
-                return true;
-            };
-            match self.cas_state(cnt, new_cnt) {
-                Ok(_) => return false,
-                Err(x) => cnt = x,
-            }
         }
     }
 
@@ -150,18 +127,5 @@ impl CountdownState {
                 Err(x) => cnt = x,
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn increment_reports_overflow_without_changing_state() {
-        let state = CountdownState::new(u32::MAX);
-
-        assert!(state.increment(1));
-        assert_eq!(state.state(), u32::MAX);
     }
 }

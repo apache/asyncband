@@ -21,10 +21,6 @@
 
 use std::fmt;
 use std::pin::pin;
-use std::sync::Arc;
-use std::sync::Barrier;
-use std::thread;
-use std::thread::JoinHandle;
 
 use asyncband::broadcast::mpmc;
 use divan::Bencher;
@@ -35,8 +31,6 @@ use crate::support::poll_pending;
 use crate::support::poll_pinned_ready;
 
 const RECEIVER_COUNTS: &[usize] = &[1, 8, 32];
-const CONCURRENCY_COUNTS: &[usize] = &[1, 2, 4, 8];
-const CONCURRENT_BATCH_SIZE: usize = 4096;
 
 /// A channel that peaked at `peak` receivers and currently has `live` of them.
 ///
@@ -69,131 +63,6 @@ const RECLAIM_FANOUTS: &[Fanout] = &[
     Fanout { peak: 256, live: 1 },
 ];
 
-struct ConcurrentSend {
-    receiver: mpmc::UnboundedReceiver<usize>,
-    start: Arc<Barrier>,
-    done: Arc<Barrier>,
-    workers: Vec<JoinHandle<()>>,
-}
-
-impl ConcurrentSend {
-    fn new(sender_count: usize) -> Self {
-        let (sender, receiver) = mpmc::unbounded();
-        let ready = Arc::new(Barrier::new(sender_count + 1));
-        let start = Arc::new(Barrier::new(sender_count + 1));
-        let done = Arc::new(Barrier::new(sender_count + 1));
-        let sends_per_worker = CONCURRENT_BATCH_SIZE / sender_count;
-        let mut workers = Vec::with_capacity(sender_count);
-
-        for worker_index in 0..sender_count {
-            let sender = sender.clone();
-            let ready = ready.clone();
-            let start = start.clone();
-            let done = done.clone();
-            workers.push(thread::spawn(move || {
-                ready.wait();
-                start.wait();
-                let first = worker_index * sends_per_worker;
-                for value in first..first + sends_per_worker {
-                    sender.send(black_box(value));
-                }
-                done.wait();
-            }));
-        }
-        drop(sender);
-        ready.wait();
-
-        Self {
-            receiver,
-            start,
-            done,
-            workers,
-        }
-    }
-
-    // The drain is inside the measured region on purpose: it is what keeps the backlog bounded
-    // across samples, and reclaiming the batch is part of the cost of an unbounded send.
-    fn run(&mut self) {
-        self.start.wait();
-        self.done.wait();
-        while let Ok(value) = self.receiver.try_recv() {
-            black_box(value);
-        }
-    }
-}
-
-impl Drop for ConcurrentSend {
-    fn drop(&mut self) {
-        for worker in self.workers.drain(..) {
-            worker.join().unwrap();
-        }
-    }
-}
-
-struct ConcurrentFanout {
-    sender: mpmc::UnboundedSender<usize>,
-    start: Arc<Barrier>,
-    done: Arc<Barrier>,
-    workers: Vec<JoinHandle<()>>,
-}
-
-impl ConcurrentFanout {
-    fn new(receiver_count: usize) -> Self {
-        let (sender, receiver) = mpmc::unbounded();
-        let mut receivers = Vec::with_capacity(receiver_count);
-        receivers.push(receiver);
-        for _ in 1..receiver_count {
-            receivers.push(sender.subscribe());
-        }
-
-        let ready = Arc::new(Barrier::new(receiver_count + 1));
-        let start = Arc::new(Barrier::new(receiver_count + 1));
-        let done = Arc::new(Barrier::new(receiver_count + 1));
-        let mut workers = Vec::with_capacity(receiver_count);
-
-        for mut receiver in receivers {
-            let ready = ready.clone();
-            let start = start.clone();
-            let done = done.clone();
-            workers.push(thread::spawn(move || {
-                ready.wait();
-                start.wait();
-                let result = (0..CONCURRENT_BATCH_SIZE).try_for_each(|_| {
-                    receiver.try_recv().map(|value| {
-                        black_box(value);
-                    })
-                });
-                done.wait();
-                result.unwrap();
-            }));
-        }
-        ready.wait();
-
-        Self {
-            sender,
-            start,
-            done,
-            workers,
-        }
-    }
-
-    fn run(&mut self) {
-        for value in 0..CONCURRENT_BATCH_SIZE {
-            self.sender.send(black_box(value));
-        }
-        self.start.wait();
-        self.done.wait();
-    }
-}
-
-impl Drop for ConcurrentFanout {
-    fn drop(&mut self) {
-        for worker in self.workers.drain(..) {
-            worker.join().unwrap();
-        }
-    }
-}
-
 #[divan::bench]
 fn send_without_receivers(bencher: Bencher) {
     let (sender, receiver) = mpmc::unbounded::<usize>();
@@ -206,16 +75,6 @@ fn try_recv_empty(bencher: Bencher) {
     let (sender, mut receiver) = mpmc::unbounded::<usize>();
     bencher.bench_local(|| black_box(receiver.try_recv()));
     black_box(sender);
-}
-
-// A sole receiver takes ownership of the payload, so this path never clones the message.
-#[divan::bench]
-fn send_and_try_recv(bencher: Bencher) {
-    let (sender, mut receiver) = mpmc::unbounded();
-    bencher.bench_local(|| {
-        sender.send(black_box(1usize));
-        black_box(receiver.try_recv().unwrap())
-    });
 }
 
 // With the payload shared, each receive clones it and the second one reclaims the slot.
@@ -274,30 +133,6 @@ fn drain_with_receivers(bencher: Bencher, fanout: Fanout) {
             black_box(receiver.try_recv().unwrap());
         }
     });
-}
-
-#[divan::bench(
-    args = CONCURRENCY_COUNTS,
-    sample_count = 50,
-    sample_size = 1,
-    counters = [CONCURRENT_BATCH_SIZE]
-)]
-fn concurrent_send_and_drain(bencher: Bencher, sender_count: usize) {
-    bencher
-        .with_inputs(|| ConcurrentSend::new(sender_count))
-        .bench_local_refs(ConcurrentSend::run);
-}
-
-#[divan::bench(
-    args = CONCURRENCY_COUNTS,
-    sample_count = 50,
-    sample_size = 1,
-    counters = [CONCURRENT_BATCH_SIZE]
-)]
-fn concurrent_fanout(bencher: Bencher, receiver_count: usize) {
-    bencher
-        .with_inputs(|| ConcurrentFanout::new(receiver_count))
-        .bench_local_refs(ConcurrentFanout::run);
 }
 
 #[divan::bench]

@@ -22,11 +22,17 @@ mod completion;
 mod condvar;
 mod event;
 mod latch;
+mod mpmc;
+
+#[allow(dead_code)]
+#[path = "../mpmc/mod.rs"]
+mod mpmc_support;
 mod mpsc;
 mod mutex;
 mod once;
 mod once_map;
 mod oneshot;
+mod phaser;
 mod pool;
 mod rwlock;
 mod semaphore;
@@ -34,7 +40,6 @@ mod shutdown;
 mod singleflight;
 mod support;
 mod waitgroup;
-mod watch;
 
 fn main() {
     divan::main();

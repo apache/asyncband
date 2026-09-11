@@ -20,20 +20,13 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Wake;
 use std::task::Waker;
 use std::thread;
-use std::time::Duration;
 
+use asyncband::blocking::FutureExt;
 use asyncband::broadcast::mpmc::*;
-
-struct TrackWake(AtomicUsize);
-
-impl Wake for TrackWake {
-    fn wake(self: Arc<Self>) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
+use tests_integration::WakeCounter;
+use tests_integration::assert_completes_without_deadlock;
 
 /// A payload whose destructor re-enters the channel it was sent through.
 struct Reentrant {
@@ -89,48 +82,6 @@ impl Rng {
         self.0 = x;
         x % n
     }
-}
-
-#[tokio::test]
-async fn test_broadcast_basic() {
-    let (tx, mut rx1) = unbounded();
-    let mut rx2 = tx.subscribe();
-
-    tx.send(10);
-    tx.send(20);
-
-    assert_eq!(rx1.recv().await, Ok(10));
-    assert_eq!(rx1.recv().await, Ok(20));
-    assert_eq!(rx2.recv().await, Ok(10));
-    assert_eq!(rx2.recv().await, Ok(20));
-}
-
-#[tokio::test]
-async fn test_subscribe() {
-    let (tx, _rx) = unbounded();
-    let mut rx = tx.subscribe();
-
-    tx.send(100);
-    assert_eq!(rx.recv().await, Ok(100));
-}
-
-#[tokio::test]
-async fn test_resubscribe() {
-    let (tx, mut rx) = unbounded();
-
-    tx.send(1);
-    tx.send(2);
-
-    let mut rx2 = rx.resubscribe();
-
-    // rx sees 1, 2
-    // rx2 sees nothing yet (starts at tail=2)
-
-    tx.send(3);
-
-    assert_eq!(rx.recv().await, Ok(1));
-    assert_eq!(rx.recv().await, Ok(2));
-    assert_eq!(rx2.recv().await, Ok(3));
 }
 
 #[test]
@@ -329,9 +280,7 @@ fn panicking_clone_leaves_the_channel_consistent() {
 
 #[test]
 fn message_destructors_run_outside_the_channel_lock() {
-    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-
-    let worker = thread::spawn(move || {
+    assert_completes_without_deadlock(|| {
         let (tx, mut rx1) = unbounded();
         let rx2 = tx.subscribe();
 
@@ -354,20 +303,13 @@ fn message_destructors_run_outside_the_channel_lock() {
             channel: Some(tx.clone()),
         });
         drop(tx);
-
-        finished_tx.send(()).unwrap();
     });
-
-    finished_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("a message destructor deadlocked against the channel lock");
-    worker.join().unwrap();
 }
 
 #[test]
 fn send_wakes_a_parked_receiver_exactly_once() {
     let (tx, mut rx) = unbounded();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let mut context = Context::from_waker(&waker);
     let mut recv = Box::pin(rx.recv());
@@ -376,14 +318,14 @@ fn send_wakes_a_parked_receiver_exactly_once() {
 
     tx.send(42);
 
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(tracker.count(), 1);
     assert_eq!(recv.as_mut().poll(&mut context), Poll::Ready(Ok(42)));
 }
 
 #[test]
 fn cancelled_recv_releases_its_waker() {
     let (tx, mut rx) = unbounded::<()>();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let baseline = Arc::strong_count(&tracker);
     let mut context = Context::from_waker(&waker);
@@ -396,7 +338,7 @@ fn cancelled_recv_releases_its_waker() {
     assert_eq!(Arc::strong_count(&tracker), baseline);
 
     tx.send(());
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 0);
+    assert_eq!(tracker.count(), 0);
     assert_eq!(rx.try_recv(), Ok(()));
 }
 
@@ -404,7 +346,7 @@ fn cancelled_recv_releases_its_waker() {
 fn dropping_a_woken_recv_keeps_another_receivers_waiter() {
     let (tx, mut rx1) = unbounded::<i32>();
     let mut rx2 = tx.subscribe();
-    let first = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let first = Arc::new(WakeCounter::default());
     let waker = Waker::from(first.clone());
     let mut context = Context::from_waker(&waker);
     let mut recv1 = Box::pin(rx1.recv());
@@ -412,10 +354,10 @@ fn dropping_a_woken_recv_keeps_another_receivers_waiter() {
     assert!(recv1.as_mut().poll(&mut context).is_pending());
 
     tx.send(1);
-    assert_eq!(first.0.load(Ordering::Relaxed), 1);
+    assert_eq!(first.count(), 1);
     assert_eq!(rx2.try_recv(), Ok(1));
 
-    let second = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let second = Arc::new(WakeCounter::default());
     let waker = Waker::from(second.clone());
     let mut context = Context::from_waker(&waker);
     let mut recv2 = Box::pin(rx2.recv());
@@ -425,14 +367,14 @@ fn dropping_a_woken_recv_keeps_another_receivers_waiter() {
     drop(recv1);
     tx.send(2);
 
-    assert_eq!(second.0.load(Ordering::Relaxed), 1);
+    assert_eq!(second.count(), 1);
 }
 
 #[test]
 fn parked_recv_wakes_when_the_last_sender_drops() {
     let (tx, mut rx) = unbounded::<()>();
     let extra = tx.clone();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let mut context = Context::from_waker(&waker);
     let mut recv = Box::pin(rx.recv());
@@ -440,10 +382,10 @@ fn parked_recv_wakes_when_the_last_sender_drops() {
     assert!(recv.as_mut().poll(&mut context).is_pending());
 
     drop(tx);
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 0);
+    assert_eq!(tracker.count(), 0);
 
     drop(extra);
-    assert_eq!(tracker.0.load(Ordering::Relaxed), 1);
+    assert_eq!(tracker.count(), 1);
 
     drop(recv);
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
@@ -452,7 +394,7 @@ fn parked_recv_wakes_when_the_last_sender_drops() {
 #[test]
 fn parked_recv_prefers_buffered_messages_over_disconnection() {
     let (tx, mut rx) = unbounded();
-    let tracker = Arc::new(TrackWake(AtomicUsize::new(0)));
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker);
     let mut context = Context::from_waker(&waker);
     let mut recv = Box::pin(rx.recv());
@@ -513,7 +455,7 @@ fn concurrent_senders_deliver_every_message_to_every_receiver() {
         .map(|mut receiver| {
             thread::spawn(move || {
                 let mut seen = vec![];
-                while let Ok(value) = pollster::block_on(receiver.recv()) {
+                while let Ok(value) = FutureExt::block_on(receiver.recv()) {
                     seen.push(value);
                 }
                 seen

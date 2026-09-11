@@ -17,7 +17,7 @@
 
 [package]
 name = "asyncband"
-version = "0.6.7"
+version = "0.7.2"
 
 categories = ["asynchronous", "concurrency"]
 description = "Composable, runtime-agnostic concurrency building blocks for async Rust."
@@ -52,12 +52,14 @@ condvar = ["mutex"]
 event = []
 latch = []
 lazy-cell = ["mutex"]
+mpmc = []
 mpsc = []
 mutex = []
 once = ["semaphore"]
 once-cell = ["semaphore"]
 once-map = ["dep:hashbrown", "once-cell"]
 oneshot = []
+phaser = []
 pool = ["semaphore"]
 rwlock = []
 semaphore = []

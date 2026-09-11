@@ -115,8 +115,8 @@ use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
 use crate::internal::semaphore::Acquire;
 use crate::internal::semaphore::Semaphore;
-use crate::internal::waitset::WakerToken;
-use crate::internal::waitset::wake_all;
+use crate::internal::wake_all;
+use crate::internal::wakerset::WakerToken;
 
 #[cfg(test)]
 mod tests;
@@ -702,7 +702,12 @@ impl<T> Drop for Recv<'_, T> {
             return;
         }
 
-        common::unregister(&self.receiver.shared.inner, &mut self.token);
+        common::unregister(
+            &self.receiver.shared.inner,
+            &self.receiver.shared.senders,
+            self.receiver.key,
+            &mut self.token,
+        );
     }
 }
 

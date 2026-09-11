@@ -15,6 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// This file contains tests adapted from the oneshot crate.
+// Asyncband uses the upstream crate's Apache-2.0 license option for that code.
+// The incorporated code has been modified for use in Apache Asyncband.
+// Upstream tests (oneshot v0.1.11):
+// https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/tests/async.rs
+// https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/tests/future.rs
+// https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/tests/sync.rs
+
 use std::future::Future;
 use std::future::IntoFuture;
 use std::pin::Pin;
@@ -22,6 +30,7 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
+use asyncband::blocking::FutureExt;
 use asyncband::oneshot;
 use asyncband::oneshot::TryRecvError;
 
@@ -38,7 +47,7 @@ fn send_before_await() {
     assert!(!receiver.has_message());
     assert!(sender.send(19i128).is_ok());
     assert!(receiver.has_message());
-    assert_eq!(pollster::block_on(receiver), Ok(19i128));
+    assert_eq!(FutureExt::block_on(receiver), Ok(19i128));
 }
 
 #[test]
@@ -48,7 +57,7 @@ fn await_with_dropped_sender() {
     drop(sender);
     assert!(receiver.is_disconnected());
     assert_eq!(
-        pollster::block_on(receiver),
+        FutureExt::block_on(receiver),
         Err(oneshot::RecvError::Disconnected)
     );
 }
@@ -64,7 +73,7 @@ fn try_recv_success_then_disconnected() {
     assert!(rx.is_disconnected());
     assert!(!rx.has_message());
     assert_eq!(
-        pollster::block_on(rx.into_future()),
+        FutureExt::block_on(rx.into_future()),
         Err(oneshot::RecvError::Disconnected)
     );
 }

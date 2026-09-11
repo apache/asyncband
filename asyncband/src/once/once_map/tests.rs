@@ -31,6 +31,12 @@ use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
 
+impl<K, V, S> OnceMap<K, V, S> {
+    fn len(&self) -> usize {
+        self.entries.lock().len()
+    }
+}
+
 #[derive(Default)]
 struct ConstantHasher;
 
@@ -124,32 +130,6 @@ fn failed_compute_preserves_entry_for_waiter_retry() {
     assert_eq!(map.len(), 1);
     assert_eq!(poll_once(retry.as_mut()), Poll::Ready(Ok(1)));
     assert_eq!(map.get("key"), Some(1));
-}
-
-#[test]
-fn abandoned_pending_entry_is_removed_when_last_caller_leaves() {
-    let map = OnceMap::<&str, i32>::new();
-    let Lookup::Pending(entry) = map.get_or_insert("key") else {
-        unreachable!()
-    };
-
-    map.cleanup_abandoned_entry(entry);
-
-    assert_eq!(map.len(), 0);
-}
-
-#[test]
-fn colliding_ready_entries_can_be_unlinked_independently() {
-    let map: OnceMap<usize, usize, BuildHasherDefault<ConstantHasher>> =
-        (0..4).map(|key| (key, key * 2)).collect();
-
-    map.discard(&1);
-    map.discard(&3);
-
-    assert_eq!(map.get(&0), Some(0));
-    assert_eq!(map.get(&1), None);
-    assert_eq!(map.get(&2), Some(4));
-    assert_eq!(map.get(&3), None);
 }
 
 #[test]

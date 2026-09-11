@@ -1,8 +1,64 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
+
+### New features
+
+* Implement `broadcast::mpmc::bounded`, a lossless bounded broadcast channel that retains at most the requested capacity and makes producers wait for the slowest active receiver.
+* Add opt-in bounded and unbounded `asyncband::mpmc` queues with cloneable producers and competing consumers, delivering each accepted value to exactly one receiver while a receiver remains.
+* Add an opt-in runtime-agnostic `Phaser` with shared observer handles, dynamic RAII participants registered individually or in batches through an owning iterator, `u64` phase numbers, split arrival/wait with cancellation-resilient retries, and a `close` operation that releases unfinished waits with `Closed`.
+* Add bounded MPSC `reserve` and `try_reserve` methods returning a `Permit`, allowing callers to wait for capacity before constructing a message; pending sends and reservations receive capacity in wait-queue order, and unused permits release capacity without claiming message order.
+
+### Bug fixes
+
+* Release MPSC receiver wakers when the receiver is dropped, avoiding retained tasks and ownership cycles when a waker holds a sender.
+* Notify all blocked bounded MPSC senders on receiver disconnection even when a buffered message destructor panics.
+* Avoid deadlocks when a bounded MPSC sender's waker clone callback receives from the same channel.
+
+### Improvements
+
+* Finish releasing buffered bounded MPSC messages even if one message destructor panics.
+* Improve unbounded MPSC throughput with batched receiving and incremental storage reclamation; empty-buffer retention is bounded independently of previous peak occupancy.
+* Make completed and abandoned `Completion` waits lock-free while preserving cancellable pending registration.
+
+## v0.7.2 (2026-09-11)
+
+### Improvements
+
+* Preserve applicable third-party licensing and copyright notices on derived source files, and record exact provenance mappings in `LICENSE` and source comments.
+
+## v0.7.1 (2026-09-04)
+
+This is an interim non-ASF release. It has not been approved by the Apache Incubator PMC and is not an act of the Apache Software Foundation.
+
+### Bug fixes
+
+* Correct source-header treatment and make third-party derivation and test provenance records more precise in source distributions.
+
+## v0.7.0 (2026-09-04)
+
+This non-ASF release was not approved by the Apache Incubator PMC, is not an act of the Apache Software Foundation, and has been yanked from crates.io.
 
 ### Breaking changes
 
@@ -21,8 +77,7 @@ All notable changes to this project will be documented in this file.
 ### New features
 
 * Implement `broadcast::mpmc::unbounded`, an unbounded broadcast channel that retains messages until all active receivers consume them or are dropped.
-* Implement `broadcast::mpmc::bounded`, a lossless bounded broadcast channel that retains at most the requested capacity and makes producers wait for the slowest active receiver.
-* Add an opt-in latest-state channel under `asyncband::watch`.
+* Add an opt-in clone-based latest-state channel under `asyncband::watch`, including retained replacement updates through `Sender::send_replace`.
 * Add opt-in `asyncband::event::ManualResetEvent`, a reusable level-triggered signal that releases registered waits and remains ready for future waits until explicitly reset.
 * Add an opt-in shared one-shot completion primitive under `asyncband::completion` with a single-use completer, cloneable observers, a retained borrowed result, and observable abandonment.
 * Add opt-in `asyncband::once::LazyCell` for values that own one asynchronous initializer and preserve its in-flight future across caller cancellation.
@@ -31,11 +86,17 @@ All notable changes to this project will be documented in this file.
 
 ### Bug fixes
 
+* Reject semaphore permit merges whose combined count exceeds `usize::MAX` instead of wrapping and losing permits.
 * Release cancelled wait registrations promptly and reclaim fulfilled `Semaphore::reduce_permits` debt nodes.
-* Preserve fan-out notifications when one registered waker panics.
-* Clone task wakers outside primitive state locks so reentrant clone callbacks cannot deadlock wait registration.
+* Preserve fan-out notifications, including semaphore permit grants, when one registered waker panics.
 
 ### Improvements
 
-* Remove the `slab` dependency in favor of a focused internal waiter arena.
+* Reduce fan-out notification overhead by avoiding heap allocation for a single waiter and transferring terminal waiter storage out of state locks.
+* Reduce MPSC receiver registration and wake latency by storing receiver wakers inline instead of allocating them on the heap.
+* Reduce semaphore and mutex hot-path overhead by avoiding wake-buffer allocation when no tasks are queued and batching queued wakes on the stack.
+* Allocate `OnceMap` and `singleflight::Group` registries lazily to reduce construction overhead.
 * Describe disconnected channel states consistently in channel error messages.
+* Avoid fixed CPU spinning before registering `WaitGroup`, `Latch`, and `Once` waiters.
+* Specialize `WaitGroup`'s one-shot completion state to reduce handle registration and multi-waiter notification overhead while preserving cancellable multi-observer waits.
+* Reduce waiter state and notification overhead across `Barrier`, broadcast, completion, `Latch`, `Once`, and watch by reusing each primitive's existing lifecycle state instead of maintaining duplicate waiter epochs.
