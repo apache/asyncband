@@ -18,7 +18,7 @@ Decision: [#257](https://github.com/apache/asyncband/pull/257).
 
 ## Documentation
 
-Keep each Markdown prose paragraph and list item on one source line.
+Keep each Markdown prose paragraph and list item on one source line. Format Markdown tables so their columns and separators align in the source.
 
 ## Changelog
 
