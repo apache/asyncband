@@ -65,6 +65,7 @@ rwlock = []
 semaphore = []
 shutdown = ["latch", "waitgroup"]
 singleflight = ["dep:hashbrown", "once-cell"]
+spmc = []
 waitgroup = []
 watch = []
 

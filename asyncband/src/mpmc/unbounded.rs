@@ -22,7 +22,8 @@ use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
 use super::TrySendError;
-use super::queue::Shared;
+use crate::internal::competing_queue::Shared;
+use crate::internal::competing_queue::send_error;
 
 /// Creates an unbounded multi-producer, multi-consumer queue.
 ///
@@ -76,7 +77,7 @@ impl<T> UnboundedSender<T> {
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
         match self.shared.try_send(value) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Disconnected(value)) => Err(SendError::new(value)),
+            Err(TrySendError::Disconnected(value)) => Err(send_error(value)),
             Err(TrySendError::Full(_)) => unreachable!("unbounded queue cannot be full"),
         }
     }

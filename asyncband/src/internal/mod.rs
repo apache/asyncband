@@ -56,6 +56,7 @@ pub(crate) fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
     feature = "completion",
     feature = "latch",
     feature = "mpmc",
+    feature = "spmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "phaser",
@@ -68,6 +69,9 @@ pub(crate) fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
 // leaves part of this shared API unused, while the all-feature build uses it.
 #[allow(dead_code)]
 pub(crate) mod arena;
+
+#[cfg(any(feature = "mpmc", feature = "spmc"))]
+pub(crate) mod competing_queue;
 
 #[cfg(any(feature = "latch", feature = "once"))]
 pub(crate) mod countdown;
@@ -85,6 +89,7 @@ pub(crate) mod value_cell;
     feature = "completion",
     feature = "latch",
     feature = "mpmc",
+    feature = "spmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "phaser",
@@ -99,18 +104,21 @@ pub(crate) mod mutex;
 
 #[cfg(any(
     feature = "mpmc",
+    feature = "spmc",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
 ))]
-// MPMC uses waiter notifications; mutexes and rwlocks use acquire/release operations; the public
-// semaphore also exposes permit accounting. Single-primitive builds leave part of this API unused.
+// Competing queues use waiter notifications; mutexes and rwlocks use acquire/release operations;
+// the public semaphore also exposes permit accounting. Single-primitive builds leave part of this
+// API unused.
 #[allow(dead_code)]
 pub(crate) mod semaphore;
 
 #[cfg(any(
     feature = "event",
     feature = "mpmc",
+    feature = "spmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "rwlock",
@@ -128,6 +136,7 @@ pub(crate) mod waitlist;
     feature = "completion",
     feature = "latch",
     feature = "mpmc",
+    feature = "spmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "once",

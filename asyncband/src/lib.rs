@@ -75,6 +75,7 @@
 //! |                            | [`oneshot`]                                   | `oneshot`      | Send one value from one sender to one receiver.                                                               |
 //! |                            | [`mpmc`]                                      | `mpmc`         | Distribute each value to exactly one of multiple competing receivers.      |
 //! |                            | [`mpsc`]                                      | `mpsc`         | Send each value from multiple producers to one receiver with bounded backpressure or an unbounded queue.      |
+//! |                            | [`spmc`]                                      | `spmc`         | Distribute work from one exclusive sender to multiple competing receivers, with bounded or unbounded storage. |
 //! |                            | [`broadcast`]                                 | `broadcast`    | Deliver every value to receivers active at send time; retain an unbounded backlog until each consumes or drops. |
 //! |                            | [`watch`]                                     | `watch`        | Publish cloneable latest state from one or more senders; receivers independently coalesce intermediate updates. |
 //! | Object reuse               | [`pool`]                                      | `pool`         | Reuse objects through bounded or unbounded pool variants.                                                     |
@@ -161,6 +162,8 @@ pub mod semaphore;
 pub mod shutdown;
 #[cfg(feature = "singleflight")]
 pub mod singleflight;
+#[cfg(feature = "spmc")]
+pub mod spmc;
 #[cfg(feature = "waitgroup")]
 pub mod waitgroup;
 #[cfg(feature = "watch")]
