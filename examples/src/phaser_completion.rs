@@ -1,0 +1,170 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+//! Publish consistent progress snapshots from parallel import workers.
+//!
+//! Each worker contributes its cumulative record count after a batch. The coordinator sums those
+//! counts and publishes a snapshot before workers process the next batch. Separate ready/resume
+//! phasers prevent a fast worker from updating its count while the snapshot is being prepared.
+//! The coordinator can also await an asynchronous checkpoint before releasing the workers.
+//!
+//! The first scenario stops once the total reaches a target. The other two show how a failed or
+//! cancelled worker stops its peers, including a task cancelled before its first poll. Import work
+//! is represented by counters, and checkpoint I/O by a yield.
+//!
+//! Membership is fixed within this protocol; changes must update both groups at a common batch
+//! boundary. Each phaser has its own counter, distinct from the application's batch number.
+
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use asyncband::phaser::Closed;
+use asyncband::phaser::Phaser;
+use asyncband::phaser::PhaserParticipant;
+
+// Own this guard before constructing a task future so cancelling an unpolled task also aborts.
+struct CloseOnDrop([Phaser; 2]);
+
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) {
+        for phaser in &self.0 {
+            phaser.close();
+        }
+    }
+}
+
+struct Member {
+    // Fields drop in declaration order: close before withdrawing any arrival obligation.
+    _close: CloseOnDrop,
+    ready: PhaserParticipant,
+    resume: PhaserParticipant,
+}
+
+impl Member {
+    fn register(ready: &Phaser, resume: &Phaser) -> Result<Self, Closed> {
+        Ok(Self {
+            _close: CloseOnDrop([ready.clone(), resume.clone()]),
+            ready: ready.register_one()?,
+            resume: resume.register_one()?,
+        })
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Closed> {
+    publish_until_target().await?;
+    failure_closes_the_group().await?;
+    cancelling_an_unpolled_task_closes_the_group().await?;
+    Ok(())
+}
+
+async fn compute(
+    mut member: Member,
+    id: usize,
+    values: Arc<Vec<AtomicU64>>,
+    published: Arc<AtomicU64>,
+) -> Result<(), Closed> {
+    for round in 1_u64.. {
+        // The resume rendezvous must publish the previous aggregate before this read.
+        assert_eq!(published.load(Ordering::Relaxed), (round - 1) * 6);
+        values[id].store((id as u64 + 1) * round, Ordering::Relaxed);
+        member.ready.wait().await?;
+        member.resume.wait().await?;
+    }
+    unreachable!()
+}
+
+async fn publish_until_target() -> Result<(), Closed> {
+    let ready = Phaser::new();
+    let resume = Phaser::new();
+    let mut coordinator = Member::register(&ready, &resume)?;
+    let values = Arc::new((0..3).map(|_| AtomicU64::new(0)).collect::<Vec<_>>());
+    let published = Arc::new(AtomicU64::new(0));
+    let mut tasks = Vec::new();
+    // Register everyone before polling any worker; the coordinator also keeps both phases open.
+    for id in 0..3 {
+        tasks.push(tokio::spawn(compute(
+            Member::register(&ready, &resume)?,
+            id,
+            values.clone(),
+            published.clone(),
+        )));
+    }
+
+    loop {
+        coordinator.ready.wait().await?;
+        let sum: u64 = values
+            .iter()
+            .map(|value| value.load(Ordering::Relaxed))
+            .sum();
+        // An async checkpoint can be awaited here while workers wait at resume.
+        tokio::task::yield_now().await;
+        published.store(sum, Ordering::Relaxed);
+        println!("coordinator: published aggregate {sum}");
+        if sum >= 18 {
+            // Stop without releasing anyone into another computation round.
+            ready.close();
+            resume.close();
+            break;
+        }
+        coordinator.resume.wait().await?;
+    }
+    for task in tasks {
+        assert!(task.await.expect("worker panicked").is_err());
+    }
+    assert_eq!(published.load(Ordering::Relaxed), 18);
+    println!("target reached: all workers stopped after 18 imported records");
+    Ok(())
+}
+
+async fn wait_once(mut member: Member) -> Result<(), Closed> {
+    member.ready.wait().await?;
+    member.resume.wait().await?;
+    Ok(())
+}
+
+async fn fail(_member: Member) -> Result<(), &'static str> {
+    // The job error stays in its result; Closed tells peers that no next round is available.
+    Err("input validation failed")
+}
+
+async fn failure_closes_the_group() -> Result<(), Closed> {
+    let ready = Phaser::new();
+    let resume = Phaser::new();
+    let healthy = Member::register(&ready, &resume)?;
+    let failing = Member::register(&ready, &resume)?;
+    let (peer, failure) = tokio::join!(wait_once(healthy), fail(failing));
+    assert!(peer.is_err());
+    assert_eq!(failure, Err("input validation failed"));
+    assert_eq!(ready.phase(), 0);
+    assert_eq!(resume.phase(), 0);
+    println!("failure: peers observed Closed, not successful phase completion");
+    Ok(())
+}
+
+async fn cancelling_an_unpolled_task_closes_the_group() -> Result<(), Closed> {
+    let ready = Phaser::new();
+    let resume = Phaser::new();
+    let peer = Member::register(&ready, &resume)?;
+    let cancelled = wait_once(Member::register(&ready, &resume)?);
+    drop(cancelled);
+    assert!(wait_once(peer).await.is_err());
+    assert_eq!(ready.phase(), 0);
+    println!("cancellation: dropping an unpolled task closed both gates");
+    Ok(())
+}
