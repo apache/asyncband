@@ -90,23 +90,15 @@ Verify the existing artifacts with the [candidate-verification guide](verificati
 
 For the separate `license-audit` review, provide the original source archive, the extracted source, and the Cargo package produced by verification, together with `RELEASE_COMMIT`. Discuss its evidence and suggestions with the release manager. Keep the verification directory available until both reviews finish; then remove that disposable directory.
 
-## Stage the candidate on ASF infrastructure
+## Stage the candidate in Apache Trusted Releases
 
-Check whether this candidate is already staged. For a new staging operation, check out a working copy under `RELEASE_DIR`, add the three candidate files, and commit them:
+Use [Apache Trusted Releases (ATR)](https://releases.apache.org/) for new candidates. Resume an existing candidate where it is already staged; moving a vote in progress between services would change its artifact links.
 
-```shell
-svn checkout --depth=empty \
-  https://dist.apache.org/repos/dist/dev/incubator/asyncband "${RELEASE_DIR}/svn-dev"
-mkdir "${RELEASE_DIR}/svn-dev/${VERSION}-rc.${RC}"
-cp \
-  "${ARTIFACT_DIR}/${SOURCE_DIR}.tar.gz" \
-  "${ARTIFACT_DIR}/${SOURCE_DIR}.tar.gz.asc" \
-  "${ARTIFACT_DIR}/${SOURCE_DIR}.tar.gz.sha512" \
-  "${RELEASE_DIR}/svn-dev/${VERSION}-rc.${RC}/"
-svn add "${RELEASE_DIR}/svn-dev/${VERSION}-rc.${RC}"
-svn status "${RELEASE_DIR}/svn-dev"
-svn commit "${RELEASE_DIR}/svn-dev" \
-  -m "Stage Apache Asyncband ${VERSION} release candidate ${RC}"
-```
+1. Open the `asyncband` project in ATR and locate the draft for `VERSION`, or create it if absent. Use the final version, such as `0.8.0`, without `v` or `-rc.N`. ATR assigns a new revision serial as files change; record that serial alongside `RC_TAG` and `RELEASE_COMMIT` rather than assuming it equals `RC`.
+2. Upload the verified `.tar.gz`, `.tar.gz.asc`, and `.tar.gz.sha512` files through the browser, or use the rsync command provided by ATR. Use the release manager's existing signing identity. Keep verification reports and the crates.io convenience package outside the staged source bundle.
+3. Inspect ATR's signature, checksum, archive, and license results for the resulting revision. Investigate concrete concerns with the `license-audit` skill where relevant; a scanner result is evidence to discuss, and a passing scan does not replace source or build verification. If the source archive is misclassified or a signing key is missing, consult [Infrastructure](infrastructure.md).
+4. Download the staged files into a separate directory and compare them with the local verified originals. Record the candidate URL and revision, then prepare the vote on that exact set of bytes.
 
-Confirm the candidate at `https://dist.apache.org/repos/dist/dev/incubator/asyncband/${VERSION}-rc.${RC}/` and verify every link prepared for the vote email.
+ATR holds the files through compose and vote, and pins the revision when voting starts. Use that candidate page as the voting artifact source. Its download commands are available to voters without committer access. See the official [staging and voting guide](https://releases.apache.org/docs/staging-and-voting); an additional `dist/dev` copy is unnecessary for this route.
+
+If ATR cannot be used for a new candidate, agree on the existing SVN staging route before starting its vote: upload the same three files to `https://dist.apache.org/repos/dist/dev/incubator/asyncband/${VERSION}-rc.${RC}/` and record that as the voting source. Preserve an existing SVN candidate through publication rather than silently switching it to ATR.
