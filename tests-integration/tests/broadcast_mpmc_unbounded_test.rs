@@ -23,6 +23,7 @@ use std::task::Poll;
 use std::task::Waker;
 use std::thread;
 
+use asyncband::blocking::FutureExt;
 use asyncband::broadcast::mpmc::*;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
@@ -454,7 +455,7 @@ fn concurrent_senders_deliver_every_message_to_every_receiver() {
         .map(|mut receiver| {
             thread::spawn(move || {
                 let mut seen = vec![];
-                while let Ok(value) = pollster::block_on(receiver.recv()) {
+                while let Ok(value) = FutureExt::block_on(receiver.recv()) {
                     seen.push(value);
                 }
                 seen

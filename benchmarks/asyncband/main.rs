@@ -23,6 +23,10 @@ mod condvar;
 mod event;
 mod latch;
 mod mpmc;
+
+#[allow(dead_code)]
+#[path = "../mpmc/mod.rs"]
+mod mpmc_support;
 mod mpsc;
 mod mutex;
 mod once;

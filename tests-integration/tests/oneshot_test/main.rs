@@ -30,6 +30,7 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
+use asyncband::blocking::FutureExt;
 use asyncband::oneshot;
 use asyncband::oneshot::TryRecvError;
 
@@ -46,7 +47,7 @@ fn send_before_await() {
     assert!(!receiver.has_message());
     assert!(sender.send(19i128).is_ok());
     assert!(receiver.has_message());
-    assert_eq!(pollster::block_on(receiver), Ok(19i128));
+    assert_eq!(FutureExt::block_on(receiver), Ok(19i128));
 }
 
 #[test]
@@ -56,7 +57,7 @@ fn await_with_dropped_sender() {
     drop(sender);
     assert!(receiver.is_disconnected());
     assert_eq!(
-        pollster::block_on(receiver),
+        FutureExt::block_on(receiver),
         Err(oneshot::RecvError::Disconnected)
     );
 }
@@ -72,7 +73,7 @@ fn try_recv_success_then_disconnected() {
     assert!(rx.is_disconnected());
     assert!(!rx.has_message());
     assert_eq!(
-        pollster::block_on(rx.into_future()),
+        FutureExt::block_on(rx.into_future()),
         Err(oneshot::RecvError::Disconnected)
     );
 }

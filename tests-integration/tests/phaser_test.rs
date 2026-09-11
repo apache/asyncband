@@ -25,6 +25,7 @@ use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
 
+use asyncband::blocking::FutureExt;
 use asyncband::phaser::Phaser;
 
 fn poll_once<F: Future>(future: std::pin::Pin<&mut F>) -> Poll<F::Output> {
@@ -748,7 +749,7 @@ fn arrivals_publish_each_workers_writes_across_threads() {
         for (id, mut participant) in participants.enumerate() {
             let values = &values;
             scope.spawn(move || {
-                pollster::block_on(async {
+                FutureExt::block_on(async {
                     for round in 1..=16 {
                         values[id].store(round, Ordering::Relaxed);
                         participant.wait().await.unwrap();

@@ -19,6 +19,8 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::task::Context;
 
+use asyncband::blocking::FutureExt;
+
 use crate::support::poll_ready;
 
 pub struct Asyncband;
@@ -86,11 +88,11 @@ impl<T: Debug + Send + 'static> BoundedMpsc<T> for Asyncband {
     }
 
     fn send_blocking(sender: &Self::Sender, value: T) {
-        pollster::block_on(sender.send(value)).unwrap();
+        FutureExt::block_on(sender.send(value)).unwrap();
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {
-        pollster::block_on(receiver.recv()).unwrap()
+        FutureExt::block_on(receiver.recv()).unwrap()
     }
 }
 
@@ -127,11 +129,11 @@ impl<T: Debug + Send + 'static> BoundedMpsc<T> for Tokio {
     }
 
     fn send_blocking(sender: &Self::Sender, value: T) {
-        pollster::block_on(sender.send(value)).unwrap();
+        FutureExt::block_on(sender.send(value)).unwrap();
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {
-        pollster::block_on(receiver.recv()).unwrap()
+        FutureExt::block_on(receiver.recv()).unwrap()
     }
 }
 
@@ -168,11 +170,11 @@ impl<T: Debug + Send + 'static> BoundedMpsc<T> for AsyncChannel {
     }
 
     fn send_blocking(sender: &Self::Sender, value: T) {
-        pollster::block_on(sender.send(value)).unwrap();
+        FutureExt::block_on(sender.send(value)).unwrap();
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {
-        pollster::block_on(receiver.recv()).unwrap()
+        FutureExt::block_on(receiver.recv()).unwrap()
     }
 }
 
@@ -209,11 +211,11 @@ impl<T: Debug + Send + 'static> BoundedMpsc<T> for Flume {
     }
 
     fn send_blocking(sender: &Self::Sender, value: T) {
-        pollster::block_on(sender.send_async(value)).unwrap();
+        FutureExt::block_on(sender.send_async(value)).unwrap();
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {
-        pollster::block_on(receiver.recv_async()).unwrap()
+        FutureExt::block_on(receiver.recv_async()).unwrap()
     }
 }
 
@@ -242,7 +244,7 @@ impl<T: Debug + Send + 'static> UnboundedMpsc<T> for Asyncband {
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {
-        pollster::block_on(receiver.recv()).unwrap()
+        FutureExt::block_on(receiver.recv()).unwrap()
     }
 }
 
@@ -271,7 +273,7 @@ impl<T: Debug + Send + 'static> UnboundedMpsc<T> for Tokio {
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {
-        pollster::block_on(receiver.recv()).unwrap()
+        FutureExt::block_on(receiver.recv()).unwrap()
     }
 }
 
@@ -300,7 +302,7 @@ impl<T: Debug + Send + 'static> UnboundedMpsc<T> for AsyncChannel {
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {
-        pollster::block_on(receiver.recv()).unwrap()
+        FutureExt::block_on(receiver.recv()).unwrap()
     }
 }
 
@@ -329,6 +331,6 @@ impl<T: Debug + Send + 'static> UnboundedMpsc<T> for Flume {
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> T {
-        pollster::block_on(receiver.recv_async()).unwrap()
+        FutureExt::block_on(receiver.recv_async()).unwrap()
     }
 }

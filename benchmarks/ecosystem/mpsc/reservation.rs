@@ -18,6 +18,7 @@
 use std::future::Future;
 use std::marker::PhantomData;
 
+use asyncband::blocking::FutureExt;
 use divan::Bencher;
 use divan::black_box;
 use divan::counter::ItemsCount;
@@ -92,7 +93,7 @@ impl<C: Reservable, const CAPACITY: usize> ConcurrentMpsc for Reserved<C, CAPACI
         C::channel(CAPACITY)
     }
     fn send(sender: &Self::Sender, value: usize) {
-        C::publish(pollster::block_on(C::reserve(sender)), value);
+        C::publish(FutureExt::block_on(C::reserve(sender)), value);
     }
     fn recv(receiver: &mut Self::Receiver) -> usize {
         C::recv_blocking(receiver)

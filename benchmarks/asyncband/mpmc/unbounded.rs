@@ -15,22 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use asyncband::mpmc;
 use divan::Bencher;
 use divan::counter::ItemsCount;
 
-use super::support::BATCH_MESSAGES;
-use super::support::ConcurrentBatch;
-use super::support::TOPOLOGIES;
-use super::support::Topology;
-
-fn send(sender: &mpmc::UnboundedSender<usize>, value: usize) {
-    sender.send(value).expect("benchmark sender disconnected");
-}
-
-fn recv(receiver: &mpmc::UnboundedReceiver<usize>) -> usize {
-    pollster::block_on(receiver.recv()).expect("benchmark receiver disconnected")
-}
+use crate::mpmc_support::adapters::Asyncband;
+use crate::mpmc_support::support::BATCH_MESSAGES;
+use crate::mpmc_support::support::TOPOLOGIES;
+use crate::mpmc_support::support::TaskBatch;
+use crate::mpmc_support::support::ThreadBatch;
+use crate::mpmc_support::support::Topology;
+use crate::mpmc_support::support::Unbounded;
+use crate::mpmc_support::support::runtime;
 
 #[divan::bench(
     args = TOPOLOGIES,
@@ -38,11 +33,22 @@ fn recv(receiver: &mpmc::UnboundedReceiver<usize>) -> usize {
     sample_size = 1,
     counter = ItemsCount::new(BATCH_MESSAGES),
 )]
-fn concurrent(bencher: Bencher, topology: Topology) {
+fn blocking_threads(bencher: Bencher, topology: Topology) {
     bencher
-        .with_inputs(|| {
-            let (sender, receiver) = mpmc::unbounded();
-            ConcurrentBatch::new(sender, receiver, topology, send, recv)
-        })
+        .with_inputs(|| ThreadBatch::new_unbounded::<Asyncband>(topology))
         .bench_local_refs(|batch| batch.run());
+}
+
+#[divan::bench(
+    consts = [0, 4],
+    args = TOPOLOGIES,
+    sample_count = 20,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn tokio_tasks<const WORKERS: usize>(bencher: Bencher, topology: Topology) {
+    let runtime = runtime(WORKERS);
+    bencher
+        .with_inputs(|| TaskBatch::new::<Unbounded<Asyncband>>(&runtime, topology))
+        .bench_local_refs(|batch| runtime.block_on(batch.run()));
 }

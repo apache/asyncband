@@ -15,20 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod broadcast;
-mod mpmc;
-
-#[allow(dead_code)]
-#[path = "../mpmc/mod.rs"]
-mod mpmc_support;
-mod mpsc;
-mod waitgroup;
-mod watch;
-
-#[allow(dead_code)]
-#[path = "../asyncband/support.rs"]
-mod support;
-
-fn main() {
-    divan::main();
-}
+pub mod adapters;
+pub mod support;
