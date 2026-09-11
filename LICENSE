@@ -202,10 +202,14 @@
 
 THIRD-PARTY WORKS
 
-This product contains portions of third-party works. The paths below identify
-each local file containing those portions and the corresponding upstream
-source paths. Modifications made for Apache Asyncband are licensed under the
-Apache License, Version 2.0, unless otherwise noted.
+This product contains portions of third-party works. Modifications made for
+Apache Asyncband are licensed under the Apache License, Version 2.0, unless
+otherwise noted.
+
+Paths identifying Asyncband files are relative to the source repository root.
+For the published asyncband crate, remove the asyncband/ prefix to locate
+the corresponding packaged files. References to repository-only tests
+document additional uses of the same upstream works.
 
 In this section, "derived", "adapted", and "ported" identify incorporated
 source code.
