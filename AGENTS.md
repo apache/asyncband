@@ -23,6 +23,8 @@ under the License.
 
 Use `cargo x` as the source of truth for repository workflows. Read `cargo x --help` and the relevant subcommand's `--help` before running build, test, lint, or formatting commands.
 
+Use the shared [release skill](.agents/skills/release/SKILL.md) for release preparation, status checks, publication, and recovery. Its phase guides are the maintained release procedure; resume from the established candidate and completed steps.
+
 Use the shared [license-audit skill](.agents/skills/license-audit/SKILL.md) for license audits and release licensing checks. For a delegated Codex review, use the [`license_auditor`](.codex/agents/license_auditor.toml) agent, which reads the same skill. Other agents can follow the skill directly.
 
 ## Rust Style
