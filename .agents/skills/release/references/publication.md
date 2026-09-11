@@ -25,24 +25,30 @@ Resume from the recorded candidate and vote results. Check which publication ste
 
 Incubating releases use the [Incubator two-phase vote](https://incubator.apache.org/cookbook/#two-phase-vote-on-podling-releases). Each vote remains open for at least 72 hours.
 
-When the staged candidate and supporting links have been verified, send `[VOTE] Release Apache Asyncband (Incubating) ${VERSION} RC${RC}` to `dev@asyncband.apache.org`. Include:
+For an ATR candidate, use its email vote mode with `dev@asyncband.apache.org` as the first-round recipient and `general@incubator.apache.org` as the second-round recipient. Use at least 72 hours and keep automatic SVN publication off for the initial ATR release so the release manager can inspect the destination before publishing. ATR pins the staged revision when voting starts.
 
-- the staged source URL;
+When the staged candidate and supporting links have been verified, review the vote message before sending it through ATR. Use `[VOTE] Release Apache Asyncband (Incubating) ${VERSION} RC${RC}` as the subject and include:
+
+- the ATR candidate page identifying the voted revision, or the staged SVN URL for a legacy candidate;
 - the `KEYS` URL and signing-key fingerprint;
 - the signed RC tag and commit hash;
 - the changelog or comparison with the previous release;
 - verification commands or a checklist for signatures, checksums, licensing, unexpected binaries, and the build;
 - a closing time at least 72 hours after the vote starts.
 
-The PPMC vote passes with at least three PPMC `+1` votes and more PPMC `+1` votes than `-1` votes. Publish a result email that identifies the voters and links the archived vote thread.
+The PPMC vote passes with at least three PPMC `+1` votes and more PPMC `+1` votes than `-1` votes. Record the voters, result, and archived thread. Resolving a passing first-round podling vote in ATR also starts the IPMC vote; prepare both actions with the release manager before resolving it. Do not send a duplicate IPMC proposal outside ATR.
 
-Then send the proposal to `general@incubator.apache.org` with the PPMC result and archive link. The IPMC vote passes with at least three binding IPMC `+1` votes and more binding `+1` votes than `-1` votes. Publish its result email and record the archive link.
+The IPMC vote passes with at least three binding IPMC `+1` votes and more binding `+1` votes than `-1` votes. Confirm its result and record the archived vote and result links. ATR's checks and phase labels support the release manager's review; retain the evidence for both vote rounds.
+
+For a candidate already staged in SVN, conduct the same two votes by email: send and resolve the PPMC proposal, then send the IPMC proposal with the PPMC result and archive link. Publish each result and retain its archive link.
 
 Begin publication after the IPMC result records a passing vote.
 
 ## Promote and publish the approved release
 
-Promote the exact voted artifacts from the development distribution area:
+For an ATR candidate, open its finish page after both rounds pass. Verify that the destination is `https://dist.apache.org/repos/dist/release/incubator/asyncband/${VERSION}/`, then use ATR's publish action to promote the exact voted artifacts. The `download_path_suffix` in `.asf.yaml` selects the version directory. Record the resulting SVN revision and URL; there is no separate `svn move` for this route. See [Promoting to release](https://releases.apache.org/docs/promoting-to-release).
+
+For a legacy SVN candidate, promote the exact voted artifacts from its recorded staging area:
 
 ```shell
 svn move \
@@ -69,14 +75,14 @@ After publication:
 1. Verify the version and metadata on crates.io and docs.rs.
 2. After ASF distribution syncs, verify the source archive, checksum, and signature under `https://downloads.apache.org/incubator/asyncband/${VERSION}/` and the project `KEYS` file at `https://downloads.apache.org/incubator/asyncband/KEYS`.
 3. Submit a post-release pull request that adds the actual publication date to the `v${VERSION}` changelog heading.
-4. Announce the release on `dev@asyncband.apache.org` and other appropriate channels as Apache Asyncband (Incubating).
+4. Announce the release on `dev@asyncband.apache.org` and other appropriate channels as Apache Asyncband (Incubating). For an ATR release, use its announcement action after checking crates.io and docs.rs; ATR also checks download availability and records the release in its catalog. Reuse an announcement already sent through ATR.
 5. Remove superseded releases from `dist/release`; ASF retains them in the archive.
 
 ## Recover from failures
 
-A transient CI, staging, or registry error can be retried against the same candidate after checking what already succeeded.
+A transient CI, staging, or registry error can be retried against the same candidate after checking what already succeeded. For ATR, inspect the current phase, revision, vote tasks, and SVN publication result before repeating an upload or action; a lost response does not mean the operation failed.
 
-If the community rejects a candidate or its content changes, coordinate a new candidate with an incremented `RC`. Remove the rejected candidate from the development distribution area:
+If the community rejects a candidate or its content changes, coordinate a new candidate with an incremented `RC`. In ATR, end the affected vote and return the release to compose before uploading the replacement as a new revision; record its new Git tag, commit, and ATR revision. Keep the prior vote identity in the handoff. For a legacy SVN candidate, remove the rejected files from the development distribution area:
 
 ```shell
 svn delete \
