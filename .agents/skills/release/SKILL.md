@@ -24,7 +24,7 @@ under the License.
 
 # Release Apache Asyncband
 
-Help the release manager carry out the requested release work, explain the current state, and propose practical next steps. Keep coordination in the main conversation; use the shared license-audit skill for the licensing review. The release manager and project community make release decisions.
+Help the release manager carry out the requested release work, explain the current state, and propose practical next steps. Keep release coordination in the main conversation. Delegate substantial candidate verification when it can run independently, and use the shared license-audit skill for the licensing review. The release manager and project community make release decisions.
 
 ## Resume the requested work
 
@@ -44,14 +44,23 @@ Report completed work with evidence, the next useful step, and any input still n
 
 ## Choose the current phase
 
-| Current work                                       | Read                                             |
-| -------------------------------------------------- | ------------------------------------------------ |
-| Signing keys, ASF directories, registry setup      | [Release setup](references/setup.md)             |
-| Version/changelog PR, RC, artifacts, or staging    | [Candidate preparation](references/candidate.md) |
-| Voting, approved publication, follow-up, or retry  | [Publication](references/publication.md)         |
-| Licensing review of the checkout or supplied files | [License audit](../license-audit/SKILL.md)       |
+| Current work                                      | Read                                                 |
+| ------------------------------------------------- | ---------------------------------------------------- |
+| Version/changelog PR, RC, artifacts, or staging   | [Candidate preparation](references/candidate.md)     |
+| Checking an existing candidate's artifacts        | [Candidate verification](references/verification.md) |
+| Voting, approved publication, follow-up, or retry | [Publication](references/publication.md)             |
 
-The phase guides are the maintained release procedure for both people and agents. `RELEASE.md` is only a discovery link. Repository paths and Git/Cargo commands refer to the repository or release-worktree root; Markdown links are relative to their containing file. Read `cargo x --help` and the relevant subcommand help before running repository checks.
+The phase guides are the maintained release procedure for both people and agents. `RELEASE.md` is only a discovery link. Existing infrastructure is described in [Infrastructure](references/infrastructure.md); read it only for configuration changes, a new release manager's signing key, or infrastructure troubleshooting.
+
+Links within this skill resolve from the containing document and stay within this skill's files. Repository paths such as `.github/workflows/release.yml` resolve from the caller's Asyncband repository root, which may differ from the current working directory. Locate the `license-audit` skill and configured agents by name; if skill discovery is unavailable, read `.agents/skills/license-audit/SKILL.md` from that repository root. Do not infer repository locations by walking upward from this skill's installation directory.
+
+Read `cargo x --help` and the relevant subcommand help before running repository checks.
+
+## Delegate candidate verification
+
+Use the `release_verifier` Codex agent for a substantial check of an existing candidate when the main agent can continue independent work, such as preparing vote materials. Other coding agents can delegate the same candidate-verification guide to a worker or follow it directly. Keep a small status query in the main conversation.
+
+Give the verifier the repository root, candidate commit and tag, version, absolute artifact paths, expected signing fingerprint and its provenance, requested checks, and a scratch directory outside the checkout. It returns the checked revision and artifacts, observed results, and remaining gaps. Preserve the original artifacts for a separate `license-audit` review; the verifier does not duplicate that audit. Collect the results before staging or publishing the candidate.
 
 ## Candidate and publication continuity
 
@@ -61,6 +70,6 @@ Keep the RC tag, commit, artifacts, and vote tied together. A later `main` commi
 
 After both vote results record approval, promote the exact voted source artifacts. The signed final `v${VERSION}` tag uses the approved RC commit and starts the crates.io publication workflow, subject to the configured `release` environment review. Successful CI alone does not establish vote approval. Confirm each external action's result before reporting completion or retrying it.
 
-Use the shared [license-audit skill](../license-audit/SKILL.md) to examine the relevant checkout or artifact contents. In Codex, the configured `license_auditor` can perform a delegated review; another agent can follow the same skill directly. Provide the candidate revision and actual artifact paths, then discuss the review's evidence and suggestions with the release manager.
+Use the shared `license-audit` skill to examine the relevant checkout or artifact contents. In Codex, the configured `license_auditor` can perform a delegated review; another agent can follow the same skill directly. Provide the candidate revision and actual artifact paths, then discuss the review's evidence and suggestions with the release manager.
 
 Follow the current [ASF Release Policy](https://www.apache.org/legal/release-policy.html), [Release Distribution Policy](https://infra.apache.org/release-distribution), [Release Creation Process](https://infra.apache.org/release-publishing.html), and [Incubator release guidance](https://incubator.apache.org/guides/releasemanagement.html). Explain any relevant ambiguity with its source and practical options instead of treating incomplete evidence as a project defect.

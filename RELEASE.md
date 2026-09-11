@@ -19,4 +19,4 @@ under the License.
 
 # Releasing Apache Asyncband (Incubating)
 
-The maintained release procedure is the [release skill](.agents/skills/release/SKILL.md), including its phase guides for setup, candidate preparation, voting, and publication. Release managers can read it directly; coding agents can use it to prepare or resume the requested release work.
+The maintained release procedure is the [release skill](.agents/skills/release/SKILL.md), including its phase guides for candidate preparation, verification, voting, and publication. Release managers can read it directly; coding agents can use it to prepare or resume the requested release work.

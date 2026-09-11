@@ -25,7 +25,7 @@ For a new release, start from current `main` and choose `VERSION` from the chang
 
 1. Change `version` in `asyncband/Cargo.toml` and refresh `Cargo.lock` with Cargo.
 2. Move the entries under `Unreleased` in `CHANGELOG.md` into an undated `v${VERSION}` section immediately below it, then restore an empty `Unreleased` section. Keep user-impacting sections ordered as breaking changes, new features, bug fixes, and improvements; add the actual release date only after publication.
-3. Review `LICENSE`, `NOTICE`, `DISCLAIMER`, source headers, and bundled dependencies. Agents can use the shared [license-audit skill](../../license-audit/SKILL.md); Codex can delegate to the project's [`license_auditor`](../../../../.codex/agents/license_auditor.toml) subagent. Ask: "Help review this checkout for release licensing. Explain what the existing arrangements cover, any material concerns with supporting evidence, and practical suggestions or open questions. Keep the review read-only." Use its evidence and suggestions to decide what follow-up is needed during release preparation.
+3. Review `LICENSE`, `NOTICE`, `DISCLAIMER`, source headers, and bundled dependencies using the `license-audit` skill. Codex can delegate that review to `license_auditor`; provide the repository root and requested revision. Use its evidence and suggestions to decide what follow-up is needed during release preparation.
 4. Run the release checks:
 
 ```shell
@@ -86,30 +86,9 @@ git archive --format=tar --prefix="${SOURCE_DIR}/" "${RC_TAG}" \
 )
 ```
 
-Verify the artifacts in a fresh temporary directory. The archive test uses Cargo's `--locked` mode to check the shipped lockfile; `cargo x test` does not expose that option:
+Verify the existing artifacts with the [candidate-verification guide](verification.md), directly or through `release_verifier`. Supply the candidate identity, signing-key fingerprint, repository root, and absolute artifact paths. Keep the signed archive unchanged throughout verification.
 
-```shell
-VERIFY_DIR="$(mktemp -d "${RELEASE_DIR}/verify.XXXXXX")"
-(
-  cd "${ARTIFACT_DIR}"
-  shasum -a 512 --check "${SOURCE_DIR}.tar.gz.sha512"
-  gpg --verify "${SOURCE_DIR}.tar.gz.asc" "${SOURCE_DIR}.tar.gz"
-  tar --extract --gzip --file "${SOURCE_DIR}.tar.gz" --directory "${VERIFY_DIR}"
-)
-(
-  cd "${VERIFY_DIR}/${SOURCE_DIR}"
-  cargo test --workspace --all-features --locked
-  cargo publish --package asyncband --locked --dry-run
-)
-```
-
-Inspect the archive for unexpected binary files and compare its contents with the RC tag. Read `LICENSE` and `NOTICE` against the bundled and derived third-party works and their source-file notices, using automated header checks as supporting evidence. When using the license-audit skill directly or through a subagent, provide `${ARTIFACT_DIR}/${SOURCE_DIR}.tar.gz`, the extracted `${VERIFY_DIR}/${SOURCE_DIR}`, and `${VERIFY_DIR}/${SOURCE_DIR}/target/package/asyncband-${VERSION}.crate`, together with `RELEASE_COMMIT`, so the review covers the actual contents and packaging conventions of each distribution. Discuss any material concerns and open questions with the release manager; the review informs the project's release process and ASF release vote.
-
-After completing the artifact review, remove the temporary directory:
-
-```shell
-rm -rf "${VERIFY_DIR}"
-```
+For the separate `license-audit` review, provide the original source archive, the extracted source, and the Cargo package produced by verification, together with `RELEASE_COMMIT`. Discuss its evidence and suggestions with the release manager. Keep the verification directory available until both reviews finish; then remove that disposable directory.
 
 ## Stage the candidate on ASF infrastructure
 
