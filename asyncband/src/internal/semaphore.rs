@@ -291,11 +291,6 @@ impl Semaphore {
             wakers.wake_all();
         }
     }
-
-    #[cfg(test)]
-    pub fn num_waiter_nodes(&self) -> usize {
-        self.waiters.lock().occupied_len()
-    }
 }
 
 #[derive(Debug)]
@@ -484,6 +479,19 @@ mod tests {
     }
 
     #[test]
+    fn fulfilled_reduce_permits_debt_reclaims_its_waiter_node() {
+        let semaphore = Semaphore::new(0);
+
+        for _ in 0..3 {
+            semaphore.reduce_permits(1);
+            assert_eq!(semaphore.waiters.lock().occupied_len(), 1);
+
+            semaphore.release(1);
+            assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
+        }
+    }
+
+    #[test]
     fn release_drains_more_than_one_wake_batch() {
         const WAITER_COUNT: usize = WAKE_BATCH_SIZE + 3;
 
@@ -497,7 +505,7 @@ mod tests {
         for acquire in &mut acquires {
             assert!(acquire.poll_once(&waker).is_pending());
         }
-        assert_eq!(semaphore.num_waiter_nodes(), WAITER_COUNT);
+        assert_eq!(semaphore.waiters.lock().occupied_len(), WAITER_COUNT);
 
         semaphore.release(WAITER_COUNT);
         assert_eq!(counter.0.load(Ordering::Relaxed), WAITER_COUNT);
@@ -505,6 +513,6 @@ mod tests {
         for acquire in &mut acquires {
             assert!(acquire.poll_once(&waker).is_ready());
         }
-        assert_eq!(semaphore.num_waiter_nodes(), 0);
+        assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
     }
 }

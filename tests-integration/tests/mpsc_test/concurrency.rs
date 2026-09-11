@@ -17,6 +17,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -28,12 +29,59 @@ use asyncband::mpsc;
 use asyncband::mpsc::RecvError;
 use asyncband::mpsc::TryRecvError;
 use asyncband::mpsc::TrySendError;
+use tests_integration::WakeCounter;
 use tests_integration::poll_once;
+use tests_integration::poll_with;
 use tests_integration::test_runtime;
 use tokio_test::assert_ok;
 
-use super::support::WakeCounter;
-use super::support::poll_with;
+#[test]
+fn publication_racing_with_close_drops_every_payload_once() {
+    #[derive(Debug)]
+    #[repr(align(128))]
+    struct Payload {
+        bytes: [u8; 1024],
+        drops: Arc<[AtomicUsize; 3]>,
+        // Queued messages must not retain the channel through a sender cycle.
+        _sender: mpsc::BoundedSender<Payload>,
+    }
+
+    impl Drop for Payload {
+        fn drop(&mut self) {
+            self.drops[self.bytes[0] as usize].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    for _ in 0..if cfg!(miri) { 8 } else { 128 } {
+        let (tx, rx) = mpsc::bounded(3);
+        let drops = Arc::new(std::array::from_fn(|_| AtomicUsize::new(0)));
+        let start = Barrier::new(4);
+        thread::scope(|scope| {
+            for byte in 0..3 {
+                let permit = tx.try_reserve().unwrap();
+                let value = Payload {
+                    bytes: [byte; 1024],
+                    drops: drops.clone(),
+                    _sender: tx.clone(),
+                };
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    if let Err(error) = permit.send(value) {
+                        let value = error.into_inner();
+                        assert_eq!(value.bytes, [byte; 1024]);
+                        drop(value);
+                    }
+                });
+            }
+            start.wait();
+            drop(rx);
+        });
+        for count in drops.iter() {
+            assert_eq!(count.load(Ordering::Relaxed), 1);
+        }
+    }
+}
 
 #[test]
 fn bounded_receive_racing_with_send_registration_cannot_lose_wakeup() {
@@ -55,6 +103,47 @@ fn bounded_receive_racing_with_send_registration_cannot_lose_wakeup() {
         });
         if poll.is_pending() {
             assert!(notified.count() > 0);
+            assert_eq!(poll_once(send.as_mut()), Poll::Ready(Ok(())));
+        } else {
+            assert_eq!(poll, Poll::Ready(Ok(())));
+        }
+        assert_eq!(rx.try_recv(), Ok(2));
+    }
+}
+
+#[test]
+fn bounded_competing_reservation_cannot_strand_a_waiting_send() {
+    for _ in 0..if cfg!(miri) { 32 } else { 512 } {
+        let (tx, mut rx) = mpsc::bounded(1);
+        tx.try_send(1).unwrap();
+        let start = Barrier::new(3);
+        let received = Barrier::new(2);
+        let (waker, notified) = WakeCounter::new();
+        let mut send = Box::pin(tx.send(2));
+
+        let poll = thread::scope(|scope| {
+            let receive = scope.spawn(|| {
+                start.wait();
+                assert_eq!(rx.try_recv(), Ok(1));
+                received.wait();
+            });
+            let competitor = scope.spawn(|| {
+                start.wait();
+                received.wait();
+                // Try to consume the returned capacity while the other sender registers.
+                tx.try_reserve().ok()
+            });
+            start.wait();
+            let poll = poll_with(send.as_mut(), &waker);
+            receive.join().unwrap();
+            // Keep any competing reservation until registration has completed. Its release
+            // must notify a pending sender even if it won capacity during that registration.
+            drop(competitor.join().unwrap());
+            poll
+        });
+
+        if poll.is_pending() {
+            assert!(notified.count() > 0, "available capacity stranded a sender");
             assert_eq!(poll_once(send.as_mut()), Poll::Ready(Ok(())));
         } else {
             assert_eq!(poll, Poll::Ready(Ok(())));
@@ -195,11 +284,12 @@ fn unbounded_collects_from_multiple_producers() {
         }
         drop(tx);
 
-        let mut sum = 0;
+        let mut received = Vec::new();
         while let Ok(i) = rx.recv().await {
-            sum += i;
+            received.push(i);
         }
-        assert_eq!(sum, 28);
+        received.sort_unstable();
+        assert_eq!(received, (0..8).collect::<Vec<_>>());
     });
 }
 
@@ -207,15 +297,21 @@ fn unbounded_collects_from_multiple_producers() {
 #[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn bounded_backpressure_progresses_on_an_executor() {
     let (tx, mut rx) = mpsc::bounded(1);
+    let (blocked_tx, blocked_rx) = tokio::sync::oneshot::channel();
 
     tx.send(1).await.unwrap();
-    // This will block until the receiver is ready to receive.
-    tokio::spawn(async move {
-        tx.send(2).await.unwrap();
+    let sender = tokio::spawn(async move {
+        let mut send = std::pin::pin!(tx.send(2));
+        let first_poll = std::future::poll_fn(|cx| Poll::Ready(send.as_mut().poll(cx))).await;
+        assert!(first_poll.is_pending());
+        blocked_tx.send(()).unwrap();
+        send.await.unwrap();
     });
 
+    blocked_rx.await.unwrap();
     assert_eq!(Ok(1), rx.recv().await);
     assert_eq!(Ok(2), rx.recv().await);
+    sender.await.unwrap();
     assert_eq!(Err(RecvError::Disconnected), rx.recv().await);
 }
 

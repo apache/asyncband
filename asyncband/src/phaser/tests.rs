@@ -15,19 +15,32 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use super::Semaphore;
+use std::task::Poll;
 
-// This test stays next to the implementation because it inspects private state.
+use super::Phaser;
+use crate::test_support::poll_once;
 
 #[test]
-fn fulfilled_reduce_permits_debt_reclaims_its_waiter_node() {
-    let semaphore = Semaphore::new(0);
+fn phase_identity_wraps_without_an_ordering_contract() {
+    let phaser = Phaser::new();
+    phaser.state.lock().phase = u64::MAX;
+    let observed = phaser.phase();
+    let mut participant = phaser.register_one().unwrap();
 
-    for _ in 0..3 {
-        semaphore.reduce_permits(1);
-        assert_eq!(semaphore.s.num_waiter_nodes(), 1);
+    assert_eq!(participant.arrive().unwrap(), observed);
+    assert_eq!(phaser.phase(), 0);
+    assert_ne!(phaser.phase(), observed);
+}
 
-        semaphore.release(1);
-        assert_eq!(semaphore.s.num_waiter_nodes(), 0);
-    }
+#[test]
+fn a_late_waiter_observes_completion_across_counter_wraparound() {
+    let phaser = Phaser::new();
+    phaser.state.lock().phase = u64::MAX;
+    let mut participant = phaser.register_one().unwrap();
+    participant.arrive().unwrap();
+    phaser.close();
+    assert_eq!(
+        poll_once(Box::pin(participant.wait()).as_mut()),
+        Poll::Ready(Ok(0))
+    );
 }

@@ -49,11 +49,6 @@ pub(crate) fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
     }
 }
 
-// MPSC owns its receiver wait protocol; the general-purpose waker currently has no production
-// users.
-#[cfg(test)]
-pub(crate) mod atomic_waker;
-
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
@@ -63,6 +58,7 @@ pub(crate) mod atomic_waker;
     feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
+    feature = "phaser",
     feature = "rwlock",
     feature = "semaphore",
     feature = "waitgroup",
@@ -72,9 +68,6 @@ pub(crate) mod atomic_waker;
 // leaves part of this shared API unused, while the all-feature build uses it.
 #[allow(dead_code)]
 pub(crate) mod arena;
-
-#[cfg(feature = "mpsc")]
-pub(crate) mod cache_padded;
 
 #[cfg(any(feature = "latch", feature = "once"))]
 pub(crate) mod countdown;
@@ -94,6 +87,7 @@ pub(crate) mod value_cell;
     feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
+    feature = "phaser",
     feature = "rwlock",
     feature = "semaphore",
     feature = "waitgroup",
@@ -137,6 +131,7 @@ pub(crate) mod waitlist;
     feature = "mpsc",
     feature = "mutex",
     feature = "once",
+    feature = "phaser",
     feature = "rwlock",
     feature = "semaphore",
     feature = "waitgroup",
@@ -153,6 +148,7 @@ pub(crate) mod waker_batch;
     feature = "completion",
     feature = "latch",
     feature = "once",
+    feature = "phaser",
     feature = "waitgroup",
     feature = "watch",
 ))]

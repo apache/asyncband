@@ -30,6 +30,7 @@ asyncband = { workspace = true, features = [
   "completion",
   "lazy-cell",
   "once-cell",
+  "phaser",
   "shutdown",
 ] }
 tokio = { workspace = true, features = [
@@ -58,3 +59,15 @@ path = "src/graceful_shutdown.rs"
 [[example]]
 name = "shared_completion"
 path = "src/shared_completion.rs"
+
+[[example]]
+name = "phaser_rounds"
+path = "src/phaser_rounds.rs"
+
+[[example]]
+name = "phaser_completion"
+path = "src/phaser_completion.rs"
+
+[[example]]
+name = "phaser_groups"
+path = "src/phaser_groups.rs"

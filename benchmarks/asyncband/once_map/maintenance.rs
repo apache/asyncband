@@ -26,17 +26,6 @@ use super::support::ready_map;
 use crate::support::defer_input_drop;
 
 #[divan::bench(args = NONEMPTY_ENTRY_COUNTS, sample_size = BATCH_SAMPLE_SIZE)]
-fn discard_hit(bencher: Bencher, ready_entries: usize) {
-    let key = ready_entries / 2;
-    bencher
-        .with_inputs(|| ready_map(ready_entries))
-        .bench_local_values(|map| {
-            map.discard(black_box(&key));
-            defer_input_drop(map, ())
-        });
-}
-
-#[divan::bench(args = NONEMPTY_ENTRY_COUNTS, sample_size = BATCH_SAMPLE_SIZE)]
 fn remove_hit(bencher: Bencher, ready_entries: usize) {
     let key = ready_entries / 2;
     bencher
@@ -45,12 +34,6 @@ fn remove_hit(bencher: Bencher, ready_entries: usize) {
             let removed = black_box(map.remove(black_box(&key)));
             defer_input_drop(map, removed)
         });
-}
-
-#[divan::bench(args = READY_ENTRY_COUNTS, sample_size = FAST_SAMPLE_SIZE)]
-fn discard_miss(bencher: Bencher, ready_entries: usize) {
-    let map = ready_map(ready_entries);
-    bencher.bench_local(|| map.discard(black_box(&usize::MAX)));
 }
 
 #[divan::bench(args = READY_ENTRY_COUNTS, sample_size = FAST_SAMPLE_SIZE)]

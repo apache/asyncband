@@ -63,18 +63,6 @@ pub(super) fn poll_pending<F: Future>(mut future: Pin<&mut F>, context: &mut Con
     assert!(future.as_mut().poll(context).is_pending());
 }
 
-// Polls the future to completion, yielding between polls so a leader running on another thread can
-// make progress. The bench waker never wakes, so pending futures must be re-polled unconditionally.
-pub(super) fn spin_poll_ready<F: Future>(future: F, context: &mut Context<'_>) -> F::Output {
-    let mut future = pin!(future);
-    loop {
-        match future.as_mut().poll(context) {
-            Poll::Ready(output) => return output,
-            Poll::Pending => std::thread::yield_now(),
-        }
-    }
-}
-
 static NEXT_THREAD_SLOT: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {

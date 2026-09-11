@@ -31,22 +31,57 @@ use super::adapters::UnboundedMpsc;
 
 pub const BOUNDED_CAPACITY: usize = 64;
 pub const BATCH_MESSAGES: usize = 16_384;
-pub const PRODUCER_COUNTS: &[usize] = &[1, 2, 4, 8];
+pub const PRODUCER_COUNTS: &[usize] = &[1, 8];
+
+pub trait Message: Send + 'static {
+    fn new(sequence: usize) -> Self;
+    fn sequence(self) -> usize;
+}
+
+impl Message for usize {
+    fn new(sequence: usize) -> Self {
+        sequence
+    }
+
+    fn sequence(self) -> usize {
+        self
+    }
+}
+
+impl Message for [u8; 1024] {
+    fn new(sequence: usize) -> Self {
+        let mut value = [1; 1024];
+        value[..size_of::<usize>()].copy_from_slice(&sequence.to_le_bytes());
+        value
+    }
+
+    fn sequence(self) -> usize {
+        let value = black_box(self);
+        assert_eq!(value[1023], 1);
+        usize::from_le_bytes(value[..size_of::<usize>()].try_into().unwrap())
+    }
+}
 
 pub trait ConcurrentMpsc: Send + Sync + 'static {
+    type Message: Message;
     type Sender: Clone + Send + Sync + 'static;
     type Receiver: Send + 'static;
 
     fn channel() -> (Self::Sender, Self::Receiver);
-    fn send(sender: &Self::Sender, value: usize);
-    fn recv(receiver: &mut Self::Receiver) -> usize;
-    fn send_async(sender: &Self::Sender, value: usize) -> impl Future<Output = ()> + Send;
-    fn recv_async(receiver: &mut Self::Receiver) -> impl Future<Output = usize> + Send;
+    fn send(sender: &Self::Sender, value: Self::Message);
+    fn recv(receiver: &mut Self::Receiver) -> Self::Message;
+    fn send_async(sender: &Self::Sender, value: Self::Message) -> impl Future<Output = ()> + Send;
+    fn recv_async(receiver: &mut Self::Receiver) -> impl Future<Output = Self::Message> + Send;
 }
 
-pub struct Bounded<C, const CAPACITY: usize = BOUNDED_CAPACITY>(PhantomData<C>);
+pub struct Bounded<C, const CAPACITY: usize = BOUNDED_CAPACITY, T = usize>(
+    PhantomData<fn() -> (C, T)>,
+);
 
-impl<C: BoundedMpsc, const CAPACITY: usize> ConcurrentMpsc for Bounded<C, CAPACITY> {
+impl<C: BoundedMpsc<T>, const CAPACITY: usize, T: Message> ConcurrentMpsc
+    for Bounded<C, CAPACITY, T>
+{
+    type Message = T;
     type Receiver = C::Receiver;
     type Sender = C::Sender;
 
@@ -54,19 +89,19 @@ impl<C: BoundedMpsc, const CAPACITY: usize> ConcurrentMpsc for Bounded<C, CAPACI
         C::channel(CAPACITY)
     }
 
-    fn send(sender: &Self::Sender, value: usize) {
+    fn send(sender: &Self::Sender, value: T) {
         C::send_blocking(sender, value);
     }
 
-    async fn send_async(sender: &Self::Sender, value: usize) {
+    async fn send_async(sender: &Self::Sender, value: T) {
         C::send_async(sender, value).await;
     }
 
-    async fn recv_async(receiver: &mut Self::Receiver) -> usize {
+    async fn recv_async(receiver: &mut Self::Receiver) -> T {
         C::recv_async(receiver).await
     }
 
-    fn recv(receiver: &mut Self::Receiver) -> usize {
+    fn recv(receiver: &mut Self::Receiver) -> T {
         C::recv_blocking(receiver)
     }
 }
@@ -74,6 +109,7 @@ impl<C: BoundedMpsc, const CAPACITY: usize> ConcurrentMpsc for Bounded<C, CAPACI
 pub struct Unbounded<C>(PhantomData<C>);
 
 impl<C: UnboundedMpsc> ConcurrentMpsc for Unbounded<C> {
+    type Message = usize;
     type Receiver = C::Receiver;
     type Sender = C::Sender;
 
@@ -98,72 +134,15 @@ impl<C: UnboundedMpsc> ConcurrentMpsc for Unbounded<C> {
     }
 }
 
-pub struct ConcurrentBatch<C: ConcurrentMpsc> {
-    receiver: C::Receiver,
-    start: Arc<Barrier>,
-    workers: Vec<JoinHandle<()>>,
-}
-
-impl<C: ConcurrentMpsc> ConcurrentBatch<C> {
-    pub fn new(producer_count: usize) -> Self {
-        assert_eq!(BATCH_MESSAGES % producer_count, 0);
-
-        let (sender, receiver) = C::channel();
-        let start = Arc::new(Barrier::new(producer_count + 1));
-        let messages_per_producer = BATCH_MESSAGES / producer_count;
-        let workers = (0..producer_count)
-            .map(|producer| {
-                let sender = sender.clone();
-                let start = start.clone();
-                thread::spawn(move || {
-                    start.wait();
-                    let first = producer * messages_per_producer;
-                    for offset in 0..messages_per_producer {
-                        C::send(&sender, black_box(first + offset));
-                    }
-                })
-            })
-            .collect();
-        drop(sender);
-
-        Self {
-            receiver,
-            start,
-            workers,
-        }
-    }
-
-    pub fn run(&mut self) -> usize {
-        self.start.wait();
-        let mut checksum = 0usize;
-        for _ in 0..BATCH_MESSAGES {
-            checksum = checksum.wrapping_add(C::recv(&mut self.receiver));
-        }
-        black_box(checksum)
-    }
-}
-
-impl<C: ConcurrentMpsc> Drop for ConcurrentBatch<C> {
-    fn drop(&mut self) {
-        let panicking = thread::panicking();
-        for worker in self.workers.drain(..) {
-            let result = worker.join();
-            if !panicking {
-                result.expect("benchmark producer panicked");
-            }
-        }
-    }
-}
-
 // Reuse worker threads and channel storage so steady-state samples exclude thread creation.
-pub struct RepeatedBatch<C: ConcurrentMpsc> {
+pub struct RepeatedBatch<C: ConcurrentMpsc<Message = usize>> {
     receiver: C::Receiver,
     start: Arc<Barrier>,
     stop: Arc<AtomicBool>,
     workers: Vec<JoinHandle<()>>,
 }
 
-impl<C: ConcurrentMpsc> RepeatedBatch<C> {
+impl<C: ConcurrentMpsc<Message = usize>> RepeatedBatch<C> {
     pub fn new(producer_count: usize) -> Self {
         assert_eq!(BATCH_MESSAGES % producer_count, 0);
         let (sender, receiver) = C::channel();
@@ -208,7 +187,7 @@ impl<C: ConcurrentMpsc> RepeatedBatch<C> {
     }
 }
 
-impl<C: ConcurrentMpsc> Drop for RepeatedBatch<C> {
+impl<C: ConcurrentMpsc<Message = usize>> Drop for RepeatedBatch<C> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         self.start.wait();
@@ -218,11 +197,21 @@ impl<C: ConcurrentMpsc> Drop for RepeatedBatch<C> {
     }
 }
 
-// Exercise executor wakeups as well as channel traffic. Reuse tasks, threads, and channel storage
-// across samples; a current-thread runtime also exposes polling that monopolizes the executor.
+// A spawned receiver shares the executor's scheduling with producers. Keeping the receiver in
+// block_on instead measures worker-to-caller thread handoffs, which is a separate workload.
+enum Receiver<C: ConcurrentMpsc> {
+    Task {
+        start: Arc<tokio::sync::Notify>,
+        completed: tokio::sync::mpsc::UnboundedReceiver<usize>,
+    },
+    External(C::Receiver),
+}
+
+// Reuse every task and the channel. The small control exchange happens once per 16,384-message
+// batch; it never forwards measured messages. Both payload sizes use this same start protocol.
 pub struct RepeatedTasks<C: ConcurrentMpsc> {
     runtime: tokio::runtime::Runtime,
-    receiver: C::Receiver,
+    receiver: Receiver<C>,
     start: Arc<tokio::sync::Barrier>,
     stop: Arc<AtomicBool>,
     workers: Vec<tokio::task::JoinHandle<()>>,
@@ -230,6 +219,18 @@ pub struct RepeatedTasks<C: ConcurrentMpsc> {
 
 impl<C: ConcurrentMpsc> RepeatedTasks<C> {
     pub fn new(producer_count: usize, worker_threads: usize) -> Self {
+        Self::with_receiver(producer_count, worker_threads, false)
+    }
+
+    pub fn external_receiver(producer_count: usize, worker_threads: usize) -> Self {
+        Self::with_receiver(producer_count, worker_threads, true)
+    }
+
+    fn with_receiver(
+        producer_count: usize,
+        worker_threads: usize,
+        external_receiver: bool,
+    ) -> Self {
         assert_eq!(BATCH_MESSAGES % producer_count, 0);
         let runtime = if worker_threads == 0 {
             tokio::runtime::Builder::new_current_thread()
@@ -241,11 +242,11 @@ impl<C: ConcurrentMpsc> RepeatedTasks<C> {
                 .build()
                 .unwrap()
         };
-        let (sender, receiver) = C::channel();
+        let (sender, mut receiver) = C::channel();
         let start = Arc::new(tokio::sync::Barrier::new(producer_count + 1));
         let stop = Arc::new(AtomicBool::new(false));
         let messages_per_producer = BATCH_MESSAGES / producer_count;
-        let workers = (0..producer_count)
+        let mut workers: Vec<_> = (0..producer_count)
             .map(|producer| {
                 let sender = sender.clone();
                 let start = start.clone();
@@ -258,13 +259,38 @@ impl<C: ConcurrentMpsc> RepeatedTasks<C> {
                         }
                         let first = producer * messages_per_producer;
                         for offset in 0..messages_per_producer {
-                            C::send_async(&sender, black_box(first + offset)).await;
+                            C::send_async(&sender, black_box(C::Message::new(first + offset)))
+                                .await;
                         }
                     }
                 })
             })
             .collect();
         drop(sender);
+        let receiver = if external_receiver {
+            Receiver::External(receiver)
+        } else {
+            let request = Arc::new(tokio::sync::Notify::new());
+            let (completed_tx, completed) = tokio::sync::mpsc::unbounded_channel();
+            let request_rx = request.clone();
+            let start = start.clone();
+            let stop = stop.clone();
+            workers.push(runtime.spawn(async move {
+                loop {
+                    request_rx.notified().await;
+                    start.wait().await;
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let checksum = receive_batch::<C>(&mut receiver).await;
+                    completed_tx.send(checksum).unwrap();
+                }
+            }));
+            Receiver::Task {
+                start: request,
+                completed,
+            }
+        };
         Self {
             runtime,
             receiver,
@@ -276,13 +302,16 @@ impl<C: ConcurrentMpsc> RepeatedTasks<C> {
 
     pub fn run(&mut self) -> usize {
         self.runtime.block_on(async {
-            self.start.wait().await;
-            let mut checksum = 0usize;
-            for _ in 0..BATCH_MESSAGES {
-                checksum = checksum.wrapping_add(C::recv_async(&mut self.receiver).await);
+            match &mut self.receiver {
+                Receiver::Task { start, completed } => {
+                    start.notify_one();
+                    completed.recv().await.expect("benchmark receiver panicked")
+                }
+                Receiver::External(receiver) => {
+                    self.start.wait().await;
+                    receive_batch::<C>(receiver).await
+                }
             }
-            assert_eq!(checksum, BATCH_MESSAGES * (BATCH_MESSAGES - 1) / 2);
-            black_box(checksum)
         })
     }
 }
@@ -291,10 +320,24 @@ impl<C: ConcurrentMpsc> Drop for RepeatedTasks<C> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         self.runtime.block_on(async {
-            self.start.wait().await;
+            match &self.receiver {
+                Receiver::Task { start, .. } => start.notify_one(),
+                Receiver::External(_) => {
+                    self.start.wait().await;
+                }
+            }
             for worker in self.workers.drain(..) {
                 worker.await.expect("benchmark producer panicked");
             }
         });
     }
+}
+
+async fn receive_batch<C: ConcurrentMpsc>(receiver: &mut C::Receiver) -> usize {
+    let mut checksum = 0usize;
+    for _ in 0..BATCH_MESSAGES {
+        checksum = checksum.wrapping_add(C::recv_async(receiver).await.sequence());
+    }
+    assert_eq!(checksum, BATCH_MESSAGES * (BATCH_MESSAGES - 1) / 2);
+    black_box(checksum)
 }
