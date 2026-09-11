@@ -38,7 +38,7 @@ async fn observer_waits_without_becoming_a_party() {
     let mut first = phaser.register_one().unwrap();
     let second = phaser.register_one().unwrap();
     let observer_phaser = phaser.clone();
-    let observer = tokio::spawn(async move { observer_phaser.wait_for_advance(observed).await });
+    let observer = tokio::spawn(async move { observer_phaser.wait(observed).await });
 
     tokio::task::yield_now().await;
     assert_eq!(phaser.registered_parties(), 2);

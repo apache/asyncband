@@ -22,6 +22,65 @@
 //! Register participants before starting their tasks, or keep a coordinator participant registered
 //! while setting up a group so that the first workers cannot finish the phase prematurely.
 //!
+//! # Example: build a shared dictionary before encoding documents
+//!
+//! An indexing job needs the same numeric ID for a word in every document. Workers first collect
+//! vocabulary in parallel. Once all documents have contributed their words, the coordinator assigns
+//! IDs in sorted order. A second rendezvous keeps workers from encoding documents before that
+//! shared dictionary is ready. The same participants coordinate both steps.
+//!
+//! ```
+//! use std::collections::BTreeMap;
+//! use std::sync::Arc;
+//! use std::sync::Mutex;
+//!
+//! use asyncband::phaser::Closed;
+//! use asyncband::phaser::Phaser;
+//!
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<(), Closed> {
+//! let documents = ["rust async rust", "async tasks"];
+//! let dictionary = Arc::new(Mutex::new(BTreeMap::new()));
+//! let phaser = Phaser::new();
+//! let mut coordinator = phaser.register_one()?;
+//! let participants = phaser.register(documents.len())?;
+//! let mut tasks = Vec::new();
+//!
+//! for (document, mut participant) in documents.into_iter().zip(participants) {
+//!     let dictionary = dictionary.clone();
+//!     tasks.push(tokio::spawn(async move {
+//!         let words: Vec<_> = document.split_whitespace().collect();
+//!         {
+//!             let mut dictionary = dictionary.lock().unwrap();
+//!             for &word in &words {
+//!                 dictionary.entry(word).or_insert(0);
+//!             }
+//!         }
+//!         participant.wait().await?; // All vocabulary has been collected.
+//!         participant.wait().await?; // The coordinator has assigned the IDs.
+//!
+//!         let dictionary = dictionary.lock().unwrap();
+//!         let encoded: Vec<_> = words.iter().map(|word| dictionary[word]).collect();
+//!         Ok::<_, Closed>(encoded)
+//!     }));
+//! }
+//!
+//! coordinator.wait().await?;
+//! for (id, value) in dictionary.lock().unwrap().values_mut().enumerate() {
+//!     *value = id;
+//! }
+//! coordinator.wait().await?;
+//!
+//! let mut encoded_documents = Vec::new();
+//! for task in tasks {
+//!     encoded_documents.push(task.await.unwrap()?);
+//! }
+//! // Every document uses the same dictionary: async = 0, rust = 1, tasks = 2.
+//! assert_eq!(encoded_documents, [vec![1, 0, 1], vec![0, 2]]);
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! # Arriving and waiting
 //!
 //! [`PhaserParticipant::wait`] arrives and waits for the other participants. To overlap independent
@@ -29,33 +88,6 @@
 //! observes that arrival's phase even if it has already completed. Explicitly arriving again
 //! replaces the pending observation with the current phase; repeated arrivals within one phase
 //! do not count twice.
-//!
-//! ```
-//! use asyncband::phaser::Phaser;
-//!
-//! # #[tokio::main(flavor = "current_thread")]
-//! # async fn main() -> Result<(), asyncband::phaser::Closed> {
-//! let phaser = Phaser::new();
-//! let mut worker = phaser.register_one()?;
-//! let mut coordinator = phaser.register_one()?;
-//!
-//! let task = tokio::spawn(async move {
-//!     for _ in 0..3 {
-//!         // Finish this round's work before arriving.
-//!         let completed = worker.arrive()?;
-//!         // Independent work can run here without delaying the other participants.
-//!         assert_ne!(worker.wait().await?, completed);
-//!     }
-//!     Ok::<_, asyncband::phaser::Closed>(())
-//! });
-//!
-//! for _ in 0..3 {
-//!     coordinator.wait().await?;
-//! }
-//! task.await.unwrap()?;
-//! # Ok(())
-//! # }
-//! ```
 //!
 //! # Membership and cancellation
 //!
@@ -71,11 +103,11 @@
 //! participant itself withdraws it from the group. Withdrawal does not certify successful work;
 //! applications that require all workers to succeed should close the phaser on failure.
 //!
-//! [`Phaser::wait_for_advance`] is an independent, cancel-safe observation. It never registers a
+//! [`Phaser::wait`] is an independent, cancel-safe observation. It never registers a
 //! participant or records an arrival. Observers may miss intermediate phases; this is not an
 //! event stream with one notification per phase.
 //!
-//! # Closure and synchronization
+//! # Closing and synchronization
 //!
 //! [`Phaser::close`] permanently freezes the current phase, rejects registration and arrival,
 //! and releases waits for the unfinished phase with [`Closed`]. A previously completed phase
@@ -86,7 +118,7 @@
 //! provided by a wait that returns `Closed`.
 //!
 //! Phase numbers start at zero and wrap from `u64::MAX` to zero. Pass a value previously obtained
-//! from the same phaser to `wait_for_advance`; it tests for a different phase, not a target number
+//! from the same phaser to `wait`; it tests for a different phase, not a target number
 //! or numeric threshold. An observation must not be retained across a full counter cycle.
 
 use std::fmt;
@@ -191,7 +223,7 @@ impl Phaser {
         }
     }
 
-    /// Returns the current phase number, which remains fixed after closure.
+    /// Returns the current phase number, which remains fixed once the phaser is closed.
     pub fn phase(&self) -> u64 {
         self.state.lock().phase
     }
@@ -203,12 +235,12 @@ impl Phaser {
 
     /// Closes this phaser and wakes all pending observers without completing the current phase.
     ///
-    /// Closure is idempotent and affects every handle and participant. Existing participants may
-    /// still deregister or be dropped; their removal no longer advances the phase.
+    /// This operation is idempotent and affects every handle and participant. Existing participants
+    /// may still deregister or be dropped; their removal no longer advances the phase.
     ///
     /// # Panics
     ///
-    /// If a waker panics, closure remains committed and notification is attempted for the other
+    /// If a waker panics, the phaser remains closed and notification is attempted for the other
     /// waiters before the panic resumes.
     pub fn close(&self) {
         let wakers = {
@@ -264,14 +296,6 @@ impl Phaser {
     /// Returns [`Closed`] without registering anyone if the phaser is closed. On an open phaser,
     /// a zero-sized batch does nothing. Collect this iterator into a collection of your choice.
     ///
-    /// ```
-    /// use asyncband::phaser::Phaser;
-    ///
-    /// let phaser = Phaser::new();
-    /// let participants: Vec<_> = phaser.register(3)?.collect();
-    /// # Ok::<(), asyncband::phaser::Closed>(())
-    /// ```
-    ///
     /// # Panics
     ///
     /// Panics if the registered count would exceed `usize::MAX`.
@@ -309,13 +333,13 @@ impl Phaser {
     /// It neither registers a participant nor records an arrival.
     ///
     /// Returns [`Closed`] if the observed phase is still current when the phaser closes. A phase
-    /// completed before closure remains successful. Phase numbers wrap; do not retain an
-    /// observation across a full `u64` cycle or use a number obtained from another phaser.
+    /// completed before the phaser was closed remains successful. Phase numbers wrap; do not retain
+    /// an observation across a full `u64` cycle or use a number obtained from another phaser.
     ///
     /// # Cancel safety
     ///
     /// Cancelling only unregisters this wait's waker. The same observation can be retried.
-    pub async fn wait_for_advance(&self, observed: u64) -> Result<u64, Closed> {
+    pub async fn wait(&self, observed: u64) -> Result<u64, Closed> {
         PhaserWait {
             phaser: self,
             observed,
@@ -331,8 +355,8 @@ impl Phaser {
 /// advancement. Dropping this iterator withdraws the remaining participants in one state
 /// transition. Yielded participants are independent and retain their registrations.
 ///
-/// Closure does not prevent iteration over this existing batch, but arrival and waiting on the
-/// yielded participants return [`Closed`]. This iterator is not cloneable.
+/// Closing the phaser does not prevent iteration over this existing batch, but arrival and waiting
+/// on the yielded participants return [`Closed`]. This iterator is not cloneable.
 #[must_use = "dropping the iterator withdraws participants that have not been yielded"]
 #[derive(Debug)]
 pub struct PhaserParticipants {
@@ -447,7 +471,7 @@ impl PhaserParticipant {
             Some(phase) => phase,
             None => self.arrive()?,
         };
-        let next = self.phaser.wait_for_advance(observed).await?;
+        let next = self.phaser.wait(observed).await?;
         self.pending = None;
         Ok(next)
     }
@@ -455,7 +479,7 @@ impl PhaserParticipant {
     /// Withdraws this participant and returns the phase from which it withdrew, or [`Closed`].
     ///
     /// Any outstanding arrival is discharged without counting an already-arrived participant
-    /// twice. This always removes the registration, including after closure. The pending
+    /// twice. This always removes the registration, even if the phaser is closed. The pending
     /// observation is abandoned. Dropping a participant has the same membership effect.
     pub fn deregister(mut self) -> Result<u64, Closed> {
         self.do_deregister()

@@ -15,12 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A start gate, changing membership, split arrival/wait, observers, and cancellation retry.
+//! Coordinate a batch job while its worker pool changes.
 //!
-//! The setup participant prevents early workers from completing the initial phase before the
-//! whole batch is registered. An empty phaser stays reusable after all participants leave.
+//! The start-gate scenario keeps workers waiting until the coordinator has finished setting up
+//! the job. The changing-membership scenario adds a worker after the first batch and lets an
+//! independent task report progress without holding up the workers. The cancellation scenario
+//! retries a wait that lost a select race, without counting the worker in the next batch early.
 //!
-//! Run: cargo run -p examples --example phaser_rounds
+//! These are coordination patterns for jobs such as parallel imports. The work within a batch is
+//! represented by a yield; the examples focus on when workers can join, proceed, and leave.
 
 use asyncband::phaser::Closed;
 use asyncband::phaser::Phaser;
@@ -75,7 +78,7 @@ async fn changing_membership() -> Result<(), Closed> {
     let progress = phaser.clone();
     let observer = tokio::spawn(async move {
         let mut observed = progress.phase();
-        while let Ok(next) = progress.wait_for_advance(observed).await {
+        while let Ok(next) = progress.wait(observed).await {
             println!("observer: phase {observed} -> {next}");
             // A slow observer may skip phases; it never delays workers.
             observed = next;
@@ -107,7 +110,7 @@ async fn changing_membership() -> Result<(), Closed> {
 async fn wait_until(phaser: &Phaser, target: u64) -> Result<u64, Closed> {
     let mut observed = phaser.phase();
     while observed < target {
-        observed = phaser.wait_for_advance(observed).await?;
+        observed = phaser.wait(observed).await?;
     }
     Ok(observed)
 }

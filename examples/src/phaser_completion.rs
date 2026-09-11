@@ -15,16 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Finalize each round before releasing workers, and close the group on failure or cancellation.
+//! Publish consistent progress snapshots from parallel import workers.
 //!
-//! An application coordinator aggregates results and checks convergence between two rendezvous
-//! points. The coordinator may await I/O. Merely running code after one wait, even in a barrier
-//! leader, would not stop other workers from starting their next round.
+//! Each worker contributes its cumulative record count after a batch. The coordinator sums those
+//! counts and publishes a snapshot before workers process the next batch. Separate ready/resume
+//! phasers prevent a fast worker from updating its count while the snapshot is being prepared.
+//! The coordinator can also await an asynchronous checkpoint before releasing the workers.
 //!
-//! Membership is fixed within this protocol; changes must update both groups at a common round
-//! boundary. Each phaser has its own counter, distinct from the application's iteration number.
+//! The first scenario stops once the total reaches a target. The other two show how a failed or
+//! cancelled worker stops its peers, including a task cancelled before its first poll. Import work
+//! is represented by counters, and checkpoint I/O by a yield.
 //!
-//! Run: cargo run -p examples --example phaser_completion
+//! Membership is fixed within this protocol; changes must update both groups at a common batch
+//! boundary. Each phaser has its own counter, distinct from the application's batch number.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -64,7 +67,7 @@ impl Member {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Closed> {
-    finalize_until_converged().await?;
+    publish_until_target().await?;
     failure_closes_the_group().await?;
     cancelling_an_unpolled_task_closes_the_group().await?;
     Ok(())
@@ -86,7 +89,7 @@ async fn compute(
     unreachable!()
 }
 
-async fn finalize_until_converged() -> Result<(), Closed> {
+async fn publish_until_target() -> Result<(), Closed> {
     let ready = Phaser::new();
     let resume = Phaser::new();
     let mut coordinator = Member::register(&ready, &resume)?;
@@ -125,7 +128,7 @@ async fn finalize_until_converged() -> Result<(), Closed> {
         assert!(task.await.expect("worker panicked").is_err());
     }
     assert_eq!(published.load(Ordering::Relaxed), 18);
-    println!("convergence: all workers stopped after the third aggregate");
+    println!("target reached: all workers stopped after 18 imported records");
     Ok(())
 }
 

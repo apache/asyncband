@@ -19,9 +19,9 @@
 // Copyright (c) Tokio Contributors
 // The Tokio-derived portions remain licensed under the MIT License.
 // Asyncband independently built the mutex on its own semaphore and substantially changed the
-// incorporated guard implementation: the try-lock error type and semaphore closure are absent,
-// projected guards use NonNull pointers with explicit invariance, and projected guards can be
-// mapped repeatedly in both borrowed and owned forms.
+// incorporated guard implementation: the try-lock error type and support for closing the semaphore
+// are absent, projected guards use NonNull pointers with explicit invariance, and projected guards
+// can be mapped repeatedly in both borrowed and owned forms.
 // Upstream source:
 // https://github.com/tokio-rs/tokio/blob/01e04daaa162ce6122bb894fdda0b6803dd32093/tokio/src/sync/mutex.rs
 

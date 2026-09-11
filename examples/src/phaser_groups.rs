@@ -15,16 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Group local arrivals before one global rendezvous, then release the local workers.
+//! Synchronize the time steps of a simulation whose workers are grouped by region.
 //!
-//! A group representative contributes one root participant. Each group runs an explicit driver
-//! task and uses separate local counters. A local ready phase must never authorize the next round
-//! until the root has also completed.
-//! The example uses a fixed cohort for three rounds; automatic parent registration and arbitrary
-//! concurrent changes to a hierarchical participant set are not provided by this composition.
-//! No performance advantage over a flat Phaser is claimed without workload-specific measurement.
+//! This example models progress tracking for two regions with two workers each. Workers publish
+//! their completed time step, then wait for their region's driver. Each driver represents its
+//! region at a root phaser and releases local workers only after every region is ready. No region
+//! can start the next step while another is still processing the current one.
 //!
-//! Run: cargo run -p examples --example phaser_groups
+//! The first run completes three steps. The second fails a worker during step two and verifies
+//! that all groups stop with only step one completed globally. The simulation's domain calculation
+//! is omitted; the shared counters record each worker's completed step.
+//!
+//! The groups and drivers are explicit application code, with independent local phase counters
+//! and fixed membership. This does not provide automatic parent registration or arbitrary
+//! concurrent membership changes. Performance relative to a flat phaser depends on the workload.
 
 use std::error::Error;
 use std::sync::Arc;
@@ -127,7 +131,7 @@ impl Drop for CloseRootOnDrop {
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     run_groups(false).await?;
     assert!(run_groups(true).await.unwrap_err().is::<Closed>());
-    println!("group failure: root closure propagated to every local group");
+    println!("group failure: every local group stopped after the root was closed");
     Ok(())
 }
 
@@ -166,7 +170,7 @@ async fn run_groups(fail_one_worker: bool) -> Result<(), Box<dyn Error + Send + 
 
     for round in 1..=ROUNDS {
         if let Err(error) = coordinator.wait().await {
-            // Root closure propagates through the group drivers to their local waiters.
+            // After the root is closed, group drivers close their local phasers.
             root.close();
             let mut failures = 0;
             for task in tasks {
