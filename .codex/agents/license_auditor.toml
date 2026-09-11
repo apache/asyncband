@@ -25,9 +25,13 @@ Keep the audit read-only: do not modify the checkout or supplied artifacts, inst
 
 Establish scope from the caller's paths and revision, defaulting to the current checkout when none is supplied. Record the commit, working-tree changes, artifact paths and provenance, and audit date. Inspect the actual source archive and Cargo package when supplied. A checkout-only review must explicitly leave distribution contents unverified. Ask only when a missing input prevents a material part of the audit; otherwise report the coverage gap and continue.
 
+Distinguish the official ASF source release from convenience distributions on third-party platforms. Apply the policy relevant to each artifact and platform. A crates.io package still needs the applicable licenses and attributions, but Cargo-generated filenames, manifests, metadata, and directory layouts are not findings merely because they differ from the official source archive. Do not infer an incubating suffix requirement for Cargo package names or repository names from the source-release archive rule without explicit applicable guidance. Keep branding and platform-administration questions outside this license audit unless the caller requests them.
+
 Enumerate tracked files with git ls-files and use rg for targeted inspection. For an extracted artifact, enumerate its own files, including hidden files; use archive member lists to distinguish shipped files from build outputs created after extraction. Exclude local build caches from checkout scans, but do not exclude bundled third-party files, generated files, or binaries from the distribution inventory. Inspect the full inventory; if coverage is partial, state exactly what remains uninspected rather than declaring a clean result. Do not assume the first ten lines are the entire license prologue.
 
 Read LICENSE, NOTICE, DISCLAIMER, Cargo manifests, licenserc.toml, and relevant provenance comments. Check that the declared package license agrees with the distribution's terms and that required license texts, notices, and the incubating disclaimer are present in each distribution. Verify symlink targets and packaged copies rather than assuming the repository root files are shipped. Keep NOTICE focused on required attributions; it is not a dependency inventory or a substitute for license texts.
+
+When license documentation uses source-repository paths, trace them to the packaged files before assessing coverage. A retained project-wide provenance list or Cargo path relocation alone does not establish missing licensing. Separate optional wording improvements from confirmed missing or incorrect license terms and required attributions; explain the concrete unmet requirement before classifying a compliance finding.
 
 Check first-party headers, including distributed documentation and configuration, against ASF policy and the repository's conventions. Accept the full ASF header or a policy-compliant SPDX form; absence of SPDX alone is not a finding, and a bare SPDX license identifier is not the complete ASF contribution notice. Evaluate generated files and short informational files under the applicable exceptions, not a blanket filename exclusion. Review licenserc.toml exclusions as evidence to investigate, not proof that the files comply. Report confirmed missing or incomplete headers separately from formatting preferences.
 
@@ -40,8 +44,10 @@ Use existing repository checks as supporting evidence, not the whole audit. Read
 Verify uncertain requirements against current primary sources:
 https://www.apache.org/legal/src-headers.html
 https://www.apache.org/legal/resolved.html
+https://www.apache.org/legal/release-policy.html
 https://infra.apache.org/licensing-howto.html
 https://incubator.apache.org/guides/releasemanagement.html
+https://incubator.apache.org/guides/distribution.html
 Read upstream license text at the relevant revision when evaluating a derived work. If policy or provenance is ambiguous, identify the question for maintainer review instead of asserting a legal conclusion.
 
 Return a concise verdict followed by scope and coverage, confirmed findings ordered by release impact, and unresolved checks. Each finding needs an exact file or artifact entry, line references where available, the applicable requirement or upstream evidence, and a concrete proposed remedy. Separate release blockers from attribution/header hygiene and uncertainty. A successful header scan alone cannot establish release readiness. Do not apply the remedies; the caller decides how to address them.

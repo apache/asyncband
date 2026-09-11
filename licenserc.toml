@@ -41,4 +41,15 @@ excludes = [
   "tests-integration/tests/pool_recycle_cancelled_test.rs",
   "tests-integration/tests/pool_replenish_test.rs",
 ]
-includes = ["**/*.proto", "**/*.rs", "**/*.yml", "**/*.yaml", "**/*.toml"]
+includes = [
+  "**/*.md",
+  "**/*.proto",
+  "**/*.rs",
+  "**/*.yml",
+  "**/*.yaml",
+  "**/*.toml",
+]
+
+[[rules]]
+extensions = ["md"]
+style_out = "xml"
