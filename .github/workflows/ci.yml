@@ -59,7 +59,7 @@ jobs:
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
         with:
-          tool: typos-cli,taplo-cli,hawkeye@7.2.0
+          tool: typos-cli,taplo-cli,hawkeye
       - run: cargo x lint
       - name: Check feature matrix
         run: cargo x check
