@@ -47,6 +47,20 @@ impl Wake for PanicWake {
     }
 }
 
+struct CloseOnDrop(Phaser);
+
+impl Wake for CloseOnDrop {
+    fn wake(self: Arc<Self>) {
+        self.0.close();
+    }
+}
+
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
 #[test]
 fn batch_registration_joins_one_observed_phase() {
     let phaser = Phaser::new();
@@ -647,34 +661,44 @@ fn close_survives_a_panicking_waker_and_notifies_other_waiters() {
 }
 
 #[test]
-fn closing_during_waker_clone_does_not_register_after_close() {
-    use std::mem::ManuallyDrop;
-    use std::task::RawWaker;
-    use std::task::RawWakerVTable;
-
-    unsafe fn clone_waker(data: *const ()) -> RawWaker {
-        // SAFETY: Each raw waker owns an Arc<Phaser>; ManuallyDrop preserves this one's reference.
-        let phaser = ManuallyDrop::new(unsafe { Arc::<Phaser>::from_raw(data.cast()) });
-        phaser.close();
-        RawWaker::new(Arc::into_raw(Arc::clone(&phaser)).cast(), &VTABLE)
-    }
-    unsafe fn drop_waker(data: *const ()) {
-        // SAFETY: Consuming a raw waker releases exactly its one owned Arc reference.
-        drop(unsafe { Arc::<Phaser>::from_raw(data.cast()) });
-    }
-    unsafe fn wake_by_ref(_: *const ()) {}
-    static VTABLE: RawWakerVTable =
-        RawWakerVTable::new(clone_waker, drop_waker, wake_by_ref, drop_waker);
-
+fn replacing_a_waiter_waker_can_close_the_phaser_from_its_destructor() {
     let phaser = Phaser::new();
-    let data = Arc::into_raw(Arc::new(phaser.clone())).cast();
-    // SAFETY: The vtable maintains Arc ownership and every callback is thread-safe.
-    let waker = unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) };
+    let waker = Waker::from(Arc::new(CloseOnDrop(phaser.clone())));
     let mut wait = Box::pin(phaser.wait(phaser.phase()));
-    assert!(matches!(
-        wait.as_mut().poll(&mut Context::from_waker(&waker)),
-        Poll::Ready(Err(_))
-    ));
+    assert!(
+        wait.as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(waker);
+    assert!(!phaser.is_closed());
+
+    let counter = Arc::new(CountWake(AtomicUsize::new(0)));
+    let replacement = Waker::from(counter.clone());
+    assert!(
+        wait.as_mut()
+            .poll(&mut Context::from_waker(&replacement))
+            .is_pending()
+    );
+    assert!(phaser.is_closed());
+    assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+    assert!(matches!(poll_once(wait.as_mut()), Poll::Ready(Err(_))));
+}
+
+#[test]
+fn cancelling_a_waiter_can_close_the_phaser_from_its_waker_destructor() {
+    let phaser = Phaser::new();
+    let waker = Waker::from(Arc::new(CloseOnDrop(phaser.clone())));
+    let mut wait = Box::pin(phaser.wait(phaser.phase()));
+    assert!(
+        wait.as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(waker);
+    assert!(!phaser.is_closed());
+
+    drop(wait);
     assert!(phaser.is_closed());
 }
 

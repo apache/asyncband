@@ -524,31 +524,12 @@ impl Future for PhaserWait<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        {
-            let state = this.phaser.state.lock();
-            if let ready @ Poll::Ready(_) = state.completion(this.observed) {
-                this.token = None;
-                return ready;
-            }
-            if this
-                .token
-                .as_ref()
-                .is_some_and(|token| state.waiters.will_wake(token, cx.waker()))
-            {
-                return Poll::Pending;
-            }
-        }
-
-        // Waker cloning may reenter or close this phaser. Recheck completion before registering.
-        let waker = cx.waker().clone();
         let mut state = this.phaser.state.lock();
         if let ready @ Poll::Ready(_) = state.completion(this.observed) {
             this.token = None;
-            drop(state);
-            drop(waker);
             return ready;
         }
-        let retired = state.waiters.register_owned(&mut this.token, waker);
+        let retired = state.waiters.register(&mut this.token, cx.waker());
         drop(state);
         drop(retired);
         Poll::Pending
