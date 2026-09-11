@@ -102,6 +102,17 @@ impl WakerSet {
         None
     }
 
+    /// Returns whether a live registration already wakes the given task, without cloning a waker.
+    ///
+    /// The caller must check completion before querying a potentially stale token.
+    #[inline]
+    pub fn will_wake(&self, token: &WakerToken, waker: &Waker) -> bool {
+        self.wakers
+            .get(token.0)
+            .expect("waker token must refer to an occupied slot")
+            .will_wake(waker)
+    }
+
     /// Registers or replaces a waker cloned before taking the owner's state lock.
     ///
     /// Returns the previous waker so its destructor can run after releasing that lock.

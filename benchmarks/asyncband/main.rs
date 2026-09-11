@@ -27,6 +27,7 @@ mod mutex;
 mod once;
 mod once_map;
 mod oneshot;
+mod phaser;
 mod pool;
 mod rwlock;
 mod semaphore;

@@ -156,6 +156,8 @@ impl std::error::Error for Closed {}
 ///
 /// Cloning this handle does not register a participant. Use [`register_one`](Self::register_one) to
 /// create a participant that can be moved into an independently spawned task.
+///
+/// See the [module level documentation](self) for usage examples and synchronization semantics.
 #[derive(Clone)]
 pub struct Phaser {
     state: Arc<Mutex<State>>,
@@ -317,12 +319,9 @@ impl Phaser {
             .registered
             .checked_add(parties)
             .expect("Phaser registered-party count overflow");
-        let unarrived = state
-            .unarrived
-            .checked_add(parties)
-            .expect("Phaser unarrived-party count overflow");
         state.registered = registered;
-        state.unarrived = unarrived;
+        // unarrived <= registered, so the registered-count check also covers this addition.
+        state.unarrived += parties;
         Ok(())
     }
 
@@ -406,11 +405,13 @@ impl Drop for PhaserParticipants {
 ///
 /// This handle is not cloneable. Dropping it withdraws the participant, including any outstanding
 /// current arrival. It does not report successful work or close the other participants.
+///
+/// See the [module level documentation](self) for usage examples and cancellation semantics.
 #[must_use = "dropping a participant withdraws it from the Phaser"]
 #[derive(Debug)]
 pub struct PhaserParticipant {
     phaser: Phaser,
-    arrived: Option<u64>,
+    // Cleared only after advancement, so a pending current phase also records arrival.
     pending: Option<u64>,
     registered: bool,
 }
@@ -419,7 +420,6 @@ impl PhaserParticipant {
     fn new(phaser: Phaser) -> Self {
         Self {
             phaser,
-            arrived: None,
             pending: None,
             registered: true,
         }
@@ -444,9 +444,8 @@ impl PhaserParticipant {
                 return Err(Closed(()));
             }
             let phase = state.phase;
-            if self.arrived != Some(phase) {
+            if self.pending != Some(phase) {
                 state.unarrived -= 1;
-                self.arrived = Some(phase);
             }
             self.pending = Some(phase);
             (phase, state.advance_if_ready())
@@ -490,7 +489,7 @@ impl PhaserParticipant {
             let mut state = self.phaser.state.lock();
             self.registered = false;
             state.registered -= 1;
-            if self.arrived != Some(state.phase) {
+            if self.pending != Some(state.phase) {
                 state.unarrived -= 1;
             }
             let result = if state.closed {
@@ -530,6 +529,13 @@ impl Future for PhaserWait<'_> {
             if let ready @ Poll::Ready(_) = state.completion(this.observed) {
                 this.token = None;
                 return ready;
+            }
+            if this
+                .token
+                .as_ref()
+                .is_some_and(|token| state.waiters.will_wake(token, cx.waker()))
+            {
+                return Poll::Pending;
             }
         }
 
