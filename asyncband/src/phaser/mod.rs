@@ -107,12 +107,14 @@ use crate::internal::wakerset::WakerToken;
 mod tests;
 
 /// The phaser was closed before this operation could complete.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Closed;
+///
+/// This error is returned by phaser operations and cannot be constructed directly by callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Closed(());
 
 impl fmt::Display for Closed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("phaser is closed")
+        f.write_str("Phaser is closed")
     }
 }
 
@@ -150,7 +152,7 @@ impl State {
         if self.phase != observed {
             Poll::Ready(Ok(self.phase))
         } else if self.closed {
-            Poll::Ready(Err(Closed))
+            Poll::Ready(Err(Closed(())))
         } else {
             Poll::Pending
         }
@@ -285,7 +287,7 @@ impl Phaser {
     fn do_register(&self, parties: usize) -> Result<(), Closed> {
         let mut state = self.state.lock();
         if state.closed {
-            return Err(Closed);
+            return Err(Closed(()));
         }
         let registered = state
             .registered
@@ -380,7 +382,7 @@ impl Drop for PhaserParticipants {
 ///
 /// This handle is not cloneable. Dropping it withdraws the participant, including any outstanding
 /// current arrival. It does not report successful work or close the other participants.
-#[must_use = "dropping a participant withdraws it from the phaser"]
+#[must_use = "dropping a participant withdraws it from the Phaser"]
 #[derive(Debug)]
 pub struct PhaserParticipant {
     phaser: Phaser,
@@ -415,7 +417,7 @@ impl PhaserParticipant {
         let (phase, wakers) = {
             let mut state = self.phaser.state.lock();
             if state.closed {
-                return Err(Closed);
+                return Err(Closed(()));
             }
             let phase = state.phase;
             if self.arrived != Some(phase) {
@@ -468,7 +470,7 @@ impl PhaserParticipant {
                 state.unarrived -= 1;
             }
             let result = if state.closed {
-                Err(Closed)
+                Err(Closed(()))
             } else {
                 Ok(state.phase)
             };

@@ -26,6 +26,7 @@
 //!
 //! Run: cargo run -p examples --example phaser_groups
 
+use std::error::Error;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -78,11 +79,11 @@ async fn worker(
     id: usize,
     values: Arc<Vec<AtomicU64>>,
     fail: bool,
-) -> Result<(), Closed> {
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     for round in 1..=ROUNDS {
         if fail && round == 2 {
             // The abort guard closes the root before any participant is withdrawn.
-            return Err(Closed);
+            return Err("input validation failed".into());
         }
         values[id].store(round, Ordering::Relaxed);
         member.ready.wait().await?;
@@ -104,7 +105,7 @@ struct GroupDriver {
     root: PhaserParticipant,
 }
 
-async fn drive_group(mut driver: GroupDriver) -> Result<(), Closed> {
+async fn drive_group(mut driver: GroupDriver) -> Result<(), Box<dyn Error + Send + Sync>> {
     for _ in 0..ROUNDS {
         driver.local.ready.wait().await?;
         driver.root.wait().await?;
@@ -123,14 +124,14 @@ impl Drop for CloseRootOnDrop {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Closed> {
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     run_groups(false).await?;
-    assert_eq!(run_groups(true).await, Err(Closed));
+    assert!(run_groups(true).await.unwrap_err().is::<Closed>());
     println!("group failure: root closure propagated to every local group");
     Ok(())
 }
 
-async fn run_groups(fail_one_worker: bool) -> Result<(), Closed> {
+async fn run_groups(fail_one_worker: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
     let root = Phaser::new();
     let mut coordinator = root.register_one()?;
     // Created after the participant so cancellation closes the root before withdrawing it.
@@ -167,11 +168,17 @@ async fn run_groups(fail_one_worker: bool) -> Result<(), Closed> {
         if let Err(error) = coordinator.wait().await {
             // Root closure propagates through the group drivers to their local waiters.
             root.close();
+            let mut failures = 0;
             for task in tasks {
-                let _ = task.await.expect("group task panicked");
+                let error = task.await.expect("group task panicked").unwrap_err();
+                if !error.is::<Closed>() {
+                    assert_eq!(error.to_string(), "input validation failed");
+                    failures += 1;
+                }
             }
+            assert_eq!(failures, 1);
             assert_eq!(root.phase(), 1);
-            return Err(error);
+            return Err(error.into());
         }
         println!("root: all {GROUPS} groups completed round {round}");
     }

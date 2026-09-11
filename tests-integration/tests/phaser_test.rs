@@ -81,8 +81,6 @@ fn arrivals_publish_each_workers_writes_across_threads() {
 
 #[tokio::test]
 async fn a_failed_task_can_close_the_group_without_reporting_phase_completion() {
-    use asyncband::phaser::Closed;
-
     let phaser = Phaser::new();
     let mut worker = phaser.register_one().unwrap();
     let failing = phaser.register_one().unwrap();
@@ -96,7 +94,7 @@ async fn a_failed_task_can_close_the_group_without_reporting_phase_completion() 
     arrival.await.unwrap();
     failing.phaser().close();
     drop(failing);
-    assert_eq!(task.await.unwrap(), Err(Closed));
+    assert!(task.await.unwrap().is_err());
     assert_eq!(phaser.phase(), observed);
     assert_eq!(phaser.registered_parties(), 0);
 }

@@ -25,7 +25,6 @@ use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
 
-use super::Closed;
 use super::Phaser;
 use crate::test_support::poll_once;
 
@@ -129,7 +128,7 @@ fn an_existing_batch_can_be_iterated_and_withdrawn_after_close() {
     drop(participants);
     assert_eq!(phaser.registered_parties(), 1);
     assert_eq!(phaser.unarrived_parties(), 1);
-    assert_eq!(participant.arrive(), Err(Closed));
+    assert!(participant.arrive().is_err());
     drop(participant);
     assert_eq!(phaser.phase(), observed);
     assert_eq!(phaser.registered_parties(), 0);
@@ -563,14 +562,14 @@ fn closing_wakes_all_waiters_once_and_rejects_new_obligations() {
     phaser.close();
     assert!(phaser.is_closed());
     assert_eq!(counter.0.load(Ordering::Relaxed), 2);
-    assert_eq!(poll_once(observer.as_mut()), Poll::Ready(Err(Closed)));
-    assert_eq!(poll_once(wait.as_mut()), Poll::Ready(Err(Closed)));
+    assert!(matches!(poll_once(observer.as_mut()), Poll::Ready(Err(_))));
+    assert!(matches!(poll_once(wait.as_mut()), Poll::Ready(Err(_))));
     drop(wait);
-    assert_eq!(first.arrive(), Err(Closed));
-    assert!(matches!(phaser.register_one(), Err(Closed)));
-    assert!(matches!(phaser.register(2), Err(Closed)));
-    assert!(matches!(phaser.register(0), Err(Closed)));
-    assert_eq!(first.deregister(), Err(Closed));
+    assert!(first.arrive().is_err());
+    assert!(phaser.register_one().is_err());
+    assert!(phaser.register(2).is_err());
+    assert!(phaser.register(0).is_err());
+    assert!(first.deregister().is_err());
     drop(second);
     assert_eq!(phaser.registered_parties(), 0);
     assert_eq!(phaser.unarrived_parties(), 0);
@@ -594,10 +593,10 @@ fn completed_arrival_remains_successful_after_close_but_cannot_start_another_rou
         poll_once(Box::pin(first.wait()).as_mut()),
         Poll::Ready(Ok(completed))
     );
-    assert_eq!(
+    assert!(matches!(
         poll_once(Box::pin(first.wait()).as_mut()),
-        Poll::Ready(Err(Closed))
-    );
+        Poll::Ready(Err(_))
+    ));
     drop(first);
     drop(second);
     assert_eq!(phaser.phase(), completed);
@@ -628,8 +627,8 @@ fn close_survives_a_panicking_waker_and_notifies_other_waiters() {
     assert!(panic::catch_unwind(|| phaser.close()).is_err());
     assert!(phaser.is_closed());
     assert_eq!(counter.0.load(Ordering::Relaxed), 1);
-    assert_eq!(poll_once(first.as_mut()), Poll::Ready(Err(Closed)));
-    assert_eq!(poll_once(second.as_mut()), Poll::Ready(Err(Closed)));
+    assert!(matches!(poll_once(first.as_mut()), Poll::Ready(Err(_))));
+    assert!(matches!(poll_once(second.as_mut()), Poll::Ready(Err(_))));
 }
 
 #[test]
@@ -670,9 +669,9 @@ fn closing_during_waker_clone_does_not_register_after_close() {
     // SAFETY: The vtable maintains Arc ownership and every callback is thread-safe.
     let waker = unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) };
     let mut wait = Box::pin(phaser.wait_for_advance(phaser.phase()));
-    assert_eq!(
+    assert!(matches!(
         wait.as_mut().poll(&mut Context::from_waker(&waker)),
-        Poll::Ready(Err(Closed))
-    );
+        Poll::Ready(Err(_))
+    ));
     assert!(phaser.is_closed());
 }
