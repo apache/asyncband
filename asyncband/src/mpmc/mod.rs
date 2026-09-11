@@ -23,17 +23,15 @@
 //! sends return their value in an error.
 
 mod bounded;
-mod error;
-mod queue;
 mod unbounded;
 
 pub use self::bounded::BoundedReceiver;
 pub use self::bounded::BoundedSender;
 pub use self::bounded::bounded;
-pub use self::error::RecvError;
-pub use self::error::SendError;
-pub use self::error::TryRecvError;
-pub use self::error::TrySendError;
 pub use self::unbounded::UnboundedReceiver;
 pub use self::unbounded::UnboundedSender;
 pub use self::unbounded::unbounded;
+pub use crate::internal::competing_queue::RecvError;
+pub use crate::internal::competing_queue::SendError;
+pub use crate::internal::competing_queue::TryRecvError;
+pub use crate::internal::competing_queue::TrySendError;

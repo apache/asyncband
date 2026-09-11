@@ -25,6 +25,7 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
+* Add opt-in bounded and unbounded `asyncband::spmc` queues with one non-cloneable sender requiring exclusive access, cloneable competing receivers, and cancellation-safe receive notification handoff.
 * Add opt-in bounded and unbounded `asyncband::mpmc` queues with cloneable producers and competing consumers, delivering each accepted value to exactly one receiver while a receiver remains.
 * Add an opt-in runtime-agnostic `Phaser` with shared observer handles, dynamic RAII participants registered individually or in batches through an owning iterator, `u64` phase numbers, split arrival/wait with cancellation-resilient retries, and a `close` operation that releases unfinished waits with `Closed`.
 * Add bounded MPSC `reserve` and `try_reserve` methods returning a `Permit`, allowing callers to wait for capacity before constructing a message; pending sends and reservations receive capacity in wait-queue order, and unused permits release capacity without claiming message order.

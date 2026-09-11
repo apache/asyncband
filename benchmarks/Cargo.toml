@@ -46,6 +46,7 @@ asyncband = { workspace = true, features = [
   "semaphore",
   "shutdown",
   "singleflight",
+  "spmc",
   "waitgroup",
   "watch",
 ] }

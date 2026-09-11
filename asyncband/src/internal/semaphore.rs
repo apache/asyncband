@@ -206,7 +206,7 @@ impl Semaphore {
     }
 
     /// Adds `n` permits to the semaphore if there is any waiter.
-    #[cfg(feature = "mpmc")]
+    #[cfg(any(feature = "mpmc", feature = "spmc"))]
     pub fn release_if_nonempty(&self, n: usize) {
         let waiters = self.waiters.lock();
         if !waiters.is_empty() {
@@ -215,7 +215,7 @@ impl Semaphore {
     }
 
     /// Adds as many permits until there is no waiter.
-    #[cfg(feature = "mpmc")]
+    #[cfg(any(feature = "mpmc", feature = "spmc"))]
     pub fn notify_all(&self) {
         let mut waiters = self.waiters.lock();
         let mut wakers = vec![];
