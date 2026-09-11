@@ -22,15 +22,20 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use super::RecvError;
-use super::SendError;
-use super::TryRecvError;
-use super::TrySendError;
 use crate::internal::mutex::Mutex;
 use crate::internal::semaphore::Acquire;
 use crate::internal::semaphore::Semaphore;
 
-pub(super) struct Shared<T> {
+mod error;
+
+pub use self::error::RecvError;
+pub use self::error::SendError;
+pub use self::error::TryRecvError;
+pub use self::error::TrySendError;
+pub use self::error::send_error;
+
+// Shared by MPMC and SPMC; endpoint wrappers decide which producer capabilities are exposed.
+pub struct Shared<T> {
     state: Mutex<State<T>>,
     recv_waiters: Semaphore,
     send_waiters: Semaphore,
@@ -65,6 +70,7 @@ impl<T> Shared<T> {
         }
     }
 
+    #[cfg(feature = "mpmc")]
     pub fn clone_sender(&self) {
         let mut state = self.state.lock();
         state.senders = state
@@ -89,7 +95,7 @@ impl<T> Shared<T> {
         state.receivers = state
             .receivers
             .checked_add(1)
-            .expect("mpmc receiver count overflow");
+            .expect("competing queue receiver count overflow");
     }
 
     pub fn drop_receiver(&self) {
@@ -125,7 +131,7 @@ impl<T> Shared<T> {
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
         let value = match self.try_send(value) {
             Ok(()) => return Ok(()),
-            Err(TrySendError::Disconnected(value)) => return Err(SendError::new(value)),
+            Err(TrySendError::Disconnected(value)) => return Err(send_error(value)),
             Err(TrySendError::Full(value)) => value,
         };
         let mut send = Send {
@@ -181,7 +187,7 @@ impl<T> Send<'_, T> {
             value = match self.shared.try_send(value) {
                 Ok(()) => return Poll::Ready(Ok(())),
                 Err(TrySendError::Disconnected(value)) => {
-                    return Poll::Ready(Err(SendError::new(value)));
+                    return Poll::Ready(Err(send_error(value)));
                 }
                 Err(TrySendError::Full(value)) => value,
             };

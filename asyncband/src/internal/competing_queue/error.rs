@@ -34,10 +34,10 @@ impl<T> SendError<T> {
     pub fn into_inner(self) -> T {
         self.0
     }
+}
 
-    pub(super) fn new(value: T) -> Self {
-        Self(value)
-    }
+pub fn send_error<T>(value: T) -> SendError<T> {
+    SendError(value)
 }
 
 impl<T> fmt::Display for SendError<T> {
@@ -54,7 +54,7 @@ impl<T> fmt::Debug for SendError<T> {
 
 impl<T> std::error::Error for SendError<T> {}
 
-/// Error returned by [`BoundedSender::try_send`](crate::mpmc::BoundedSender::try_send).
+/// Error returned when attempting to send without waiting for capacity.
 #[derive(Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
     /// The queue is full, so the value cannot be sent without waiting for capacity.
