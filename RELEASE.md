@@ -76,7 +76,7 @@ Start from current `main` and choose `VERSION` from the changes since the latest
 
 1. Change `version` in `asyncband/Cargo.toml` and refresh `Cargo.lock` with Cargo.
 2. Move the entries under `Unreleased` in `CHANGELOG.md` into an undated `v${VERSION}` section immediately below it, then restore an empty `Unreleased` section. Keep user-impacting sections ordered as breaking changes, new features, bug fixes, and improvements; add the actual release date only after publication.
-3. Verify `LICENSE`, `NOTICE`, `DISCLAIMER`, source headers, and bundled dependencies. When using Codex, delegate this review to the project's [`license_auditor`](.codex/agents/license_auditor.toml) subagent: "Use license_auditor to audit this checkout for release licensing. Report confirmed findings and unverified checks; do not modify files." Review its evidence and resolve release blockers before proceeding.
+3. Review `LICENSE`, `NOTICE`, `DISCLAIMER`, source headers, and bundled dependencies. When using Codex, ask the project's [`license_auditor`](.codex/agents/license_auditor.toml) subagent: "Help review this checkout for release licensing. Explain what the existing arrangements cover, any material concerns with supporting evidence, and practical suggestions or open questions. Keep the review read-only." Use its evidence and suggestions to decide what follow-up is needed during release preparation.
 4. Run the release checks:
 
 ```shell
@@ -151,7 +151,7 @@ VERIFY_DIR="$(mktemp -d)"
 )
 ```
 
-Inspect the archive for unexpected binary files and compare its contents with the RC tag. Read `LICENSE` and `NOTICE` against the bundled and derived third-party works and their source-file notices; the presence of those files and a successful automated header scan are not sufficient verification. When using `license_auditor`, provide `dist/${SOURCE_DIR}.tar.gz`, the extracted `${VERIFY_DIR}/${SOURCE_DIR}`, and `${VERIFY_DIR}/${SOURCE_DIR}/target/package/asyncband-${VERSION}.crate`, together with `RELEASE_COMMIT`, so it verifies both distributions rather than relying on the checkout audit. Its findings support the release manager's review and do not replace the ASF release vote.
+Inspect the archive for unexpected binary files and compare its contents with the RC tag. Read `LICENSE` and `NOTICE` against the bundled and derived third-party works and their source-file notices, using automated header checks as supporting evidence. When using `license_auditor`, provide `dist/${SOURCE_DIR}.tar.gz`, the extracted `${VERIFY_DIR}/${SOURCE_DIR}`, and `${VERIFY_DIR}/${SOURCE_DIR}/target/package/asyncband-${VERSION}.crate`, together with `RELEASE_COMMIT`, so it can review the actual contents and packaging conventions of each distribution. Discuss any material concerns and open questions with the release manager; the review informs the project's release process and ASF release vote.
 
 After completing the artifact review, remove the temporary directory:
 
