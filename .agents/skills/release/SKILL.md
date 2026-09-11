@@ -50,7 +50,7 @@ Report completed work with evidence, the next useful step, and any input still n
 | Checking an existing candidate's artifacts        | [Candidate verification](references/verification.md) |
 | Voting, approved publication, follow-up, or retry | [Publication](references/publication.md)             |
 
-The phase guides are the maintained release procedure for both people and agents. `RELEASE.md` is only a discovery link. Existing infrastructure is described in [Infrastructure](references/infrastructure.md); read it only for configuration changes, a new release manager's signing key, or infrastructure troubleshooting.
+The phase guides are the maintained release procedure for both people and agents. Existing infrastructure is described in [Infrastructure](references/infrastructure.md); read it only for configuration changes, a new release manager's signing key, or infrastructure troubleshooting.
 
 Links within this skill resolve from the containing document and stay within this skill's files. Repository paths such as `.github/workflows/release.yml` resolve from the caller's Asyncband repository root, which may differ from the current working directory. Locate the `license-audit` skill and configured agents by name; if skill discovery is unavailable, read `.agents/skills/license-audit/SKILL.md` from that repository root. Do not infer repository locations by walking upward from this skill's installation directory.
 
