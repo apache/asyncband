@@ -32,6 +32,7 @@ use asyncband::mpmc::TryRecvError;
 use asyncband::mpmc::TrySendError;
 use tests_integration::poll_once;
 
+#[derive(Debug)]
 struct WakeCounter(AtomicUsize);
 
 impl WakeCounter {
@@ -244,31 +245,57 @@ fn bounded_cancelled_notified_receiver_passes_value_to_next_receiver() {
 }
 
 #[test]
-fn bounded_cancelled_notified_sender_passes_capacity_to_next_sender() {
+fn bounded_cancelled_sender_notifies_next_sender_before_dropping_value() {
+    #[derive(Debug)]
+    struct Value {
+        id: usize,
+        wake_observer: Option<(Arc<WakeCounter>, Arc<AtomicUsize>)>,
+    }
+
+    impl Drop for Value {
+        fn drop(&mut self) {
+            if let Some((wakes, observed)) = &self.wake_observer {
+                // A message destructor may depend on another blocked sender making progress.
+                observed.store(wakes.count(), Ordering::SeqCst);
+            }
+        }
+    }
+
     let (sender, receiver) = mpmc::bounded(1);
-    sender.try_send(0).unwrap();
+    sender
+        .try_send(Value {
+            id: 0,
+            wake_observer: None,
+        })
+        .unwrap();
     let first_sender = sender.clone();
     let second_sender = sender.clone();
-    let mut cancelled = Box::pin(first_sender.send(1));
-    let mut waiting = Box::pin(second_sender.send(2));
     let cancelled_wakes = Arc::new(WakeCounter(AtomicUsize::new(0)));
     let waiting_wakes = Arc::new(WakeCounter(AtomicUsize::new(0)));
+    let wakes_during_drop = Arc::new(AtomicUsize::new(usize::MAX));
+    let mut cancelled = Box::pin(first_sender.send(Value {
+        id: 1,
+        wake_observer: Some((waiting_wakes.clone(), wakes_during_drop.clone())),
+    }));
+    let mut waiting = Box::pin(second_sender.send(Value {
+        id: 2,
+        wake_observer: None,
+    }));
     let cancelled_waker = Waker::from(cancelled_wakes.clone());
     let waiting_waker = Waker::from(waiting_wakes.clone());
 
     assert!(poll_with_waker(cancelled.as_mut(), &cancelled_waker).is_pending());
     assert!(poll_with_waker(waiting.as_mut(), &waiting_waker).is_pending());
-    assert_eq!(receiver.try_recv(), Ok(0));
+    assert_eq!(receiver.try_recv().unwrap().id, 0);
     assert_eq!(cancelled_wakes.count(), 1);
     assert_eq!(waiting_wakes.count(), 0);
     drop(cancelled);
 
+    assert_eq!(wakes_during_drop.load(Ordering::SeqCst), 1);
     assert_eq!(waiting_wakes.count(), 1);
-    assert_eq!(
-        expect_ready(poll_with_waker(waiting.as_mut(), &waiting_waker)),
-        Ok(())
-    );
-    assert_eq!(receiver.try_recv(), Ok(2));
+    expect_ready(poll_with_waker(waiting.as_mut(), &waiting_waker)).unwrap();
+    assert_eq!(receiver.try_recv().unwrap().id, 2);
+    assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
 }
 
 #[test]

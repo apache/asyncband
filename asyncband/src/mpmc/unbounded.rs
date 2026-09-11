@@ -27,6 +27,10 @@ use super::queue::Shared;
 /// Creates an unbounded multi-producer, multi-consumer queue.
 ///
 /// Sends are synchronous and values may be buffered until available memory is exhausted.
+///
+/// Operations briefly acquire internal mutexes. No lock is held across an await point, while
+/// waking tasks, or while dropping messages. Sending and trying to receive may wait to acquire
+/// a mutex, but never wait for capacity or new messages.
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     let shared = Arc::new(Shared::unbounded());
     (
@@ -66,7 +70,7 @@ impl<T> Drop for UnboundedSender<T> {
 }
 
 impl<T> UnboundedSender<T> {
-    /// Sends a value without waiting.
+    /// Sends a value without waiting for capacity.
     ///
     /// If all receivers have been dropped, the value is returned in [`SendError`].
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
@@ -111,13 +115,17 @@ impl<T> UnboundedReceiver<T> {
     /// Receives the next available value.
     ///
     /// Buffered values remain available after the final sender is dropped. Once they are drained,
-    /// this method returns [`RecvError::Disconnected`]. This method is cancel safe and passes a
-    /// selected value notification to another receiver if the pending future is cancelled.
+    /// this method returns [`RecvError::Disconnected`].
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending `recv` does not consume a value. Any selected value notification is
+    /// passed to another waiting receiver, so cancellation does not prevent it from receiving.
     pub async fn recv(&self) -> Result<T, RecvError> {
         self.shared.recv().await
     }
 
-    /// Attempts to receive the next available value without waiting.
+    /// Attempts to receive the next available value without waiting for a message.
     ///
     /// Returns [`TryRecvError::Empty`] while the queue is empty and a sender remains, or
     /// [`TryRecvError::Disconnected`] once the queue is empty and all senders have been dropped.

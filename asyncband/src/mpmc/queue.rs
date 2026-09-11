@@ -130,8 +130,8 @@ impl<T> Shared<T> {
         };
         let mut send = Send {
             shared: self,
-            value: Some(value),
             acquire: self.send_waiters.poll_acquire(1),
+            value: Some(value),
         };
         poll_fn(|cx| send.poll(cx)).await
     }
@@ -167,8 +167,10 @@ impl<T> Shared<T> {
 
 struct Send<'a, T> {
     shared: &'a Shared<T>,
-    value: Option<T>,
+    // Cancel the wait and pass on its notification before dropping a value whose destructor
+    // may depend on another blocked sender making progress. Fields drop in declaration order.
     acquire: Acquire<'a>,
+    value: Option<T>,
 }
 
 impl<T> Send<'_, T> {
