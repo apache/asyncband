@@ -19,9 +19,11 @@
 builtin = "Apache-2.0-ASF"
 
 [files]
-# These third-party-derived files use the applicable upstream license and copyright notices instead
-# of the standard ASF source header.
 excludes = [
+  # Skill discovery requires YAML frontmatter first. Its ASF header follows the frontmatter,
+  # which HawkEye currently cannot skip when checking or inserting headers.
+  ".agents/skills/license-audit/SKILL.md",
+  # These third-party-derived files retain the applicable upstream license and copyright notices.
   "asyncband/src/blocking/executor.rs",
   "asyncband/src/blocking/parker.rs",
   "asyncband/src/pool/bounded.rs",
