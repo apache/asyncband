@@ -296,10 +296,8 @@ impl Semaphore {
             }
 
             drop(waiters);
-            if let Err(payload) = wakers.wake_all()
-                && first_panic.is_none()
-            {
-                first_panic = Some(payload);
+            if let Err(payload) = wakers.wake_all() {
+                first_panic.get_or_insert(payload);
             }
         }
 
