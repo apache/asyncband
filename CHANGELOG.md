@@ -25,12 +25,14 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
+* Implement `broadcast::mpmc::bounded`, a lossless bounded broadcast channel that retains at most the requested capacity and makes producers wait for the slowest active receiver.
 * Add opt-in bounded and unbounded `asyncband::mpmc` queues with cloneable producers and competing consumers, delivering each accepted value to exactly one receiver while a receiver remains.
 * Add an opt-in runtime-agnostic `Phaser` with shared observer handles, dynamic RAII participants registered individually or in batches through an owning iterator, `u64` phase numbers, split arrival/wait with cancellation-resilient retries, and a `close` operation that releases unfinished waits with `Closed`.
 * Add bounded MPSC `reserve` and `try_reserve` methods returning a `Permit`, allowing callers to wait for capacity before constructing a message; pending sends and reservations receive capacity in wait-queue order, and unused permits release capacity without claiming message order.
 
 ### Bug fixes
 
+* Complete semaphore permit releases and notify all eligible waiters even if a wake callback panics.
 * Release MPSC receiver wakers when the receiver is dropped, avoiding retained tasks and ownership cycles when a waker holds a sender.
 * Notify all blocked bounded MPSC senders on receiver disconnection even when a buffered message destructor panics.
 * Avoid deadlocks when a bounded MPSC sender's waker clone callback receives from the same channel.

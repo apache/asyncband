@@ -16,5 +16,6 @@
 // under the License.
 
 mod adapters;
+mod bounded;
 mod support;
 mod unbounded;

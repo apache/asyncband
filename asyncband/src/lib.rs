@@ -75,7 +75,7 @@
 //! |                            | [`oneshot`]                                   | `oneshot`      | Send one value from one sender to one receiver.                                                               |
 //! |                            | [`mpmc`]                                      | `mpmc`         | Distribute each value to exactly one of multiple competing receivers.      |
 //! |                            | [`mpsc`]                                      | `mpsc`         | Send each value from multiple producers to one receiver with bounded backpressure or an unbounded queue.      |
-//! |                            | [`broadcast`]                                 | `broadcast`    | Deliver every value to receivers active at send time; retain an unbounded backlog until each consumes or drops. |
+//! |                            | [`broadcast`]                                 | `broadcast`    | Deliver every value to active receivers with bounded backpressure or unbounded retention. |
 //! |                            | [`watch`]                                     | `watch`        | Publish cloneable latest state from one or more senders; receivers independently coalesce intermediate updates. |
 //! | Object reuse               | [`pool`]                                      | `pool`         | Reuse objects through bounded or unbounded pool variants.                                                     |
 //! | Sync interop               | [`FutureExt`](blocking::FutureExt)            | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                                     |
