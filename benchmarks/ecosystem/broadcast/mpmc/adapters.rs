@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::future::Future;
 use std::task::Context;
 
 use asyncband::blocking::FutureExt;
@@ -136,11 +137,13 @@ impl BroadcastMpmc for AsyncBroadcast {
 ///
 /// `tokio::sync::broadcast` deliberately has no implementation here — see the note in `bounded.rs`.
 pub trait BoundedBroadcastMpmc: Send + Sync + 'static {
-    type Sender: Clone + Send + 'static;
+    type Sender: Clone + Send + Sync + 'static;
     type Receiver: Send + 'static;
 
     fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>);
     fn try_send(sender: &Self::Sender, value: usize);
+    fn send_async(sender: &Self::Sender, value: usize) -> impl Future<Output = ()> + Send;
+    fn recv_async(receiver: &mut Self::Receiver) -> impl Future<Output = usize> + Send;
     fn send_ready(sender: &Self::Sender, value: usize, context: &mut Context<'_>);
     fn send_blocking(sender: &Self::Sender, value: usize);
     fn try_recv(receiver: &mut Self::Receiver) -> Option<usize>;
@@ -166,12 +169,20 @@ impl BoundedBroadcastMpmc for Asyncband {
         sender.try_send(value).unwrap();
     }
 
+    async fn send_async(sender: &Self::Sender, value: usize) {
+        sender.send(value).await;
+    }
+
+    async fn recv_async(receiver: &mut Self::Receiver) -> usize {
+        receiver.recv().await.unwrap()
+    }
+
     fn send_ready(sender: &Self::Sender, value: usize, context: &mut Context<'_>) {
-        poll_ready(sender.send(value), context);
+        poll_ready(Self::send_async(sender, value), context);
     }
 
     fn send_blocking(sender: &Self::Sender, value: usize) {
-        FutureExt::block_on(sender.send(value));
+        FutureExt::block_on(Self::send_async(sender, value));
     }
 
     fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
@@ -185,11 +196,11 @@ impl BoundedBroadcastMpmc for Asyncband {
     }
 
     fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
-        poll_ready(receiver.recv(), context).unwrap()
+        poll_ready(Self::recv_async(receiver), context)
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> usize {
-        FutureExt::block_on(receiver.recv()).unwrap()
+        FutureExt::block_on(Self::recv_async(receiver))
     }
 }
 
@@ -212,14 +223,23 @@ impl BoundedBroadcastMpmc for AsyncBroadcast {
         sender.try_broadcast(value).unwrap();
     }
 
-    fn send_ready(sender: &Self::Sender, value: usize, context: &mut Context<'_>) {
-        poll_ready(sender.broadcast_direct(value), context)
+    async fn send_async(sender: &Self::Sender, value: usize) {
+        sender
+            .broadcast_direct(value)
+            .await
             .expect("async-broadcast lost every receiver during benchmark");
     }
 
+    async fn recv_async(receiver: &mut Self::Receiver) -> usize {
+        receiver.recv_direct().await.unwrap()
+    }
+
+    fn send_ready(sender: &Self::Sender, value: usize, context: &mut Context<'_>) {
+        poll_ready(Self::send_async(sender, value), context);
+    }
+
     fn send_blocking(sender: &Self::Sender, value: usize) {
-        FutureExt::block_on(sender.broadcast_direct(value))
-            .expect("async-broadcast lost every receiver during benchmark");
+        FutureExt::block_on(Self::send_async(sender, value));
     }
 
     fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
@@ -231,10 +251,10 @@ impl BoundedBroadcastMpmc for AsyncBroadcast {
     }
 
     fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
-        poll_ready(receiver.recv_direct(), context).unwrap()
+        poll_ready(Self::recv_async(receiver), context)
     }
 
     fn recv_blocking(receiver: &mut Self::Receiver) -> usize {
-        FutureExt::block_on(receiver.recv_direct()).unwrap()
+        FutureExt::block_on(Self::recv_async(receiver))
     }
 }

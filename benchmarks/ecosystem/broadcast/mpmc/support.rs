@@ -23,6 +23,8 @@ use std::thread;
 use std::thread::JoinHandle;
 
 use divan::black_box;
+use tokio::runtime::Runtime;
+use tokio::task::JoinSet;
 
 use super::adapters::BoundedBroadcastMpmc;
 use super::adapters::BroadcastMpmc;
@@ -37,11 +39,9 @@ pub const ROUND_TRIP_CAPACITY: usize = 64;
 /// One bounded workload: the channel capacity, how many producers publish, and how many
 /// subscriptions read.
 ///
-/// Capacity is a dimension rather than a constant because it is the parameter that decides how a
-/// bounded broadcast behaves. At `TIGHT` the backlog is a fraction of the fanout, so the run
-/// degenerates into a per-message round trip: the producer publishes one value, every subscription
-/// is woken to read it, and only then does a slot come back. At `ROOMY` the producer runs ahead
-/// and both sides batch. Reporting only one of the two would describe half the channel.
+/// Capacity bounds the shared backlog, independently of the subscription count. Capacity one
+/// forces the next publication to wait until every subscription advances; larger capacities let
+/// producers run ahead by that many messages, subject to scheduling and consumer progress.
 #[derive(Clone, Copy)]
 pub struct BoundedShape {
     pub capacity: usize,
@@ -50,9 +50,6 @@ pub struct BoundedShape {
 }
 
 impl BoundedShape {
-    const TIGHT: usize = 64;
-    const ROOMY: usize = 1024;
-
     const fn new(capacity: usize, producers: usize, receivers: usize) -> Self {
         Self {
             capacity,
@@ -73,18 +70,30 @@ impl fmt::Display for BoundedShape {
 }
 
 pub const BOUNDED_SHAPES: &[BoundedShape] = &[
-    BoundedShape::new(BoundedShape::TIGHT, 1, 1),
-    BoundedShape::new(BoundedShape::TIGHT, 1, 8),
-    BoundedShape::new(BoundedShape::TIGHT, 1, 32),
-    BoundedShape::new(BoundedShape::TIGHT, 8, 1),
-    BoundedShape::new(BoundedShape::TIGHT, 8, 8),
-    BoundedShape::new(BoundedShape::TIGHT, 8, 32),
-    BoundedShape::new(BoundedShape::ROOMY, 1, 1),
-    BoundedShape::new(BoundedShape::ROOMY, 1, 8),
-    BoundedShape::new(BoundedShape::ROOMY, 1, 32),
-    BoundedShape::new(BoundedShape::ROOMY, 8, 1),
-    BoundedShape::new(BoundedShape::ROOMY, 8, 8),
-    BoundedShape::new(BoundedShape::ROOMY, 8, 32),
+    BoundedShape::new(1, 1, 1),
+    BoundedShape::new(1, 1, 8),
+    BoundedShape::new(1, 8, 1),
+    BoundedShape::new(1, 8, 8),
+    BoundedShape::new(2, 1, 1),
+    BoundedShape::new(2, 1, 8),
+    BoundedShape::new(2, 8, 1),
+    BoundedShape::new(2, 8, 8),
+    BoundedShape::new(8, 1, 1),
+    BoundedShape::new(8, 1, 8),
+    BoundedShape::new(8, 8, 1),
+    BoundedShape::new(8, 8, 8),
+    BoundedShape::new(64, 1, 1),
+    BoundedShape::new(64, 1, 8),
+    BoundedShape::new(64, 1, 32),
+    BoundedShape::new(64, 8, 1),
+    BoundedShape::new(64, 8, 8),
+    BoundedShape::new(64, 8, 32),
+    BoundedShape::new(1024, 1, 1),
+    BoundedShape::new(1024, 1, 8),
+    BoundedShape::new(1024, 1, 32),
+    BoundedShape::new(1024, 8, 1),
+    BoundedShape::new(1024, 8, 8),
+    BoundedShape::new(1024, 8, 32),
 ];
 
 fn recv<C: BroadcastMpmc>(receiver: &mut C::Receiver) -> usize {
@@ -305,5 +314,66 @@ impl<C: BoundedBroadcastMpmc> Drop for BoundedConcurrent<C> {
                 result.expect("bounded benchmark worker panicked");
             }
         }
+    }
+}
+
+/// The same bounded workload on async tasks. Construction and task spawning happen outside the
+/// timed section. Each fixture runs once, so its benchmark must use `sample_size = 1`.
+pub struct BoundedTasks {
+    start: Arc<tokio::sync::Barrier>,
+    tasks: JoinSet<()>,
+}
+
+impl BoundedTasks {
+    pub fn new<C: BoundedBroadcastMpmc>(runtime: &Runtime, shape: BoundedShape) -> Self {
+        let BoundedShape {
+            capacity,
+            producers,
+            receivers,
+        } = shape;
+        assert_eq!(BATCH_MESSAGES % producers, 0);
+        let (sender, receivers) = C::channel(capacity, receivers);
+        let start = Arc::new(tokio::sync::Barrier::new(producers + receivers.len() + 1));
+        let mut tasks = JoinSet::new();
+
+        for mut receiver in receivers {
+            let start = start.clone();
+            tasks.spawn_on(
+                async move {
+                    start.wait().await;
+                    let mut checksum = 0usize;
+                    for _ in 0..BATCH_MESSAGES {
+                        checksum = checksum.wrapping_add(C::recv_async(&mut receiver).await);
+                    }
+                    assert_eq!(checksum, BATCH_MESSAGES * (BATCH_MESSAGES - 1) / 2);
+                },
+                runtime.handle(),
+            );
+        }
+        for producer in 0..producers {
+            let sender = sender.clone();
+            let start = start.clone();
+            tasks.spawn_on(
+                async move {
+                    start.wait().await;
+                    let first = producer * (BATCH_MESSAGES / producers);
+                    for value in first..first + BATCH_MESSAGES / producers {
+                        C::send_async(&sender, black_box(value)).await;
+                    }
+                },
+                runtime.handle(),
+            );
+        }
+
+        Self { start, tasks }
+    }
+
+    pub fn run(&mut self, runtime: &Runtime) {
+        runtime.block_on(async {
+            self.start.wait().await;
+            while let Some(result) = self.tasks.join_next().await {
+                result.expect("bounded benchmark task panicked");
+            }
+        });
     }
 }

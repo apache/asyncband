@@ -23,12 +23,9 @@
 // cheaper workload of dropping messages. It appears in `unbounded.rs` instead, where every peer is
 // given room for the whole batch and the comparison is over their shared non-blocking path.
 //
-// `concurrent` sweeps capacity as well as producer and receiver counts, because the ratio of
-// capacity to fanout is what decides how a bounded broadcast behaves. A backlog smaller than the
-// fanout turns every message into a round trip — publish one value, wake every subscription, wait
-// for the one slot to come back — while a roomy backlog lets both sides batch. The two regimes
-// differ by an order of magnitude on every implementation measured, so reporting one capacity
-// would describe half the channel.
+// Sweep capacity and producer/subscription counts independently. Capacity one measures the
+// per-message handoff; larger backlogs allow several messages to be outstanding. How effectively
+// that headroom is used depends on scheduling and the slowest subscription, not just fanout.
 
 use divan::Bencher;
 use divan::black_box;
@@ -41,11 +38,12 @@ use super::support::BATCH_MESSAGES;
 use super::support::BOUNDED_SHAPES;
 use super::support::BoundedConcurrent;
 use super::support::BoundedShape;
+use super::support::BoundedTasks;
 use super::support::ROUND_TRIP_CAPACITY;
 use crate::support::bench_context;
 
 // Send-then-receive pairing keeps at most one message retained, so these never reach capacity.
-#[divan::bench(types = [Asyncband, AsyncBroadcast])]
+#[divan::bench(types = [Asyncband, AsyncBroadcast], sample_size = 512)]
 fn try_round_trip<C: BoundedBroadcastMpmc>(bencher: Bencher) {
     let (sender, mut receivers) = C::channel(ROUND_TRIP_CAPACITY, 1);
     let mut receiver = receivers.pop().unwrap();
@@ -56,7 +54,7 @@ fn try_round_trip<C: BoundedBroadcastMpmc>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, AsyncBroadcast])]
+#[divan::bench(types = [Asyncband, AsyncBroadcast], sample_size = 512)]
 fn ready_round_trip<C: BoundedBroadcastMpmc>(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receivers) = C::channel(ROUND_TRIP_CAPACITY, 1);
@@ -81,4 +79,21 @@ fn concurrent<C: BoundedBroadcastMpmc>(bencher: Bencher, shape: BoundedShape) {
     bencher
         .with_inputs(|| BoundedConcurrent::<C>::new(shape))
         .bench_local_refs(BoundedConcurrent::run);
+}
+
+#[divan::bench(
+    types = [Asyncband, AsyncBroadcast],
+    args = BOUNDED_SHAPES,
+    sample_count = 10,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn scheduled<C: BoundedBroadcastMpmc>(bencher: Bencher, shape: BoundedShape) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .build()
+        .unwrap();
+    bencher
+        .with_inputs(|| BoundedTasks::new::<C>(&runtime, shape))
+        .bench_local_refs(|tasks| tasks.run(&runtime));
 }
