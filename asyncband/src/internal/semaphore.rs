@@ -20,16 +20,12 @@
 // The Tokio-derived portions remain licensed under the MIT License.
 // Asyncband substantially replaced the waiter lifecycle with queue-owned WaitList nodes, supports
 // queue-head permit debt for exact reductions, has no closed state or reserved flag bits, and uses
-// its own cancellation, detachment, and batched-waking machinery.
+// its own cancellation, detachment, and waking machinery.
 // Upstream source:
 // https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/batch_semaphore.rs
 
 use std::future::Future;
-use std::mem::MaybeUninit;
-use std::panic;
-use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
-use std::ptr;
 use std::sync::MutexGuard;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -56,68 +52,6 @@ struct WaitNode {
     /// A linked node without a waker is permit debt owned by the queue. An acquire node only loses
     /// its waker while being detached, after which its future still owns the node.
     waker: Option<Waker>,
-}
-
-const WAKE_BATCH_SIZE: usize = 32;
-
-/// The initialized entries in `wakers` are exactly `start..end`.
-struct WakeBatch {
-    wakers: [MaybeUninit<Waker>; WAKE_BATCH_SIZE],
-    start: usize,
-    end: usize,
-}
-
-impl WakeBatch {
-    fn new() -> Self {
-        const UNINIT: MaybeUninit<Waker> = MaybeUninit::uninit();
-        Self {
-            wakers: [UNINIT; WAKE_BATCH_SIZE],
-            start: 0,
-            end: 0,
-        }
-    }
-
-    fn push(&mut self, waker: Waker) {
-        debug_assert_eq!(self.start, 0);
-        debug_assert!(self.end < WAKE_BATCH_SIZE);
-        self.wakers[self.end].write(waker);
-        self.end += 1;
-    }
-
-    fn is_full(&self) -> bool {
-        self.end == WAKE_BATCH_SIZE
-    }
-
-    fn wake_all(&mut self) -> std::thread::Result<()> {
-        let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            wake_all(std::iter::from_fn(|| {
-                if self.start == self.end {
-                    return None;
-                }
-
-                let index = self.start;
-                self.start += 1;
-                // SAFETY: `index` was within the initialized range before advancing `start`.
-                Some(unsafe { self.wakers[index].assume_init_read() })
-            }));
-        }));
-        // `wake_all` attempts every callback even after a panic, so the batch is empty in either
-        // case. Reset it before the next batch continues distributing the remaining permits.
-        self.start = 0;
-        self.end = 0;
-        result
-    }
-}
-
-impl Drop for WakeBatch {
-    fn drop(&mut self) {
-        let start = self.wakers[self.start..self.end]
-            .as_mut_ptr()
-            .cast::<Waker>();
-        let remaining = ptr::slice_from_raw_parts_mut(start, self.end - self.start);
-        // SAFETY: The initialized entries are exactly `start..end`.
-        unsafe { ptr::drop_in_place(remaining) };
-    }
 }
 
 impl Semaphore {
@@ -244,68 +178,61 @@ impl Semaphore {
             }
         }
         drop(waiters);
-        crate::internal::wake_all(wakers.into_iter());
+        wake_all(wakers.into_iter());
     }
 
     fn insert_permits_with_lock(
         &self,
         mut rem: usize,
-        waiters: MutexGuard<'_, WaitList<WaitNode>>,
+        mut waiters: MutexGuard<'_, WaitList<WaitNode>>,
     ) {
-        let mut wakers = WakeBatch::new();
-        let mut first_panic = None;
-
-        let mut lock = Some(waiters);
+        // A single-waiter handoff should not allocate a wake buffer.
+        let mut first_waker = None;
+        let mut wakers = vec![];
         while rem > 0 {
-            let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
-            while !wakers.is_full() {
-                match waiters.unlink_first_waiter(|node| {
-                    if node.permits <= rem {
-                        rem -= node.permits;
-                        node.permits = 0;
-                        true
-                    } else {
-                        node.permits -= rem;
-                        rem = 0;
-                        false
-                    }
-                }) {
-                    None => break,
-                    Some((id, waiter)) => {
-                        let remove_now = waiter.waker.is_none();
-                        if let Some(waker) = waiter.waker.take() {
+            match waiters.unlink_first_waiter(|node| {
+                if node.permits <= rem {
+                    rem -= node.permits;
+                    node.permits = 0;
+                    true
+                } else {
+                    node.permits -= rem;
+                    rem = 0;
+                    false
+                }
+            }) {
+                None => break,
+                Some((id, waiter)) => {
+                    let remove_now = waiter.waker.is_none();
+                    if let Some(waker) = waiter.waker.take() {
+                        if first_waker.is_none() {
+                            first_waker = Some(waker);
+                        } else {
                             wakers.push(waker);
                         }
-                        if remove_now {
-                            waiters.remove_unlinked_waiter(id);
-                        }
+                    }
+                    if remove_now {
+                        waiters.remove_unlinked_waiter(id);
                     }
                 }
             }
-
-            if rem > 0 && waiters.is_empty() {
-                // Holding `waiters` serializes all permit additions. Concurrent operations can
-                // only remove permits, so the count cannot grow between this check and fetch_add.
-                let current = self.permits.load(Ordering::Relaxed);
-                assert!(
-                    current.checked_add(rem).is_some(),
-                    "number of added permits ({rem}) would overflow usize::MAX (prev: {current})"
-                );
-                self.permits.fetch_add(rem, Ordering::Release);
-                rem = 0;
-            }
-
-            drop(waiters);
-            if let Err(payload) = wakers.wake_all() {
-                first_panic.get_or_insert(payload);
-            }
         }
 
-        // A callback must not prevent later batches from receiving permits that have already
-        // been released. Propagate its panic only after all accounting and notifications finish.
-        if let Some(payload) = first_panic {
-            panic::resume_unwind(payload);
+        if rem > 0 {
+            // Holding `waiters` serializes all permit additions. Concurrent operations can only
+            // remove permits, so the count cannot grow between this check and fetch_add.
+            let current = self.permits.load(Ordering::Relaxed);
+            assert!(
+                current.checked_add(rem).is_some(),
+                "number of added permits ({rem}) would overflow usize::MAX (prev: {current})"
+            );
+            self.permits.fetch_add(rem, Ordering::Release);
         }
+
+        // Finish all permit accounting before invoking callbacks. The shared helper attempts
+        // every wake even if one panics, and propagates the first panic afterward.
+        drop(waiters);
+        wake_all(first_waker.into_iter().chain(wakers));
     }
 }
 
@@ -479,6 +406,8 @@ fn acquired_or_enqueue(
 
 #[cfg(test)]
 mod tests {
+    use std::panic;
+    use std::panic::AssertUnwindSafe;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -508,8 +437,8 @@ mod tests {
     }
 
     #[test]
-    fn release_drains_more_than_one_wake_batch() {
-        const WAITER_COUNT: usize = WAKE_BATCH_SIZE + 3;
+    fn release_distributes_permits_to_all_waiters() {
+        const WAITER_COUNT: usize = 35;
 
         let semaphore = Semaphore::new(0);
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
@@ -533,8 +462,8 @@ mod tests {
     }
 
     #[test]
-    fn panicking_wakes_finish_later_batches_and_preserve_the_first_panic() {
-        const WAITER_COUNT: usize = WAKE_BATCH_SIZE * 2 + 1;
+    fn panicking_wakes_preserve_permits_and_the_first_panic() {
+        const WAITER_COUNT: usize = 65;
 
         struct TrackedWake {
             count: AtomicUsize,
@@ -555,10 +484,12 @@ mod tests {
             .map(|index| {
                 Arc::new(TrackedWake {
                     count: AtomicUsize::new(0),
-                    panic_message: match index {
-                        0 => Some("first wake panic"),
-                        WAKE_BATCH_SIZE => Some("later wake panic"),
-                        _ => None,
+                    panic_message: if index == 0 {
+                        Some("first wake panic")
+                    } else if index == WAITER_COUNT / 2 {
+                        Some("later wake panic")
+                    } else {
+                        None
                     },
                 })
             })
