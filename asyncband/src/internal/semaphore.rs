@@ -20,12 +20,14 @@
 // The Tokio-derived portions remain licensed under the MIT License.
 // Asyncband substantially replaced the waiter lifecycle with queue-owned WaitList nodes, supports
 // queue-head permit debt for exact reductions, has no closed state or reserved flag bits, and uses
-// its own cancellation, detachment, and waking machinery.
+// its own cancellation, detachment, and batched-waking machinery.
 // Upstream source:
 // https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/batch_semaphore.rs
 
 use std::future::Future;
+use std::mem::MaybeUninit;
 use std::pin::Pin;
+use std::ptr;
 use std::sync::MutexGuard;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -52,6 +54,61 @@ struct WaitNode {
     /// A linked node without a waker is permit debt owned by the queue. An acquire node only loses
     /// its waker while being detached, after which its future still owns the node.
     waker: Option<Waker>,
+}
+
+const WAKE_BATCH_SIZE: usize = 32;
+
+/// The initialized entries in `wakers` are exactly `start..end`.
+struct WakeBatch {
+    wakers: [MaybeUninit<Waker>; WAKE_BATCH_SIZE],
+    start: usize,
+    end: usize,
+}
+
+impl WakeBatch {
+    fn new() -> Self {
+        const UNINIT: MaybeUninit<Waker> = MaybeUninit::uninit();
+        Self {
+            wakers: [UNINIT; WAKE_BATCH_SIZE],
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn push(&mut self, waker: Waker) {
+        debug_assert_eq!(self.start, 0);
+        debug_assert!(self.end < WAKE_BATCH_SIZE);
+        self.wakers[self.end].write(waker);
+        self.end += 1;
+    }
+
+    fn is_full(&self) -> bool {
+        self.end == WAKE_BATCH_SIZE
+    }
+
+    fn take_next(&mut self) -> Option<Waker> {
+        if self.start == self.end {
+            self.start = 0;
+            self.end = 0;
+            return None;
+        }
+
+        let index = self.start;
+        self.start += 1;
+        // SAFETY: `index` was within the initialized range before advancing `start`.
+        Some(unsafe { self.wakers[index].assume_init_read() })
+    }
+}
+
+impl Drop for WakeBatch {
+    fn drop(&mut self) {
+        let start = self.wakers[self.start..self.end]
+            .as_mut_ptr()
+            .cast::<Waker>();
+        let remaining = ptr::slice_from_raw_parts_mut(start, self.end - self.start);
+        // SAFETY: The initialized entries are exactly `start..end`.
+        unsafe { ptr::drop_in_place(remaining) };
+    }
 }
 
 impl Semaphore {
@@ -184,55 +241,64 @@ impl Semaphore {
     fn insert_permits_with_lock(
         &self,
         mut rem: usize,
-        mut waiters: MutexGuard<'_, WaitList<WaitNode>>,
+        waiters: MutexGuard<'_, WaitList<WaitNode>>,
     ) {
-        // A single-waiter handoff should not allocate a wake buffer.
-        let mut first_waker = None;
-        let mut wakers = vec![];
-        while rem > 0 {
-            match waiters.unlink_first_waiter(|node| {
-                if node.permits <= rem {
-                    rem -= node.permits;
-                    node.permits = 0;
-                    true
-                } else {
-                    node.permits -= rem;
-                    rem = 0;
-                    false
+        let mut batch = WakeBatch::new();
+        let mut lock = Some(waiters);
+
+        // One iterator covers the entire release. If a callback panics, `wake_all` keeps pulling
+        // batches during unwinding, so the remaining permits are still distributed and notified.
+        wake_all(std::iter::from_fn(|| {
+            loop {
+                if let Some(waker) = batch.take_next() {
+                    return Some(waker);
                 }
-            }) {
-                None => break,
-                Some((id, waiter)) => {
-                    let remove_now = waiter.waker.is_none();
-                    if let Some(waker) = waiter.waker.take() {
-                        if first_waker.is_none() {
-                            first_waker = Some(waker);
+                if rem == 0 {
+                    return None;
+                }
+
+                let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
+                while !batch.is_full() {
+                    match waiters.unlink_first_waiter(|node| {
+                        if node.permits <= rem {
+                            rem -= node.permits;
+                            node.permits = 0;
+                            true
                         } else {
-                            wakers.push(waker);
+                            node.permits -= rem;
+                            rem = 0;
+                            false
+                        }
+                    }) {
+                        None => break,
+                        Some((id, waiter)) => {
+                            let remove_now = waiter.waker.is_none();
+                            if let Some(waker) = waiter.waker.take() {
+                                batch.push(waker);
+                            }
+                            if remove_now {
+                                waiters.remove_unlinked_waiter(id);
+                            }
                         }
                     }
-                    if remove_now {
-                        waiters.remove_unlinked_waiter(id);
-                    }
                 }
+
+                if rem > 0 && waiters.is_empty() {
+                    // Retire the remainder before the overflow check so unwinding cannot retry it.
+                    let added = std::mem::take(&mut rem);
+                    // The lock serializes additions; concurrent operations can only remove permits.
+                    let current = self.permits.load(Ordering::Relaxed);
+                    assert!(
+                        current.checked_add(added).is_some(),
+                        "number of added permits ({added}) would overflow usize::MAX (prev: {current})"
+                    );
+                    self.permits.fetch_add(added, Ordering::Release);
+                }
+
+                // Neither wake callbacks nor destruction of the taken waker run under this lock.
+                drop(waiters);
             }
-        }
-
-        if rem > 0 {
-            // Holding `waiters` serializes all permit additions. Concurrent operations can only
-            // remove permits, so the count cannot grow between this check and fetch_add.
-            let current = self.permits.load(Ordering::Relaxed);
-            assert!(
-                current.checked_add(rem).is_some(),
-                "number of added permits ({rem}) would overflow usize::MAX (prev: {current})"
-            );
-            self.permits.fetch_add(rem, Ordering::Release);
-        }
-
-        // Finish all permit accounting before invoking callbacks. The shared helper attempts
-        // every wake even if one panics, and propagates the first panic afterward.
-        drop(waiters);
-        wake_all(first_waker.into_iter().chain(wakers));
+        }));
     }
 }
 
