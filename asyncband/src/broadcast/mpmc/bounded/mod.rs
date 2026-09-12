@@ -34,6 +34,10 @@
 //!
 //! If no receivers are active the channel retains nothing, so a send never waits.
 //!
+//! A successful receive releases its subscription's claim before returning the value; processing
+//! that value afterward does not hold capacity. The capacity limit excludes pending sends and
+//! values already handed to application code.
+//!
 //! # Receivers
 //!
 //! Each receiver has an independent cursor. Use [`BoundedSender::subscribe`] or
@@ -521,6 +525,7 @@ impl<T> BoundedSender<T> {
     /// assert_eq!(rx.recv().await, Ok(20));
     /// # }
     /// ```
+    #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn subscribe(&self) -> BoundedReceiver<T> {
         let key = self.shared.inner.lock().log.subscribe();
         BoundedReceiver {
@@ -635,9 +640,9 @@ impl<T> BoundedReceiver<T> {
     /// Re-subscribes to the channel, returning a new receiver that starts receiving messages from
     /// the *current* tail of the channel.
     ///
-    /// This is useful if the receiver wants to jump to the latest message, skipping everything in
-    /// between. The original receiver is unchanged and continues to retain its own backlog until
-    /// it consumes those messages or is dropped.
+    /// The new receiver skips every value already published, including the latest retained value.
+    /// The original receiver is unchanged and continues to retain its own backlog until it
+    /// consumes those messages or is dropped.
     ///
     /// # Examples
     ///
@@ -653,6 +658,7 @@ impl<T> BoundedReceiver<T> {
     ///
     /// assert_eq!(rx2.try_recv(), Ok(3));
     /// ```
+    #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn resubscribe(&self) -> Self {
         let key = self.shared.inner.lock().log.subscribe();
         Self {
