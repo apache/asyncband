@@ -66,8 +66,7 @@ fn ready_round_trip<C: BoundedBroadcastMpmc>(bencher: Bencher) {
     });
 }
 
-// `sample_size = 1` is required: `BoundedConcurrent` spawns its workers once and they exit after a
-// single pass, so a second `run` on the same value would block forever.
+// Keep one fixture per sample so workers from other fixtures are not alive during timing.
 #[divan::bench(
     types = [Asyncband, AsyncBroadcast],
     args = BOUNDED_SHAPES,
@@ -77,7 +76,7 @@ fn ready_round_trip<C: BoundedBroadcastMpmc>(bencher: Bencher) {
 )]
 fn concurrent<C: BoundedBroadcastMpmc>(bencher: Bencher, shape: BoundedShape) {
     bencher
-        .with_inputs(|| BoundedConcurrent::<C>::new(shape))
+        .with_inputs(|| BoundedConcurrent::new::<C>(shape))
         .bench_local_refs(BoundedConcurrent::run);
 }
 

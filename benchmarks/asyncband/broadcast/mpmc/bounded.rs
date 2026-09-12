@@ -27,6 +27,7 @@ use divan::Bencher;
 use divan::black_box;
 
 use crate::support::bench_context;
+use crate::support::defer_input_drop;
 use crate::support::poll_pending;
 use crate::support::poll_pinned_ready;
 
@@ -142,4 +143,34 @@ fn deliver_to_waiting_receiver(bencher: Bencher) {
         tx.try_send(black_box(1)).unwrap();
         black_box(poll_pinned_ready(recv, &mut context).unwrap())
     });
+}
+
+#[divan::bench(args = [1, 2, 32, 256], sample_size = 64)]
+fn drop_lagging_receiver_wakes_senders(bencher: Bencher, backlog: usize) {
+    bencher
+        .with_inputs(|| {
+            let (sender, mut fast) = mpmc::bounded(backlog);
+            let slow = sender.subscribe();
+            for value in 0..backlog {
+                sender.try_send(value).unwrap();
+                assert_eq!(fast.try_recv().unwrap(), value);
+            }
+            let mut context = bench_context();
+            let mut sends = (0..backlog)
+                .map(|value| {
+                    let sender = sender.clone();
+                    Box::pin(async move { sender.send(value).await })
+                })
+                .collect::<Vec<_>>();
+            for send in &mut sends {
+                poll_pending(send.as_mut(), &mut context);
+            }
+            (slow, fast, sends)
+        })
+        .bench_local_values(|(slow, fast, sends)| {
+            // The fast subscription stays alive so this measures reclaim, not last-receiver exit.
+            // Preparing the backlog, parking senders, and disposing of futures are outside timing.
+            drop(slow);
+            defer_input_drop((fast, sends), ())
+        });
 }

@@ -17,36 +17,18 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
+use std::sync::Barrier;
 use std::task::Context;
 use std::task::Wake;
 use std::task::Waker;
 use std::thread;
-use std::time::Duration;
 
 use asyncband::blocking::FutureExt;
 use asyncband::broadcast::mpmc::*;
+use tests_integration::WakeCounter;
+use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
 use tests_integration::waker_on_wake;
-
-struct TrackWake(AtomicUsize);
-
-impl TrackWake {
-    fn new() -> Arc<Self> {
-        Arc::new(Self(AtomicUsize::new(0)))
-    }
-
-    fn count(&self) -> usize {
-        self.0.load(Ordering::Relaxed)
-    }
-}
-
-impl Wake for TrackWake {
-    fn wake(self: Arc<Self>) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
 
 /// A payload whose destructor re-enters the channel it was sent through.
 struct Reentrant {
@@ -279,7 +261,7 @@ fn receive_that_vacates_the_head_wakes_a_blocked_sender() {
     let (tx, mut rx) = bounded(1);
     tx.try_send(0).unwrap();
 
-    let tracker = TrackWake::new();
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let mut send = Box::pin(tx.send(1));
     assert!(
@@ -299,7 +281,7 @@ fn parked_recv_that_reclaims_wakes_a_blocked_sender() {
     let (tx, mut rx) = bounded(1);
     tx.try_send(0).unwrap();
 
-    let tracker = TrackWake::new();
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let mut send = Box::pin(tx.send(1));
     assert!(
@@ -364,7 +346,9 @@ fn dropping_the_last_receiver_wakes_every_blocked_sender() {
 
     // More blocked producers than the drop will reclaim slots. Once no receiver remains every
     // send succeeds unconditionally, so waking only `reclaimed` of them would strand the rest.
-    let trackers = (0..BLOCKED).map(|_| TrackWake::new()).collect::<Vec<_>>();
+    let trackers = (0..BLOCKED)
+        .map(|_| Arc::new(WakeCounter::default()))
+        .collect::<Vec<_>>();
     let mut sends = (0..BLOCKED)
         .map(|value| Box::pin(tx.send(10 + value as i32)))
         .collect::<Vec<_>>();
@@ -462,7 +446,7 @@ fn cancelled_notified_sender_passes_capacity_to_the_next_sender() {
 fn cancelled_recv_releases_its_waker() {
     let (tx, mut rx) = bounded(4);
 
-    let tracker = TrackWake::new();
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let baseline = Arc::strong_count(&tracker);
 
@@ -489,7 +473,7 @@ fn cancelled_recv_releases_its_waker() {
 fn dropping_a_woken_recv_keeps_another_receivers_waiter() {
     let (tx, mut rx1) = bounded::<i32>(2);
     let mut rx2 = tx.subscribe();
-    let first = TrackWake::new();
+    let first = Arc::new(WakeCounter::default());
     let waker = Waker::from(first.clone());
     let mut context = Context::from_waker(&waker);
     let mut recv1 = Box::pin(rx1.recv());
@@ -500,7 +484,7 @@ fn dropping_a_woken_recv_keeps_another_receivers_waiter() {
     assert_eq!(first.count(), 1);
     assert_eq!(rx2.try_recv(), Ok(1));
 
-    let second = TrackWake::new();
+    let second = Arc::new(WakeCounter::default());
     let waker = Waker::from(second.clone());
     let mut context = Context::from_waker(&waker);
     let mut recv2 = Box::pin(rx2.recv());
@@ -537,7 +521,7 @@ fn bounded_parked_recv_wakes_when_the_last_sender_drops() {
     let (tx, mut rx) = bounded::<i32>(4);
     let second_tx = tx.clone();
 
-    let tracker = TrackWake::new();
+    let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
     let mut recv = Box::pin(rx.recv());
     assert!(
@@ -570,7 +554,9 @@ fn panicking_wake_does_not_strand_senders_after_a_large_reclaim() {
         fast.try_recv().unwrap();
     }
 
-    let trackers = (0..40).map(|_| TrackWake::new()).collect::<Vec<_>>();
+    let trackers = (0..40)
+        .map(|_| Arc::new(WakeCounter::default()))
+        .collect::<Vec<_>>();
     let wakers = trackers
         .iter()
         .enumerate()
@@ -671,9 +657,7 @@ fn panicking_payload_destructor_still_releases_capacity() {
 
 #[test]
 fn bounded_message_destructors_run_outside_the_channel_lock() {
-    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-
-    let worker = thread::spawn(move || {
+    assert_completes_without_deadlock(|| {
         let (tx, mut rx1) = bounded(8);
         let rx2 = tx.subscribe();
 
@@ -685,20 +669,51 @@ fn bounded_message_destructors_run_outside_the_channel_lock() {
             .unwrap();
         }
 
-        // Draining both receivers reclaims the prefix, whose destructors re-enter the channel.
-        for _ in 0..4 {
-            rx1.try_recv().unwrap();
-        }
+        // Reclaim through a receive, and then through receiver drops.
+        assert_eq!(rx1.try_recv().unwrap().value, 0);
         drop(rx2);
+        assert_eq!(rx1.try_recv().unwrap().value, 1);
         drop(rx1);
 
-        finished_tx.send(()).unwrap();
+        // With no receiver, both send paths discard the payload immediately.
+        tx.try_send(Reentrant {
+            value: 4,
+            channel: Some(tx.clone()),
+        })
+        .unwrap();
+        FutureExt::block_on(tx.send(Reentrant {
+            value: 5,
+            channel: Some(tx.clone()),
+        }));
     });
+}
 
-    finished_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("reclaimed message destructors must not run while the channel is locked");
-    worker.join().unwrap();
+#[test]
+fn cancelling_a_blocked_send_drops_its_payload_outside_the_channel_lock() {
+    assert_completes_without_deadlock(|| {
+        let (tx, mut rx) = bounded(1);
+        tx.try_send(Reentrant {
+            value: 0,
+            channel: None,
+        })
+        .unwrap();
+
+        let mut send = Box::pin(tx.send(Reentrant {
+            value: 1,
+            channel: Some(tx.clone()),
+        }));
+        assert!(poll_once(send.as_mut()).is_pending());
+        drop(send);
+
+        assert_eq!(rx.try_recv().unwrap().value, 0);
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        tx.try_send(Reentrant {
+            value: 2,
+            channel: None,
+        })
+        .unwrap();
+        assert_eq!(rx.try_recv().unwrap().value, 2);
+    });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -710,101 +725,96 @@ fn dropping_the_last_receiver_never_strands_a_racing_producer() {
     const ROUNDS: u64 = 150;
     const PRODUCERS: u64 = 4;
 
-    // The deterministic tests above drop the receiver at a fixed point. This races the drop
-    // against producers entering the waiting path, which is the window where the channel decides
-    // whether anybody needs waking. A missed wake-up here parks a producer forever, so the failure
-    // mode is a hang rather than a wrong value — hence the timeout instead of an assertion.
-    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-
-    let worker = thread::spawn(move || {
-        for round in 0..ROUNDS {
+    // Bound each race independently of the total time spent starting threads across all rounds.
+    for round in 0..ROUNDS {
+        assert_completes_without_deadlock(move || {
             let (tx, rx) = bounded(1);
             tx.try_send(0).unwrap();
+            let start = Arc::new(Barrier::new(PRODUCERS as usize + 1));
 
             let producers = (0..PRODUCERS)
                 .map(|producer| {
                     let tx = tx.clone();
-                    thread::spawn(move || FutureExt::block_on(tx.send(round * 10 + producer + 1)))
+                    let start = start.clone();
+                    thread::spawn(move || {
+                        start.wait();
+                        FutureExt::block_on(tx.send(round * 10 + producer + 1));
+                    })
                 })
                 .collect::<Vec<_>>();
 
+            // Race removal against senders entering the wait path after all workers are ready.
+            start.wait();
             drop(rx);
 
             for producer in producers {
                 producer.join().unwrap();
             }
-        }
-        finished_tx.send(()).unwrap();
-    });
-
-    finished_rx
-        .recv_timeout(Duration::from_secs(60))
-        .expect("a producer was left waiting after the last receiver went away");
-    worker.join().unwrap();
+        });
+    }
 }
 
 #[test]
 fn bounded_concurrent_producers_commit_one_order_seen_by_every_receiver() {
-    const PRODUCERS: u64 = 4;
-    const PER_PRODUCER: u64 = 128;
-    const RECEIVERS: usize = 4;
-    const TOTAL: u64 = PRODUCERS * PER_PRODUCER;
+    assert_completes_without_deadlock(|| {
+        const PRODUCERS: u64 = 4;
+        const PER_PRODUCER: u64 = 128;
+        const RECEIVERS: usize = 4;
+        const TOTAL: u64 = PRODUCERS * PER_PRODUCER;
 
-    // Several producers publishing concurrently must still commit one contiguous order, and every
-    // subscription must observe that same order — not merely the same set.
-    //
-    // Capacity is far below the batch, so the producers really do block on the slowest receiver.
-    // This still terminates: the run could only wedge if every producer and every receiver waited
-    // at once, but a producer waits only while at least one message is retained, and a retained
-    // message is by definition unread by the slowest receiver — so that receiver is runnable.
-    let (tx, rx) = bounded(8);
-    let mut receivers = vec![rx];
-    receivers.extend((1..RECEIVERS).map(|_| tx.subscribe()));
+        // Capacity is below the message count, exercising backpressure while every subscription
+        // checks the same committed order rather than merely the same set of messages.
+        let (tx, rx) = bounded(8);
+        let mut receivers = vec![rx];
+        receivers.extend((1..RECEIVERS).map(|_| tx.subscribe()));
 
-    let drains = receivers
-        .into_iter()
-        .map(|mut receiver| {
-            thread::spawn(move || {
-                let mut seen = Vec::with_capacity(TOTAL as usize);
-                for _ in 0..TOTAL {
-                    seen.push(FutureExt::block_on(receiver.recv()).expect("sender dropped early"));
-                }
-                seen
+        let drains = receivers
+            .into_iter()
+            .map(|mut receiver| {
+                thread::spawn(move || {
+                    let mut seen = Vec::with_capacity(TOTAL as usize);
+                    for _ in 0..TOTAL {
+                        seen.push(
+                            FutureExt::block_on(receiver.recv()).expect("sender dropped early"),
+                        );
+                    }
+                    seen
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
 
-    let producers = (0..PRODUCERS)
-        .map(|worker| {
-            let tx = tx.clone();
-            thread::spawn(move || {
-                for value in 0..PER_PRODUCER {
-                    FutureExt::block_on(tx.send(worker * PER_PRODUCER + value));
-                }
+        let producers = (0..PRODUCERS)
+            .map(|worker| {
+                let tx = tx.clone();
+                thread::spawn(move || {
+                    for value in 0..PER_PRODUCER {
+                        FutureExt::block_on(tx.send(worker * PER_PRODUCER + value));
+                    }
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
 
-    for producer in producers {
-        producer.join().unwrap();
-    }
-    drop(tx);
+        for producer in producers {
+            producer.join().unwrap();
+        }
+        drop(tx);
 
-    let orders = drains
-        .into_iter()
-        .map(|drain| drain.join().unwrap())
-        .collect::<Vec<_>>();
+        let orders = drains
+            .into_iter()
+            .map(|drain| drain.join().unwrap())
+            .collect::<Vec<_>>();
 
-    // Every subscription saw the identical sequence.
-    for (index, order) in orders.iter().enumerate().skip(1) {
-        assert_eq!(
-            order, &orders[0],
-            "subscription {index} observed a different committed order"
-        );
-    }
+        // Every subscription saw the identical sequence.
+        for (index, order) in orders.iter().enumerate().skip(1) {
+            assert_eq!(
+                order, &orders[0],
+                "subscription {index} observed a different committed order"
+            );
+        }
 
-    // And that sequence is every published value exactly once — no gap, no duplicate.
-    let mut sorted = orders[0].clone();
-    sorted.sort_unstable();
-    assert_eq!(sorted, (0..TOTAL).collect::<Vec<_>>());
+        // And that sequence is every published value exactly once — no gap, no duplicate.
+        let mut sorted = orders[0].clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..TOTAL).collect::<Vec<_>>());
+    });
 }

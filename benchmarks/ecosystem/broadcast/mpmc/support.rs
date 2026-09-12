@@ -224,101 +224,63 @@ impl<C: BroadcastMpmc> Drop for Fanout<C> {
     }
 }
 
-/// Producers and receivers running concurrently against a channel far smaller than the batch.
-///
-/// The unbounded fixtures above publish the whole batch before anyone drains it, which is only
-/// safe because every peer is given room for the entire batch. That shape deadlocks a genuinely
-/// bounded channel, so this one interleaves: every thread blocks, and the drain runs while the
-/// producers are still publishing.
-///
-/// This terminates. The run could only wedge if every producer and every receiver waited at the
-/// same time, but a producer waits only while at least one message is retained, and a retained
-/// message is by definition unread by the slowest receiver — so that receiver is runnable. The
-/// counts balance exactly: the producers publish `BATCH_MESSAGES` between them and each receiver
-/// consumes `BATCH_MESSAGES`, so no thread over- or under-runs. Every receiver is subscribed
-/// before the first send, so every receiver sees every message.
-///
-/// Benches using this must set `sample_size = 1`: the worker threads are spawned in `new` and exit
-/// after one pass, so a second `run` on the same value would block forever.
-pub struct BoundedConcurrent<C: BoundedBroadcastMpmc> {
+/// Concurrent producers and subscribers on native threads. Each subscriber drains the full batch.
+/// Construction is outside timing; `run` includes barrier release, transfers, checksum validation,
+/// and worker joins.
+pub struct BoundedConcurrent {
     start: Arc<Barrier>,
-    done: Arc<Barrier>,
     workers: Vec<JoinHandle<()>>,
-    channel: PhantomData<C>,
 }
 
-impl<C: BoundedBroadcastMpmc> BoundedConcurrent<C> {
-    pub fn new(shape: BoundedShape) -> Self {
+impl BoundedConcurrent {
+    pub fn new<C: BoundedBroadcastMpmc>(shape: BoundedShape) -> Self {
         let BoundedShape {
             capacity,
             producers,
             receivers,
         } = shape;
         assert_eq!(BATCH_MESSAGES % producers, 0);
-
         let (sender, receivers) = C::channel(capacity, receivers);
         let start = Arc::new(Barrier::new(producers + receivers.len() + 1));
-        let done = Arc::new(Barrier::new(producers + receivers.len() + 1));
         let messages_per_producer = BATCH_MESSAGES / producers;
         let mut workers = Vec::with_capacity(producers + receivers.len());
 
         for mut receiver in receivers {
             let start = start.clone();
-            let done = done.clone();
             workers.push(thread::spawn(move || {
                 start.wait();
                 let mut checksum = 0usize;
                 for _ in 0..BATCH_MESSAGES {
                     checksum = checksum.wrapping_add(C::recv_blocking(&mut receiver));
                 }
-                black_box(checksum);
-                done.wait();
+                assert_eq!(checksum, BATCH_MESSAGES * (BATCH_MESSAGES - 1) / 2);
             }));
         }
-
         for producer in 0..producers {
             let sender = sender.clone();
             let start = start.clone();
-            let done = done.clone();
             workers.push(thread::spawn(move || {
                 start.wait();
                 let first = producer * messages_per_producer;
                 for value in first..first + messages_per_producer {
                     C::send_blocking(&sender, black_box(value));
                 }
-                done.wait();
             }));
         }
-        drop(sender);
 
-        Self {
-            start,
-            done,
-            workers,
-            channel: PhantomData,
-        }
+        Self { start, workers }
     }
 
     pub fn run(&mut self) {
         self.start.wait();
-        self.done.wait();
-    }
-}
-
-impl<C: BoundedBroadcastMpmc> Drop for BoundedConcurrent<C> {
-    fn drop(&mut self) {
-        let panicking = thread::panicking();
         for worker in self.workers.drain(..) {
-            let result = worker.join();
-            if !panicking {
-                result.expect("bounded benchmark worker panicked");
-            }
+            worker.join().expect("bounded benchmark worker panicked");
         }
     }
 }
 
-/// The same bounded workload on async tasks. Construction and task spawning happen outside the
-/// timed section. Each fixture runs once, so its benchmark must use `sample_size = 1`.
+/// The same bounded workload on async tasks. Construction and spawning are outside timing; `run`
+/// includes barrier release, transfers, checksum validation, and task joins.
 pub struct BoundedTasks {
     start: Arc<tokio::sync::Barrier>,
     tasks: JoinSet<()>,
