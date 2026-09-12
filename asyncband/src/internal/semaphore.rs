@@ -26,6 +26,8 @@
 
 use std::future::Future;
 use std::mem::MaybeUninit;
+use std::panic;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::ptr;
 use std::sync::MutexGuard;
@@ -86,19 +88,24 @@ impl WakeBatch {
         self.end == WAKE_BATCH_SIZE
     }
 
-    fn wake_all(&mut self) {
-        wake_all(std::iter::from_fn(|| {
-            if self.start == self.end {
-                return None;
-            }
+    fn wake_all(&mut self) -> std::thread::Result<()> {
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            wake_all(std::iter::from_fn(|| {
+                if self.start == self.end {
+                    return None;
+                }
 
-            let index = self.start;
-            self.start += 1;
-            // SAFETY: `index` was within the initialized range before advancing `start`.
-            Some(unsafe { self.wakers[index].assume_init_read() })
+                let index = self.start;
+                self.start += 1;
+                // SAFETY: `index` was within the initialized range before advancing `start`.
+                Some(unsafe { self.wakers[index].assume_init_read() })
+            }));
         }));
+        // `wake_all` attempts every callback even after a panic, so the batch is empty in either
+        // case. Reset it before the next batch continues distributing the remaining permits.
         self.start = 0;
         self.end = 0;
+        result
     }
 }
 
@@ -246,6 +253,7 @@ impl Semaphore {
         waiters: MutexGuard<'_, WaitList<WaitNode>>,
     ) {
         let mut wakers = WakeBatch::new();
+        let mut first_panic = None;
 
         let mut lock = Some(waiters);
         while rem > 0 {
@@ -288,7 +296,17 @@ impl Semaphore {
             }
 
             drop(waiters);
-            wakers.wake_all();
+            if let Err(payload) = wakers.wake_all()
+                && first_panic.is_none()
+            {
+                first_panic = Some(payload);
+            }
+        }
+
+        // A callback must not prevent later batches from receiving permits that have already
+        // been released. Propagate its panic only after all accounting and notifications finish.
+        if let Some(payload) = first_panic {
+            panic::resume_unwind(payload);
         }
     }
 }
@@ -513,6 +531,64 @@ mod tests {
         for acquire in &mut acquires {
             assert!(acquire.poll_once(&waker).is_ready());
         }
+        assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
+    }
+
+    #[test]
+    fn panicking_wakes_finish_later_batches_and_preserve_the_first_panic() {
+        const WAITER_COUNT: usize = WAKE_BATCH_SIZE * 2 + 1;
+
+        struct TrackedWake {
+            count: AtomicUsize,
+            panic_message: Option<&'static str>,
+        }
+
+        impl Wake for TrackedWake {
+            fn wake(self: Arc<Self>) {
+                self.count.fetch_add(1, Ordering::Relaxed);
+                if let Some(message) = self.panic_message {
+                    panic::panic_any(message);
+                }
+            }
+        }
+
+        let semaphore = Semaphore::new(0);
+        let trackers = (0..WAITER_COUNT)
+            .map(|index| {
+                Arc::new(TrackedWake {
+                    count: AtomicUsize::new(0),
+                    panic_message: match index {
+                        0 => Some("first wake panic"),
+                        WAKE_BATCH_SIZE => Some("later wake panic"),
+                        _ => None,
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut acquires = trackers
+            .iter()
+            .map(|tracker| {
+                let mut acquire = semaphore.poll_acquire(1);
+                assert!(
+                    acquire
+                        .poll_once(&Waker::from(tracker.clone()))
+                        .is_pending()
+                );
+                acquire
+            })
+            .collect::<Vec<_>>();
+
+        let payload = panic::catch_unwind(AssertUnwindSafe(|| semaphore.release(WAITER_COUNT + 2)))
+            .expect_err("the original wake panic must reach the caller");
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"first wake panic"));
+
+        for tracker in trackers {
+            assert_eq!(tracker.count.load(Ordering::Relaxed), 1);
+        }
+        for acquire in &mut acquires {
+            assert!(acquire.poll_once(Waker::noop()).is_ready());
+        }
+        assert_eq!(semaphore.available_permits(), 2);
         assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
     }
 }

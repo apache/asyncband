@@ -28,6 +28,7 @@ use std::time::Duration;
 use asyncband::blocking::FutureExt;
 use asyncband::broadcast::mpmc::*;
 use tests_integration::poll_once;
+use tests_integration::waker_on_wake;
 
 struct TrackWake(AtomicUsize);
 
@@ -559,6 +560,54 @@ fn bounded_parked_recv_wakes_when_the_last_sender_drops() {
 // ---------------------------------------------------------------------------------------------
 // Panic safety
 // ---------------------------------------------------------------------------------------------
+
+#[test]
+fn panicking_wake_does_not_strand_senders_after_a_large_reclaim() {
+    let (tx, mut fast) = bounded(40);
+    let slow = tx.subscribe();
+    for value in 0..40 {
+        tx.try_send(value).unwrap();
+        fast.try_recv().unwrap();
+    }
+
+    let trackers = (0..40).map(|_| TrackWake::new()).collect::<Vec<_>>();
+    let wakers = trackers
+        .iter()
+        .enumerate()
+        .map(|(index, tracker)| {
+            let tracker = tracker.clone();
+            waker_on_wake(move || {
+                tracker.wake();
+                assert_ne!(index, 0, "first sender wake panics");
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut sends = (40..80)
+        .map(|value| Box::pin(tx.send(value)))
+        .collect::<Vec<_>>();
+    for (send, waker) in sends.iter_mut().zip(&wakers) {
+        assert!(
+            send.as_mut()
+                .poll(&mut Context::from_waker(waker))
+                .is_pending()
+        );
+    }
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(slow)));
+    assert!(result.is_err());
+    assert_eq!(tx.retained_message_count(), 0);
+    for tracker in trackers {
+        assert_eq!(tracker.count(), 1);
+    }
+    // Every send fits without another receive. All must have been notified, not merely made
+    // ready for a poll that an executor would otherwise have no reason to perform.
+    for send in &mut sends {
+        assert!(poll_once(send.as_mut()).is_ready());
+    }
+    for value in 40..80 {
+        assert_eq!(fast.try_recv(), Ok(value));
+    }
+}
 
 #[test]
 fn bounded_panicking_clone_leaves_the_channel_consistent() {

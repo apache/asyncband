@@ -32,6 +32,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug fixes
 
+* Complete semaphore permit releases and notify all eligible waiters even if a wake callback panics during an earlier notification batch.
 * Release MPSC receiver wakers when the receiver is dropped, avoiding retained tasks and ownership cycles when a waker holds a sender.
 * Notify all blocked bounded MPSC senders on receiver disconnection even when a buffered message destructor panics.
 * Avoid deadlocks when a bounded MPSC sender's waker clone callback receives from the same channel.
