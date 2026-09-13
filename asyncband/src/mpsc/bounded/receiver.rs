@@ -45,21 +45,21 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        let (queue, recv_waker, wakers) = {
+        let mut wakers = WakerBatch::new();
+        let (queue, recv_waker) = {
             let mut state = self.shared.lock();
             state.receiver = false;
             let queue = mem::take(&mut state.queue);
             let recv_waker = state.recv_waker.take();
-            let mut wakers = WakerBatch::new();
             while let Some((_, waiter)) = state.send_waiters.unlink_first_waiter(|_| true) {
                 if let Some(waker) = waiter.waker.take() {
                     wakers.push(waker);
                 }
             }
-            (queue, recv_waker, wakers)
+            (queue, recv_waker)
         };
         // Local ownership also drains the queue if a wake or waker destructor unwinds.
-        wake_all(wakers.into_iter());
+        wake_all(&mut wakers);
         drop(recv_waker);
         drop(queue);
     }

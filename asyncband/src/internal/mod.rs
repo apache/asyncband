@@ -140,8 +140,8 @@ pub(crate) mod waitlist;
     feature = "waitgroup",
     feature = "watch",
 ))]
-// Waker-set primitives know the exact batch capacity, while linked-list primitives use the
-// allocation-free constructor. Each constructor is therefore unused in some feature subsets.
+// Only the semaphore refills a batch and asks whether it is full, so other feature subsets leave
+// that method unused.
 #[allow(dead_code)]
 pub(crate) mod waker_batch;
 
