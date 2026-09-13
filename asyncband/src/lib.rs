@@ -65,6 +65,7 @@
 //! |                            | [`Latch`](latch::Latch)                       | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                            |
 //! |                            | [`Phaser`](phaser::Phaser)                    | `phaser`       | Coordinate repeated phases with a dynamic participant set.                                                    |
 //! |                            | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Dynamically register participants and wait until all have completed.                                          |
+//! |                            | [`TaskGroup`](task_group::TaskGroup)          | `task-group`   | Track independently spawned futures and consume their outputs in completion order.                            |
 //! |                            | [`Shutdown`](shutdown::Shutdown)              | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                            |
 //! | Work coalescing            | [`Once`](once::Once)                          | `once`         | Complete one asynchronous initialization; cancelled or panicked attempts may be retried.                       |
 //! |                            | [`OnceCell`](once::OnceCell)                  | `once-cell`    | Store one value from an access-time initializer; failed, cancelled, or panicked attempts may be retried.       |
@@ -161,6 +162,8 @@ pub mod semaphore;
 pub mod shutdown;
 #[cfg(feature = "singleflight")]
 pub mod singleflight;
+#[cfg(feature = "task-group")]
+pub mod task_group;
 #[cfg(feature = "waitgroup")]
 pub mod waitgroup;
 #[cfg(feature = "watch")]
@@ -168,6 +171,11 @@ pub mod watch;
 
 #[cfg(all(
     test,
-    any(feature = "once-map", feature = "phaser", feature = "singleflight")
+    any(
+        feature = "once-map",
+        feature = "phaser",
+        feature = "singleflight",
+        feature = "task-group"
+    )
 ))]
 mod test_support;
