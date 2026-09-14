@@ -20,8 +20,6 @@ use std::future::Future;
 use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
@@ -78,10 +76,7 @@ use crate::internal::waitlist::WaiterId;
 /// # }
 /// ```
 pub struct AutoResetEvent {
-    is_set: AtomicBool,
-    // A stored signal and queued (unselected) waits never coexist. Detached, selected waits can
-    // coexist with either: their signals are reserved until consumption or cancellation.
-    waiters: Mutex<WaitList<Waiter>>,
+    state: Mutex<State>,
 }
 
 impl AutoResetEvent {
@@ -95,8 +90,10 @@ impl AutoResetEvent {
     /// If `is_set` is `true`, the event stores one signal for a future wait.
     pub const fn with_state(is_set: bool) -> Self {
         Self {
-            is_set: AtomicBool::new(is_set),
-            waiters: Mutex::new(WaitList::new()),
+            state: Mutex::new(State {
+                is_set,
+                waiters: WaitList::new(),
+            }),
         }
     }
 
@@ -111,7 +108,7 @@ impl AutoResetEvent {
     /// Panics if waking a selected task panics. Its signal remains assigned and can still be
     /// consumed by polling that wait or passed on by dropping it.
     pub fn set(&self) {
-        let waker = self.signal(&mut self.waiters.lock());
+        let waker = self.state.lock().signal();
         if let Some(waker) = waker {
             waker.wake();
         }
@@ -122,8 +119,7 @@ impl AutoResetEvent {
     /// Signals already assigned to waits remain theirs. Cancelling such a wait can still transfer
     /// or restore its signal after this call. If no signal is stored, this has no effect.
     pub fn reset(&self) {
-        let _waiters = self.waiters.lock();
-        self.is_set.store(false, Ordering::Relaxed);
+        self.state.lock().is_set = false;
     }
 
     /// Returns whether the event is currently set.
@@ -144,7 +140,7 @@ impl AutoResetEvent {
     /// assert!(event.is_set());
     /// ```
     pub fn is_set(&self) -> bool {
-        self.is_set.load(Ordering::Acquire)
+        self.state.lock().is_set
     }
 
     /// Attempts to wait without registering a waiter.
@@ -163,13 +159,7 @@ impl AutoResetEvent {
     /// assert!(!event.try_wait()); // A successful wait consumes the signal.
     /// ```
     pub fn try_wait(&self) -> bool {
-        // Only consumption bypasses the waiter lock. Signals are stored under that lock only
-        // when no wait is queued, so this cannot take a signal assigned to a registered wait.
-        self.is_set.load(Ordering::Relaxed)
-            && self
-                .is_set
-                .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
+        mem::take(&mut self.state.lock().is_set)
     }
 
     /// Waits for and consumes one signal.
@@ -217,17 +207,12 @@ impl AutoResetEvent {
     }
 
     fn poll_wait(&self, waiter_id: &mut Option<WaiterId>, cx: &mut Context<'_>) -> Poll<()> {
-        // Registered waits own separate signals and must remove their nodes under the lock.
-        if waiter_id.is_none() && self.try_wait() {
-            return Poll::Ready(());
-        }
-
         let (poll, retired_waker) = {
-            let mut waiters = self.waiters.lock();
+            let mut state = self.state.lock();
             match *waiter_id {
-                Some(id) => match waiters.waiter_mut(id) {
+                Some(id) => match state.waiters.waiter_mut(id) {
                     Waiter::Notified => {
-                        waiters.remove_unlinked_waiter(id);
+                        state.waiters.remove_unlinked_waiter(id);
                         *waiter_id = None;
                         (Poll::Ready(()), None)
                     }
@@ -237,10 +222,12 @@ impl AutoResetEvent {
                         (Poll::Pending, retired)
                     }
                 },
-                // Recheck before enqueueing: set and cancellation handoff use this same lock.
-                None if self.try_wait() => (Poll::Ready(()), None),
+                None if state.is_set => {
+                    state.is_set = false;
+                    (Poll::Ready(()), None)
+                }
                 None => {
-                    *waiter_id = Some(waiters.push_back(Waiter::Waiting(cx.waker().clone())));
+                    *waiter_id = Some(state.waiters.push_back(Waiter::Waiting(cx.waker().clone())));
                     (Poll::Pending, None)
                 }
             }
@@ -251,12 +238,12 @@ impl AutoResetEvent {
 
     fn unregister_waiter(&self, id: WaiterId) {
         let (waiter, waker) = {
-            let mut waiters = self.waiters.lock();
+            let mut state = self.state.lock();
             // A selected waiter is already detached, but still owns its signal until removal.
-            waiters.unlink_waiter(id, |_| true);
-            let waiter = waiters.remove_unlinked_waiter(id);
+            state.waiters.unlink_waiter(id, |_| true);
+            let waiter = state.waiters.remove_unlinked_waiter(id);
             let waker = match &waiter {
-                Waiter::Notified => self.signal(&mut waiters),
+                Waiter::Notified => state.signal(),
                 Waiter::Waiting(_) => None,
             };
             (waiter, waker)
@@ -264,19 +251,6 @@ impl AutoResetEvent {
         drop(waiter);
         if let Some(waker) = waker {
             waker.wake();
-        }
-    }
-
-    fn signal(&self, waiters: &mut WaitList<Waiter>) -> Option<Waker> {
-        if let Some((_, waiter)) = waiters.unlink_first_waiter(|_| true) {
-            let Waiter::Waiting(waker) = mem::replace(waiter, Waiter::Notified) else {
-                unreachable!("only unselected waits remain queued")
-            };
-            Some(waker)
-        } else {
-            // Publish every set, including coalesced sets and returned assigned signals.
-            self.is_set.store(true, Ordering::Release);
-            None
         }
     }
 }
@@ -289,10 +263,31 @@ impl Default for AutoResetEvent {
 
 impl fmt::Debug for AutoResetEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let is_set = self.is_set();
+        let is_set = self.state.lock().is_set;
         f.debug_struct("AutoResetEvent")
             .field("is_set", &is_set)
             .finish_non_exhaustive()
+    }
+}
+
+struct State {
+    // A stored signal and queued (unselected) waits never coexist. Detached, selected waits can
+    // coexist with either: their signals are reserved until consumption or cancellation.
+    is_set: bool,
+    waiters: WaitList<Waiter>,
+}
+
+impl State {
+    fn signal(&mut self) -> Option<Waker> {
+        if let Some((_, waiter)) = self.waiters.unlink_first_waiter(|_| true) {
+            let Waiter::Waiting(waker) = mem::replace(waiter, Waiter::Notified) else {
+                unreachable!("only unselected waits remain queued")
+            };
+            Some(waker)
+        } else {
+            self.is_set = true;
+            None
+        }
     }
 }
 

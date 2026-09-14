@@ -74,6 +74,7 @@ use crate::internal::waker_batch::WakerBatch;
 /// # }
 /// ```
 pub struct ManualResetEvent {
+    // Flag writes and waiter-list changes hold `waiters`. Lock-free paths only read the flag.
     is_set: AtomicBool,
     waiters: Mutex<WaitList<Waiter>>,
 }
@@ -110,7 +111,7 @@ impl ManualResetEvent {
                 return;
             }
 
-            // Serialize publication, cohort detach, reset, and registration with the same lock.
+            // Publish to waits that observe the set state without taking the lock.
             self.is_set.store(true, Ordering::Release);
             // Detach the complete cohort before invoking any waker. A wake callback may reset the
             // event and register a new wait, which must belong to the state current at that point.
@@ -135,6 +136,7 @@ impl ManualResetEvent {
     /// already unset, this has no effect.
     pub fn reset(&self) {
         let _waiters = self.waiters.lock();
+        // Clearing the flag does not publish data to successful waits.
         self.is_set.store(false, Ordering::Relaxed);
     }
 
