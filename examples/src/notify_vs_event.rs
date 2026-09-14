@@ -148,8 +148,8 @@ async fn wait_for_index_with_notify(
 
 // Publish the indexed revision through watch, replacing both the atomic and the broadcast.
 // Each request subscribes before checking and independently waits for its required revision.
-// A retained receiver remembers unseen changes across cancelled waits. That suits a revision
-// predicate; preserving Notify's per-wait broadcast boundary instead requires fresh subscriptions.
+// Each request keeps its subscription across retries, so cancelling a changed() wait does not
+// lose an unseen revision update.
 // A ManualResetEvent set/reset pulse would miss unpolled waits; leaving it set admits future waits.
 async fn index_readers_with_watch() {
     let (indexed, mut first_request) = watch::channel(0);

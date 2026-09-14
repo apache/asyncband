@@ -122,10 +122,32 @@ impl AutoResetEvent {
         self.state.lock().is_set = false;
     }
 
-    /// Consumes a stored signal without waiting, returning whether one was available.
+    /// Returns whether the event is currently set.
     ///
-    /// This never takes a signal assigned to another wait. A `false` result is only a snapshot;
-    /// use [`wait`](Self::wait) to wait for a future signal.
+    /// The event is set while it stores an unassigned signal. Signals already assigned to waits
+    /// are not reflected in this state.
+    ///
+    /// This is a snapshot only; it does not change the event or reserve a signal for a later wait.
+    /// The state may change immediately after this call.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::event::AutoResetEvent;
+    ///
+    /// let event = AutoResetEvent::with_state(true);
+    /// assert!(event.is_set());
+    /// assert!(event.is_set());
+    /// ```
+    pub fn is_set(&self) -> bool {
+        self.state.lock().is_set
+    }
+
+    /// Attempts to wait without registering a waiter.
+    ///
+    /// Returns `true` if a stored signal was consumed. This never takes a signal assigned to
+    /// another wait. A `false` result is only a snapshot; use [`wait`](Self::wait) to wait for a
+    /// future signal.
     ///
     /// # Examples
     ///
@@ -134,7 +156,7 @@ impl AutoResetEvent {
     ///
     /// let event = AutoResetEvent::with_state(true);
     /// assert!(event.try_wait());
-    /// assert!(!event.try_wait());
+    /// assert!(!event.try_wait()); // A successful wait consumes the signal.
     /// ```
     pub fn try_wait(&self) -> bool {
         mem::take(&mut self.state.lock().is_set)

@@ -21,6 +21,9 @@
 //! it retains at most one signal, coalescing further sets. A [`ManualResetEvent`] releases all
 //! registered waits and remains set until explicitly reset.
 //!
+//! Both types offer `is_set` to inspect the state without changing it and `try_wait` to attempt
+//! an immediate wait. A successful wait consumes the signal only for an auto-reset event.
+//!
 //! Both types retain state, unlike a condition variable's unbuffered notifications. Use a
 //! semaphore when unused permits must accumulate, or a watch channel when each receiver needs to
 //! observe state changes independently.

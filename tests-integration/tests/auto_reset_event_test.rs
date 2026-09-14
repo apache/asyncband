@@ -38,12 +38,15 @@ use tests_integration::poll_once;
 #[test]
 fn unpolled_waits_do_not_reserve_stored_signals() {
     let event = AutoResetEvent::new();
+    assert!(!event.is_set());
     let mut first = pin!(event.wait());
     let mut second = pin!(event.wait());
 
     event.set();
     event.set();
+    assert!(event.is_set());
     assert!(poll_once(second.as_mut()).is_ready());
+    assert!(!event.is_set());
     assert!(!event.try_wait());
     assert!(poll_once(first.as_mut()).is_pending());
 
@@ -58,10 +61,13 @@ fn reset_discards_only_unassigned_signals() {
     let mut selected = pin!(event.wait());
     assert!(poll_once(selected.as_mut()).is_pending());
     event.set();
+    assert!(!event.is_set()); // The signal belongs to the selected wait.
 
     let mut unpolled = pin!(event.wait());
     event.set(); // One signal is assigned and another is stored.
+    assert!(event.is_set());
     event.reset();
+    assert!(!event.is_set());
     assert!(!event.try_wait());
     assert!(poll_once(unpolled.as_mut()).is_pending());
     assert!(poll_once(selected.as_mut()).is_ready());
@@ -83,12 +89,15 @@ fn reset_preserves_cancellation_handoff() {
     let mut remaining = Box::pin(event.wait());
     assert!(poll_once(remaining.as_mut()).is_pending());
     drop(selected);
+    assert!(!event.is_set());
     assert!(!event.try_wait());
 
     // The transferred signal also survives reset and can be restored by cancellation.
     event.reset();
     drop(remaining);
+    assert!(event.is_set());
     assert!(event.try_wait());
+    assert!(!event.is_set());
     assert!(!event.try_wait());
 }
 

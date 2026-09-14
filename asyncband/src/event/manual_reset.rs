@@ -45,12 +45,12 @@ use crate::internal::waker_batch::WakerBatch;
 ///
 /// # Synchronization
 ///
-/// An unset-to-set transition synchronizes with the waits it releases and with waits first polled
-/// while the event remains set. Memory operations sequenced before [`set`](Self::set) are therefore
-/// visible after those waits complete.
+/// An unset-to-set transition synchronizes with the waits it releases, with waits first polled
+/// while the event remains set, and with successful [`try_wait`](Self::try_wait) calls that observe
+/// that set state. Memory operations sequenced before [`set`](Self::set) are therefore visible
+/// after those waits complete.
 ///
 /// A `set` call that finds the event already set does not establish this guarantee.
-/// [`is_set`](Self::is_set) is only a snapshot and cannot replace a wait or support check-then-act.
 ///
 /// The event carries no application state: callers must synchronize access to external predicates
 /// separately.
@@ -137,7 +137,8 @@ impl ManualResetEvent {
 
     /// Returns whether the event is currently set.
     ///
-    /// This is a snapshot only; it does not reserve or consume the set state.
+    /// This is a snapshot only; it does not change the event or reserve a signal for a later wait.
+    /// The state may change immediately after this call.
     ///
     /// # Examples
     ///
@@ -150,6 +151,24 @@ impl ManualResetEvent {
     /// ```
     pub fn is_set(&self) -> bool {
         self.state.lock().is_set
+    }
+
+    /// Attempts to wait without registering a waiter.
+    ///
+    /// Returns `true` if the event is set, leaving it set. A `false` result is only a snapshot;
+    /// use [`wait`](Self::wait) to wait for a future signal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::event::ManualResetEvent;
+    ///
+    /// let event = ManualResetEvent::with_state(true);
+    /// assert!(event.try_wait());
+    /// assert!(event.try_wait()); // A successful wait leaves the event set.
+    /// ```
+    pub fn try_wait(&self) -> bool {
+        self.is_set()
     }
 
     /// Waits until the event is set.
