@@ -90,7 +90,7 @@ use crate::internal::wakerset::WakerToken;
 /// let (_tx, rx) = watch::channel("ready");
 /// assert_eq!(rx.get(), "ready");
 /// ```
-pub fn channel<T: Clone>(initial: T) -> (Sender<T>, Receiver<T>) {
+pub fn channel<T>(initial: T) -> (Sender<T>, Receiver<T>) {
     let shared = Arc::new(Shared {
         state: Mutex::new(State {
             value: initial,

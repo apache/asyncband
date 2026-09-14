@@ -24,6 +24,7 @@ use asyncband::barrier::Barrier;
 use asyncband::broadcast;
 use asyncband::completion;
 use asyncband::condvar::Condvar;
+use asyncband::event::AutoResetEvent;
 use asyncband::event::ManualResetEvent;
 use asyncband::latch::Latch;
 use asyncband::mpmc;
@@ -81,6 +82,7 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<Barrier>();
     assert_send_and_sync::<Condvar>();
     assert_send_and_sync::<ManualResetEvent>();
+    assert_send_and_sync::<AutoResetEvent>();
     assert_send_and_sync::<completion::Completer<Cell<u8>>>();
     assert_send_and_sync::<completion::Completer<i64>>();
     assert_send_and_sync::<completion::Completion<i64>>();
@@ -104,8 +106,11 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<RwLockWriteGuard<'_, i64>>();
     assert_send_and_sync::<broadcast::mpmc::UnboundedSender<i64>>();
     assert_send_and_sync::<broadcast::mpmc::UnboundedReceiver<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::BoundedSender<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::BoundedReceiver<i64>>();
     assert_send_and_sync::<broadcast::mpmc::RecvError>();
     assert_send_and_sync::<broadcast::mpmc::TryRecvError>();
+    assert_send_and_sync::<broadcast::mpmc::TrySendError<i64>>();
     assert_send_and_sync::<oneshot::SendError<i64>>();
     assert_send_and_sync::<oneshot::Sender<i64>>();
     assert_send_and_sync::<Closed>();
@@ -170,6 +175,7 @@ fn public_types_are_unpin() {
     assert_unpin::<Barrier>();
     assert_unpin::<Condvar>();
     assert_unpin::<ManualResetEvent>();
+    assert_unpin::<AutoResetEvent>();
     assert_unpin::<completion::Completer<i64>>();
     assert_unpin::<completion::Completion<i64>>();
     assert_unpin::<completion::Abandoned>();
@@ -192,8 +198,11 @@ fn public_types_are_unpin() {
     assert_unpin::<RwLockWriteGuard<'_, i64>>();
     assert_unpin::<broadcast::mpmc::UnboundedSender<i64>>();
     assert_unpin::<broadcast::mpmc::UnboundedReceiver<i64>>();
+    assert_unpin::<broadcast::mpmc::BoundedSender<i64>>();
+    assert_unpin::<broadcast::mpmc::BoundedReceiver<i64>>();
     assert_unpin::<broadcast::mpmc::RecvError>();
     assert_unpin::<broadcast::mpmc::TryRecvError>();
+    assert_unpin::<broadcast::mpmc::TrySendError<i64>>();
     assert_unpin::<oneshot::Sender<i64>>();
     assert_unpin::<oneshot::SendError<i64>>();
     assert_unpin::<oneshot::Receiver<i64>>();

@@ -86,19 +86,17 @@ impl WakeBatch {
         self.end == WAKE_BATCH_SIZE
     }
 
-    fn wake_all(&mut self) {
-        wake_all(std::iter::from_fn(|| {
-            if self.start == self.end {
-                return None;
-            }
+    fn take_next(&mut self) -> Option<Waker> {
+        if self.start == self.end {
+            self.start = 0;
+            self.end = 0;
+            return None;
+        }
 
-            let index = self.start;
-            self.start += 1;
-            // SAFETY: `index` was within the initialized range before advancing `start`.
-            Some(unsafe { self.wakers[index].assume_init_read() })
-        }));
-        self.start = 0;
-        self.end = 0;
+        let index = self.start;
+        self.start += 1;
+        // SAFETY: `index` was within the initialized range before advancing `start`.
+        Some(unsafe { self.wakers[index].assume_init_read() })
     }
 }
 
@@ -208,8 +206,8 @@ impl Semaphore {
         // the balance again only once the queue is empty, so a positive balance means no waiter
         // is linked and the permits can be added without the queue lock.
         //
-        // The exchange is tried once; on failure the locked path takes over, so contending
-        // releasers queue on the lock instead of spinning on the balance.
+        // Try the exchange once before falling back to the locked path. Other threads can
+        // still use the fast paths, so a locked balance update may also need to retry.
         let current = self.permits.load(Ordering::Relaxed);
         if current != 0 && self.try_add_to_balance(current, n).is_ok() {
             return;
@@ -230,7 +228,7 @@ impl Semaphore {
     }
 
     /// Adds `n` permits to the semaphore if there is any waiter.
-    #[cfg(feature = "mpmc")]
+    #[cfg(any(feature = "broadcast", feature = "mpmc"))]
     pub fn release_if_nonempty(&self, n: usize) {
         let waiters = self.waiters.lock();
         if !waiters.is_empty() {
@@ -239,7 +237,7 @@ impl Semaphore {
     }
 
     /// Adds as many permits until there is no waiter.
-    #[cfg(feature = "mpmc")]
+    #[cfg(any(feature = "broadcast", feature = "mpmc"))]
     pub fn notify_all(&self) {
         let mut waiters = self.waiters.lock();
         let mut wakers = vec![];
@@ -261,7 +259,7 @@ impl Semaphore {
             }
         }
         drop(waiters);
-        crate::internal::wake_all(wakers.into_iter());
+        wake_all(wakers.into_iter());
     }
 
     /// Adds `n` permits to a balance expected to hold `current`, or returns the balance observed
@@ -287,55 +285,66 @@ impl Semaphore {
         mut rem: usize,
         waiters: MutexGuard<'_, WaitList<WaitNode>>,
     ) {
-        let mut wakers = WakeBatch::new();
-
+        let mut batch = WakeBatch::new();
         let mut lock = Some(waiters);
-        while rem > 0 {
-            let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
-            while !wakers.is_full() {
-                match waiters.unlink_first_waiter(|node| {
-                    if node.permits <= rem {
-                        rem -= node.permits;
-                        node.permits = 0;
-                        true
+
+        // One iterator covers the entire release. If a callback panics, `wake_all` keeps pulling
+        // batches during unwinding, so the remaining permits are still distributed and notified.
+        wake_all(std::iter::from_fn(|| {
+            loop {
+                if let Some(waker) = batch.take_next() {
+                    return Some(waker);
+                }
+                if rem == 0 {
+                    return None;
+                }
+
+                let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
+                while !batch.is_full() {
+                    match waiters.unlink_first_waiter(|node| {
+                        if node.permits <= rem {
+                            rem -= node.permits;
+                            node.permits = 0;
+                            true
+                        } else {
+                            node.permits -= rem;
+                            rem = 0;
+                            false
+                        }
+                    }) {
+                        None => break,
+                        Some((id, waiter)) => {
+                            let remove_now = waiter.waker.is_none();
+                            if let Some(waker) = waiter.waker.take() {
+                                batch.push(waker);
+                            }
+                            if remove_now {
+                                waiters.remove_unlinked_waiter(id);
+                            }
+                        }
+                    }
+                }
+
+                if rem > 0 && waiters.is_empty() {
+                    // Retire the remainder before the overflow check so unwinding cannot retry it.
+                    let added = std::mem::take(&mut rem);
+                    // Fast releases can grow the balance under this lock, so the overflow check
+                    // and addition must be one exchange. A zero balance cannot change under the
+                    // lock, but still needs an RMW to extend the previous release sequence.
+                    let mut current = self.permits.load(Ordering::Relaxed);
+                    if current == 0 {
+                        self.permits.fetch_add(added, Ordering::Release);
                     } else {
-                        node.permits -= rem;
-                        rem = 0;
-                        false
-                    }
-                }) {
-                    None => break,
-                    Some((id, waiter)) => {
-                        let remove_now = waiter.waker.is_none();
-                        if let Some(waker) = waiter.waker.take() {
-                            wakers.push(waker);
-                        }
-                        if remove_now {
-                            waiters.remove_unlinked_waiter(id);
+                        while let Err(actual) = self.try_add_to_balance(current, added) {
+                            current = actual;
                         }
                     }
                 }
-            }
 
-            if rem > 0 && waiters.is_empty() {
-                // The positive-balance path of `release` can grow the balance while the lock is
-                // held, so the overflow check and the addition are one exchange. A zero balance
-                // cannot change under the lock, but the addition stays a read-modify-write so
-                // that it extends the release sequence of the previous release.
-                let mut current = self.permits.load(Ordering::Relaxed);
-                if current == 0 {
-                    self.permits.fetch_add(rem, Ordering::Release);
-                } else {
-                    while let Err(actual) = self.try_add_to_balance(current, rem) {
-                        current = actual;
-                    }
-                }
-                rem = 0;
+                // Neither wake callbacks nor destruction of the taken waker run under this lock.
+                drop(waiters);
             }
-
-            drop(waiters);
-            wakers.wake_all();
-        }
+        }));
     }
 }
 
@@ -509,6 +518,8 @@ fn acquired_or_enqueue(
 
 #[cfg(test)]
 mod tests {
+    use std::panic;
+    use std::panic::AssertUnwindSafe;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -581,6 +592,17 @@ mod tests {
     }
 
     #[test]
+    fn locked_overflow_does_not_retry_during_unwinding() {
+        let semaphore = Semaphore::new(usize::MAX);
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            semaphore.insert_permits_with_lock(1, semaphore.waiters.lock());
+        }));
+        assert!(result.is_err());
+        assert_eq!(semaphore.available_permits(), usize::MAX);
+        assert!(semaphore.waiters.lock().is_empty());
+    }
+
+    #[test]
     fn release_all_held_hands_permits_to_the_queue() {
         let semaphore = Semaphore::new(1);
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
@@ -599,8 +621,8 @@ mod tests {
     }
 
     #[test]
-    fn release_drains_more_than_one_wake_batch() {
-        const WAITER_COUNT: usize = WAKE_BATCH_SIZE + 3;
+    fn release_distributes_permits_to_all_waiters() {
+        const WAITER_COUNT: usize = 35;
 
         let semaphore = Semaphore::new(0);
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
@@ -620,6 +642,66 @@ mod tests {
         for acquire in &mut acquires {
             assert!(acquire.poll_once(&waker).is_ready());
         }
+        assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
+    }
+
+    #[test]
+    fn panicking_wakes_preserve_permits_and_the_first_panic() {
+        const WAITER_COUNT: usize = 65;
+
+        struct TrackedWake {
+            count: AtomicUsize,
+            panic_message: Option<&'static str>,
+        }
+
+        impl Wake for TrackedWake {
+            fn wake(self: Arc<Self>) {
+                self.count.fetch_add(1, Ordering::Relaxed);
+                if let Some(message) = self.panic_message {
+                    panic::panic_any(message);
+                }
+            }
+        }
+
+        let semaphore = Semaphore::new(0);
+        let trackers = (0..WAITER_COUNT)
+            .map(|index| {
+                Arc::new(TrackedWake {
+                    count: AtomicUsize::new(0),
+                    panic_message: if index == 0 {
+                        Some("first wake panic")
+                    } else if index == WAITER_COUNT / 2 {
+                        Some("later wake panic")
+                    } else {
+                        None
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut acquires = trackers
+            .iter()
+            .map(|tracker| {
+                let mut acquire = semaphore.poll_acquire(1);
+                assert!(
+                    acquire
+                        .poll_once(&Waker::from(tracker.clone()))
+                        .is_pending()
+                );
+                acquire
+            })
+            .collect::<Vec<_>>();
+
+        let payload = panic::catch_unwind(AssertUnwindSafe(|| semaphore.release(WAITER_COUNT + 2)))
+            .expect_err("the original wake panic must reach the caller");
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"first wake panic"));
+
+        for tracker in trackers {
+            assert_eq!(tracker.count.load(Ordering::Relaxed), 1);
+        }
+        for acquire in &mut acquires {
+            assert!(acquire.poll_once(Waker::noop()).is_ready());
+        }
+        assert_eq!(semaphore.available_permits(), 2);
         assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
     }
 }

@@ -37,12 +37,17 @@ use tests_integration::poll_once;
 #[test]
 fn set_is_sticky_and_reset_blocks_new_waiters() {
     let event = ManualResetEvent::new();
+    assert!(!event.try_wait());
     event.set();
+    assert!(event.try_wait());
+    assert!(event.try_wait());
 
     let mut ready = pin!(event.wait());
     assert!(poll_once(ready.as_mut()).is_ready());
+    assert!(event.is_set());
 
     event.reset();
+    assert!(!event.try_wait());
     let mut pending = pin!(event.wait());
     assert!(poll_once(pending.as_mut()).is_pending());
 }
@@ -317,6 +322,8 @@ fn set_then_reset_commits_registered_waiters() {
     event.set();
     event.reset();
 
+    assert!(!event.is_set());
+    assert!(!event.try_wait());
     assert_eq!(tracker.count(), 1);
     assert!(wait.as_mut().poll(&mut context).is_ready());
 

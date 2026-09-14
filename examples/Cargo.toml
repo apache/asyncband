@@ -28,10 +28,12 @@ release = false
 [dependencies]
 asyncband = { workspace = true, features = [
   "completion",
+  "event",
   "lazy-cell",
   "once-cell",
   "phaser",
   "shutdown",
+  "watch",
 ] }
 tokio = { workspace = true, features = [
   "macros",
@@ -43,6 +45,14 @@ tokio = { workspace = true, features = [
 
 [lints]
 workspace = true
+
+[[example]]
+name = "coalesced_worker"
+path = "src/coalesced_worker.rs"
+
+[[example]]
+name = "notify_vs_event"
+path = "src/notify_vs_event.rs"
 
 [[example]]
 name = "once_cell_vs_lazy_cell"
