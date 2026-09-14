@@ -34,6 +34,7 @@ use crate::internal::waitlist::WaiterId;
 /// if no wait is queued. Repeated sets coalesce only while an unassigned signal is stored. A
 /// signal assigned to a wait belongs to that wait until it completes or is cancelled; subsequent
 /// sets can release other waits even before previously selected waits are polled again.
+/// An unassigned signal can be cleared with [`reset`](Self::reset).
 ///
 /// Waiting consumes a signal without returning it on completion. Unlike a
 /// [`ManualResetEvent`](super::ManualResetEvent), this event does not release all observers of a
@@ -97,6 +98,14 @@ impl AutoResetEvent {
         if let Some(waker) = waker {
             waker.wake();
         }
+    }
+
+    /// Clears any stored, unassigned signal.
+    ///
+    /// Signals already assigned to waits remain theirs. Cancelling such a wait can still transfer
+    /// or restore its signal after this call. If no signal is stored, this has no effect.
+    pub fn reset(&self) {
+        self.state.lock().is_set = false;
     }
 
     /// Consumes a stored signal without waiting, returning whether one was available.

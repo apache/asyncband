@@ -53,6 +53,46 @@ fn unpolled_waits_do_not_reserve_stored_signals() {
 }
 
 #[test]
+fn reset_discards_only_unassigned_signals() {
+    let event = AutoResetEvent::new();
+    let mut selected = pin!(event.wait());
+    assert!(poll_once(selected.as_mut()).is_pending());
+    event.set();
+
+    let mut unpolled = pin!(event.wait());
+    event.set(); // One signal is assigned and another is stored.
+    event.reset();
+    assert!(!event.try_wait());
+    assert!(poll_once(unpolled.as_mut()).is_pending());
+    assert!(poll_once(selected.as_mut()).is_ready());
+
+    event.reset();
+    event.set();
+    assert!(poll_once(unpolled.as_mut()).is_ready());
+    assert!(!event.try_wait());
+}
+
+#[test]
+fn reset_preserves_cancellation_handoff() {
+    let event = AutoResetEvent::new();
+    let mut selected = Box::pin(event.wait());
+    assert!(poll_once(selected.as_mut()).is_pending());
+    event.set();
+    event.reset();
+
+    let mut remaining = Box::pin(event.wait());
+    assert!(poll_once(remaining.as_mut()).is_pending());
+    drop(selected);
+    assert!(!event.try_wait());
+
+    // The transferred signal also survives reset and can be restored by cancellation.
+    event.reset();
+    drop(remaining);
+    assert!(event.try_wait());
+    assert!(!event.try_wait());
+}
+
+#[test]
 fn assigned_signals_cannot_be_stolen() {
     let event = AutoResetEvent::new();
     let first_wake = Arc::new(WakeCounter::default());
