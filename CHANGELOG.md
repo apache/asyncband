@@ -41,6 +41,7 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
+* Allow `watch::channel` to store non-`Clone` values for publication and change notification; only owning reads through `Receiver::get` and `Receiver::recv` require `Clone`.
 * Finish releasing buffered bounded MPSC messages even if one message destructor panics.
 * Improve unbounded MPSC throughput with batched receiving and incremental storage reclamation; empty-buffer retention is bounded independently of previous peak occupancy.
 * Make completed and abandoned `Completion` waits lock-free while preserving cancellable pending registration.
