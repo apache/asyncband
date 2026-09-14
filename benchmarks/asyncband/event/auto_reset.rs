@@ -31,6 +31,13 @@ const THREAD_COUNTS: &[usize] = &[1, 2, 8, 32];
 const CONTENDED_SAMPLE_SIZE: u32 = 256;
 
 #[divan::bench]
+fn set_coalesced(bencher: Bencher) {
+    let event = AutoResetEvent::with_state(true);
+
+    bencher.bench_local(|| black_box(&event).set());
+}
+
+#[divan::bench]
 fn set_then_wait(bencher: Bencher) {
     let event = AutoResetEvent::new();
 
@@ -101,6 +108,25 @@ fn wake_waiter_reused(bencher: Bencher) {
         let mut wait = pin!(event.wait());
         poll_pending(wait.as_mut(), &mut context);
 
+        event.set();
+        poll_pinned_ready(wait.as_mut(), &mut context);
+        black_box(&event)
+    });
+}
+
+#[divan::bench]
+fn consume_stale_signal_then_wait(bencher: Bencher) {
+    let mut context = bench_context();
+    let event = AutoResetEvent::new();
+
+    bencher.bench_local(|| {
+        // A predicate loop consumes a leftover signal, rechecks, and waits for new work.
+        event.set();
+        let mut stale = pin!(event.wait());
+        poll_pinned_ready(stale.as_mut(), &mut context);
+
+        let mut wait = pin!(event.wait());
+        poll_pending(wait.as_mut(), &mut context);
         event.set();
         poll_pinned_ready(wait.as_mut(), &mut context);
         black_box(&event)

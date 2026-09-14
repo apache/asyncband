@@ -75,7 +75,7 @@ use crate::internal::waker_batch::WakerBatch;
 /// ```
 pub struct ManualResetEvent {
     is_set: AtomicBool,
-    state: Mutex<State>,
+    waiters: Mutex<WaitList<Waiter>>,
 }
 
 impl ManualResetEvent {
@@ -90,9 +90,7 @@ impl ManualResetEvent {
     pub const fn with_state(is_set: bool) -> Self {
         Self {
             is_set: AtomicBool::new(is_set),
-            state: Mutex::new(State {
-                waiters: WaitList::new(),
-            }),
+            waiters: Mutex::new(WaitList::new()),
         }
     }
 
@@ -107,7 +105,7 @@ impl ManualResetEvent {
     /// attempted for every other selected task before the panic resumes.
     pub fn set(&self) {
         let wakers = {
-            let mut state = self.state.lock();
+            let mut waiters = self.waiters.lock();
             if self.is_set.load(Ordering::Relaxed) {
                 return;
             }
@@ -117,7 +115,7 @@ impl ManualResetEvent {
             // Detach the complete cohort before invoking any waker. A wake callback may reset the
             // event and register a new wait, which must belong to the state current at that point.
             let mut wakers = WakerBatch::new();
-            while let Some((_id, waiter)) = state.waiters.unlink_first_waiter(|waiter| {
+            while let Some((_id, waiter)) = waiters.unlink_first_waiter(|waiter| {
                 waiter.notified = true;
                 true
             }) {
@@ -136,7 +134,7 @@ impl ManualResetEvent {
     /// Waits already released by a preceding [`set`](Self::set) remain ready. If the event is
     /// already unset, this has no effect.
     pub fn reset(&self) {
-        let _state = self.state.lock();
+        let _waiters = self.waiters.lock();
         self.is_set.store(false, Ordering::Relaxed);
     }
 
@@ -230,10 +228,10 @@ impl ManualResetEvent {
         }
 
         let (poll, retired_waker) = {
-            let mut state = self.state.lock();
+            let mut waiters = self.waiters.lock();
             match *waiter_id {
-                Some(id) if state.waiters.waiter_mut(id).notified => {
-                    let waiter = state.remove_waiter(id);
+                Some(id) if waiters.waiter_mut(id).notified => {
+                    let waiter = waiters.remove_unlinked_waiter(id);
                     *waiter_id = None;
                     (Poll::Ready(()), waiter.waker)
                 }
@@ -242,7 +240,7 @@ impl ManualResetEvent {
                         !self.is_set.load(Ordering::Relaxed),
                         "a linked waiter must belong to an unset event"
                     );
-                    let waiter = state.waiters.waiter_mut(id);
+                    let waiter = waiters.waiter_mut(id);
                     let retired = (!waiter.will_wake(cx.waker()))
                         .then(|| waiter.replace_waker(cx.waker().clone()));
                     (Poll::Pending, retired)
@@ -251,7 +249,7 @@ impl ManualResetEvent {
                 // either completes this wait here or selects its registered node later.
                 None if self.is_set.load(Ordering::Relaxed) => (Poll::Ready(()), None),
                 None => {
-                    *waiter_id = Some(state.waiters.push_back(Waiter {
+                    *waiter_id = Some(waiters.push_back(Waiter {
                         notified: false,
                         waker: Some(cx.waker().clone()),
                     }));
@@ -266,8 +264,10 @@ impl ManualResetEvent {
 
     fn unregister_waiter(&self, id: WaiterId) {
         let waiter = {
-            let mut state = self.state.lock();
-            state.remove_waiter(id)
+            let mut waiters = self.waiters.lock();
+            // A released waiter is already detached, but retains its node until removal.
+            waiters.unlink_waiter(id, |_| true);
+            waiters.remove_unlinked_waiter(id)
         };
         drop(waiter);
     }
@@ -285,21 +285,6 @@ impl fmt::Debug for ManualResetEvent {
         f.debug_struct("ManualResetEvent")
             .field("is_set", &is_set)
             .finish_non_exhaustive()
-    }
-}
-
-#[derive(Debug)]
-struct State {
-    waiters: WaitList<Waiter>,
-}
-
-impl State {
-    /// Removes a waiter whether or not [`ManualResetEvent::set`] already unlinked it.
-    fn remove_waiter(&mut self, id: WaiterId) -> Waiter {
-        // Unlinking is idempotent: a waiter that `set` detached keeps its node until it is removed
-        // here, and an unconditional predicate never declines.
-        self.waiters.unlink_waiter(id, |_| true);
-        self.waiters.remove_unlinked_waiter(id)
     }
 }
 
