@@ -15,19 +15,39 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A reusable, level-triggered signal for coordinating tasks.
+//! Reusable signals for coordinating tasks without carrying a value.
+//!
+//! A [`ManualResetEvent`] releases all registered waits and remains ready until explicitly reset.
+//! An [`AutoResetEvent`] releases one wait per assigned signal and consumes that signal when the
+//! wait completes. With no queued waits, it retains at most one signal, coalescing further sets.
+//!
+//! Both types retain state, unlike a condition variable's unbuffered notifications. Use a
+//! semaphore when unused permits must accumulate, or a watch channel when each receiver needs to
+//! observe state changes independently.
+//!
+//! # Manual-reset events
 //!
 //! A [`ManualResetEvent`] is either set or unset. Calling [`set`](ManualResetEvent::set) releases
 //! every registered wait and makes future waits ready. The signal remains set until
 //! [`reset`](ManualResetEvent::reset) makes new waits block again.
 //!
-//! The retained set state distinguishes this primitive from a condition variable, whose
-//! notifications are not buffered. Unlike a latch, a manual-reset event can be reset and reused.
+//! Unlike a latch, a manual-reset event can be reset and reused.
 //!
 //! A wait registered before `set` is committed to completion even if another task calls `reset`
 //! before that wait is polled again. Registration happens on the first poll, not when the future is
 //! constructed, so `set` followed immediately by `reset` is not a pulse for unpolled futures. Keep
 //! the event set for as long as the condition it represents holds.
+//!
+//! # Auto-reset events
+//!
+//! An auto-reset event is useful for a single worker that rechecks external state after a signal.
+//! Publish the state before calling `set`, and check the predicate in a loop. A signal arriving
+//! between the predicate check and the first poll is retained, so the worker does not miss it.
+//! A leftover signal can cause an extra predicate check without implying new work.
+//!
+//! Multiple waits on an auto-reset event compete for signals. This does not broadcast a predicate
+//! change to every observer, and the simple check-then-wait loop is not a general multi-consumer
+//! queue protocol: several changes can coalesce before those consumers register their waits.
 //!
 //! # Examples
 //!
@@ -64,6 +84,10 @@ use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::wake_all;
 use crate::internal::waker_batch::WakerBatch;
+
+mod auto_reset;
+
+pub use self::auto_reset::AutoResetEvent;
 
 /// A reusable event that remains set until explicitly reset.
 ///
