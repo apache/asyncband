@@ -581,6 +581,7 @@ pub fn disconnect<B>(shared: &Shared<B>) {
         state.waiters.take_all()
     };
     wake_all(wakers);
+    notify_blocking(shared);
 }
 
 /// Releases a cancelled receive's waker registration, dropping the waker unlocked.

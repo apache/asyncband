@@ -610,6 +610,7 @@ impl<T: Clone> BoundedReceiver<T> {
                     let guard = shared.blocking.lock();
                     if shared.epoch.load(Ordering::Acquire) != snap
                         || self.cursor < shared.tail.load(Ordering::Acquire)
+                        || shared.senders.load(Ordering::Acquire) == 0
                     {
                         continue;
                     }

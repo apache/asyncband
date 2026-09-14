@@ -583,6 +583,19 @@ fn parked_recv_wakes_when_the_sender_drops() {
     );
 }
 
+#[test]
+fn parked_recv_blocking_wakes_when_the_sender_drops() {
+    assert_completes_without_deadlock(|| {
+        let (tx, mut rx) = bounded::<i32>(4);
+        let parked = thread::spawn(move || rx.recv_blocking());
+        // The worker parks on the empty channel. Dropping the sender must finish that receive
+        // with Disconnected; a missed condvar wake hangs inside assert_completes_without_deadlock.
+        thread::sleep(std::time::Duration::from_millis(50));
+        drop(tx);
+        assert_eq!(parked.join().unwrap(), Err(RecvError::Disconnected));
+    });
+}
+
 // ---------------------------------------------------------------------------------------------
 // Panic safety
 // ---------------------------------------------------------------------------------------------
