@@ -15,6 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Initialize service endpoints and clients with OnceCell or LazyCell. Compare fixed initializers,
+//! access-time configuration, and a captured credential initializer that survives caller
+//! cancellation.
+
 use std::future::Ready;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;

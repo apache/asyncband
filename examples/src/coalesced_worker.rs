@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Run with `cargo run --package examples --example coalesced_worker`.
-//!
 //! One worker rebuilds a snapshot of the latest requested revision. Intermediate revisions may
 //! coalesce: this is not a queue of jobs that must each run, or a broadcast to multiple observers.
 

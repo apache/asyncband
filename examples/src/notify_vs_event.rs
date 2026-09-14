@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Run with `cargo run --package examples --example notify_vs_event`.
-//!
 //! Three notification needs: wake one worker, notify existing observers of a change, and keep a
 //! readiness gate open. Tokio Notify combines the first two; ManualResetEvent expresses the third.
 //! See https://docs.rs/tokio/1.53.1/tokio/sync/struct.Notify.html for Tokio's contracts.
