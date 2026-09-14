@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Stop a service on Ctrl+C or an administrative request, wait for worker cleanup, and abort the
+//! worker if the shutdown deadline expires.
+
 use std::error::Error;
 use std::time::Duration;
 
