@@ -164,7 +164,7 @@ impl ManualResetEvent {
     /// Sets the event and releases every currently registered wait.
     ///
     /// The event remains set until [`reset`](Self::reset) is called. Calling `set` while it is
-    /// already set has no effect. No ordering is guaranteed among the released waits.
+    /// already set has no effect.
     ///
     /// # Panics
     ///

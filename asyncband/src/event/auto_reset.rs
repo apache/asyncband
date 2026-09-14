@@ -30,7 +30,7 @@ use crate::internal::waitlist::WaiterId;
 
 /// A reusable signal that releases one waiter and resets automatically.
 ///
-/// Each [`set`](Self::set) assigns a signal to the oldest registered wait, or stores one signal
+/// Each [`set`](Self::set) assigns a signal to one registered wait, or stores one signal
 /// if no wait is queued. Repeated sets coalesce only while an unassigned signal is stored. A
 /// signal assigned to a wait belongs to that wait until it completes or is cancelled; subsequent
 /// sets can release other waits even before previously selected waits are polled again.
@@ -82,7 +82,7 @@ impl AutoResetEvent {
         }
     }
 
-    /// Signals the oldest registered wait, or stores one signal if no wait is queued.
+    /// Signals one registered wait, or stores one signal if no wait is queued.
     ///
     /// A stored signal is available to a future wait. Further sets coalesce while it remains
     /// unassigned. Creating a wait future does not register it; registration happens when it is
@@ -101,8 +101,8 @@ impl AutoResetEvent {
 
     /// Consumes a stored signal without waiting, returning whether one was available.
     ///
-    /// This never takes a signal assigned to another wait or bypasses a queued wait. A `false`
-    /// result is only a snapshot; use [`wait`](Self::wait) to wait for a future signal.
+    /// This never takes a signal assigned to another wait. A `false` result is only a snapshot;
+    /// use [`wait`](Self::wait) to wait for a future signal.
     ///
     /// ```
     /// use asyncband::event::AutoResetEvent;
@@ -117,16 +117,16 @@ impl AutoResetEvent {
 
     /// Waits for and consumes one signal.
     ///
-    /// The first poll consumes a stored signal immediately, or joins the FIFO waiter queue.
-    /// Merely creating this future neither reserves a signal nor establishes a queue position.
+    /// The first poll consumes a stored signal immediately, or registers the wait.
+    /// Merely creating this future neither reserves a signal nor registers the wait.
     /// Signals assigned to other waits cannot be consumed by this wait.
     ///
     /// # Cancel safety
     ///
     /// Dropping this future before it returns `Ready` removes its registration. If a signal was
-    /// assigned to it, that signal is passed to the oldest queued wait or stored for a future
-    /// wait, coalescing with any signal already stored. Retrying a cancelled wait joins the back
-    /// of the queue. Dropping a completed wait does not return its consumed signal.
+    /// assigned to it, that signal is passed to another registered wait or stored for a future
+    /// wait, coalescing with any signal already stored. Dropping a completed wait does not return
+    /// its consumed signal.
     pub async fn wait(&self) {
         Wait {
             event: self,
@@ -137,8 +137,8 @@ impl AutoResetEvent {
 
     /// Waits for and consumes one signal without borrowing the event.
     ///
-    /// The future owns the [`Arc`], making it suitable for spawned tasks. Its registration,
-    /// fairness, and cancellation semantics match [`wait`](Self::wait).
+    /// The future owns the [`Arc`], making it suitable for spawned tasks. Its waiting and
+    /// cancellation semantics match [`wait`](Self::wait).
     ///
     /// ```
     /// # #[tokio::main]
