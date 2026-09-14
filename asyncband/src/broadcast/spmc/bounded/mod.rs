@@ -106,6 +106,7 @@ use std::future::Future;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
@@ -355,28 +356,28 @@ impl<T> BoundedSender<T> {
                 Ok(()) => return,
                 Err(TrySendError::Full(returned)) => {
                     value = returned;
-                    let shared = self.shared.clone();
-                    shared.producer_waiting.store(1, Ordering::Release);
-                    let snap = shared.epoch.load(Ordering::Acquire);
-                    let cap = shared.buffer.cap as u64;
-                    if shared.tail.load(Ordering::Acquire) - shared.head.load(Ordering::Acquire)
+                    self.shared.producer_waiting.store(1, Ordering::Release);
+                    let snap = self.shared.epoch.load(Ordering::Acquire);
+                    let cap = self.shared.buffer.cap as u64;
+                    if self.shared.tail.load(Ordering::Acquire)
+                        - self.shared.head.load(Ordering::Acquire)
                         < cap
                     {
                         continue;
                     }
-                    let guard = shared.blocking.lock();
-                    if shared.epoch.load(Ordering::Acquire) != snap
-                        || shared.tail.load(Ordering::Acquire) - shared.head.load(Ordering::Acquire)
+                    let guard = self.shared.blocking.lock();
+                    if self.shared.epoch.load(Ordering::Acquire) != snap
+                        || self.shared.tail.load(Ordering::Acquire)
+                            - self.shared.head.load(Ordering::Acquire)
                             < cap
                     {
-                        drop(guard);
                         continue;
                     }
                     drop(
-                        shared
+                        self.shared
                             .blocking_cvar
                             .wait(guard)
-                            .unwrap_or_else(|e| e.into_inner()),
+                            .unwrap_or_else(PoisonError::into_inner),
                     );
                 }
             }
@@ -599,26 +600,25 @@ impl<T: Clone> BoundedReceiver<T> {
                 Ok(value) => return Ok(value),
                 Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
                 Err(TryRecvError::Empty) => {
-                    let shared = self.shared.clone();
-                    let snap = shared.epoch.load(Ordering::Acquire);
-                    if self.cursor < shared.tail.load(Ordering::Acquire) {
+                    let snap = self.shared.epoch.load(Ordering::Acquire);
+                    if self.cursor < self.shared.tail.load(Ordering::Acquire) {
                         continue;
                     }
-                    if shared.senders.load(Ordering::Acquire) == 0 {
+                    if self.shared.senders.load(Ordering::Acquire) == 0 {
                         return Err(RecvError::Disconnected);
                     }
-                    let guard = shared.blocking.lock();
-                    if shared.epoch.load(Ordering::Acquire) != snap
-                        || self.cursor < shared.tail.load(Ordering::Acquire)
-                        || shared.senders.load(Ordering::Acquire) == 0
+                    let guard = self.shared.blocking.lock();
+                    if self.shared.epoch.load(Ordering::Acquire) != snap
+                        || self.cursor < self.shared.tail.load(Ordering::Acquire)
+                        || self.shared.senders.load(Ordering::Acquire) == 0
                     {
                         continue;
                     }
                     drop(
-                        shared
+                        self.shared
                             .blocking_cvar
                             .wait(guard)
-                            .unwrap_or_else(|e| e.into_inner()),
+                            .unwrap_or_else(PoisonError::into_inner),
                     );
                 }
             }

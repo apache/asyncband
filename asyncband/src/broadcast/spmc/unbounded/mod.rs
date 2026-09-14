@@ -152,37 +152,33 @@ impl<T> UnboundedSender<T> {
             let next = Shared::<UnboundedBuffer<T>>::next_tail(tail);
             if state.receiver_count == 0 {
                 common::commit_discard(&self.shared.head, &self.shared.tail, next);
-                drop(state);
-                self.shared.send_in_progress.store(false, Ordering::Release);
                 Some(msg)
             } else {
-                let slot = self.shared.buffer.slot_for_publish(tail);
                 unsafe {
-                    slot.write(msg, state.receiver_count);
+                    self.shared
+                        .buffer
+                        .slot_for_publish(tail)
+                        .write(msg, state.receiver_count);
                 }
                 common::commit_publish(&self.shared.tail, next);
-                drop(state);
-                self.shared.send_in_progress.store(false, Ordering::Release);
                 None
             }
         } else {
             let tail = self.shared.tail.load(Ordering::Relaxed);
             let next = Shared::<UnboundedBuffer<T>>::next_tail(tail);
-            let slot = self.shared.buffer.slot_for_publish(tail);
             unsafe {
-                slot.write(msg, n);
+                self.shared.buffer.slot_for_publish(tail).write(msg, n);
             }
             common::commit_publish(&self.shared.tail, next);
-            self.shared.send_in_progress.store(false, Ordering::Release);
             None
         };
 
+        self.shared.send_in_progress.store(false, Ordering::Release);
         if self.shared.has_waiters.load(Ordering::Acquire) {
             let wakers = {
                 let mut state = self.shared.state.lock();
-                let wakers = state.waiters.drain();
                 self.shared.has_waiters.store(false, Ordering::Release);
-                wakers
+                state.waiters.drain()
             };
             wake_all(wakers);
         }

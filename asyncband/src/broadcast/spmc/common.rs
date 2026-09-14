@@ -28,6 +28,7 @@ use std::hint;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::Condvar;
+use std::sync::MutexGuard;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU64;
@@ -221,7 +222,7 @@ impl<B> Shared<B> {
     }
 
     /// Waits until an unbounded lock-free send is not mid-publish, then takes `state`.
-    fn lock_idle_send(&self) -> std::sync::MutexGuard<'_, State> {
+    fn lock_idle_send(&self) -> MutexGuard<'_, State> {
         loop {
             while self.send_in_progress.load(Ordering::Acquire) {
                 hint::spin_loop();
@@ -640,26 +641,25 @@ pub fn poll_receive<T: Clone, B: SlotStore<T>>(
 
     let retired_waker = state.waiters.register(token, cx.waker());
     shared.has_waiters.store(true, Ordering::Release);
-    if *cursor < shared.tail.load(Ordering::Acquire) {
-        let waker = state.waiters.unregister(token);
+    if *cursor >= shared.tail.load(Ordering::Acquire) && shared.senders.load(Ordering::Acquire) != 0
+    {
         drop(state);
         drop(retired_waker);
-        drop(waker);
-        return Poll::Ready(Ok(consume(shared, cursor)));
+        return Poll::Pending;
     }
-    if shared.senders.load(Ordering::Acquire) == 0 {
-        let waker = state.waiters.unregister(token);
-        drop(state);
-        drop(retired_waker);
-        drop(waker);
-        return Poll::Ready(Err(RecvError::Disconnected));
-    }
+
+    let waker = state.waiters.unregister(token);
     drop(state);
     drop(retired_waker);
-    Poll::Pending
+    drop(waker);
+    if *cursor < shared.tail.load(Ordering::Acquire) {
+        Poll::Ready(Ok(consume(shared, cursor)))
+    } else {
+        Poll::Ready(Err(RecvError::Disconnected))
+    }
 }
 
-/// Publishes `tail` after writing a slot. Caller holds `state` and drains waiters after this.
+/// Publishes `tail` after writing a slot.
 pub fn commit_publish(tail: &AtomicU64, next: u64) {
     tail.store(next, Ordering::Release);
 }
