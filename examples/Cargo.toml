@@ -33,6 +33,7 @@ asyncband = { workspace = true, features = [
   "once-cell",
   "phaser",
   "shutdown",
+  "watch",
 ] }
 tokio = { workspace = true, features = [
   "macros",
@@ -48,6 +49,10 @@ workspace = true
 [[example]]
 name = "coalesced_worker"
 path = "src/coalesced_worker.rs"
+
+[[example]]
+name = "notify_vs_event"
+path = "src/notify_vs_event.rs"
 
 [[example]]
 name = "once_cell_vs_lazy_cell"
