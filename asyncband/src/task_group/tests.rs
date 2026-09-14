@@ -49,6 +49,8 @@ struct PinnedReady {
 
 struct DropFlagFuture(Arc<AtomicBool>);
 
+struct ReadyDropFlagFuture(Arc<AtomicBool>);
+
 impl Future for DropFlagFuture {
     type Output = ();
 
@@ -58,6 +60,20 @@ impl Future for DropFlagFuture {
 }
 
 impl Drop for DropFlagFuture {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Future for ReadyDropFlagFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(())
+    }
+}
+
+impl Drop for ReadyDropFlagFuture {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Relaxed);
     }
@@ -132,6 +148,9 @@ fn outputs_follow_completion_order() {
     assert_eq!(poll_once(next.as_mut()), Poll::Ready(Some("first")));
     drop(next);
     let mut next = Box::pin(group.join_next());
+    assert_eq!(poll_once(next.as_mut()), Poll::Pending);
+    drop(second);
+    drop(first);
     assert_eq!(poll_once(next.as_mut()), Poll::Ready(None));
 }
 
@@ -148,6 +167,9 @@ fn join_collects_queued_and_later_outputs() {
     assert!(poll_once(join.as_mut()).is_pending());
     assert_eq!(poll_once(second.as_mut()), Poll::Ready(()));
     assert_eq!(poll_once(third.as_mut()), Poll::Ready(()));
+    drop(first);
+    drop(second);
+    drop(third);
 
     let Poll::Ready(outputs) = poll_once(join.as_mut()) else {
         panic!("the last task completion must finish the join");
@@ -173,6 +195,36 @@ fn dropping_the_last_tracked_future_finishes_a_closed_group() {
     drop(tracked);
     assert_eq!(counter.0.load(Ordering::Relaxed), 1);
     assert_eq!(poll_once(next.as_mut()), Poll::Ready(None));
+}
+
+#[test]
+fn completed_future_is_dropped_before_wait_finishes() {
+    let (mut group, registrar) = TaskGroup::new();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let mut tracked = Box::pin(
+        registrar
+            .track(ReadyDropFlagFuture(dropped.clone()))
+            .unwrap(),
+    );
+    group.close();
+
+    assert_eq!(poll_once(tracked.as_mut()), Poll::Ready(()));
+
+    let counter = Arc::new(AssertDroppedWake {
+        dropped: dropped.clone(),
+        wakes: AtomicUsize::new(0),
+    });
+    let waker = Waker::from(counter.clone());
+    let mut wait = Box::pin(group.wait());
+    assert!(
+        wait.as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+
+    drop(tracked);
+    assert_eq!(counter.wakes.load(Ordering::Relaxed), 1);
+    assert_eq!(poll_once(wait.as_mut()), Poll::Ready(()));
 }
 
 #[test]
@@ -243,6 +295,10 @@ fn wait_discards_outputs_without_intermediate_wakes() {
     assert!(shared.state.lock().outputs.is_empty());
 
     assert_eq!(poll_once(second.as_mut()), Poll::Ready(()));
+    assert_eq!(counter.0.load(Ordering::Relaxed), 0);
+    drop(first);
+    assert_eq!(counter.0.load(Ordering::Relaxed), 0);
+    drop(second);
     assert_eq!(counter.0.load(Ordering::Relaxed), 1);
     assert_eq!(poll_once(wait.as_mut()), Poll::Ready(()));
     assert!(!shared.state.lock().discard_outputs);
@@ -267,6 +323,8 @@ fn cancelling_wait_restores_result_collection() {
     }
 
     assert_eq!(poll_once(retained.as_mut()), Poll::Ready(()));
+    drop(discarded);
+    drop(retained);
     group.close();
     let mut next = Box::pin(group.join_next());
     assert_eq!(poll_once(next.as_mut()), Poll::Ready(Some(2)));
@@ -306,6 +364,9 @@ fn forgetting_wait_does_not_prevent_another_wait() {
 
     assert_eq!(poll_once(tracked.as_mut()), Poll::Ready(()));
     assert_eq!(first_counter.0.load(Ordering::Relaxed), 0);
+    assert_eq!(second_counter.0.load(Ordering::Relaxed), 0);
+    drop(tracked);
+    assert_eq!(first_counter.0.load(Ordering::Relaxed), 0);
     assert_eq!(second_counter.0.load(Ordering::Relaxed), 1);
     assert_eq!(poll_once(second_wait.as_mut()), Poll::Ready(()));
     assert!(!shared.state.lock().discard_outputs);
@@ -327,6 +388,8 @@ fn panicking_discarded_output_does_not_prevent_the_final_wake() {
     );
 
     assert!(panic::catch_unwind(panic::AssertUnwindSafe(|| poll_once(tracked.as_mut()))).is_err());
+    assert_eq!(counter.0.load(Ordering::Relaxed), 0);
+    drop(tracked);
     assert_eq!(counter.0.load(Ordering::Relaxed), 1);
     assert_eq!(poll_once(wait.as_mut()), Poll::Ready(()));
 }

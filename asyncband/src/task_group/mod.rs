@@ -22,7 +22,7 @@
 //! never chooses an executor or spawns a task itself.
 //!
 //! [`close`](TaskGroup::close) prevents further registration. Once the group is closed, every
-//! tracked future has either completed or been dropped, and every queued output has been consumed,
+//! [`Tracked`] wrapper has been dropped, and every queued output has been consumed,
 //! [`join_next`](TaskGroup::join_next) returns `None`. Requiring `close` lets `join_next` tell an
 //! open group with no current work from a group that will never receive more work.
 //!
@@ -48,10 +48,10 @@
 //!
 //! # Task lifetime and failure
 //!
-//! Successful registration counts the returned [`Tracked`] future as active immediately. The
-//! count is released when that wrapper completes or is dropped, including when an executor aborts
-//! its task or drops it after a panic. Only normal completion produces an output; task aborts and
-//! panics are therefore reported only by the caller's executor.
+//! A [`Tracked`] future remains active until its wrapper is dropped. On normal completion, its
+//! output is sent before it returns [`Poll::Ready`], but the group does not finish until the
+//! wrapper and its inner future are dropped. Aborted and panicking tasks produce no output and are
+//! reported only by the caller's executor.
 //!
 //! Dropping the [`TaskGroup`] discards queued and future outputs and makes all registrars reject
 //! new work. It does not cancel or abort tracked futures. Callers can wrap each future with their
@@ -156,9 +156,12 @@ impl<T> TaskGroup<T> {
 
     /// Returns the next normally completed output, in completion order.
     ///
-    /// Returns `None` only after the group is closed, all tracked futures have completed or been
-    /// dropped, and all earlier outputs have been consumed. A tracked future that is dropped,
-    /// aborted, or dropped after a panic produces no output.
+    /// Returns `None` only after the group is closed, all [`Tracked`] wrappers have been dropped,
+    /// and all earlier outputs have been consumed. A tracked future that is dropped, aborted, or
+    /// dropped after a panic produces no output.
+    ///
+    /// An output can be returned before its [`Tracked`] wrapper is dropped; final completion still
+    /// waits for that drop.
     ///
     /// Canceling this operation while it waits does not consume an output.
     ///
@@ -204,6 +207,8 @@ impl<T> TaskGroup<T> {
     /// when no futures are active. If it is canceled, outputs discarded by this call cannot be
     /// recovered by a later join.
     ///
+    /// Completed [`Tracked`] wrappers must be dropped before this returns.
+    ///
     /// # Examples
     ///
     /// ```
@@ -230,6 +235,8 @@ impl<T> TaskGroup<T> {
     ///
     /// This operation does not close the group. If it is canceled, outputs already collected by
     /// this call are dropped and cannot be recovered by a later join.
+    ///
+    /// Completed [`Tracked`] wrappers must be dropped before this returns.
     pub async fn join(&mut self) -> Vec<T> {
         let (queued, capacity) = self.shared.take_outputs_and_capacity_hint();
         let additional_capacity = capacity.saturating_sub(queued.len());
@@ -309,7 +316,8 @@ impl<T> Registrar<T> {
         Ok(Tracked {
             future,
             registration: Registration {
-                shared: Some(shared),
+                shared,
+                completed: false,
             },
         })
     }
@@ -317,16 +325,16 @@ impl<T> Registrar<T> {
 
 /// A future whose lifetime and successful output are tracked by a [`TaskGroup`].
 ///
-/// This wrapper returns `()` after moving the inner future's output to the group. Dropping it
-/// before normal completion releases its registration without producing an output.
-#[must_use = "a tracked future must be polled, spawned, or dropped to release its registration"]
+/// On normal completion, this sends the inner future's output to the group and returns `()`. Its
+/// registration remains active until the wrapper is dropped; dropping it earlier sends no output.
+#[must_use = "a tracked future must be awaited, spawned, or dropped to release its registration"]
 pub struct Tracked<F>
 where
     F: Future,
 {
     future: F,
-    // Fields are dropped from top to bottom. If `Tracked` is dropped before completion, the inner
-    // future is therefore dropped before the active task count is decreased.
+    // Fields are dropped from top to bottom, so the inner future is dropped before the active task
+    // count is decreased.
     registration: Registration<F::Output>,
 }
 
@@ -349,7 +357,7 @@ where
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         assert!(
-            self.as_ref().get_ref().registration.shared.is_some(),
+            !self.as_ref().get_ref().registration.completed,
             "a tracked future cannot be polled after completion"
         );
         // SAFETY: This manually projects the outer pin onto `future`. Once `Tracked` is pinned,
@@ -448,7 +456,7 @@ impl<T> Shared<T> {
         self.lifecycle.try_register()
     }
 
-    fn complete(&self, output: T) -> (Option<T>, Option<Waker>) {
+    fn publish(&self, output: T) -> (Option<T>, Option<Waker>) {
         let mut state = self.state.lock();
         let discarded = if state.owner_alive && !state.discard_outputs {
             state.outputs.push_back(output);
@@ -456,8 +464,7 @@ impl<T> Shared<T> {
         } else {
             Some(output)
         };
-        let finished = self.lifecycle.retire_task();
-        let waker = if state.owner_alive && (!state.discard_outputs || finished) {
+        let waker = if state.owner_alive && !state.discard_outputs {
             state.waiter.take()
         } else {
             None
@@ -465,7 +472,7 @@ impl<T> Shared<T> {
         (discarded, waker)
     }
 
-    fn abandon(&self) -> Option<Waker> {
+    fn release_registration(&self) -> Option<Waker> {
         if !self.lifecycle.retire_task() {
             return None;
         }
@@ -654,24 +661,15 @@ impl Lifecycle {
 }
 
 struct Registration<T> {
-    shared: Option<Arc<Shared<T>>>,
+    shared: Arc<Shared<T>>,
+    completed: bool,
 }
 
 impl<T> Registration<T> {
     fn complete(&mut self, output: T) {
-        // Keep `shared` here until the output has been stored. If growing the queue panics,
-        // `Registration::drop` can still decrease the active task count. After the output is
-        // stored, take `shared` before dropping an output or waking a task so a panic cannot
-        // decrease the count twice.
-        let (discarded, waker) = self
-            .shared
-            .as_ref()
-            .expect("a tracked future cannot be polled after completion")
-            .complete(output);
-        let _shared = self
-            .shared
-            .take()
-            .expect("the registration was present when completion began");
+        let (discarded, waker) = self.shared.publish(output);
+        // Mark completion before waking or dropping output because either may panic.
+        self.completed = true;
         if let Some(waker) = waker {
             waker.wake();
         }
@@ -681,9 +679,7 @@ impl<T> Registration<T> {
 
 impl<T> Drop for Registration<T> {
     fn drop(&mut self) {
-        if let Some(shared) = self.shared.take()
-            && let Some(waker) = shared.abandon()
-        {
+        if let Some(waker) = self.shared.release_registration() {
             waker.wake();
         }
     }
