@@ -15,16 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Broadcast channels grouped by producer topology.
-//!
-//! [`mpmc`] supports any number of concurrent producers. [`spmc`] is the single-producer
-//! specialization: its sender is not [`Clone`] and publish methods require exclusive access
-//! (`&mut self`). Choose `spmc` when the program has one publisher; choose `mpmc` when it does
-//! not. Choose `spmc` for the exclusive-send API; do not assume it is faster on every path.
-//!
-//! Both topologies are fan-out broadcast: every accepted value is delivered to every active
-//! subscription. That is a different delivery family from a competing crate-root `spmc` queue,
-//! which would give each value to exactly one receiver.
-
-pub mod mpmc;
-pub mod spmc;
+mod bounded;
+mod unbounded;
