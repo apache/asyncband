@@ -357,24 +357,27 @@ impl<T> BoundedSender<T> {
                     value = returned;
                     let shared = self.shared.clone();
                     shared.producer_waiting.store(1, Ordering::Release);
-                    let mut epoch = shared.blocking.lock();
+                    let snap = shared.epoch.load(Ordering::Acquire);
                     let cap = shared.buffer.cap as u64;
                     if shared.tail.load(Ordering::Acquire) - shared.head.load(Ordering::Acquire)
                         < cap
                     {
-                        drop(epoch);
                         continue;
                     }
-                    let snap = *epoch;
-                    while *epoch == snap
-                        && shared.tail.load(Ordering::Acquire) - shared.head.load(Ordering::Acquire)
-                            >= cap
+                    let guard = shared.blocking.lock();
+                    if shared.epoch.load(Ordering::Acquire) != snap
+                        || shared.tail.load(Ordering::Acquire) - shared.head.load(Ordering::Acquire)
+                            < cap
                     {
-                        epoch = shared
-                            .blocking_cvar
-                            .wait(epoch)
-                            .unwrap_or_else(|e| e.into_inner());
+                        drop(guard);
+                        continue;
                     }
+                    drop(
+                        shared
+                            .blocking_cvar
+                            .wait(guard)
+                            .unwrap_or_else(|e| e.into_inner()),
+                    );
                 }
             }
         }
@@ -597,20 +600,25 @@ impl<T: Clone> BoundedReceiver<T> {
                 Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
                 Err(TryRecvError::Empty) => {
                     let shared = self.shared.clone();
-                    let mut epoch = shared.blocking.lock();
+                    let snap = shared.epoch.load(Ordering::Acquire);
                     if self.cursor < shared.tail.load(Ordering::Acquire) {
                         continue;
                     }
                     if shared.senders.load(Ordering::Acquire) == 0 {
                         return Err(RecvError::Disconnected);
                     }
-                    let snap = *epoch;
-                    while *epoch == snap && self.cursor >= shared.tail.load(Ordering::Acquire) {
-                        epoch = shared
-                            .blocking_cvar
-                            .wait(epoch)
-                            .unwrap_or_else(|e| e.into_inner());
+                    let guard = shared.blocking.lock();
+                    if shared.epoch.load(Ordering::Acquire) != snap
+                        || self.cursor < shared.tail.load(Ordering::Acquire)
+                    {
+                        continue;
                     }
+                    drop(
+                        shared
+                            .blocking_cvar
+                            .wait(guard)
+                            .unwrap_or_else(|e| e.into_inner()),
+                    );
                 }
             }
         }

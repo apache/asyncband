@@ -143,30 +143,49 @@ impl<T> UnboundedSender<T> {
     /// assert_eq!(second.try_recv(), Ok("update"));
     /// ```
     pub fn send(&mut self, msg: T) {
-        // Publishing and draining the wait set share one critical section, so a receiver can never
-        // observe an empty buffer and park after this message became visible.
-        let (unretained, wakers) = {
-            let mut state = self.shared.state.lock();
+        self.shared.send_in_progress.store(true, Ordering::Release);
+        let n = self.shared.receiver_count.load(Ordering::Acquire);
+
+        let unretained = if n == 0 {
+            let state = self.shared.state.lock();
             let tail = self.shared.tail.load(Ordering::Relaxed);
             let next = Shared::<UnboundedBuffer<T>>::next_tail(tail);
-            let unretained = if state.receiver_count == 0 {
+            if state.receiver_count == 0 {
                 common::commit_discard(&self.shared.head, &self.shared.tail, next);
+                drop(state);
+                self.shared.send_in_progress.store(false, Ordering::Release);
                 Some(msg)
             } else {
-                let n = state.receiver_count;
                 let slot = self.shared.buffer.slot_for_publish(tail);
                 unsafe {
-                    slot.write(msg, n);
+                    slot.write(msg, state.receiver_count);
                 }
                 common::commit_publish(&self.shared.tail, next);
+                drop(state);
+                self.shared.send_in_progress.store(false, Ordering::Release);
                 None
-            };
-            (unretained, state.waiters.drain())
+            }
+        } else {
+            let tail = self.shared.tail.load(Ordering::Relaxed);
+            let next = Shared::<UnboundedBuffer<T>>::next_tail(tail);
+            let slot = self.shared.buffer.slot_for_publish(tail);
+            unsafe {
+                slot.write(msg, n);
+            }
+            common::commit_publish(&self.shared.tail, next);
+            self.shared.send_in_progress.store(false, Ordering::Release);
+            None
         };
 
-        // Notify all waiting receivers. An unsent message is dropped here too, once the lock is
-        // released.
-        wake_all(wakers);
+        if self.shared.has_waiters.load(Ordering::Acquire) {
+            let wakers = {
+                let mut state = self.shared.state.lock();
+                let wakers = state.waiters.drain();
+                self.shared.has_waiters.store(false, Ordering::Release);
+                wakers
+            };
+            wake_all(wakers);
+        }
         drop(unretained);
     }
 

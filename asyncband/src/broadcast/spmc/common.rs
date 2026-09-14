@@ -20,11 +20,11 @@
 //!
 //! The producer is unique (`send` takes `&mut self`). Receivers drain already-published slots
 //! without taking the waiter mutex: each slot carries a remaining-reader count, and each
-//! subscription keeps its cursor locally. The mutex is only for subscribe/unsubscribe, parking,
-//! and the producer's publish-and-drain critical section — which is what keeps a park from missing
-//! a wake-up.
+//! subscription keeps its cursor locally. The mutex is for subscribe/unsubscribe and parking.
+//! Unbounded send publishes without it and drains waiters only when a receiver has parked.
 
 use std::cell::UnsafeCell;
+use std::hint;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::Condvar;
@@ -45,7 +45,7 @@ use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
 /// Number of slots in one unbounded log chunk.
-pub const CHUNK_LEN: usize = 64;
+pub const CHUNK_LEN: usize = 256;
 
 /// A received value together with whether this receive freed a retained slot.
 ///
@@ -168,10 +168,15 @@ pub struct Shared<B> {
     pub tail: AtomicU64,
     pub senders: AtomicUsize,
     pub producer_waiting: AtomicUsize,
+    /// Set around an unbounded lock-free publish so subscribe spins until `tail` is stable.
+    pub send_in_progress: AtomicBool,
+    pub receiver_count: AtomicUsize,
+    pub has_waiters: AtomicBool,
     pub state: Mutex<State>,
     /// Native-thread waiters. Publish and reclaim notify this condvar so a blocking receive does
     /// not go through one async waker per parked task.
-    pub blocking: Mutex<u64>,
+    pub epoch: AtomicU64,
+    pub blocking: Mutex<()>,
     pub blocking_cvar: Condvar,
 }
 
@@ -183,7 +188,11 @@ impl<B> Shared<B> {
             tail: AtomicU64::new(0),
             senders: AtomicUsize::new(1),
             producer_waiting: AtomicUsize::new(0),
-            blocking: Mutex::new(0),
+            send_in_progress: AtomicBool::new(false),
+            receiver_count: AtomicUsize::new(1),
+            has_waiters: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+            blocking: Mutex::new(()),
             blocking_cvar: Condvar::new(),
             state: Mutex::new(State {
                 waiters: WakerSet::new(),
@@ -211,11 +220,26 @@ impl<B> Shared<B> {
             .expect("broadcast channel version counter overflowed")
     }
 
+    /// Waits until an unbounded lock-free send is not mid-publish, then takes `state`.
+    fn lock_idle_send(&self) -> std::sync::MutexGuard<'_, State> {
+        loop {
+            while self.send_in_progress.load(Ordering::Acquire) {
+                hint::spin_loop();
+            }
+            let state = self.state.lock();
+            if !self.send_in_progress.load(Ordering::Acquire) {
+                return state;
+            }
+        }
+    }
+
     /// Registers a new subscription at the committed tail.
     pub fn subscribe(&self) -> u64 {
-        let mut state = self.state.lock();
+        let mut state = self.lock_idle_send();
         state.receiver_count += 1;
-        self.tail.load(Ordering::Relaxed)
+        self.receiver_count
+            .store(state.receiver_count, Ordering::Release);
+        self.tail.load(Ordering::Acquire)
     }
 
     #[cfg(test)]
@@ -527,8 +551,11 @@ pub fn drop_subscription<T, B: SlotStore<T>>(
     shared: &Shared<B>,
     cursor: u64,
 ) -> (Reclaimed<T>, Option<Waker>) {
-    let mut state = shared.state.lock();
+    let mut state = shared.lock_idle_send();
     state.receiver_count -= 1;
+    shared
+        .receiver_count
+        .store(state.receiver_count, Ordering::Release);
     let last = state.receiver_count == 0;
     let tail = shared.tail.load(Ordering::Acquire);
 
@@ -586,8 +613,8 @@ pub fn try_receive<T: Clone, B: SlotStore<T>>(
 
 /// The one poll step behind `recv` on both channels.
 ///
-/// The ready path does not take the waiter mutex. Parking rechecks `tail` under that mutex so a
-/// publish that drains waiters cannot slip between the empty check and the registration.
+/// The ready path does not take the waiter mutex. Parking stores `has_waiters` and then rechecks
+/// `tail` so an unbounded send that published without this lock cannot leave the receiver parked.
 pub fn poll_receive<T: Clone, B: SlotStore<T>>(
     shared: &Shared<B>,
     cursor: &mut u64,
@@ -611,6 +638,21 @@ pub fn poll_receive<T: Clone, B: SlotStore<T>>(
     }
 
     let retired_waker = state.waiters.register(token, cx.waker());
+    shared.has_waiters.store(true, Ordering::Release);
+    if *cursor < shared.tail.load(Ordering::Acquire) {
+        let waker = state.waiters.unregister(token);
+        drop(state);
+        drop(retired_waker);
+        drop(waker);
+        return Poll::Ready(Ok(consume(shared, cursor)));
+    }
+    if shared.senders.load(Ordering::Acquire) == 0 {
+        let waker = state.waiters.unregister(token);
+        drop(state);
+        drop(retired_waker);
+        drop(waker);
+        return Poll::Ready(Err(RecvError::Disconnected));
+    }
     drop(state);
     drop(retired_waker);
     Poll::Pending
@@ -629,7 +671,7 @@ pub fn commit_discard(head: &AtomicU64, tail: &AtomicU64, next: u64) {
 
 /// Wakes native-thread waiters parked in `recv_blocking` / `send_blocking`.
 pub fn notify_blocking<B>(shared: &Shared<B>) {
-    let mut epoch = shared.blocking.lock();
-    *epoch = epoch.wrapping_add(1);
+    let _guard = shared.blocking.lock();
+    shared.epoch.fetch_add(1, Ordering::Release);
     shared.blocking_cvar.notify_all();
 }
