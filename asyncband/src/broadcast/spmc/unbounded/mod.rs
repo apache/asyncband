@@ -59,18 +59,15 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
 use super::common;
-use super::common::Backlog;
-use super::common::Inner;
+use super::common::Shared;
+use super::common::UnboundedBuffer;
 use super::error::RecvError;
 use super::error::TryRecvError;
-use crate::internal::arena::SlotId;
-use crate::internal::mutex::Mutex;
 use crate::internal::wake_all;
 use crate::internal::wakerset::WakerToken;
 
@@ -92,23 +89,12 @@ mod tests;
 /// assert_eq!(receiver.try_recv(), Ok("ready"));
 /// ```
 pub fn unbounded<T: Clone>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
-    let (inner, key) = Inner::with_first_subscription(Backlog::elastic());
-    let shared = Arc::new(Shared {
-        inner,
-        senders: AtomicUsize::new(1),
-    });
+    let shared = Arc::new(Shared::new(UnboundedBuffer::new()));
     let sender = UnboundedSender {
         shared: shared.clone(),
     };
-    let receiver = UnboundedReceiver { shared, key };
+    let receiver = UnboundedReceiver { shared, cursor: 0 };
     (sender, receiver)
-}
-
-struct Shared<T> {
-    /// Buffer, receiver cursors, and parked receivers, all under a single lock.
-    inner: Mutex<Inner<T>>,
-    /// `1` while the sender is alive, `0` after it is dropped.
-    senders: AtomicUsize,
 }
 
 /// A publishing handle for an unbounded broadcast channel.
@@ -116,7 +102,7 @@ struct Shared<T> {
 /// This handle is not [`Clone`]. Once it is dropped, each receiver can drain the values already
 /// published for it and then observes disconnection.
 pub struct UnboundedSender<T> {
-    shared: Arc<Shared<T>>,
+    shared: Arc<Shared<UnboundedBuffer<T>>>,
 }
 
 impl<T> fmt::Debug for UnboundedSender<T> {
@@ -128,7 +114,7 @@ impl<T> fmt::Debug for UnboundedSender<T> {
 impl<T> Drop for UnboundedSender<T> {
     fn drop(&mut self) {
         self.shared.senders.store(0, Ordering::Release);
-        common::disconnect(&self.shared.inner);
+        common::disconnect(&self.shared);
     }
 }
 
@@ -157,15 +143,25 @@ impl<T> UnboundedSender<T> {
     /// assert_eq!(second.try_recv(), Ok("update"));
     /// ```
     pub fn send(&mut self, msg: T) {
-        let msg = Arc::new(msg);
-
         // Publishing and draining the wait set share one critical section, so a receiver can never
         // observe an empty buffer and park after this message became visible.
         let (unretained, wakers) = {
-            let mut inner = self.shared.inner.lock();
-            let unretained = inner.log.publish(msg);
-            let wakers = inner.waiters.drain();
-            (unretained, wakers)
+            let mut state = self.shared.state.lock();
+            let tail = self.shared.tail.load(Ordering::Relaxed);
+            let next = Shared::<UnboundedBuffer<T>>::next_tail(tail);
+            let unretained = if state.receiver_count == 0 {
+                common::commit_discard(&self.shared.head, &self.shared.tail, next);
+                Some(msg)
+            } else {
+                let n = state.receiver_count;
+                let slot = self.shared.buffer.slot_for_publish(tail);
+                unsafe {
+                    slot.write(msg, n);
+                }
+                common::commit_publish(&self.shared.tail, next);
+                None
+            };
+            (unretained, state.waiters.drain())
         };
 
         // Notify all waiting receivers. An unsent message is dropped here too, once the lock is
@@ -198,7 +194,7 @@ impl<T> UnboundedSender<T> {
     /// assert_eq!(publisher.retained_message_count(), 0);
     /// ```
     pub fn retained_message_count(&self) -> usize {
-        self.shared.inner.lock().log.retained()
+        self.shared.retained()
     }
 
     /// Subscribes a new receiver for values published from this point forward.
@@ -221,10 +217,10 @@ impl<T> UnboundedSender<T> {
     /// ```
     #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn subscribe(&self) -> UnboundedReceiver<T> {
-        let key = self.shared.inner.lock().log.subscribe();
+        let cursor = self.shared.subscribe();
         UnboundedReceiver {
             shared: self.shared.clone(),
-            key,
+            cursor,
         }
     }
 }
@@ -234,8 +230,8 @@ impl<T> UnboundedSender<T> {
 /// This receiver observes every value published after its subscription point and retains its own
 /// position in the shared backlog.
 pub struct UnboundedReceiver<T> {
-    shared: Arc<Shared<T>>,
-    key: SlotId,
+    shared: Arc<Shared<UnboundedBuffer<T>>>,
+    cursor: u64,
 }
 
 impl<T> fmt::Debug for UnboundedReceiver<T> {
@@ -246,10 +242,7 @@ impl<T> fmt::Debug for UnboundedReceiver<T> {
 
 impl<T> Drop for UnboundedReceiver<T> {
     fn drop(&mut self) {
-        let reclaimed = {
-            let mut inner = self.shared.inner.lock();
-            inner.log.remove_receiver(self.key)
-        };
+        let (reclaimed, _producer) = common::drop_subscription(&self.shared, self.cursor);
         drop(reclaimed);
     }
 }
@@ -312,9 +305,7 @@ impl<T: Clone> UnboundedReceiver<T> {
     /// assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let ((msg, reclaimed), _producer) =
-            common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
-        Ok(common::take_msg(msg, reclaimed))
+        Ok(common::try_receive(&self.shared, &mut self.cursor)?.value)
     }
 }
 
@@ -344,10 +335,10 @@ impl<T> UnboundedReceiver<T> {
     /// ```
     #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn resubscribe(&self) -> Self {
-        let key = self.shared.inner.lock().log.subscribe();
+        let cursor = self.shared.subscribe();
         Self {
             shared: self.shared.clone(),
-            key,
+            cursor,
         }
     }
 
@@ -373,7 +364,7 @@ impl<T> UnboundedReceiver<T> {
     /// assert_eq!(receiver.unread_message_count(), 1);
     /// ```
     pub fn unread_message_count(&self) -> usize {
-        self.shared.inner.lock().log.unread(self.key)
+        self.shared.unread(self.cursor)
     }
 }
 
@@ -389,12 +380,7 @@ impl<T> Drop for Recv<'_, T> {
             return;
         }
 
-        common::unregister(
-            &self.receiver.shared.inner,
-            &self.receiver.shared.senders,
-            self.receiver.key,
-            &mut self.token,
-        );
+        common::unregister(&self.receiver.shared, self.receiver.cursor, &mut self.token);
     }
 }
 
@@ -404,18 +390,13 @@ impl<T: Clone> Future for Recv<'_, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self { receiver, token } = self.get_mut();
 
-        let ((msg, reclaimed), _producer) = match common::poll_receive(
-            &receiver.shared.inner,
-            &receiver.shared.senders,
-            receiver.key,
-            token,
-            cx,
-        ) {
+        let consumed = match common::poll_receive(&receiver.shared, &mut receiver.cursor, token, cx)
+        {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-            Poll::Ready(Ok(outcome)) => outcome,
+            Poll::Ready(Ok(consumed)) => consumed,
         };
 
-        Poll::Ready(Ok(common::take_msg(msg, reclaimed)))
+        Poll::Ready(Ok(consumed.value))
     }
 }

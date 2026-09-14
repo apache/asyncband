@@ -16,55 +16,33 @@
 // under the License.
 
 use super::*;
-use crate::broadcast::spmc::common::MIN_RETAINED_CAPACITY;
+use crate::broadcast::spmc::common::CHUNK_LEN;
 
 #[test]
 #[should_panic(expected = "broadcast channel version counter overflowed")]
 fn send_panics_on_version_overflow() {
     // The receiver is dropped right away: the doctored counter would make its own drop overflow.
     let (mut tx, _) = unbounded();
-    tx.shared.inner.lock().log.set_tail(u64::MAX);
+    tx.shared.set_tail(u64::MAX);
     tx.send(());
 }
 
 #[test]
-fn one_off_burst_allocation_is_returned_once_it_is_behind_us() {
+fn chunks_grow_with_the_committed_log() {
     let (mut tx, mut rx) = unbounded();
 
-    let burst = MIN_RETAINED_CAPACITY * 16;
+    let burst = CHUNK_LEN * 4;
     for i in 0..burst {
         tx.send(i);
     }
-    assert!(tx.shared.inner.lock().log.buffer_capacity() >= burst);
+    assert!(tx.shared.buffer.allocated_slots() >= burst);
 
     for i in 0..burst {
         assert_eq!(rx.try_recv(), Ok(i));
     }
 
-    // Draining evaluates the cycle that just peaked, so the burst allocation is still held.
+    // Chunks stay allocated until the channel is dropped so receivers can walk them without a
+    // reclamation lock.
     assert_eq!(tx.retained_message_count(), 0);
-    assert!(tx.shared.inner.lock().log.buffer_capacity() >= burst);
-
-    // The next cycle stays small, which is what releases the memory.
-    tx.send(0);
-    assert_eq!(rx.try_recv(), Ok(0));
-    assert!(tx.shared.inner.lock().log.buffer_capacity() < burst);
-}
-
-#[test]
-fn repeated_bursts_keep_their_allocation() {
-    let (mut tx, mut rx) = unbounded();
-    let burst = MIN_RETAINED_CAPACITY * 4;
-
-    for _ in 0..4 {
-        for i in 0..burst {
-            tx.send(i);
-        }
-        for i in 0..burst {
-            assert_eq!(rx.try_recv(), Ok(i));
-        }
-    }
-
-    // Every cycle peaks at the same size, so the buffer must not rebuild its allocation each time.
-    assert!(tx.shared.inner.lock().log.buffer_capacity() >= burst);
+    assert!(tx.shared.buffer.allocated_slots() >= burst);
 }

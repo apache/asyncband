@@ -26,10 +26,8 @@
 //! The sender is not [`Clone`], and every publish method takes `&mut self`. That is the static
 //! single-writer contract this topology adds over [`crate::broadcast::mpmc`]: there cannot be a
 //! second producer, at compile time. `&Sender` can still be shared for [`subscribe`] and the
-//! inspection methods. The family is offered for that exclusive-send API. Measured against
-//! `async-broadcast` and `tokio::sync::broadcast`, tight bounded wait (capacity 1) is competitive;
-//! it is not a general throughput upgrade over 1-producer `broadcast::mpmc` or over Tokio's
-//! non-blocking ring.
+//! inspection methods. Receivers drain already-published slots without taking the publication
+//! lock, which is the throughput reason to pick this family when there is one producer.
 //!
 //! This is fan-out broadcast, not a competing queue: every accepted value is delivered to every
 //! active subscription. A competitive `asyncband::spmc` queue would give each value to exactly one

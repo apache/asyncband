@@ -28,6 +28,7 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
+use std::thread;
 
 use asyncband::broadcast::spmc::*;
 use tests_integration::WakeCounter;
@@ -35,8 +36,7 @@ use tests_integration::assert_completes_without_deadlock;
 
 /// A payload whose destructor re-enters the channel it was sent through.
 ///
-/// The sender is not `Clone`, so the probe is a shared receiver handle. `unread_message_count`
-/// takes the same channel lock the destructor must not already hold.
+/// The sender is not `Clone`, so the probe is a shared receiver handle.
 struct Reentrant {
     value: u64,
     probe: Option<Arc<Mutex<UnboundedReceiver<Reentrant>>>>,
@@ -57,7 +57,8 @@ impl Drop for Reentrant {
             // `try_lock`: draining the probe itself may drop a payload while this mutex is held.
             // Deadlocks if the channel still holds its lock while dropping reclaimed messages.
             if let Ok(probe) = probe.try_lock() {
-                let _ = probe.unread_message_count();
+                // `resubscribe` takes the waiter mutex; `unread_message_count` does not.
+                let _ = probe.resubscribe();
             }
         }
     }
@@ -428,6 +429,40 @@ async fn recv_reports_disconnection_without_any_message() {
     let (tx, mut rx) = unbounded::<()>();
     drop(tx);
     assert_eq!(rx.recv().await, Err(RecvError::Disconnected));
+}
+
+#[test]
+fn concurrent_receivers_drain_a_published_batch() {
+    const RECEIVERS: usize = 8;
+    const MESSAGES: usize = 256;
+
+    let (mut tx, rx) = unbounded();
+    let mut receivers = vec![rx];
+    for _ in 1..RECEIVERS {
+        receivers.push(tx.subscribe());
+    }
+    for value in 0..MESSAGES as u64 {
+        tx.send(value);
+    }
+
+    let expected = (MESSAGES as u64 - 1) * MESSAGES as u64 / 2;
+    let handles: Vec<_> = receivers
+        .into_iter()
+        .map(|mut rx| {
+            thread::spawn(move || {
+                let mut sum = 0u64;
+                for _ in 0..MESSAGES {
+                    sum += rx.try_recv().unwrap();
+                }
+                assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+                sum
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        assert_eq!(handle.join().unwrap(), expected);
+    }
 }
 
 #[test]

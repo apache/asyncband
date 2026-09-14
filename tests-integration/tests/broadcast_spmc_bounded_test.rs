@@ -36,6 +36,7 @@ use std::sync::Mutex;
 use std::task::Context;
 use std::task::Wake;
 use std::task::Waker;
+use std::thread;
 
 use asyncband::blocking::FutureExt;
 use asyncband::broadcast::spmc::*;
@@ -67,7 +68,8 @@ impl Drop for Reentrant {
             // `try_lock`: draining the probe itself may drop a payload while this mutex is held.
             // Deadlocks if the channel still holds its lock while dropping reclaimed messages.
             if let Ok(probe) = probe.try_lock() {
-                let _ = probe.unread_message_count();
+                // `resubscribe` takes the waiter mutex; `unread_message_count` does not.
+                let _ = probe.resubscribe();
             }
         }
     }
@@ -199,6 +201,40 @@ fn unread_message_count_tracks_each_receiver() {
     assert_eq!(rx1.try_recv(), Ok(1));
     assert_eq!(rx1.unread_message_count(), 1);
     assert_eq!(rx2.unread_message_count(), 2);
+}
+
+#[test]
+fn concurrent_receivers_keep_up_with_the_producer() {
+    const RECEIVERS: usize = 8;
+    const MESSAGES: usize = 256;
+
+    let (mut tx, rx) = bounded(64);
+    let mut receivers = vec![rx];
+    for _ in 1..RECEIVERS {
+        receivers.push(tx.subscribe());
+    }
+
+    let expected = (MESSAGES as u64 - 1) * MESSAGES as u64 / 2;
+    let handles: Vec<_> = receivers
+        .into_iter()
+        .map(|mut rx| {
+            thread::spawn(move || {
+                let mut sum = 0u64;
+                for _ in 0..MESSAGES {
+                    sum += FutureExt::block_on(rx.recv()).unwrap();
+                }
+                sum
+            })
+        })
+        .collect();
+
+    for value in 0..MESSAGES as u64 {
+        FutureExt::block_on(tx.send(value));
+    }
+
+    for handle in handles {
+        assert_eq!(handle.join().unwrap(), expected);
+    }
 }
 
 #[test]

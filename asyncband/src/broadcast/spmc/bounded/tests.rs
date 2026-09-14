@@ -33,7 +33,7 @@ fn bounded_panics_on_zero_capacity() {
 fn send_panics_on_version_overflow() {
     // The receiver is dropped right away: the doctored counter would make its own drop overflow.
     let (mut tx, _) = bounded(1);
-    tx.shared.inner.lock().log.set_tail(u64::MAX);
+    tx.shared.set_tail(u64::MAX);
     let _ = tx.try_send(());
 }
 
@@ -41,7 +41,7 @@ fn send_panics_on_version_overflow() {
 fn buffer_is_preallocated_and_never_shrinks() {
     let capacity = 128;
     let (mut tx, mut rx) = bounded(capacity);
-    let allocated = tx.shared.inner.lock().log.buffer_capacity();
+    let allocated = tx.shared.buffer.len();
     assert!(allocated >= capacity);
 
     // Fill to capacity, drain completely, and repeat with a much smaller cycle. An elastic backlog
@@ -56,7 +56,7 @@ fn buffer_is_preallocated_and_never_shrinks() {
     assert_eq!(rx.try_recv(), Ok(0));
 
     assert_eq!(tx.retained_message_count(), 0);
-    assert_eq!(tx.shared.inner.lock().log.buffer_capacity(), allocated);
+    assert_eq!(tx.shared.buffer.len(), allocated);
 }
 
 #[test]
@@ -74,10 +74,10 @@ fn at_most_one_producer_can_wait() {
     let mut cx = Context::from_waker(Waker::noop());
     let mut send = Box::pin(tx.send(1));
     assert!(send.as_mut().poll(&mut cx).is_pending());
-    assert!(shared.inner.lock().producer.is_some());
+    assert!(shared.state.lock().producer.is_some());
 
     assert_eq!(rx.try_recv(), Ok(0));
     assert!(send.as_mut().poll(&mut cx).is_ready());
     drop(send);
-    assert!(shared.inner.lock().producer.is_none());
+    assert!(shared.state.lock().producer.is_none());
 }
