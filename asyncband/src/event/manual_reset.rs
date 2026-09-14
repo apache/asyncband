@@ -20,6 +20,8 @@ use std::future::Future;
 use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
@@ -72,6 +74,7 @@ use crate::internal::waker_batch::WakerBatch;
 /// # }
 /// ```
 pub struct ManualResetEvent {
+    is_set: AtomicBool,
     state: Mutex<State>,
 }
 
@@ -86,8 +89,8 @@ impl ManualResetEvent {
     /// If `is_set` is `true`, waits complete immediately until the event is reset.
     pub const fn with_state(is_set: bool) -> Self {
         Self {
+            is_set: AtomicBool::new(is_set),
             state: Mutex::new(State {
-                is_set,
                 waiters: WaitList::new(),
             }),
         }
@@ -105,11 +108,12 @@ impl ManualResetEvent {
     pub fn set(&self) {
         let wakers = {
             let mut state = self.state.lock();
-            if state.is_set {
+            if self.is_set.load(Ordering::Relaxed) {
                 return;
             }
 
-            state.is_set = true;
+            // Serialize publication, cohort detach, reset, and registration with the same lock.
+            self.is_set.store(true, Ordering::Release);
             // Detach the complete cohort before invoking any waker. A wake callback may reset the
             // event and register a new wait, which must belong to the state current at that point.
             let mut wakers = WakerBatch::new();
@@ -132,7 +136,8 @@ impl ManualResetEvent {
     /// Waits already released by a preceding [`set`](Self::set) remain ready. If the event is
     /// already unset, this has no effect.
     pub fn reset(&self) {
-        self.state.lock().is_set = false;
+        let _state = self.state.lock();
+        self.is_set.store(false, Ordering::Relaxed);
     }
 
     /// Returns whether the event is currently set.
@@ -150,7 +155,7 @@ impl ManualResetEvent {
     /// assert!(event.is_set());
     /// ```
     pub fn is_set(&self) -> bool {
-        self.state.lock().is_set
+        self.is_set.load(Ordering::Acquire)
     }
 
     /// Attempts to wait without registering a waiter.
@@ -219,6 +224,11 @@ impl ManualResetEvent {
     /// event is set never enqueues. A linked waiter therefore always belongs to an unset event, so
     /// `notified` alone decides whether a registered waiter is already committed.
     fn poll_wait(&self, waiter_id: &mut Option<WaiterId>, cx: &mut Context<'_>) -> Poll<()> {
+        // A registered wait must still remove its node, even if the event has since been set.
+        if waiter_id.is_none() && self.is_set() {
+            return Poll::Ready(());
+        }
+
         let (poll, retired_waker) = {
             let mut state = self.state.lock();
             match *waiter_id {
@@ -229,7 +239,7 @@ impl ManualResetEvent {
                 }
                 Some(id) => {
                     debug_assert!(
-                        !state.is_set,
+                        !self.is_set.load(Ordering::Relaxed),
                         "a linked waiter must belong to an unset event"
                     );
                     let waiter = state.waiters.waiter_mut(id);
@@ -237,7 +247,9 @@ impl ManualResetEvent {
                         .then(|| waiter.replace_waker(cx.waker().clone()));
                     (Poll::Pending, retired)
                 }
-                None if state.is_set => (Poll::Ready(()), None),
+                // Recheck under the lock so a set between the fast probe and registration
+                // either completes this wait here or selects its registered node later.
+                None if self.is_set.load(Ordering::Relaxed) => (Poll::Ready(()), None),
                 None => {
                     *waiter_id = Some(state.waiters.push_back(Waiter {
                         notified: false,
@@ -269,7 +281,7 @@ impl Default for ManualResetEvent {
 
 impl fmt::Debug for ManualResetEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let is_set = self.state.lock().is_set;
+        let is_set = self.is_set();
         f.debug_struct("ManualResetEvent")
             .field("is_set", &is_set)
             .finish_non_exhaustive()
@@ -278,7 +290,6 @@ impl fmt::Debug for ManualResetEvent {
 
 #[derive(Debug)]
 struct State {
-    is_set: bool,
     waiters: WaitList<Waiter>,
 }
 

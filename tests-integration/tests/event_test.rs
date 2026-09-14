@@ -21,13 +21,17 @@ use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Wake;
 use std::task::Waker;
+use std::thread;
 
+use asyncband::blocking::FutureExt;
 use asyncband::event::ManualResetEvent;
 use tests_integration::PanicWake;
 use tests_integration::WakeCounter;
@@ -173,7 +177,7 @@ impl Wake for ReentrantWaker {
 
 impl Drop for ReentrantWaker {
     fn drop(&mut self) {
-        self.0.is_set();
+        self.0.reset();
     }
 }
 
@@ -225,7 +229,7 @@ fn wakers_are_woken_and_dropped_outside_the_internal_lock() {
             );
         }
 
-        // Cancelling a pending wait drops the registered waker, which re-enters `is_set`. The
+        // Cancelling a pending wait drops the registered waker, which re-enters `reset`. The
         // registration holds the last reference, so the drop runs here.
         drop(replaced);
     });
@@ -383,4 +387,37 @@ fn cancelling_an_owned_waiter_releases_its_waker_and_event_handle() {
 
     event.set();
     assert_eq!(tracker.count(), 0);
+}
+
+#[test]
+fn concurrent_sets_and_waits_publish_state_across_reset_cycles() {
+    assert_completes_without_deadlock(|| {
+        let event = ManualResetEvent::new();
+        let round = Barrier::new(2);
+        let value = AtomicUsize::new(0);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                for expected in 1..=100 {
+                    round.wait();
+                    value.store(expected, Ordering::Relaxed);
+                    event.set();
+                    round.wait();
+                }
+            });
+            for expected in 1..=100 {
+                // The opening barrier precedes publication; only the event publishes value.
+                round.wait();
+                if expected % 2 == 0 {
+                    event.wait().block_on();
+                } else {
+                    while !event.try_wait() {
+                        thread::yield_now();
+                    }
+                }
+                assert_eq!(value.load(Ordering::Relaxed), expected);
+                round.wait();
+                event.reset();
+            }
+        });
+    });
 }

@@ -17,7 +17,7 @@
 
 use std::pin::pin;
 
-use asyncband::event::ManualResetEvent;
+use asyncband::event::AutoResetEvent;
 use divan::Bencher;
 use divan::black_box;
 use divan::counter::ItemsCount;
@@ -30,11 +30,12 @@ const WAITER_COUNTS: &[usize] = &[1, 8, 32];
 const THREAD_COUNTS: &[usize] = &[1, 2, 8, 32];
 const CONTENDED_SAMPLE_SIZE: u32 = 256;
 
-#[divan::bench(threads = THREAD_COUNTS, sample_size = CONTENDED_SAMPLE_SIZE)]
-fn wait_already_set(bencher: Bencher) {
-    let event = ManualResetEvent::with_state(true);
+#[divan::bench]
+fn set_then_wait(bencher: Bencher) {
+    let event = AutoResetEvent::new();
 
-    bencher.bench(|| {
+    bencher.bench_local(|| {
+        event.set();
         let mut context = bench_context();
         let mut wait = pin!(event.wait());
         poll_pinned_ready(wait.as_mut(), &mut context);
@@ -44,14 +45,14 @@ fn wait_already_set(bencher: Bencher) {
 
 #[divan::bench(threads = THREAD_COUNTS, sample_size = CONTENDED_SAMPLE_SIZE)]
 fn is_set_contended(bencher: Bencher) {
-    let event = ManualResetEvent::with_state(true);
+    let event = AutoResetEvent::with_state(true);
 
     bencher.bench(|| black_box(event.is_set()));
 }
 
 #[divan::bench]
 fn set_reset_cycle(bencher: Bencher) {
-    let event = ManualResetEvent::new();
+    let event = AutoResetEvent::new();
 
     bencher.bench_local(|| {
         event.set();
@@ -65,7 +66,7 @@ fn cancel_pending(bencher: Bencher) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let event = ManualResetEvent::new();
+        let event = AutoResetEvent::new();
         {
             let mut wait = pin!(event.wait());
             poll_pending(wait.as_mut(), &mut context);
@@ -79,7 +80,7 @@ fn wake_waiter(bencher: Bencher) {
     let mut context = bench_context();
 
     bencher.bench_local(|| {
-        let event = ManualResetEvent::new();
+        let event = AutoResetEvent::new();
         {
             let mut wait = pin!(event.wait());
             poll_pending(wait.as_mut(), &mut context);
@@ -94,7 +95,7 @@ fn wake_waiter(bencher: Bencher) {
 #[divan::bench]
 fn wake_waiter_reused(bencher: Bencher) {
     let mut context = bench_context();
-    let event = ManualResetEvent::new();
+    let event = AutoResetEvent::new();
 
     bencher.bench_local(|| {
         let mut wait = pin!(event.wait());
@@ -102,19 +103,18 @@ fn wake_waiter_reused(bencher: Bencher) {
 
         event.set();
         poll_pinned_ready(wait.as_mut(), &mut context);
-        event.reset();
         black_box(&event)
     });
 }
 
 #[divan::bench(args = WAITER_COUNTS)]
-fn waiter_fan_out(bencher: Bencher, waiter_count: usize) {
+fn wake_waiters(bencher: Bencher, waiter_count: usize) {
     let mut context = bench_context();
 
     bencher
         .counter(ItemsCount::new(waiter_count))
         .bench_local(|| {
-            let event = ManualResetEvent::new();
+            let event = AutoResetEvent::new();
             let mut waiters = (0..waiter_count)
                 .map(|_| Box::pin(event.wait()))
                 .collect::<Vec<_>>();
@@ -122,7 +122,9 @@ fn waiter_fan_out(bencher: Bencher, waiter_count: usize) {
                 poll_pending(waiter.as_mut(), &mut context);
             }
 
-            event.set();
+            for _ in 0..waiter_count {
+                event.set();
+            }
             for mut waiter in waiters {
                 poll_pinned_ready(waiter.as_mut(), &mut context);
             }
@@ -130,9 +132,19 @@ fn waiter_fan_out(bencher: Bencher, waiter_count: usize) {
         });
 }
 
-#[divan::bench(args = [false, true], threads = THREAD_COUNTS, sample_size = CONTENDED_SAMPLE_SIZE)]
-fn try_wait_contended(bencher: Bencher, is_set: bool) {
-    let event = ManualResetEvent::with_state(is_set);
+#[divan::bench(threads = THREAD_COUNTS, sample_size = CONTENDED_SAMPLE_SIZE)]
+fn try_wait_unset(bencher: Bencher) {
+    let event = AutoResetEvent::new();
 
     bencher.bench(|| black_box(event.try_wait()));
+}
+
+#[divan::bench]
+fn set_then_try_wait(bencher: Bencher) {
+    let event = AutoResetEvent::new();
+
+    bencher.bench_local(|| {
+        event.set();
+        assert!(event.try_wait());
+    });
 }

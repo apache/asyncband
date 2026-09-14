@@ -257,13 +257,13 @@ struct ReentrantWaker(Arc<AutoResetEvent>);
 
 impl Wake for ReentrantWaker {
     fn wake(self: Arc<Self>) {
-        self.0.try_wait();
+        self.0.reset();
     }
 }
 
 impl Drop for ReentrantWaker {
     fn drop(&mut self) {
-        self.0.try_wait();
+        self.0.reset();
     }
 }
 
@@ -352,9 +352,56 @@ fn concurrent_sets_and_waits_publish_state_without_losing_signals() {
                 // Registration races with set; the second barrier prevents the next set from
                 // coalescing before this round's signal has been consumed.
                 round.wait();
-                event.wait().block_on();
+                if expected % 2 == 0 {
+                    event.wait().block_on();
+                } else {
+                    while !event.try_wait() {
+                        thread::yield_now();
+                    }
+                }
                 assert_eq!(value.load(Ordering::Relaxed), expected);
                 round.wait();
+            }
+        });
+    });
+}
+
+#[test]
+fn stored_signals_are_consumed_once_when_immediate_and_async_waits_race() {
+    assert_completes_without_deadlock(|| {
+        let event = AutoResetEvent::new();
+        let round = Barrier::new(3);
+        let completed = AtomicUsize::new(0);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..100 {
+                    round.wait();
+                    if event.try_wait() {
+                        completed.fetch_add(1, Ordering::Relaxed);
+                    }
+                    round.wait();
+                }
+            });
+            scope.spawn(|| {
+                for _ in 0..100 {
+                    round.wait();
+                    {
+                        let mut wait = pin!(event.wait());
+                        if poll_once(wait.as_mut()).is_ready() {
+                            completed.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    // Remove any pending registration before the next signal is stored.
+                    round.wait();
+                }
+            });
+            for _ in 0..100 {
+                completed.store(0, Ordering::Relaxed);
+                event.set();
+                round.wait();
+                round.wait();
+                assert_eq!(completed.load(Ordering::Relaxed), 1);
+                assert!(!event.is_set());
             }
         });
     });
