@@ -40,13 +40,25 @@ use crate::internal::waitlist::WaiterId;
 /// [`ManualResetEvent`](super::ManualResetEvent), this event does not release all observers of a
 /// condition. Unlike a semaphore, it does not count unused signals or return a permit guard.
 ///
+/// # Usage
+///
+/// Use this event for a single worker that rechecks external state after a signal. Publish the
+/// state before calling `set`, and check the predicate in a loop. A signal arriving between the
+/// predicate check and the first poll is retained, so the worker does not miss it. A leftover
+/// signal can cause an extra predicate check without implying new work.
+///
+/// Multiple waits compete for signals. The simple check-then-wait loop is not a general
+/// multi-consumer queue protocol: several changes can coalesce before those consumers register
+/// their waits.
+///
 /// # Synchronization
 ///
 /// Memory operations sequenced before a `set` are visible after a wait or
 /// [`try_wait`](Self::try_wait) consumes its signal. This includes sets coalesced into a stored
-/// signal and signals passed on after cancellation. The event carries no application state: when it
-/// is used to notify changes to an external predicate, callers must synchronize access to that
-/// predicate separately.
+/// signal and signals passed on after cancellation.
+///
+/// The event carries no application state: callers must synchronize access to external predicates
+/// separately.
 ///
 /// # Examples
 ///
@@ -68,12 +80,14 @@ pub struct AutoResetEvent {
 }
 
 impl AutoResetEvent {
-    /// Creates an event without a stored signal.
+    /// Creates an unset event.
     pub const fn new() -> Self {
         Self::with_state(false)
     }
 
-    /// Creates an event with one stored signal if `is_set` is `true`, or none otherwise.
+    /// Creates an event with the specified initial state.
+    ///
+    /// If `is_set` is `true`, the event stores one signal for a future wait.
     pub const fn with_state(is_set: bool) -> Self {
         Self {
             state: Mutex::new(State {
@@ -91,7 +105,7 @@ impl AutoResetEvent {
     ///
     /// # Panics
     ///
-    /// Panics if waking the selected task panics. Its signal remains assigned and can still be
+    /// Panics if waking a selected task panics. Its signal remains assigned and can still be
     /// consumed by polling that wait or passed on by dropping it.
     pub fn set(&self) {
         let waker = self.state.lock().signal();
@@ -112,6 +126,8 @@ impl AutoResetEvent {
     ///
     /// This never takes a signal assigned to another wait. A `false` result is only a snapshot;
     /// use [`wait`](Self::wait) to wait for a future signal.
+    ///
+    /// # Examples
     ///
     /// ```
     /// use asyncband::event::AutoResetEvent;
@@ -144,10 +160,12 @@ impl AutoResetEvent {
         .await
     }
 
-    /// Waits for and consumes one signal without borrowing the event.
+    /// Waits without borrowing the event.
     ///
     /// The future owns the [`Arc`], making it suitable for spawned tasks. Its waiting and
     /// cancellation semantics match [`wait`](Self::wait).
+    ///
+    /// # Examples
     ///
     /// ```
     /// # #[tokio::main]
@@ -256,6 +274,7 @@ enum Waiter {
     Notified,
 }
 
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 struct Wait<'a> {
     event: &'a AutoResetEvent,
     waiter: Option<WaiterId>,
@@ -264,7 +283,7 @@ struct Wait<'a> {
 impl Future for Wait<'_> {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         this.event.poll_wait(&mut this.waiter, cx)
     }
