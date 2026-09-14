@@ -22,4 +22,5 @@ under the License.
 - Start each example with concise module documentation describing the scenario and the behavior it demonstrates.
 - Omit run commands, basic Cargo instructions, and comments that merely restate the code. Assume readers know how to run a Rust example.
 - Keep each example focused on a small, coherent scenario. Explain relevant semantic differences beside the code; avoid catalogs of unrelated primitives.
+- For migration examples, show how the same application scenario works before and after the change, including any protocol changes or limits. Do not substitute a tour of primitive APIs for a migration.
 - Keep example explanations in the example source. The repository README only needs a concise entry point.
