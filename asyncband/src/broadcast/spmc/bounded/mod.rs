@@ -271,6 +271,7 @@ impl<T> BoundedSender<T> {
                     let wakers = state.waiters.drain();
                     drop(state);
                     wake_all(wakers);
+                    common::notify_blocking(self.sender.shared.as_ref());
                     drop(retired_producer);
                     drop(msg);
                     return Poll::Ready(());
@@ -305,6 +306,7 @@ impl<T> BoundedSender<T> {
                 // send, so it must not run under the lock, but a panic in its Drop must not skip
                 // the receiver wake-ups either.
                 wake_all(wakers);
+                common::notify_blocking(self.sender.shared.as_ref());
                 drop(retired_producer);
                 Poll::Ready(())
             }
@@ -346,6 +348,38 @@ impl<T> BoundedSender<T> {
         self.publish(value).map_err(TrySendError::Full)
     }
 
+    /// Broadcasts a value, parking the current thread while the channel is at capacity.
+    pub fn send_blocking(&mut self, mut value: T) {
+        loop {
+            match self.try_send(value) {
+                Ok(()) => return,
+                Err(TrySendError::Full(returned)) => {
+                    value = returned;
+                    let shared = self.shared.clone();
+                    shared.producer_waiting.store(1, Ordering::Release);
+                    let mut epoch = shared.blocking.lock();
+                    let cap = shared.buffer.cap as u64;
+                    if shared.tail.load(Ordering::Acquire) - shared.head.load(Ordering::Acquire)
+                        < cap
+                    {
+                        drop(epoch);
+                        continue;
+                    }
+                    let snap = *epoch;
+                    while *epoch == snap
+                        && shared.tail.load(Ordering::Acquire) - shared.head.load(Ordering::Acquire)
+                            >= cap
+                    {
+                        epoch = shared
+                            .blocking_cvar
+                            .wait(epoch)
+                            .unwrap_or_else(|e| e.into_inner());
+                    }
+                }
+            }
+        }
+    }
+
     /// The publish step both send paths share.
     ///
     /// Publishing and draining the wait set share one critical section, so a receiver can never
@@ -383,6 +417,7 @@ impl<T> BoundedSender<T> {
         };
 
         wake_all(wakers);
+        common::notify_blocking(self.shared.as_ref());
         drop(discarded);
         Ok(())
     }
@@ -549,6 +584,36 @@ impl<T: Clone> BoundedReceiver<T> {
         let producer = common::take_producer_on_reclaim(&self.shared, consumed.reclaimed, false);
         common::wake_producer(producer);
         Ok(consumed.value)
+    }
+
+    /// Receives the next value, parking the current thread while empty.
+    ///
+    /// Same result as [`recv`](Self::recv), without going through an async waker. Native-thread
+    /// waiters share one futex so a publish can wake every blocked receiver with a single notify.
+    pub fn recv_blocking(&mut self) -> Result<T, RecvError> {
+        loop {
+            match self.try_recv() {
+                Ok(value) => return Ok(value),
+                Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
+                Err(TryRecvError::Empty) => {
+                    let shared = self.shared.clone();
+                    let mut epoch = shared.blocking.lock();
+                    if self.cursor < shared.tail.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    if shared.senders.load(Ordering::Acquire) == 0 {
+                        return Err(RecvError::Disconnected);
+                    }
+                    let snap = *epoch;
+                    while *epoch == snap && self.cursor >= shared.tail.load(Ordering::Acquire) {
+                        epoch = shared
+                            .blocking_cvar
+                            .wait(epoch)
+                            .unwrap_or_else(|e| e.into_inner());
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -27,6 +27,7 @@
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::sync::Condvar;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU64;
@@ -168,6 +169,10 @@ pub struct Shared<B> {
     pub senders: AtomicUsize,
     pub producer_waiting: AtomicUsize,
     pub state: Mutex<State>,
+    /// Native-thread waiters. Publish and reclaim notify this condvar so a blocking receive does
+    /// not go through one async waker per parked task.
+    pub blocking: Mutex<u64>,
+    pub blocking_cvar: Condvar,
 }
 
 impl<B> Shared<B> {
@@ -178,6 +183,8 @@ impl<B> Shared<B> {
             tail: AtomicU64::new(0),
             senders: AtomicUsize::new(1),
             producer_waiting: AtomicUsize::new(0),
+            blocking: Mutex::new(0),
+            blocking_cvar: Condvar::new(),
             state: Mutex::new(State {
                 waiters: WakerSet::new(),
                 receiver_count: 1,
@@ -412,6 +419,9 @@ fn advance_head<T, B: SlotStore<T>>(shared: &Shared<B>) {
         }
     }
     shared.buffer.sync_head(h);
+    if shared.producer_waiting.load(Ordering::Acquire) != 0 {
+        notify_blocking(shared);
+    }
 }
 
 /// Consumes the message at `cursor` and advances the cursor.
@@ -615,4 +625,11 @@ pub fn commit_publish(tail: &AtomicU64, next: u64) {
 pub fn commit_discard(head: &AtomicU64, tail: &AtomicU64, next: u64) {
     head.store(next, Ordering::Release);
     tail.store(next, Ordering::Release);
+}
+
+/// Wakes native-thread waiters parked in `recv_blocking` / `send_blocking`.
+pub fn notify_blocking<B>(shared: &Shared<B>) {
+    let mut epoch = shared.blocking.lock();
+    *epoch = epoch.wrapping_add(1);
+    shared.blocking_cvar.notify_all();
 }

@@ -221,7 +221,7 @@ fn concurrent_receivers_keep_up_with_the_producer() {
             thread::spawn(move || {
                 let mut sum = 0u64;
                 for _ in 0..MESSAGES {
-                    sum += FutureExt::block_on(rx.recv()).unwrap();
+                    sum += rx.recv_blocking().unwrap();
                 }
                 sum
             })
@@ -229,12 +229,38 @@ fn concurrent_receivers_keep_up_with_the_producer() {
         .collect();
 
     for value in 0..MESSAGES as u64 {
-        FutureExt::block_on(tx.send(value));
+        tx.send_blocking(value);
     }
 
     for handle in handles {
         assert_eq!(handle.join().unwrap(), expected);
     }
+}
+
+#[test]
+fn concurrent_blocking_wait_at_capacity_one() {
+    let (mut tx, rx) = bounded(1);
+    let mut rx2 = tx.subscribe();
+    let handle = thread::spawn(move || {
+        let mut sum = 0u64;
+        for _ in 0..64 {
+            sum += rx2.recv_blocking().unwrap();
+        }
+        sum
+    });
+    let handle1 = thread::spawn(move || {
+        let mut sum = 0u64;
+        let mut rx = rx;
+        for _ in 0..64 {
+            sum += rx.recv_blocking().unwrap();
+        }
+        sum
+    });
+    for value in 0..64u64 {
+        tx.send_blocking(value);
+    }
+    assert_eq!(handle.join().unwrap(), 64 * 63 / 2);
+    assert_eq!(handle1.join().unwrap(), 64 * 63 / 2);
 }
 
 #[test]
