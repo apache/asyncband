@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod source;
+
 use std::path::Path;
 use std::process::Command as StdCommand;
 use std::process::ExitStatus;
@@ -44,6 +46,7 @@ impl Command {
             SubCommand::Lint(cmd) => cmd.run(),
             SubCommand::Miri(cmd) => cmd.run(),
             SubCommand::Semver(cmd) => cmd.run(),
+            SubCommand::Source(cmd) => cmd.run(),
             SubCommand::Test(cmd) => cmd.run(),
         }
     }
@@ -63,6 +66,8 @@ enum SubCommand {
     Miri(CommandMiri),
     #[clap(about = "Verify API compatibility for a planned release.")]
     Semver(CommandSemver),
+    #[clap(about = "Package the committed source for an ASF release.")]
+    Source(source::CommandSource),
     #[clap(about = "Run unit tests.")]
     Test(CommandTest),
 }

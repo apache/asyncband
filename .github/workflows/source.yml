@@ -1,0 +1,118 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Source candidate
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/source.yml
+      - xtask/**
+      - .agents/skills/release/**
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign with the Infra-managed key (requires ASF Security approval)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  source:
+    name: Prepare source archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install stable toolchain
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - name: Package committed source
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          set -euo pipefail
+          cargo x --help
+          cargo x source --help
+          cargo x source --output "$RUNNER_TEMP/source" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        id: artifact
+        with:
+          name: unsigned-source
+          path: ${{ runner.temp }}/source/
+          if-no-files-found: error
+    outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+
+  sign:
+    name: Sign source archive
+    needs: source
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.sign &&
+      github.repository == 'apache/asyncband' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # No checkout or candidate code runs in the job that receives the private key.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.source.outputs.artifact-id }}
+          path: ${{ runner.temp }}/source
+          merge-multiple: true
+      - name: Sign and verify
+        shell: bash
+        working-directory: ${{ runner.temp }}/source
+        env:
+          SIGNING_KEY: ${{ secrets.GPG_SECRET_KEY }}
+          SIGNING_FINGERPRINT: ${{ vars.SOURCE_SIGNING_FINGERPRINT }}
+          GNUPGHOME: ${{ runner.temp }}/source-gnupg
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_KEY"
+          [[ "$SIGNING_FINGERPRINT" =~ ^[0-9A-F]{40}$ ]]
+          shopt -s nullglob
+          archives=(*.tar.gz)
+          test "${#archives[@]}" -eq 1
+          archive="${archives[0]}"
+          [[ "$archive" =~ ^apache-asyncband-[0-9]+\.[0-9]+\.[0-9]+-incubating-src\.tar\.gz$ ]]
+          shasum -a 512 "$archive" > "$RUNNER_TEMP/source.sha512"
+          cmp "$archive.sha512" "$RUNNER_TEMP/source.sha512"
+
+          mkdir -m 700 "$GNUPGHOME"
+          trap 'gpgconf --kill all; rm -rf "$GNUPGHOME"' EXIT
+          printf '%s' "$SIGNING_KEY" | gpg --batch --import
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$SIGNING_FINGERPRINT"
+          gpg --batch --pinentry-mode loopback --passphrase '' \
+            --local-user "$SIGNING_FINGERPRINT!" --armor --detach-sign "$archive"
+          gpg --batch --verify "$archive.asc" "$archive"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-source
+          path: |
+            ${{ runner.temp }}/source/*.tar.gz
+            ${{ runner.temp }}/source/*.sha512
+            ${{ runner.temp }}/source/*.asc
+          if-no-files-found: error
