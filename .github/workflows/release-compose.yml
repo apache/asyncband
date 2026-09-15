@@ -18,16 +18,8 @@
 name: Compose source release
 
 on:
-  workflow_dispatch:
-    inputs:
-      candidate:
-        description: Full SHA of the reviewed release commit on main
-        type: string
-        required: true
-      dry_run:
-        description: Build without signing or uploading
-        type: boolean
-        default: true
+  push:
+    tags: [ "v*.*.*-rc.*" ]
   pull_request:
     paths:
       - .github/workflows/release-compose.yml
@@ -53,6 +45,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
+      commit: ${{ steps.source.outputs.commit }}
       version: ${{ steps.source.outputs.version }}
       archive: ${{ steps.source.outputs.archive }}
       artifact-id: ${{ steps.bundle.outputs.artifact-id }}
@@ -65,23 +58,26 @@ jobs:
         with:
           python-version: "3.12"
       - id: source
-        name: Archive the exact candidate commit
-        env:
-          CANDIDATE: ${{ inputs.candidate || github.sha }}
-          DRY_RUN: ${{ github.event_name == 'pull_request' || inputs.dry_run }}
+        name: Archive the release candidate
         run: |
           set -euo pipefail
-          if [[ "${DRY_RUN}" != true && ( "${GITHUB_REPOSITORY}" != apache/asyncband || "${GITHUB_REF}" != refs/heads/main ) ]]; then
-            echo "::error::Signing and uploading must run from apache/asyncband main."
-            exit 1
+          commit="$(git rev-parse HEAD)"
+          package_version="$(git show "${commit}:asyncband/Cargo.toml" | python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["package"]["version"])')"
+          if [[ "${GITHUB_EVENT_NAME}" == push ]]; then
+            if [[ ! "${GITHUB_REF_NAME}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)$ ]]; then
+              echo "::error::Expected an RC tag named vX.Y.Z-rc.N with a positive RC number."
+              exit 1
+            fi
+            version="${BASH_REMATCH[1]}"
+            if [[ "${version}" != "${package_version}" ]]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not match package version ${package_version}."
+              exit 1
+            fi
+            test "$(git rev-parse "${GITHUB_REF}^{commit}")" = "${commit}"
+            git merge-base --is-ancestor "${commit}" origin/main
+          else
+            version="${package_version}"
           fi
-          if [[ ! "${CANDIDATE}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::candidate must be a full commit SHA."
-            exit 1
-          fi
-          test "$(git rev-parse "${CANDIDATE}^{commit}")" = "${CANDIDATE}"
-          git merge-base --is-ancestor "${CANDIDATE}" "${GITHUB_SHA}"
-          version="$(git show "${CANDIDATE}:asyncband/Cargo.toml" | python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["package"]["version"])')"
           if [[ ! "${version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "::error::The package must have a stable X.Y.Z version."
             exit 1
@@ -89,15 +85,17 @@ jobs:
           source="apache-asyncband-${version}-incubating-src"
           mkdir "${RUNNER_TEMP}/source"
           git -c core.attributesFile=/dev/null -c tar.umask=0022 archive \
-            --format=tar --prefix="${source}/" "${CANDIDATE}" \
+            --format=tar --prefix="${source}/" "${commit}" \
             | gzip -n -9 > "${RUNNER_TEMP}/source/${source}.tar.gz"
           cd "${RUNNER_TEMP}/source"
           shasum -a 512 "${source}.tar.gz" > "${source}.tar.gz.sha512"
-          printf '%s\n' "${CANDIDATE}" > source-commit.txt
+          printf '%s\n' "${commit}" > source-commit.txt
+          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "archive=${source}.tar.gz" >> "${GITHUB_OUTPUT}"
           {
-            echo "Source commit: ${CANDIDATE}"
+            echo "Source ref: ${GITHUB_REF}"
+            echo "Source commit: ${commit}"
             echo
             cat "${source}.tar.gz.sha512"
           } >> "${GITHUB_STEP_SUMMARY}"
@@ -111,7 +109,7 @@ jobs:
 
   sign:
     name: Sign the source archive
-    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && github.repository == 'apache/asyncband' && github.ref == 'refs/heads/main' }}
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'apache/asyncband' }}
     needs: bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -181,12 +179,12 @@ jobs:
           src: ${{ runner.temp }}/signed-source
       - name: Record the candidate handoff
         env:
-          CANDIDATE: ${{ inputs.candidate }}
+          SOURCE_COMMIT: ${{ needs.bundle.outputs.commit }}
           VERSION: ${{ needs.bundle.outputs.version }}
           ARCHIVE: ${{ needs.bundle.outputs.archive }}
         run: |
           {
-            echo "Uploaded source commit ${CANDIDATE} to ATR project asyncband, version ${VERSION}."
+            echo "Uploaded RC tag ${GITHUB_REF_NAME} (${SOURCE_COMMIT}) to ATR project asyncband, version ${VERSION}."
             echo
             cat "${RUNNER_TEMP}/signed-source/${ARCHIVE}.sha512"
             echo
