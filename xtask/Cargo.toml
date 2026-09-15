@@ -29,10 +29,8 @@ rust-version.workspace = true
 [dependencies]
 cargo_metadata = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-flate2 = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-sha2 = { workspace = true }
 ureq = { workspace = true, default-features = false, features = [
   "json",
   "rustls",

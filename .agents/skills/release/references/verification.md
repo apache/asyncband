@@ -36,7 +36,7 @@ Establish which checks are requested and which inputs are available. Continue in
 
 For example, use `git -C "${REPO_ROOT}" rev-parse "${RC_TAG}^{commit}"` to resolve a candidate and `git -C "${REPO_ROOT}" verify-tag "${RC_TAG}"` to inspect its signature. Run `shasum -a 512 --check` from the artifact directory and `gpg --verify` with the explicitly supplied signature and archive. Inspect checksum filenames before using the checksum file so it checks the intended artifact.
 
-For a CI-signed source archive, also follow [independent reproduction](infrastructure.md#reproduce-before-staging-and-voting) on trusted hardware. `cargo x source --verify` must reproduce the actual staged compressed archive byte for byte; logical source comparison alone is insufficient for automated signing.
+For a CI-signed source archive, also follow [independent reproduction](infrastructure.md#reproduce-before-staging-and-voting) on trusted hardware. Rebuild with the documented `git archive` command and use `cmp` to compare the actual staged compressed archive byte for byte; logical source comparison alone is insufficient for automated signing.
 
 ## Verify the build and Cargo package
 
