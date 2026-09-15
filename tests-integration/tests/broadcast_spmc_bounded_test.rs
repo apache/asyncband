@@ -135,6 +135,20 @@ fn delivers_every_message_to_every_receiver() {
 }
 
 #[test]
+fn send_and_recv_deliver_every_accepted_value() {
+    let (mut tx, mut rx1) = bounded(4);
+    let mut rx2 = tx.subscribe();
+
+    FutureExt::block_on(tx.send(10));
+    FutureExt::block_on(tx.send(20));
+
+    assert_eq!(FutureExt::block_on(rx1.recv()), Ok(10));
+    assert_eq!(FutureExt::block_on(rx1.recv()), Ok(20));
+    assert_eq!(FutureExt::block_on(rx2.recv()), Ok(10));
+    assert_eq!(FutureExt::block_on(rx2.recv()), Ok(20));
+}
+
+#[test]
 fn slow_receiver_keeps_every_message_under_backpressure() {
     let (mut tx, mut fast) = bounded(2);
     let mut slow = tx.subscribe();
@@ -350,6 +364,7 @@ fn send_waits_while_the_slowest_subscription_holds_capacity() {
     assert_eq!(rx2.try_recv(), Ok(1));
     assert!(poll_once(send.as_mut()).is_ready());
     assert_eq!(rx1.try_recv(), Ok(2));
+    assert_eq!(rx2.try_recv(), Ok(2));
 }
 
 #[test]

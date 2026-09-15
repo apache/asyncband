@@ -97,6 +97,64 @@ impl Rng {
 }
 
 #[test]
+fn delivers_every_message_to_every_receiver() {
+    let (mut tx, mut rx1) = unbounded();
+    let mut rx2 = tx.subscribe();
+
+    tx.send(10);
+    tx.send(20);
+
+    assert_eq!(rx1.try_recv(), Ok(10));
+    assert_eq!(rx1.try_recv(), Ok(20));
+    assert_eq!(rx2.try_recv(), Ok(10));
+    assert_eq!(rx2.try_recv(), Ok(20));
+}
+
+#[tokio::test]
+async fn send_and_recv_deliver_every_accepted_value() {
+    let (mut tx, mut rx1) = unbounded();
+    let mut rx2 = tx.subscribe();
+
+    tx.send(10);
+    tx.send(20);
+
+    assert_eq!(rx1.recv().await, Ok(10));
+    assert_eq!(rx1.recv().await, Ok(20));
+    assert_eq!(rx2.recv().await, Ok(10));
+    assert_eq!(rx2.recv().await, Ok(20));
+}
+
+#[test]
+fn subscribe_starts_at_the_committed_tail() {
+    let (mut tx, _rx) = unbounded();
+    tx.send(1);
+
+    let mut late = tx.subscribe();
+    assert_eq!(late.try_recv(), Err(TryRecvError::Empty));
+
+    tx.send(2);
+    assert_eq!(late.try_recv(), Ok(2));
+}
+
+#[test]
+fn send_never_waits_while_a_slow_subscription_lags() {
+    let (mut tx, mut fast) = unbounded();
+    let slow = tx.subscribe();
+
+    for value in 0..1024 {
+        tx.send(value);
+    }
+
+    assert_eq!(tx.retained_message_count(), 1024);
+    for value in 0..1024 {
+        assert_eq!(fast.try_recv(), Ok(value));
+    }
+    assert_eq!(tx.retained_message_count(), 1024);
+    drop(slow);
+    assert_eq!(tx.retained_message_count(), 0);
+}
+
+#[test]
 fn try_recv_reports_empty_then_value_then_disconnected() {
     let (mut tx, mut rx) = unbounded();
 

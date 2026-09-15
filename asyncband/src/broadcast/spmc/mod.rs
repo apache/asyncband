@@ -21,7 +21,9 @@
 //! that was active when it was accepted, so a receive never reports lag. They differ in what the
 //! producer does when the slowest subscription stops reclaiming. [`bounded`] retains at most the
 //! capacity it was built with and makes the producer wait for that subscription. [`unbounded`]
-//! never waits to send and lets the retained backlog grow instead.
+//! never waits to send and lets the retained backlog grow instead. That is the same public
+//! retention contract as [`crate::broadcast::mpmc`]: no lag or overwrite, and a new subscription
+//! starts at the committed tail.
 //!
 //! The sender is not [`Clone`], and every publish method takes `&mut self`. That is the static
 //! single-writer contract this topology adds over [`crate::broadcast::mpmc`]: there cannot be a

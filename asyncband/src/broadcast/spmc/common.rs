@@ -18,6 +18,11 @@
 //! Slot log, waiters, and the receive step shared by the bounded and unbounded SPMC broadcast
 //! channels.
 //!
+//! This is family-private retention and sequencing machinery. The public retention contract is
+//! the same as [`crate::broadcast::mpmc`]: lossless fan-out, bounded wait-at-capacity or unbounded
+//! growth, and new subscriptions joining at the committed tail. Ring slots, chunk storage, and the
+//! `head` / `tail` sequencer stay in this module.
+//!
 //! The producer is unique (`send` takes `&mut self`). Receivers drain already-published slots
 //! without taking the waiter mutex: each slot carries a remaining-reader count, and each
 //! subscription keeps its cursor locally. The mutex is for subscribe/unsubscribe and parking.
@@ -46,13 +51,13 @@ use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
 /// Number of slots in one unbounded log chunk.
-pub const CHUNK_LEN: usize = 256;
+pub(super) const CHUNK_LEN: usize = 256;
 
 /// A received value together with whether this receive freed a retained slot.
 ///
 /// A bounded channel wakes the producer from `reclaimed` before it returns `value`, so a panicking
 /// `T::clone` cannot strand a waiter on capacity this receive already released.
-pub struct Consumed<T> {
+pub(super) struct Consumed<T> {
     pub value: T,
     pub reclaimed: bool,
 }
@@ -61,7 +66,7 @@ pub struct Consumed<T> {
 ///
 /// Keeping the first message out of the `Vec` avoids a heap allocation on the common path where
 /// one receive reclaims exactly one message.
-pub struct Reclaimed<T> {
+pub(super) struct Reclaimed<T> {
     first: Option<T>,
     rest: Vec<T>,
 }
@@ -74,7 +79,7 @@ impl<T> Reclaimed<T> {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.first.is_none()
     }
 
@@ -88,7 +93,7 @@ impl<T> Reclaimed<T> {
 }
 
 /// One published value and the number of subscriptions that still have to consume it.
-pub struct Slot<T> {
+pub(super) struct Slot<T> {
     msg: UnsafeCell<MaybeUninit<T>>,
     remaining: AtomicUsize,
     /// `true` once the producer has written `msg` and until the last remaining reader takes it.
@@ -121,7 +126,7 @@ impl<T> Slot<T> {
     ///
     /// `occupied` must be `false`. `n` must be the number of subscriptions that will consume this
     /// version, and must be greater than zero.
-    pub unsafe fn write(&self, msg: T, n: usize) {
+    pub(super) unsafe fn write(&self, msg: T, n: usize) {
         debug_assert!(n > 0);
         debug_assert!(!self.occupied.load(Ordering::Relaxed));
         unsafe {
@@ -156,14 +161,14 @@ impl<T> Slot<T> {
 }
 
 /// Parked receivers, the live subscription count, and the single parked producer.
-pub struct State {
+pub(super) struct State {
     pub waiters: WakerSet,
     pub receiver_count: usize,
     pub producer: Option<Waker>,
 }
 
 /// Shared channel state: the slot log plus the waiter mutex.
-pub struct Shared<B> {
+pub(super) struct Shared<B> {
     pub buffer: B,
     pub head: AtomicU64,
     pub tail: AtomicU64,
@@ -182,7 +187,7 @@ pub struct Shared<B> {
 }
 
 impl<B> Shared<B> {
-    pub fn new(buffer: B) -> Self {
+    pub(super) fn new(buffer: B) -> Self {
         Self {
             buffer,
             head: AtomicU64::new(0),
@@ -203,20 +208,20 @@ impl<B> Shared<B> {
         }
     }
 
-    pub fn retained(&self) -> usize {
+    pub(super) fn retained(&self) -> usize {
         let tail = self.tail.load(Ordering::Acquire);
         let head = self.head.load(Ordering::Acquire);
         usize::try_from(tail - head).expect("retained broadcast message count exceeds usize")
     }
 
-    pub fn unread(&self, cursor: u64) -> usize {
+    pub(super) fn unread(&self, cursor: u64) -> usize {
         let tail = self.tail.load(Ordering::Acquire);
         debug_assert!(tail >= cursor);
         usize::try_from(tail - cursor).expect("unread broadcast message count exceeds usize")
     }
 
     /// Next committed version, panicking on overflow.
-    pub fn next_tail(tail: u64) -> u64 {
+    pub(super) fn next_tail(tail: u64) -> u64 {
         tail.checked_add(1)
             .expect("broadcast channel version counter overflowed")
     }
@@ -235,7 +240,7 @@ impl<B> Shared<B> {
     }
 
     /// Registers a new subscription at the committed tail.
-    pub fn subscribe(&self) -> u64 {
+    pub(super) fn subscribe(&self) -> u64 {
         let mut state = self.lock_idle_send();
         state.receiver_count += 1;
         self.receiver_count
@@ -244,14 +249,14 @@ impl<B> Shared<B> {
     }
 
     #[cfg(test)]
-    pub fn set_tail(&self, tail: u64) {
+    pub(super) fn set_tail(&self, tail: u64) {
         self.tail.store(tail, Ordering::Relaxed);
         self.head.store(tail, Ordering::Relaxed);
     }
 }
 
 /// A random-access published slot, addressed by its committed version.
-pub trait SlotStore<T> {
+pub(super) trait SlotStore<T> {
     fn slot(&self, version: u64) -> &Slot<T>;
 
     /// Moves the lookup start past chunks the live window has left behind.
@@ -263,13 +268,13 @@ pub trait SlotStore<T> {
 }
 
 /// Fixed ring used by the bounded channel.
-pub struct BoundedBuffer<T> {
+pub(super) struct BoundedBuffer<T> {
     slots: Box<[Slot<T>]>,
     pub cap: usize,
 }
 
 impl<T> BoundedBuffer<T> {
-    pub fn new(capacity: usize) -> Self {
+    pub(super) fn new(capacity: usize) -> Self {
         Self {
             slots: (0..capacity).map(|_| Slot::empty()).collect(),
             cap: capacity,
@@ -277,7 +282,7 @@ impl<T> BoundedBuffer<T> {
     }
 
     #[cfg(test)]
-    pub fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         self.slots.len()
     }
 }
@@ -300,7 +305,7 @@ impl<T> SlotStore<T> for BoundedBuffer<T> {
 }
 
 /// One growable segment of the unbounded log.
-pub struct Chunk<T> {
+pub(super) struct Chunk<T> {
     slots: [Slot<T>; CHUNK_LEN],
     next: AtomicPtr<Chunk<T>>,
     base: u64,
@@ -319,8 +324,8 @@ impl<T> Chunk<T> {
 /// Linked chunks used by the unbounded channel.
 ///
 /// The producer appends chunks without moving earlier slots, so receivers can drain without a
-/// publication lock. Fully consumed chunks are recycled onto the sender's spare list.
-pub struct UnboundedBuffer<T> {
+/// publication lock. Fully consumed chunks stay allocated until the channel is dropped.
+pub(super) struct UnboundedBuffer<T> {
     /// First chunk ever allocated. Never moves; `Drop` walks from here.
     root: AtomicPtr<Chunk<T>>,
     /// First chunk that may still hold a live message. Lookup starts here.
@@ -330,7 +335,7 @@ pub struct UnboundedBuffer<T> {
 }
 
 impl<T> UnboundedBuffer<T> {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         let chunk = Box::into_raw(Chunk::new(0));
         Self {
             root: AtomicPtr::new(chunk),
@@ -345,7 +350,7 @@ impl<T> UnboundedBuffer<T> {
     /// The caller is the unique producer and must not publish `tail` past this version until this
     /// returns. Fully consumed chunks stay allocated until the channel is dropped so a receiver
     /// walking the list cannot observe a freed chunk.
-    pub fn slot_for_publish(&self, version: u64) -> &Slot<T> {
+    pub(super) fn slot_for_publish(&self, version: u64) -> &Slot<T> {
         loop {
             let chunk = self.tail_chunk.load(Ordering::Acquire);
             debug_assert!(!chunk.is_null());
@@ -378,7 +383,7 @@ impl<T> UnboundedBuffer<T> {
     }
 
     #[cfg(test)]
-    pub fn allocated_slots(&self) -> usize {
+    pub(super) fn allocated_slots(&self) -> usize {
         let mut n = 0;
         let mut chunk = self.root.load(Ordering::Acquire);
         while !chunk.is_null() {
@@ -455,7 +460,10 @@ fn advance_head<T, B: SlotStore<T>>(shared: &Shared<B>) {
 /// other reader clones `T` with the waiter mutex not held. The cursor advances before that clone
 /// so a panicking `T::clone` still consumes the subscription's claim; a drop guard releases the
 /// remaining count if the clone unwinds.
-pub fn consume<T: Clone, B: SlotStore<T>>(shared: &Shared<B>, cursor: &mut u64) -> Consumed<T> {
+pub(super) fn consume<T: Clone, B: SlotStore<T>>(
+    shared: &Shared<B>,
+    cursor: &mut u64,
+) -> Consumed<T> {
     let version = *cursor;
     debug_assert!(version < shared.tail.load(Ordering::Acquire));
     let slot = shared.buffer.slot(version);
@@ -524,7 +532,7 @@ fn reclaim_range<T, B: SlotStore<T>>(shared: &Shared<B>, start: u64, end: u64) -
 }
 
 /// Takes the parked producer if a reclaim may have freed capacity.
-pub fn take_producer_on_reclaim<B>(
+pub(super) fn take_producer_on_reclaim<B>(
     shared: &Shared<B>,
     reclaimed: bool,
     drained_last: bool,
@@ -541,14 +549,14 @@ pub fn take_producer_on_reclaim<B>(
 }
 
 /// Wakes the parked producer, if any, with the channel already unlocked.
-pub fn wake_producer(producer: Option<Waker>) {
+pub(super) fn wake_producer(producer: Option<Waker>) {
     if let Some(waker) = producer {
         waker.wake();
     }
 }
 
 /// Drops a subscription, reclaiming every unread slot it still held.
-pub fn drop_subscription<T, B: SlotStore<T>>(
+pub(super) fn drop_subscription<T, B: SlotStore<T>>(
     shared: &Shared<B>,
     cursor: u64,
 ) -> (Reclaimed<T>, Option<Waker>) {
@@ -576,7 +584,7 @@ pub fn drop_subscription<T, B: SlotStore<T>>(
 }
 
 /// Wakes every parked receiver so it can observe the channel's disconnected state.
-pub fn disconnect<B>(shared: &Shared<B>) {
+pub(super) fn disconnect<B>(shared: &Shared<B>) {
     let wakers = {
         let mut state = shared.state.lock();
         state.waiters.take_all()
@@ -586,7 +594,7 @@ pub fn disconnect<B>(shared: &Shared<B>) {
 }
 
 /// Releases a cancelled receive's waker registration, dropping the waker unlocked.
-pub fn unregister<B>(shared: &Shared<B>, cursor: u64, token: &mut Option<WakerToken>) {
+pub(super) fn unregister<B>(shared: &Shared<B>, cursor: u64, token: &mut Option<WakerToken>) {
     let mut state = shared.state.lock();
     if cursor < shared.tail.load(Ordering::Relaxed) || shared.senders.load(Ordering::Acquire) == 0 {
         *token = None;
@@ -599,7 +607,7 @@ pub fn unregister<B>(shared: &Shared<B>, cursor: u64, token: &mut Option<WakerTo
 }
 
 /// Receives without waiting.
-pub fn try_receive<T: Clone, B: SlotStore<T>>(
+pub(super) fn try_receive<T: Clone, B: SlotStore<T>>(
     shared: &Shared<B>,
     cursor: &mut u64,
 ) -> Result<Consumed<T>, TryRecvError> {
@@ -617,7 +625,7 @@ pub fn try_receive<T: Clone, B: SlotStore<T>>(
 ///
 /// The ready path does not take the waiter mutex. Parking stores `has_waiters` and then rechecks
 /// `tail` so an unbounded send that published without this lock cannot leave the receiver parked.
-pub fn poll_receive<T: Clone, B: SlotStore<T>>(
+pub(super) fn poll_receive<T: Clone, B: SlotStore<T>>(
     shared: &Shared<B>,
     cursor: &mut u64,
     token: &mut Option<WakerToken>,
@@ -660,18 +668,18 @@ pub fn poll_receive<T: Clone, B: SlotStore<T>>(
 }
 
 /// Publishes `tail` after writing a slot.
-pub fn commit_publish(tail: &AtomicU64, next: u64) {
+pub(super) fn commit_publish(tail: &AtomicU64, next: u64) {
     tail.store(next, Ordering::Release);
 }
 
 /// Advances `head` and `tail` together when nothing can read the message.
-pub fn commit_discard(head: &AtomicU64, tail: &AtomicU64, next: u64) {
+pub(super) fn commit_discard(head: &AtomicU64, tail: &AtomicU64, next: u64) {
     head.store(next, Ordering::Release);
     tail.store(next, Ordering::Release);
 }
 
 /// Wakes native-thread waiters parked in `recv_blocking` / `send_blocking`.
-pub fn notify_blocking<B>(shared: &Shared<B>) {
+pub(super) fn notify_blocking<B>(shared: &Shared<B>) {
     let _guard = shared.blocking.lock();
     shared.epoch.fetch_add(1, Ordering::Release);
     shared.blocking_cvar.notify_all();

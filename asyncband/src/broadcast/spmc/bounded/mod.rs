@@ -163,6 +163,20 @@ pub fn bounded<T: Clone>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<
 ///
 /// This handle is not [`Clone`]. Dropping it disconnects the channel. Each receiver may drain its
 /// own buffered messages before observing disconnection.
+///
+/// ```compile_fail
+/// use asyncband::broadcast::spmc::bounded;
+///
+/// let (tx, _rx) = bounded::<u8>(1);
+/// let _ = tx.clone();
+/// ```
+///
+/// ```compile_fail
+/// use asyncband::broadcast::spmc::bounded;
+///
+/// let (tx, _rx) = bounded::<u8>(1);
+/// tx.try_send(1);
+/// ```
 pub struct BoundedSender<T> {
     shared: Arc<Shared<BoundedBuffer<T>>>,
 }

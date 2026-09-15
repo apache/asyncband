@@ -101,6 +101,20 @@ pub fn unbounded<T: Clone>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
 ///
 /// This handle is not [`Clone`]. Once it is dropped, each receiver can drain the values already
 /// published for it and then observes disconnection.
+///
+/// ```compile_fail
+/// use asyncband::broadcast::spmc::unbounded;
+///
+/// let (tx, _rx) = unbounded::<u8>();
+/// let _ = tx.clone();
+/// ```
+///
+/// ```compile_fail
+/// use asyncband::broadcast::spmc::unbounded;
+///
+/// let (tx, _rx) = unbounded::<u8>();
+/// tx.send(1);
+/// ```
 pub struct UnboundedSender<T> {
     shared: Arc<Shared<UnboundedBuffer<T>>>,
 }
