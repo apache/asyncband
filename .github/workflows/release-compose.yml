@@ -1,0 +1,244 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Compose source release
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Full SHA of the reviewed release commit on main
+        type: string
+        required: true
+      dry_run:
+        description: Check reproducibility without signing or uploading
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - .github/workflows/release-compose.yml
+      - .asf.yaml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  LC_ALL: C
+
+concurrency:
+  group: source-release-${{ github.event_name == 'pull_request' && github.event.number || 'compose' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  bundle:
+    name: Build source (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, macos-14 ]
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+      archive: ${{ steps.source.outputs.archive }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - id: source
+        name: Archive the exact candidate commit
+        env:
+          CANDIDATE: ${{ inputs.candidate || github.sha }}
+          DRY_RUN: ${{ github.event_name == 'pull_request' || inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [[ "${DRY_RUN}" != true && ( "${GITHUB_REPOSITORY}" != apache/asyncband || "${GITHUB_REF}" != refs/heads/main ) ]]; then
+            echo "::error::Signing and uploading must run from apache/asyncband main."
+            exit 1
+          fi
+          if [[ ! "${CANDIDATE}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::candidate must be a full commit SHA."
+            exit 1
+          fi
+          test "$(git rev-parse "${CANDIDATE}^{commit}")" = "${CANDIDATE}"
+          git merge-base --is-ancestor "${CANDIDATE}" "${GITHUB_SHA}"
+          version="$(git show "${CANDIDATE}:asyncband/Cargo.toml" | python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["package"]["version"])')"
+          if [[ ! "${version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::The package must have a stable X.Y.Z version."
+            exit 1
+          fi
+          source="apache-asyncband-${version}-incubating-src"
+          mkdir "${RUNNER_TEMP}/source"
+          # System gzip implementations can emit different deflate streams on macOS and Linux.
+          git -c core.attributesFile=/dev/null -c tar.umask=0022 archive \
+            --format=tar --prefix="${source}/" "${CANDIDATE}" \
+            | python3 -c '
+          import gzip, shutil, sys
+          with gzip.GzipFile(filename="", mode="wb", fileobj=sys.stdout.buffer, compresslevel=9, mtime=0) as archive:
+              shutil.copyfileobj(sys.stdin.buffer, archive)
+          ' > "${RUNNER_TEMP}/source/${source}.tar.gz"
+          cd "${RUNNER_TEMP}/source"
+          shasum -a 512 "${source}.tar.gz" > "${source}.tar.gz.sha512"
+          printf '%s\n' "${CANDIDATE}" > source-commit.txt
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "archive=${source}.tar.gz" >> "${GITHUB_OUTPUT}"
+          {
+            echo "Source commit: ${CANDIDATE}"
+            echo
+            cat "${source}.tar.gz.sha512"
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/source/
+          if-no-files-found: error
+          compression-level: 0
+
+  verify:
+    name: Compare independent source builds
+    needs: bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      artifact-id: ${{ steps.verified.outputs.artifact-id }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: source-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/sources
+      - name: Require identical source artifacts
+        env:
+          ARCHIVE: ${{ needs.bundle.outputs.archive }}
+        run: |
+          set -euo pipefail
+          linux=( "${RUNNER_TEMP}"/sources/source-*-ubuntu-24.04 )
+          macos=( "${RUNNER_TEMP}"/sources/source-*-macos-14 )
+          test -d "${linux[0]}"
+          test -d "${macos[0]}"
+          # Include successful builds from earlier attempts when rerunning failed jobs.
+          for source in "${RUNNER_TEMP}"/sources/*; do
+            diff -r "${linux[0]}" "${source}"
+          done
+          cp -R "${linux[0]}" "${RUNNER_TEMP}/verified-source"
+          cd "${RUNNER_TEMP}/verified-source"
+          shasum -a 512 --check "${ARCHIVE}.sha512"
+          {
+            echo "Linux and macOS produced identical source archives and checksums."
+            echo "Source commit: $(cat source-commit.txt)"
+            echo
+            cat "${ARCHIVE}.sha512"
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - id: verified
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/verified-source/
+          if-no-files-found: error
+          compression-level: 0
+
+  sign:
+    name: Sign the verified source archive
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && github.repository == 'apache/asyncband' && github.ref == 'refs/heads/main' }}
+    needs: [ bundle, verify ]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      artifact-id: ${{ steps.signed.outputs.artifact-id }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact-id }}
+          path: ${{ runner.temp }}/verified-source
+          merge-multiple: true
+      - name: Sign with the ASF project key
+        env:
+          ARCHIVE: ${{ needs.bundle.outputs.archive }}
+          SIGNING_KEY: ${{ secrets.GPG_SECRET_KEY }}
+          SIGNING_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          SIGNING_FINGERPRINT: ${{ vars.SOURCE_SIGNING_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          : "${SIGNING_KEY:?Configure the ASF project key in GPG_SECRET_KEY.}"
+          if [[ ! "${SIGNING_FINGERPRINT}" =~ ^([0-9A-F]{40}|[0-9A-F]{64})$ ]]; then
+            echo "::error::SOURCE_SIGNING_FINGERPRINT must be the full uppercase primary fingerprint."
+            exit 1
+          fi
+          cd "${RUNNER_TEMP}/verified-source"
+          shasum -a 512 --check "${ARCHIVE}.sha512"
+          GNUPGHOME="$(mktemp -d "${RUNNER_TEMP}/gnupg.XXXXXX")"
+          export GNUPGHOME
+          trap 'gpgconf --kill gpg-agent; rm -rf -- "${GNUPGHOME}"' EXIT
+          printf '%s' "${SIGNING_KEY}" | gpg --batch --import
+          unset SIGNING_KEY
+          gpg --batch --list-secret-keys "${SIGNING_FINGERPRINT}"
+          printf '%s' "${SIGNING_PASSPHRASE}" | gpg --batch --pinentry-mode loopback \
+            --passphrase-fd 0 --armor --detach-sign --local-user "${SIGNING_FINGERPRINT}" "${ARCHIVE}"
+          gpg --batch --status-fd 1 --verify "${ARCHIVE}.asc" "${ARCHIVE}" \
+            | awk -v fingerprint="${SIGNING_FINGERPRINT}" \
+              '$2 == "VALIDSIG" && ($3 == fingerprint || $NF == fingerprint) { valid = 1 } END { exit !valid }'
+          mkdir "${RUNNER_TEMP}/signed-source"
+          cp "${ARCHIVE}" "${ARCHIVE}.asc" "${ARCHIVE}.sha512" "${RUNNER_TEMP}/signed-source/"
+      - id: signed
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/signed-source/
+          if-no-files-found: error
+          compression-level: 0
+
+  upload:
+    name: Upload the signed candidate to ATR
+    needs: [ bundle, sign ]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.sign.outputs.artifact-id }}
+          path: ${{ runner.temp }}/signed-source
+          merge-multiple: true
+      - name: Upload to ATR compose
+        uses: apache/tooling-actions/upload-to-atr@fa721a0b176d713807b574da721b96545b587eea
+        with:
+          project: asyncband
+          version: ${{ needs.bundle.outputs.version }}
+          src: ${{ runner.temp }}/signed-source
+      - name: Record the candidate handoff
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          VERSION: ${{ needs.bundle.outputs.version }}
+          ARCHIVE: ${{ needs.bundle.outputs.archive }}
+        run: |
+          {
+            echo "Uploaded source commit ${CANDIDATE} to ATR project asyncband, version ${VERSION}."
+            echo
+            cat "${RUNNER_TEMP}/signed-source/${ARCHIVE}.sha512"
+            echo
+            echo "Inspect ATR checks and record the candidate URL and revision before starting a vote."
+            echo "After an upload failure, inspect ATR before rerunning failed jobs; reuse the signed artifact."
+          } >> "${GITHUB_STEP_SUMMARY}"
