@@ -27,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 defaults:
   run:
@@ -40,15 +41,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  bundle:
-    name: Build source
+  compose:
+    name: Compose source release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    outputs:
-      commit: ${{ steps.source.outputs.commit }}
-      version: ${{ steps.source.outputs.version }}
-      archive: ${{ steps.source.outputs.archive }}
-      artifact-id: ${{ steps.bundle.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -89,7 +85,6 @@ jobs:
             | gzip -n -9 > "${RUNNER_TEMP}/source/${source}.tar.gz"
           cd "${RUNNER_TEMP}/source"
           shasum -a 512 "${source}.tar.gz" > "${source}.tar.gz.sha512"
-          printf '%s\n' "${commit}" > source-commit.txt
           echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "archive=${source}.tar.gz" >> "${GITHUB_OUTPUT}"
@@ -99,31 +94,11 @@ jobs:
             echo
             cat "${source}.tar.gz.sha512"
           } >> "${GITHUB_STEP_SUMMARY}"
-      - id: bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: source-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/source/
-          if-no-files-found: error
-          compression-level: 0
-
-  sign:
-    name: Sign the source archive
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'apache/asyncband' }}
-    needs: bundle
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    outputs:
-      artifact-id: ${{ steps.signed.outputs.artifact-id }}
-    steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ needs.bundle.outputs.artifact-id }}
-          path: ${{ runner.temp }}/source
-          merge-multiple: true
-      - name: Sign with the ASF project key
+      - id: sign
+        name: Sign with the ASF project key
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'apache/asyncband' }}
         env:
-          ARCHIVE: ${{ needs.bundle.outputs.archive }}
+          ARCHIVE: ${{ steps.source.outputs.archive }}
           SIGNING_KEY: ${{ secrets.GPG_SECRET_KEY }}
           SIGNING_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           SIGNING_FINGERPRINT: ${{ vars.SOURCE_SIGNING_FINGERPRINT }}
@@ -135,7 +110,6 @@ jobs:
             exit 1
           fi
           cd "${RUNNER_TEMP}/source"
-          shasum -a 512 --check "${ARCHIVE}.sha512"
           GNUPGHOME="$(mktemp -d "${RUNNER_TEMP}/gnupg.XXXXXX")"
           export GNUPGHOME
           trap 'gpgconf --kill gpg-agent; rm -rf -- "${GNUPGHOME}"' EXIT
@@ -147,47 +121,25 @@ jobs:
           gpg --batch --status-fd 1 --verify "${ARCHIVE}.asc" "${ARCHIVE}" \
             | awk -v fingerprint="${SIGNING_FINGERPRINT}" \
               '$2 == "VALIDSIG" && ($3 == fingerprint || $NF == fingerprint) { valid = 1 } END { exit !valid }'
-          mkdir "${RUNNER_TEMP}/signed-source"
-          cp "${ARCHIVE}" "${ARCHIVE}.asc" "${ARCHIVE}.sha512" "${RUNNER_TEMP}/signed-source/"
-      - id: signed
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: signed-source-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/signed-source/
-          if-no-files-found: error
-          compression-level: 0
-
-  upload:
-    name: Upload the signed candidate to ATR
-    needs: [ bundle, sign ]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          artifact-ids: ${{ needs.sign.outputs.artifact-id }}
-          path: ${{ runner.temp }}/signed-source
-          merge-multiple: true
       - name: Upload to ATR compose
+        if: ${{ steps.sign.outcome == 'success' }}
         uses: apache/tooling-actions/upload-to-atr@fa721a0b176d713807b574da721b96545b587eea
         with:
           project: asyncband
-          version: ${{ needs.bundle.outputs.version }}
-          src: ${{ runner.temp }}/signed-source
+          version: ${{ steps.source.outputs.version }}
+          src: ${{ runner.temp }}/source
       - name: Record the candidate handoff
+        if: ${{ steps.sign.outcome == 'success' }}
         env:
-          SOURCE_COMMIT: ${{ needs.bundle.outputs.commit }}
-          VERSION: ${{ needs.bundle.outputs.version }}
-          ARCHIVE: ${{ needs.bundle.outputs.archive }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+          VERSION: ${{ steps.source.outputs.version }}
+          ARCHIVE: ${{ steps.source.outputs.archive }}
         run: |
           {
             echo "Uploaded RC tag ${GITHUB_REF_NAME} (${SOURCE_COMMIT}) to ATR project asyncband, version ${VERSION}."
             echo
-            cat "${RUNNER_TEMP}/signed-source/${ARCHIVE}.sha512"
+            cat "${RUNNER_TEMP}/source/${ARCHIVE}.sha512"
             echo
             echo "Inspect ATR checks and record the candidate URL and revision before starting a vote."
-            echo "After an upload failure, inspect ATR before rerunning failed jobs; reuse the signed artifact."
+            echo "Inspect ATR before rerunning this job after an upload failure; reruns rebuild and re-sign the same RC tag."
           } >> "${GITHUB_STEP_SUMMARY}"
