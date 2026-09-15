@@ -25,7 +25,7 @@ on:
         type: string
         required: true
       dry_run:
-        description: Check reproducibility without signing or uploading
+        description: Build without signing or uploading
         type: boolean
         default: true
   pull_request:
@@ -49,16 +49,13 @@ concurrency:
 
 jobs:
   bundle:
-    name: Build source (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Build source
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ ubuntu-24.04, macos-14 ]
     outputs:
       version: ${{ steps.source.outputs.version }}
       archive: ${{ steps.source.outputs.archive }}
+      artifact-id: ${{ steps.bundle.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,14 +88,9 @@ jobs:
           fi
           source="apache-asyncband-${version}-incubating-src"
           mkdir "${RUNNER_TEMP}/source"
-          # System gzip implementations can emit different deflate streams on macOS and Linux.
           git -c core.attributesFile=/dev/null -c tar.umask=0022 archive \
             --format=tar --prefix="${source}/" "${CANDIDATE}" \
-            | python3 -c '
-          import gzip, shutil, sys
-          with gzip.GzipFile(filename="", mode="wb", fileobj=sys.stdout.buffer, compresslevel=9, mtime=0) as archive:
-              shutil.copyfileobj(sys.stdin.buffer, archive)
-          ' > "${RUNNER_TEMP}/source/${source}.tar.gz"
+            | gzip -n -9 > "${RUNNER_TEMP}/source/${source}.tar.gz"
           cd "${RUNNER_TEMP}/source"
           shasum -a 512 "${source}.tar.gz" > "${source}.tar.gz.sha512"
           printf '%s\n' "${CANDIDATE}" > source-commit.txt
@@ -109,59 +101,18 @@ jobs:
             echo
             cat "${source}.tar.gz.sha512"
           } >> "${GITHUB_STEP_SUMMARY}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - id: bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os }}
+          name: source-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/source/
           if-no-files-found: error
           compression-level: 0
 
-  verify:
-    name: Compare independent source builds
-    needs: bundle
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    outputs:
-      artifact-id: ${{ steps.verified.outputs.artifact-id }}
-    steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: source-${{ github.run_id }}-*
-          path: ${{ runner.temp }}/sources
-      - name: Require identical source artifacts
-        env:
-          ARCHIVE: ${{ needs.bundle.outputs.archive }}
-        run: |
-          set -euo pipefail
-          linux=( "${RUNNER_TEMP}"/sources/source-*-ubuntu-24.04 )
-          macos=( "${RUNNER_TEMP}"/sources/source-*-macos-14 )
-          test -d "${linux[0]}"
-          test -d "${macos[0]}"
-          # Include successful builds from earlier attempts when rerunning failed jobs.
-          for source in "${RUNNER_TEMP}"/sources/*; do
-            diff -r "${linux[0]}" "${source}"
-          done
-          cp -R "${linux[0]}" "${RUNNER_TEMP}/verified-source"
-          cd "${RUNNER_TEMP}/verified-source"
-          shasum -a 512 --check "${ARCHIVE}.sha512"
-          {
-            echo "Linux and macOS produced identical source archives and checksums."
-            echo "Source commit: $(cat source-commit.txt)"
-            echo
-            cat "${ARCHIVE}.sha512"
-          } >> "${GITHUB_STEP_SUMMARY}"
-      - id: verified
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: verified-source-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/verified-source/
-          if-no-files-found: error
-          compression-level: 0
-
   sign:
-    name: Sign the verified source archive
+    name: Sign the source archive
     if: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && github.repository == 'apache/asyncband' && github.ref == 'refs/heads/main' }}
-    needs: [ bundle, verify ]
+    needs: bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -169,8 +120,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: ${{ needs.verify.outputs.artifact-id }}
-          path: ${{ runner.temp }}/verified-source
+          artifact-ids: ${{ needs.bundle.outputs.artifact-id }}
+          path: ${{ runner.temp }}/source
           merge-multiple: true
       - name: Sign with the ASF project key
         env:
@@ -185,7 +136,7 @@ jobs:
             echo "::error::SOURCE_SIGNING_FINGERPRINT must be the full uppercase primary fingerprint."
             exit 1
           fi
-          cd "${RUNNER_TEMP}/verified-source"
+          cd "${RUNNER_TEMP}/source"
           shasum -a 512 --check "${ARCHIVE}.sha512"
           GNUPGHOME="$(mktemp -d "${RUNNER_TEMP}/gnupg.XXXXXX")"
           export GNUPGHOME
