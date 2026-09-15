@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod source;
-
+use std::fs;
+use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command as StdCommand;
 use std::process::ExitStatus;
 use std::time::Duration;
@@ -26,6 +27,8 @@ use clap::Parser;
 use clap::Subcommand;
 use semver::Version;
 use serde::Deserialize;
+use sha2::Digest;
+use sha2::Sha512;
 
 const PACKAGE_NAME: &str = "asyncband";
 // cargo-semver-checks reserves exit code 100 for completed checks that found deny-level violations.
@@ -67,9 +70,111 @@ enum SubCommand {
     #[clap(about = "Verify API compatibility for a planned release.")]
     Semver(CommandSemver),
     #[clap(about = "Package the committed source for an ASF release.")]
-    Source(source::CommandSource),
+    Source(CommandSource),
     #[clap(about = "Run unit tests.")]
     Test(CommandTest),
+}
+
+#[derive(Parser)]
+struct CommandSource {
+    #[arg(
+        long,
+        help = "New directory for the source archive and SHA-512 checksum."
+    )]
+    output: PathBuf,
+
+    #[arg(
+        long,
+        help = "Compare the generated archive with a downloaded candidate."
+    )]
+    verify: Option<PathBuf>,
+}
+
+impl CommandSource {
+    fn run(self) {
+        // Cargo's manifest must describe the same tree that Git archives.
+        let mut clean = find_command("git");
+        clean.args(["diff", "--quiet", "HEAD", "--"]);
+        run_command(clean);
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .manifest_path(Path::new(env!("CARGO_WORKSPACE_DIR")).join("Cargo.toml"))
+            .no_deps()
+            .other_options(vec!["--locked".to_owned()])
+            .exec()
+            .expect("failed to read workspace metadata");
+        let version = &metadata
+            .packages
+            .iter()
+            .find(|package| package.name == PACKAGE_NAME)
+            .expect("asyncband package missing")
+            .version;
+        assert!(
+            version.pre.is_empty() && version.build.is_empty(),
+            "expected a stable X.Y.Z package version"
+        );
+
+        let mut revision = find_command("git");
+        revision.args(["rev-parse", "--verify", "HEAD^{commit}"]);
+        let revision = command_output(revision);
+        let revision = std::str::from_utf8(&revision)
+            .expect("invalid Git revision")
+            .trim();
+        println!("Commit: {revision}\nVersion: {version}");
+
+        // Git owns the committed file inventory, modes, symlinks, and timestamps.
+        let mut archive = find_command("git");
+        archive
+            .args(["-c", "tar.umask=0022", "archive", "--format=tar"])
+            .arg(format!(
+                "--prefix=apache-asyncband-{version}-incubating-src/"
+            ))
+            .arg(revision);
+        let source = compress_source(&command_output(archive));
+        let name = format!("apache-asyncband-{version}-incubating-src.tar.gz");
+        let digest: String = Sha512::digest(&source)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let checksum = format!("{digest}  {name}\n");
+        fs::create_dir(&self.output)
+            .expect("output must be a new directory with an existing parent");
+        fs::write(self.output.join(&name), &source).expect("failed to write source archive");
+        fs::write(self.output.join(format!("{name}.sha512")), &checksum)
+            .expect("failed to write checksum");
+        print!("{checksum}");
+
+        if let Some(candidate) = self.verify {
+            let candidate = fs::read(candidate).expect("failed to read downloaded candidate");
+            assert!(
+                source == candidate,
+                "downloaded candidate differs from the reproduced source archive"
+            );
+            println!(
+                "The downloaded candidate is byte-for-byte identical to the reproduced source archive."
+            );
+        }
+    }
+}
+
+fn compress_source(tar: &[u8]) -> Vec<u8> {
+    // Keep the gzip header independent of the host and build time. Cargo.lock pins the compressor.
+    let mut gzip = flate2::GzBuilder::new()
+        .mtime(0)
+        .operating_system(255)
+        .write(Vec::new(), flate2::Compression::best());
+    gzip.write_all(tar)
+        .expect("failed to compress source archive");
+    gzip.finish().expect("failed to finish source archive")
+}
+
+fn command_output(mut command: StdCommand) -> Vec<u8> {
+    let result = command.output().expect("failed to execute command");
+    assert!(
+        result.status.success(),
+        "{command:?} failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    result.stdout
 }
 
 #[derive(Parser)]
@@ -525,6 +630,23 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_compression_has_portable_headers_and_preserves_content() {
+        use std::io::Read;
+
+        let data = b"committed source bytes";
+        let compressed = compress_source(data);
+        let mut gzip = flate2::read::GzDecoder::new(compressed.as_slice());
+        let header = gzip.header().unwrap();
+        assert_eq!(header.mtime(), 0);
+        assert_eq!(header.operating_system(), 255);
+        assert_eq!(header.filename(), None);
+        assert_eq!(header.comment(), None);
+        let mut restored = Vec::new();
+        gzip.read_to_end(&mut restored).unwrap();
+        assert_eq!(restored, data);
+    }
 
     #[test]
     fn classify_release_types_with_cargo_pre_one_semantics() {

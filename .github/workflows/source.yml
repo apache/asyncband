@@ -22,6 +22,8 @@ on:
     paths:
       - .github/workflows/source.yml
       - xtask/**
+      - Cargo.toml
+      - Cargo.lock
       - .agents/skills/release/**
   workflow_dispatch:
     inputs:
@@ -57,31 +59,11 @@ jobs:
           cargo x --help
           cargo x source --help
           cargo x source --output "$RUNNER_TEMP/source" | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        id: artifact
-        with:
-          name: unsigned-source
-          path: ${{ runner.temp }}/source/
-          if-no-files-found: error
-    outputs:
-      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
-
-  sign:
-    name: Sign source archive
-    needs: source
-    if: >-
-      github.event_name == 'workflow_dispatch' && inputs.sign &&
-      github.repository == 'apache/asyncband' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      # No checkout or candidate code runs in the job that receives the private key.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          artifact-ids: ${{ needs.source.outputs.artifact-id }}
-          path: ${{ runner.temp }}/source
-          merge-multiple: true
       - name: Sign and verify
+        id: sign
+        if: >-
+          github.event_name == 'workflow_dispatch' && inputs.sign &&
+          github.repository == 'apache/asyncband' && github.ref == 'refs/heads/main'
         shell: bash
         working-directory: ${{ runner.temp }}/source
         env:
@@ -97,8 +79,6 @@ jobs:
           test "${#archives[@]}" -eq 1
           archive="${archives[0]}"
           [[ "$archive" =~ ^apache-asyncband-[0-9]+\.[0-9]+\.[0-9]+-incubating-src\.tar\.gz$ ]]
-          shasum -a 512 "$archive" > "$RUNNER_TEMP/source.sha512"
-          cmp "$archive.sha512" "$RUNNER_TEMP/source.sha512"
 
           mkdir -m 700 "$GNUPGHOME"
           trap 'gpgconf --kill all; rm -rf "$GNUPGHOME"' EXIT
@@ -110,9 +90,6 @@ jobs:
           gpg --batch --verify "$archive.asc" "$archive"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: signed-source
-          path: |
-            ${{ runner.temp }}/source/*.tar.gz
-            ${{ runner.temp }}/source/*.sha512
-            ${{ runner.temp }}/source/*.asc
+          name: ${{ steps.sign.outcome == 'success' && 'signed-source' || 'unsigned-source' }}
+          path: ${{ runner.temp }}/source/
           if-no-files-found: error

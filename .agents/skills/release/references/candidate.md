@@ -68,7 +68,7 @@ Wait for the `Release` GitHub Actions workflow to pass. The workflow validates t
 
 ## Build and verify the source archive
 
-For a new candidate, build the source archive from the verified RC tag. Reuse existing signed artifacts for a retry of the same candidate. Use `cargo x source` with Git, GNU gzip, and `shasum` on PATH. It packages the clean checkout at HEAD with the required `incubating` filename and writes its SHA-512 checksum. On macOS, install GNU gzip with `brew install gzip`; Apple gzip is not the release compressor.
+For a new candidate, build the source archive from the verified RC tag. Reuse existing signed artifacts for a retry of the same candidate. Use `cargo x source` with Git on PATH. It packages the clean checkout at HEAD with the required `incubating` filename and writes its SHA-512 checksum. Compression, hashing, and byte comparison use Rust libraries; no system gzip, checksum, or comparison utility is required.
 
 ```shell
 RC_TAG="v${VERSION}-rc.${RC}"

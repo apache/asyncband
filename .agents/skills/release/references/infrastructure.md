@@ -35,7 +35,7 @@ The release manager uses an ASF-associated signing key published in the existing
 
 ## CI source signing
 
-`.github/workflows/source.yml` prepares an unsigned source archive on relevant pull requests and on manual dispatch. The default manual run is unsigned. Its separate signing job runs only on an explicit manual dispatch from `apache/asyncband`'s `main` branch with `sign=true`. It downloads the exact unsigned Actions artifact by ID, checks the archive's SHA-512, imports the Infra-managed key into a temporary GPG home, checks the primary fingerprint, signs only the expected source archive, and verifies the signature. It neither checks out nor executes candidate code. The workflow has read-only repository access and no OIDC permission. It retains artifacts in Actions; it does not stage, vote, create tags, or publish.
+`.github/workflows/source.yml` prepares a source archive and optionally signs it in one job. Pull requests and default manual runs produce unsigned artifacts. Signing runs only on an explicit manual dispatch from `apache/asyncband`'s `main` branch with `sign=true`; the secret is passed to that step. The build code and its dependencies share the trusted signing environment. The signing step imports the Infra-managed key into a temporary GPG home, checks the primary fingerprint, signs the expected source archive, and verifies the signature. The workflow uploads the resulting bundle once. It has read-only repository access and no OIDC permission; it does not stage, vote, create tags, or publish.
 
 ### Provisioning
 
@@ -53,7 +53,7 @@ Once approval, provisioning, and public-key publication are complete, manually r
 
 ### Reproduce before staging and voting
 
-The release manager must reproduce the source archive on trusted hardware outside GitHub Actions, using a fresh checkout of the exact commit printed in the workflow summary. Compare against the actual downloaded archive, not merely its checksum file. Use Git, GNU gzip, and `shasum`; the command records the Git and gzip versions alongside the commit and checksum. Run the following from that clean checkout, after setting `DOWNLOADED_ARCHIVE` to the absolute path of the downloaded `.tar.gz`:
+The release manager must reproduce the source archive on trusted hardware outside GitHub Actions, using a fresh checkout of the exact commit printed in the workflow summary. Compare against the actual downloaded archive, not merely its checksum file. Use Git and the committed `Cargo.lock`. The command uses `git archive` for the committed tree, `flate2` with its Rust backend and fixed gzip header for compression, and `sha2` for the checksum. It records the commit and checksum; Rust compares the full archive bytes. Run the following from that clean checkout, after setting `DOWNLOADED_ARCHIVE` to the absolute path of the downloaded `.tar.gz`:
 
 ```shell
 cargo x --help
@@ -62,6 +62,6 @@ REPRO_DIR="$(mktemp -d "${TMPDIR:-/tmp}/asyncband-reproduce.XXXXXX")"
 cargo x source --output "${REPRO_DIR}/dist" --verify "${DOWNLOADED_ARCHIVE}"
 ```
 
-`--verify` fails on any byte difference, including gzip headers or compression differences. Do not accept merely equivalent extracted contents as evidence for automated signing. If tool versions affect the output, reproduce with the recorded versions and investigate the discrepancy before accepting the candidate. Do not use local Git attribute overrides in the reproduction checkout. Unsigned untracked files are not part of `git archive`; tracked edits are rejected.
+`--verify` fails on any byte difference, including gzip headers or compression differences. Do not accept merely equivalent extracted contents as evidence for automated signing. If the output differs, check that both builds use the same commit and locked dependencies, then investigate the discrepancy before accepting the candidate. Do not use local Git attribute overrides in the reproduction checkout. Unsigned untracked files are not part of `git archive`; tracked edits are rejected.
 
 After staging, download the candidate again and repeat the comparison and signature verification against the published `KEYS`. Record the candidate revision, source commit, SHA-512, tool versions, and result in the vote evidence. Reviewers independently reproduce these same bytes on trusted hardware before publication. CI generation, a valid automated signature, and a passing build do not replace this check. The existing source-content, build, licensing, PPMC/IPMC voting, and final publication requirements still apply. No compiled binaries or crates.io packages are signed by this workflow.
