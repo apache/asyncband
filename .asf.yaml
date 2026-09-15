@@ -17,6 +17,29 @@
 
 # See https://github.com/apache/infrastructure-asfyaml/ for the configuration reference.
 
+project:
+  metadata:
+    key: asyncband
+    committee: asyncband
+    name: Apache Asyncband
+    homepage: https://asyncband.apache.org
+    repositories:
+      - https://github.com/apache/asyncband.git
+    programming_languages:
+      - Rust
+  policy:
+    source_artifact_paths:
+      - "apache-asyncband-*-incubating-src.tar.gz"
+    vote_mode: email
+    min_hours: 72
+    vote_recipients:
+      to: dev@asyncband.apache.org
+    announce_recipients:
+      to: dev@asyncband.apache.org
+    download_path_suffix: "{{VERSION}}"
+  features:
+    atr_sync: true
+
 github:
   description: >-
     This crate provides concurrency control and async coordination primitives that are runtime agnostic.
