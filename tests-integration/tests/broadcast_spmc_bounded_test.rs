@@ -496,6 +496,22 @@ fn sends_never_block_once_all_receivers_are_gone() {
 }
 
 #[test]
+fn send_without_receivers_does_not_buffer() {
+    let (mut tx, rx) = bounded(4);
+    drop(rx);
+
+    tx.try_send(1).unwrap();
+    tx.try_send(2).unwrap();
+    assert_eq!(tx.retained_message_count(), 0);
+
+    let mut rx = tx.subscribe();
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+
+    tx.try_send(3).unwrap();
+    assert_eq!(rx.try_recv(), Ok(3));
+}
+
+#[test]
 fn subscribing_while_the_producer_is_blocked_does_not_release_capacity() {
     let (mut tx, rx) = bounded(1);
     tx.try_send(0).unwrap();
@@ -624,6 +640,29 @@ fn parked_recv_wakes_when_the_sender_drops() {
         poll_once(recv.as_mut()),
         std::task::Poll::Ready(Err(RecvError::Disconnected))
     );
+}
+
+#[test]
+fn try_recv_does_not_report_disconnected_while_a_message_is_unread() {
+    // `try_recv` must not treat a sender drop as terminal until it has observed `tail`. MPMC
+    // gets that by receiving under the publication lock; SPMC reloads `tail` after `senders == 0`.
+    for _ in 0..10_000 {
+        let (mut tx, mut rx) = bounded(4);
+        let producer = thread::spawn(move || {
+            tx.try_send(1).unwrap();
+        });
+        loop {
+            match rx.try_recv() {
+                Ok(1) => break,
+                Err(TryRecvError::Empty) => std::hint::spin_loop(),
+                Err(TryRecvError::Disconnected) => {
+                    panic!("try_recv dropped a published message on disconnect")
+                }
+                Ok(other) => panic!("unexpected value {other}"),
+            }
+        }
+        producer.join().unwrap();
+    }
 }
 
 #[test]

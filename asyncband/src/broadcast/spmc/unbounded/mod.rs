@@ -169,15 +169,16 @@ impl<T> UnboundedSender<T> {
             // slot's remaining-reader count match its consumers and keeps a parking receiver from
             // missing this publication.
             let mut state = self.shared.state.lock();
-            let tail = self.shared.tail.load(Ordering::Relaxed);
-            let next = Shared::<UnboundedBuffer<T>>::next_tail(tail);
 
             if state.receiver_count == 0 {
                 // Nothing can read this message. It leaves the critical section with us and is
-                // dropped below, so `T::drop` never runs under the lock.
+                // dropped below, so `T::drop` never runs under the lock. `head` / `tail` stay put:
+                // a discarded send is not a publication, so the version-addressed log must not
+                // allocate empty chunks for it. A later subscribe still joins at this tail.
                 discarded = Some(msg);
-                common::commit_discard(&self.shared.head, &self.shared.tail, next);
             } else {
+                let tail = self.shared.tail.load(Ordering::Relaxed);
+                let next = Shared::<UnboundedBuffer<T>>::next_tail(tail);
                 unsafe {
                     self.shared
                         .buffer

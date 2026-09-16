@@ -255,15 +255,16 @@ async fn send_without_receivers_does_not_buffer() {
     let (mut tx, rx) = unbounded();
     drop(rx);
 
-    tx.send(1);
-    tx.send(2);
+    for value in 0..1024 {
+        tx.send(value);
+    }
     assert_eq!(tx.retained_message_count(), 0);
 
     let mut rx = tx.subscribe();
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
 
-    tx.send(3);
-    assert_eq!(rx.recv().await, Ok(3));
+    tx.send(1024);
+    assert_eq!(rx.recv().await, Ok(1024));
 }
 
 #[test]
@@ -469,6 +470,29 @@ fn parked_recv_prefers_buffered_messages_over_disconnection() {
     assert_eq!(recv.as_mut().poll(&mut context), Poll::Ready(Ok(7)));
     drop(recv);
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
+fn try_recv_does_not_report_disconnected_while_a_message_is_unread() {
+    // `try_recv` must not treat a sender drop as terminal until it has observed `tail`. MPMC
+    // gets that by receiving under the publication lock; SPMC reloads `tail` after `senders == 0`.
+    for _ in 0..10_000 {
+        let (mut tx, mut rx) = unbounded();
+        let producer = thread::spawn(move || {
+            tx.send(1);
+        });
+        loop {
+            match rx.try_recv() {
+                Ok(1) => break,
+                Err(TryRecvError::Empty) => std::hint::spin_loop(),
+                Err(TryRecvError::Disconnected) => {
+                    panic!("try_recv dropped a published message on disconnect")
+                }
+                Ok(other) => panic!("unexpected value {other}"),
+            }
+        }
+        producer.join().unwrap();
+    }
 }
 
 #[tokio::test]

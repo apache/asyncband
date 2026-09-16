@@ -614,6 +614,11 @@ pub(super) fn unregister<B>(shared: &Shared<B>, cursor: u64, token: &mut Option<
 }
 
 /// Receives without waiting.
+///
+/// `Disconnected` is only returned after a reload of `tail`. The sender stores `senders = 0` only
+/// after its last publication, so seeing zero synchronizes with that store and cannot hide an
+/// accepted message. Returning `Disconnected` while a value is still unread would violate the same
+/// drain-before-disconnect contract as [`crate::broadcast::mpmc`].
 pub(super) fn try_receive<T: Clone, B: SlotStore<T>>(
     shared: &Shared<B>,
     cursor: &mut u64,
@@ -621,10 +626,13 @@ pub(super) fn try_receive<T: Clone, B: SlotStore<T>>(
     if *cursor < shared.tail.load(Ordering::Acquire) {
         return Ok(consume(shared, cursor));
     }
-    if shared.senders.load(Ordering::Acquire) == 0 {
-        Err(TryRecvError::Disconnected)
+    if shared.senders.load(Ordering::Acquire) != 0 {
+        return Err(TryRecvError::Empty);
+    }
+    if *cursor < shared.tail.load(Ordering::Acquire) {
+        Ok(consume(shared, cursor))
     } else {
-        Err(TryRecvError::Empty)
+        Err(TryRecvError::Disconnected)
     }
 }
 

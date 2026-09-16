@@ -15,15 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use super::TryRecvError;
 use super::*;
 use crate::broadcast::spmc::common::CHUNK_LEN;
 
 #[test]
 #[should_panic(expected = "broadcast channel version counter overflowed")]
 fn send_panics_on_version_overflow() {
-    // The receiver is dropped right away: the doctored counter would make its own drop overflow.
-    let (mut tx, _) = unbounded();
+    // Keep a live subscription at the doctored tail so drop does not walk the whole log, and so
+    // this send is a publication rather than a no-subscriber discard.
+    let (mut tx, mut rx) = unbounded();
     tx.shared.set_tail(u64::MAX);
+    rx.cursor = u64::MAX;
     tx.send(());
 }
 
@@ -51,5 +54,28 @@ fn chunk_storage_grows_and_drains_with_the_live_window() {
         tx.send(i);
         assert_eq!(rx.try_recv(), Ok(i));
     }
+    assert_eq!(tx.shared.buffer.allocated_slots(), CHUNK_LEN);
+}
+
+#[test]
+fn discarded_sends_do_not_grow_chunk_storage() {
+    let (mut tx, rx) = unbounded();
+    drop(rx);
+
+    for i in 0..CHUNK_LEN * 4 {
+        tx.send(i);
+    }
+
+    // Discarded sends are not publications. The log must not allocate empty chunks for versions
+    // that were never retained, matching MPMC's empty-buffer discard path.
+    assert_eq!(tx.retained_message_count(), 0);
+    assert_eq!(tx.shared.buffer.allocated_slots(), CHUNK_LEN);
+
+    let mut rx = tx.subscribe();
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+
+    tx.send(0);
+    assert_eq!(rx.try_recv(), Ok(0));
+    assert_eq!(tx.retained_message_count(), 0);
     assert_eq!(tx.shared.buffer.allocated_slots(), CHUNK_LEN);
 }
