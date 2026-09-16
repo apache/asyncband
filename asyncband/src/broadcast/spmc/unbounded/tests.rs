@@ -28,7 +28,7 @@ fn send_panics_on_version_overflow() {
 }
 
 #[test]
-fn chunks_grow_with_the_committed_log() {
+fn chunk_storage_grows_and_drains_with_the_live_window() {
     let (mut tx, mut rx) = unbounded();
 
     let burst = CHUNK_LEN * 4;
@@ -41,8 +41,15 @@ fn chunks_grow_with_the_committed_log() {
         assert_eq!(rx.try_recv(), Ok(i));
     }
 
-    // Chunks stay allocated until the channel is dropped so receivers can walk them without a
-    // reclamation lock.
+    // The footprint tracks the live window, not the lifetime message count: only the chunk
+    // holding the current window is left.
     assert_eq!(tx.retained_message_count(), 0);
-    assert!(tx.shared.buffer.allocated_slots() >= burst);
+    assert_eq!(tx.shared.buffer.allocated_slots(), CHUNK_LEN);
+
+    // Released chunks keep their index entries, so lookups still reach live versions.
+    for i in 0..CHUNK_LEN {
+        tx.send(i);
+        assert_eq!(rx.try_recv(), Ok(i));
+    }
+    assert_eq!(tx.shared.buffer.allocated_slots(), CHUNK_LEN);
 }

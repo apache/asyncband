@@ -222,14 +222,6 @@ impl BoundedBroadcastSpmc for Asyncband {
         receiver.recv().await.unwrap()
     }
 
-    fn send_blocking(sender: &mut Self::Sender, value: usize) {
-        sender.send_blocking(value);
-    }
-
-    fn recv_blocking(receiver: &mut Self::Receiver) -> usize {
-        receiver.recv_blocking().unwrap()
-    }
-
     fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
         match receiver.try_recv() {
             Ok(value) => Some(value),

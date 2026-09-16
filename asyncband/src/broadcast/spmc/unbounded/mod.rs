@@ -30,6 +30,11 @@
 //! [`UnboundedSender::retained_message_count`] reports its current length. Use [`bounded`] when
 //! the producer should wait for the slowest receiver instead of growing the backlog.
 //!
+//! Value storage is released as the backlog drains, so memory tracks the peak backlog rather than
+//! the number of values ever published. The log keeps one small index entry per 256 values until
+//! the channel is dropped: a receiver locates a value without any lock, and may still be walking
+//! past entries the backlog has left behind.
+//!
 //! # Receivers
 //!
 //! [`UnboundedSender::subscribe`] and [`UnboundedReceiver::resubscribe`] add a receiver at the
@@ -157,16 +162,21 @@ impl<T> UnboundedSender<T> {
     /// assert_eq!(second.try_recv(), Ok("update"));
     /// ```
     pub fn send(&mut self, msg: T) {
-        self.shared.send_in_progress.store(true, Ordering::Release);
-        let n = self.shared.receiver_count.load(Ordering::Acquire);
-
-        let unretained = if n == 0 {
-            let state = self.shared.state.lock();
+        let mut discarded = None;
+        let wakers = {
+            // Counting subscriptions, writing the slot, publishing `tail`, and draining the wait
+            // set share one critical section with subscribe and unsubscribe. That is what makes a
+            // slot's remaining-reader count match its consumers and keeps a parking receiver from
+            // missing this publication.
+            let mut state = self.shared.state.lock();
             let tail = self.shared.tail.load(Ordering::Relaxed);
             let next = Shared::<UnboundedBuffer<T>>::next_tail(tail);
+
             if state.receiver_count == 0 {
+                // Nothing can read this message. It leaves the critical section with us and is
+                // dropped below, so `T::drop` never runs under the lock.
+                discarded = Some(msg);
                 common::commit_discard(&self.shared.head, &self.shared.tail, next);
-                Some(msg)
             } else {
                 unsafe {
                     self.shared
@@ -175,28 +185,12 @@ impl<T> UnboundedSender<T> {
                         .write(msg, state.receiver_count);
                 }
                 common::commit_publish(&self.shared.tail, next);
-                None
             }
-        } else {
-            let tail = self.shared.tail.load(Ordering::Relaxed);
-            let next = Shared::<UnboundedBuffer<T>>::next_tail(tail);
-            unsafe {
-                self.shared.buffer.slot_for_publish(tail).write(msg, n);
-            }
-            common::commit_publish(&self.shared.tail, next);
-            None
+            state.waiters.drain()
         };
 
-        self.shared.send_in_progress.store(false, Ordering::Release);
-        if self.shared.has_waiters.load(Ordering::Acquire) {
-            let wakers = {
-                let mut state = self.shared.state.lock();
-                self.shared.has_waiters.store(false, Ordering::Release);
-                state.waiters.drain()
-            };
-            wake_all(wakers);
-        }
-        drop(unretained);
+        wake_all(wakers);
+        drop(discarded);
     }
 
     /// Returns the number of values in the shared backlog.

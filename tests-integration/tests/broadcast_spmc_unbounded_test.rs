@@ -23,6 +23,8 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -520,6 +522,128 @@ fn concurrent_receivers_drain_a_published_batch() {
 
     for handle in handles {
         assert_eq!(handle.join().unwrap(), expected);
+    }
+}
+
+#[test]
+fn subscription_churn_never_strands_the_backlog() {
+    const MESSAGES: u64 = 200_000;
+
+    let (mut tx, rx) = unbounded::<u64>();
+    let stop = Arc::new(AtomicBool::new(false));
+
+    // A publish has to agree with concurrent subscribe/unsubscribe on each version's consumer
+    // count. If it does not, a slot's remaining count never reaches zero and `head` stops.
+    let churn_stop = stop.clone();
+    let churn = thread::spawn(move || {
+        while !churn_stop.load(Ordering::Relaxed) {
+            for _ in 0..64 {
+                drop(rx.resubscribe());
+            }
+        }
+        rx
+    });
+
+    for value in 0..MESSAGES {
+        tx.send(value);
+    }
+    stop.store(true, Ordering::Relaxed);
+    let mut rx = churn.join().unwrap();
+
+    for value in 0..MESSAGES {
+        assert_eq!(rx.try_recv(), Ok(value));
+    }
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(tx.retained_message_count(), 0);
+}
+
+#[test]
+fn publish_races_with_a_parking_receiver_without_losing_the_wakeup() {
+    const ROUNDS: u64 = 200_000;
+
+    let (mut tx, mut rx) = unbounded::<u64>();
+    let gate = Arc::new(AtomicU64::new(0));
+    let published = Arc::new(AtomicU64::new(0));
+
+    // Start the send and the parking receive together, so the publish lands while the receiver is
+    // registering its waker.
+    let producer_gate = gate.clone();
+    let producer_published = published.clone();
+    let producer = thread::spawn(move || {
+        for round in 1..=ROUNDS {
+            while producer_gate.load(Ordering::Acquire) < round {
+                std::hint::spin_loop();
+            }
+            tx.send(round);
+            producer_published.store(round, Ordering::Release);
+        }
+        tx
+    });
+
+    let (waker, counter) = WakeCounter::new();
+    let mut context = Context::from_waker(&waker);
+
+    for round in 1..=ROUNDS {
+        let woken = counter.count();
+        let mut recv = Box::pin(rx.recv());
+        gate.store(round, Ordering::Release);
+        if recv.as_mut().poll(&mut context).is_ready() {
+            continue;
+        }
+
+        // The receive parked, so this round's send must have woken it. Otherwise the value sits
+        // unread with the receiver parked.
+        while published.load(Ordering::Acquire) < round {
+            std::hint::spin_loop();
+        }
+        assert!(
+            counter.count() > woken,
+            "round {round}: publish left the receiver parked"
+        );
+        drop(recv);
+        assert_eq!(rx.try_recv(), Ok(round));
+    }
+
+    drop(producer.join().unwrap());
+}
+
+#[test]
+fn releasing_a_long_backlog_keeps_concurrent_receives_inside_the_live_window() {
+    const DRAINERS: usize = 32;
+    const BACKLOG: u64 = 20_000;
+
+    // Dropping a receiver that pinned the whole prefix advances `head` many chunks in one step,
+    // while the other receivers are mid-receive. Locating a slot must not depend on a `head`
+    // snapshot that this jump has already invalidated.
+    for _ in 0..8 {
+        let (mut tx, rx) = unbounded::<u64>();
+        let laggard = tx.subscribe();
+        for value in 0..BACKLOG {
+            tx.send(value);
+        }
+
+        let mut drainers = vec![rx];
+        for _ in 1..DRAINERS {
+            drainers.push(tx.subscribe());
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let handles: Vec<_> = drainers
+            .into_iter()
+            .map(|mut rx| {
+                let stop = stop.clone();
+                thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = rx.try_recv();
+                    }
+                })
+            })
+            .collect();
+
+        drop(laggard);
+        stop.store(true, Ordering::Relaxed);
+        for handle in handles {
+            handle.join().unwrap();
+        }
     }
 }
 

@@ -28,8 +28,9 @@
 //! The sender is not [`Clone`], and every publish method takes `&mut self`. That is the static
 //! single-writer contract this topology adds over [`crate::broadcast::mpmc`]: there cannot be a
 //! second producer, at compile time. `&Sender` can still be shared for [`subscribe`] and the
-//! inspection methods. Receivers drain already-published slots without taking the publication
-//! lock, which is the throughput reason to pick this family when there is one producer.
+//! inspection methods. Apart from that the public surface matches [`crate::broadcast::mpmc`]
+//! method for method. Receivers drain already-published slots without taking the publication lock,
+//! which is the throughput reason to pick this family when there is one producer.
 //!
 //! This is fan-out broadcast, not a competing queue: every accepted value is delivered to every
 //! active subscription. A competitive `asyncband::spmc` queue would give each value to exactly one

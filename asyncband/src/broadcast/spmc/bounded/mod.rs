@@ -106,8 +106,8 @@ use std::future::Future;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::fence;
 use std::task::Context;
 use std::task::Poll;
 
@@ -267,6 +267,9 @@ impl<T> BoundedSender<T> {
                     .shared
                     .producer_waiting
                     .store(1, Ordering::Release);
+                // Announce the intent to park before reading `head`. Pairs with the fence in
+                // `common::take_producer_on_reclaim`.
+                fence(Ordering::SeqCst);
                 let mut state = self.sender.shared.state.lock();
 
                 if state.receiver_count == 0 {
@@ -286,7 +289,6 @@ impl<T> BoundedSender<T> {
                     let wakers = state.waiters.drain();
                     drop(state);
                     wake_all(wakers);
-                    common::notify_blocking(self.sender.shared.as_ref());
                     drop(retired_producer);
                     drop(msg);
                     return Poll::Ready(());
@@ -321,7 +323,6 @@ impl<T> BoundedSender<T> {
                 // send, so it must not run under the lock, but a panic in its Drop must not skip
                 // the receiver wake-ups either.
                 wake_all(wakers);
-                common::notify_blocking(self.sender.shared.as_ref());
                 drop(retired_producer);
                 Poll::Ready(())
             }
@@ -363,41 +364,6 @@ impl<T> BoundedSender<T> {
         self.publish(value).map_err(TrySendError::Full)
     }
 
-    /// Broadcasts a value, parking the current thread while the channel is at capacity.
-    pub fn send_blocking(&mut self, mut value: T) {
-        loop {
-            match self.try_send(value) {
-                Ok(()) => return,
-                Err(TrySendError::Full(returned)) => {
-                    value = returned;
-                    self.shared.producer_waiting.store(1, Ordering::Release);
-                    let snap = self.shared.epoch.load(Ordering::Acquire);
-                    let cap = self.shared.buffer.cap as u64;
-                    if self.shared.tail.load(Ordering::Acquire)
-                        - self.shared.head.load(Ordering::Acquire)
-                        < cap
-                    {
-                        continue;
-                    }
-                    let guard = self.shared.blocking.lock();
-                    if self.shared.epoch.load(Ordering::Acquire) != snap
-                        || self.shared.tail.load(Ordering::Acquire)
-                            - self.shared.head.load(Ordering::Acquire)
-                            < cap
-                    {
-                        continue;
-                    }
-                    drop(
-                        self.shared
-                            .blocking_cvar
-                            .wait(guard)
-                            .unwrap_or_else(PoisonError::into_inner),
-                    );
-                }
-            }
-        }
-    }
-
     /// The publish step both send paths share.
     ///
     /// Publishing and draining the wait set share one critical section, so a receiver can never
@@ -435,7 +401,6 @@ impl<T> BoundedSender<T> {
         };
 
         wake_all(wakers);
-        common::notify_blocking(self.shared.as_ref());
         drop(discarded);
         Ok(())
     }
@@ -599,44 +564,9 @@ impl<T: Clone> BoundedReceiver<T> {
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
         let consumed = common::try_receive(&self.shared, &mut self.cursor)?;
-        let producer = common::take_producer_on_reclaim(&self.shared, consumed.reclaimed, false);
+        let producer = common::take_producer_on_reclaim(&self.shared, consumed.reclaimed);
         common::wake_producer(producer);
         Ok(consumed.value)
-    }
-
-    /// Receives the next value, parking the current thread while empty.
-    ///
-    /// Same result as [`recv`](Self::recv), without going through an async waker. Native-thread
-    /// waiters share one futex so a publish can wake every blocked receiver with a single notify.
-    pub fn recv_blocking(&mut self) -> Result<T, RecvError> {
-        loop {
-            match self.try_recv() {
-                Ok(value) => return Ok(value),
-                Err(TryRecvError::Disconnected) => return Err(RecvError::Disconnected),
-                Err(TryRecvError::Empty) => {
-                    let snap = self.shared.epoch.load(Ordering::Acquire);
-                    if self.cursor < self.shared.tail.load(Ordering::Acquire) {
-                        continue;
-                    }
-                    if self.shared.senders.load(Ordering::Acquire) == 0 {
-                        return Err(RecvError::Disconnected);
-                    }
-                    let guard = self.shared.blocking.lock();
-                    if self.shared.epoch.load(Ordering::Acquire) != snap
-                        || self.cursor < self.shared.tail.load(Ordering::Acquire)
-                        || self.shared.senders.load(Ordering::Acquire) == 0
-                    {
-                        continue;
-                    }
-                    drop(
-                        self.shared
-                            .blocking_cvar
-                            .wait(guard)
-                            .unwrap_or_else(PoisonError::into_inner),
-                    );
-                }
-            }
-        }
     }
 }
 
@@ -755,8 +685,7 @@ impl<T: Clone> Future for Recv<'_, T> {
             Poll::Ready(Ok(consumed)) => consumed,
         };
 
-        let producer =
-            common::take_producer_on_reclaim(&receiver.shared, consumed.reclaimed, false);
+        let producer = common::take_producer_on_reclaim(&receiver.shared, consumed.reclaimed);
         common::wake_producer(producer);
         Poll::Ready(Ok(consumed.value))
     }

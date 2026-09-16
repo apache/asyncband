@@ -31,6 +31,7 @@
 //   the remaining drop-vs-wait race is `dropping_the_last_receiver_wakes_the_blocked_sender`
 //   together with `sends_never_block_once_all_receivers_are_gone`.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::task::Context;
@@ -90,6 +91,33 @@ impl Clone for PanicOnClone {
         Self {
             value: self.value,
             panic: self.panic,
+        }
+    }
+}
+
+/// A payload whose clone lets another subscription consume the same slot, then panics.
+///
+/// That makes the panicking receive the slot's last reader, so it releases the slot from the drop
+/// guard inside the receive step — a path that unwinds before the caller can wake the producer.
+struct RaceOnClone {
+    armed: bool,
+    probe: Option<Arc<Mutex<BoundedReceiver<RaceOnClone>>>>,
+}
+
+impl Clone for RaceOnClone {
+    fn clone(&self) -> Self {
+        if self.armed {
+            if let Some(probe) = &self.probe
+                && let Ok(mut probe) = probe.try_lock()
+            {
+                // Takes this slot's remaining count from 2 to 1 while we are still cloning.
+                let _ = probe.try_recv();
+            }
+            panic!("panic while cloning a broadcast message");
+        }
+        Self {
+            armed: self.armed,
+            probe: self.probe.clone(),
         }
     }
 }
@@ -235,7 +263,7 @@ fn concurrent_receivers_keep_up_with_the_producer() {
             thread::spawn(move || {
                 let mut sum = 0u64;
                 for _ in 0..MESSAGES {
-                    sum += rx.recv_blocking().unwrap();
+                    sum += FutureExt::block_on(rx.recv()).unwrap();
                 }
                 sum
             })
@@ -243,7 +271,7 @@ fn concurrent_receivers_keep_up_with_the_producer() {
         .collect();
 
     for value in 0..MESSAGES as u64 {
-        tx.send_blocking(value);
+        FutureExt::block_on(tx.send(value));
     }
 
     for handle in handles {
@@ -258,7 +286,7 @@ fn concurrent_blocking_wait_at_capacity_one() {
     let handle = thread::spawn(move || {
         let mut sum = 0u64;
         for _ in 0..64 {
-            sum += rx2.recv_blocking().unwrap();
+            sum += FutureExt::block_on(rx2.recv()).unwrap();
         }
         sum
     });
@@ -266,12 +294,12 @@ fn concurrent_blocking_wait_at_capacity_one() {
         let mut sum = 0u64;
         let mut rx = rx;
         for _ in 0..64 {
-            sum += rx.recv_blocking().unwrap();
+            sum += FutureExt::block_on(rx.recv()).unwrap();
         }
         sum
     });
     for value in 0..64u64 {
-        tx.send_blocking(value);
+        FutureExt::block_on(tx.send(value));
     }
     assert_eq!(handle.join().unwrap(), 64 * 63 / 2);
     assert_eq!(handle1.join().unwrap(), 64 * 63 / 2);
@@ -599,12 +627,12 @@ fn parked_recv_wakes_when_the_sender_drops() {
 }
 
 #[test]
-fn parked_recv_blocking_wakes_when_the_sender_drops() {
+fn parked_native_thread_recv_wakes_when_the_sender_drops() {
     assert_completes_without_deadlock(|| {
         let (tx, mut rx) = bounded::<i32>(4);
-        let parked = thread::spawn(move || rx.recv_blocking());
+        let parked = thread::spawn(move || FutureExt::block_on(rx.recv()));
         // The worker parks on the empty channel. Dropping the sender must finish that receive
-        // with Disconnected; a missed condvar wake hangs inside assert_completes_without_deadlock.
+        // with Disconnected; a missed wake hangs inside assert_completes_without_deadlock.
         thread::sleep(std::time::Duration::from_millis(50));
         drop(tx);
         assert_eq!(parked.join().unwrap(), Err(RecvError::Disconnected));
@@ -752,6 +780,39 @@ fn panicking_payload_destructor_still_releases_capacity() {
         poll_once(send.as_mut()).is_ready(),
         "a panicking payload destructor must not strand a producer on capacity it already freed"
     );
+}
+
+#[test]
+fn panicking_clone_that_becomes_the_last_reader_wakes_the_producer() {
+    let (mut tx, mut rx1) = bounded(1);
+    let rx2 = Arc::new(Mutex::new(tx.subscribe()));
+
+    tx.try_send(RaceOnClone {
+        armed: true,
+        probe: Some(rx2.clone()),
+    })
+    .unwrap();
+
+    let (waker, counter) = WakeCounter::new();
+    let mut context = Context::from_waker(&waker);
+    let mut send = Box::pin(tx.send(RaceOnClone {
+        armed: false,
+        probe: None,
+    }));
+    assert!(send.as_mut().poll(&mut context).is_pending());
+    assert_eq!(counter.count(), 0);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = rx1.try_recv();
+    }));
+    assert!(result.is_err(), "the clone was expected to panic");
+
+    assert!(
+        counter.count() > 0,
+        "a panicking clone must not strand a producer on capacity it already freed"
+    );
+    drop(send);
+    assert_eq!(tx.retained_message_count(), 0);
 }
 
 #[test]
