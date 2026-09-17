@@ -111,6 +111,16 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<broadcast::mpmc::RecvError>();
     assert_send_and_sync::<broadcast::mpmc::TryRecvError>();
     assert_send_and_sync::<broadcast::mpmc::TrySendError<i64>>();
+    // SPMC senders stay `Send + Sync` so `&Sender` can subscribe and inspect. They are not
+    // `Clone`; exclusive `&mut self` publish is the type-level single-writer contract (no
+    // trybuild).
+    assert_send_and_sync::<broadcast::spmc::UnboundedSender<i64>>();
+    assert_send_and_sync::<broadcast::spmc::UnboundedReceiver<i64>>();
+    assert_send_and_sync::<broadcast::spmc::BoundedSender<i64>>();
+    assert_send_and_sync::<broadcast::spmc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<broadcast::spmc::RecvError>();
+    assert_send_and_sync::<broadcast::spmc::TryRecvError>();
+    assert_send_and_sync::<broadcast::spmc::TrySendError<i64>>();
     assert_send_and_sync::<oneshot::SendError<i64>>();
     assert_send_and_sync::<oneshot::Sender<i64>>();
     assert_send_and_sync::<Closed>();
@@ -203,6 +213,13 @@ fn public_types_are_unpin() {
     assert_unpin::<broadcast::mpmc::RecvError>();
     assert_unpin::<broadcast::mpmc::TryRecvError>();
     assert_unpin::<broadcast::mpmc::TrySendError<i64>>();
+    assert_unpin::<broadcast::spmc::UnboundedSender<i64>>();
+    assert_unpin::<broadcast::spmc::UnboundedReceiver<i64>>();
+    assert_unpin::<broadcast::spmc::BoundedSender<i64>>();
+    assert_unpin::<broadcast::spmc::BoundedReceiver<i64>>();
+    assert_unpin::<broadcast::spmc::RecvError>();
+    assert_unpin::<broadcast::spmc::TryRecvError>();
+    assert_unpin::<broadcast::spmc::TrySendError<i64>>();
     assert_unpin::<oneshot::Sender<i64>>();
     assert_unpin::<oneshot::SendError<i64>>();
     assert_unpin::<oneshot::Receiver<i64>>();
