@@ -31,7 +31,6 @@ mod backpressure;
 mod callbacks;
 mod concurrency;
 mod reservation;
-mod support;
 
 #[test]
 fn unbounded_try_recv_preserves_order_and_reports_state() {

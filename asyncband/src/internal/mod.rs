@@ -99,14 +99,13 @@ pub(crate) mod mutex;
 
 #[cfg(any(
     feature = "broadcast",
-    feature = "mpmc",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
 ))]
-// Broadcast and MPMC use waiter notifications; mutexes and rwlocks use acquire/release operations;
-// the public semaphore also exposes permit accounting. Single-primitive builds leave part of this
-// API unused.
+// Broadcast uses waiter notifications; mutexes and rwlocks use acquire/release operations; the
+// public semaphore also exposes permit accounting. Single-primitive builds leave part of this API
+// unused.
 #[allow(dead_code)]
 pub(crate) mod semaphore;
 

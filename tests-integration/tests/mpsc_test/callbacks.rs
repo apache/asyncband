@@ -32,10 +32,9 @@ use tests_integration::assert_completes_without_deadlock;
 use tests_integration::expect_ready;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
+use tests_integration::waker_on_clone;
 use tests_integration::waker_on_drop;
 use tests_integration::waker_on_wake;
-
-use super::support::waker_on_clone;
 
 struct HoldSender<S> {
     _sender: S,
