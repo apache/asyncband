@@ -68,16 +68,20 @@ Wait for the `Release` GitHub Actions workflow to pass. The workflow validates t
 
 ## Build and verify the source archive
 
-For a new candidate, build the source archive from the verified RC tag. Reuse existing signed artifacts for a retry of the same candidate. The `incubating` marker is required in the filename, and `gzip -n` keeps the gzip header independent of the local build time.
+For a new candidate, build the source archive from the verified RC tag. Reuse existing signed artifacts for a retry of the same candidate. Use Git to package the committed source with the required `incubating` filename, `shasum` to calculate its SHA-512 checksum, and GPG to sign it.
 
 ```shell
+set -eu
 RC_TAG="v${VERSION}-rc.${RC}"
 SOURCE_DIR="apache-asyncband-${VERSION}-incubating-src"
 ARTIFACT_DIR="${RELEASE_DIR}/dist"
-mkdir -p "${ARTIFACT_DIR}"
 git verify-tag "${RC_TAG}"
-git archive --format=tar --prefix="${SOURCE_DIR}/" "${RC_TAG}" \
-  | gzip -n -9 > "${ARTIFACT_DIR}/${SOURCE_DIR}.tar.gz"
+test "$(git rev-parse HEAD)" = "$(git rev-parse "${RC_TAG}^{commit}")"
+git diff --quiet HEAD --
+mkdir "${ARTIFACT_DIR}"
+git -c tar.umask=0022 archive --format=tar.gz -9 \
+  --prefix="${SOURCE_DIR}/" \
+  --output="${ARTIFACT_DIR}/${SOURCE_DIR}.tar.gz" "${RC_TAG}^{commit}"
 (
   cd "${ARTIFACT_DIR}"
   shasum -a 512 "${SOURCE_DIR}.tar.gz" > "${SOURCE_DIR}.tar.gz.sha512"
@@ -85,6 +89,8 @@ git archive --format=tar --prefix="${SOURCE_DIR}/" "${RC_TAG}" \
     "${SOURCE_DIR}.tar.gz"
 )
 ```
+
+The optional [CI source signing workflow](infrastructure.md#ci-source-signing) uses the same packaging command. Its signed bundle is a preparation artifact; download and verify it before staging a candidate.
 
 Verify the existing artifacts with the [candidate-verification guide](verification.md), directly or through `release_verifier`. Supply the candidate identity, signing-key fingerprint, repository root, and absolute artifact paths. Keep the signed archive unchanged throughout verification.
 
