@@ -18,11 +18,6 @@
 use std::any::type_name;
 use std::fmt;
 
-use crate::internal::competing_queue::RecvError as InternalRecvError;
-use crate::internal::competing_queue::SendError as InternalSendError;
-use crate::internal::competing_queue::TryRecvError as InternalTryRecvError;
-use crate::internal::competing_queue::TrySendError as InternalTrySendError;
-
 /// An error returned when trying to send on a disconnected queue.
 ///
 /// The value that could not be sent can be retrieved with [`SendError::into_inner`].
@@ -41,14 +36,8 @@ impl<T> SendError<T> {
     }
 }
 
-pub(super) fn send_error<T>(value: T) -> SendError<T> {
+pub fn send_error<T>(value: T) -> SendError<T> {
     SendError(value)
-}
-
-impl<T> From<InternalSendError<T>> for SendError<T> {
-    fn from(error: InternalSendError<T>) -> Self {
-        send_error(error.into_inner())
-    }
 }
 
 impl<T> fmt::Display for SendError<T> {
@@ -90,15 +79,6 @@ impl<T> TrySendError<T> {
     }
 }
 
-impl<T> From<InternalTrySendError<T>> for TrySendError<T> {
-    fn from(error: InternalTrySendError<T>) -> Self {
-        match error {
-            InternalTrySendError::Full(value) => TrySendError::Full(value),
-            InternalTrySendError::Disconnected(value) => TrySendError::Disconnected(value),
-        }
-    }
-}
-
 impl<T> fmt::Display for TrySendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -129,14 +109,6 @@ pub enum RecvError {
     Disconnected,
 }
 
-impl From<InternalRecvError> for RecvError {
-    fn from(error: InternalRecvError) -> Self {
-        match error {
-            InternalRecvError::Disconnected => RecvError::Disconnected,
-        }
-    }
-}
-
 impl fmt::Display for RecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("receiving on a disconnected queue")
@@ -152,15 +124,6 @@ pub enum TryRecvError {
     Empty,
     /// All senders have been dropped, and no buffered values remain.
     Disconnected,
-}
-
-impl From<InternalTryRecvError> for TryRecvError {
-    fn from(error: InternalTryRecvError) -> Self {
-        match error {
-            InternalTryRecvError::Empty => TryRecvError::Empty,
-            InternalTryRecvError::Disconnected => TryRecvError::Disconnected,
-        }
-    }
 }
 
 impl fmt::Display for TryRecvError {

@@ -22,6 +22,7 @@ mod mpmc;
 #[path = "../mpmc/mod.rs"]
 mod mpmc_support;
 mod mpsc;
+mod spmc;
 mod waitgroup;
 mod watch;
 

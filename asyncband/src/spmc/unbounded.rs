@@ -25,7 +25,7 @@ use super::error::send_error;
 use crate::internal::competing_queue::Shared;
 use crate::internal::competing_queue::TrySendError as InternalTrySendError;
 
-/// Creates an unbounded multi-producer, multi-consumer queue.
+/// Creates an unbounded single-producer, multi-consumer queue.
 ///
 /// Sends are synchronous and values may be buffered until available memory is exhausted.
 ///
@@ -44,18 +44,10 @@ pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
 
 /// Sends values to the associated [`UnboundedReceiver`] handles.
 ///
-/// Instances are created by [`unbounded`] and can be cloned to add producers.
+/// Instances are created by [`unbounded`] and cannot be cloned. Sending requires exclusive access
+/// to this endpoint.
 pub struct UnboundedSender<T> {
     shared: Arc<Shared<T>>,
-}
-
-impl<T> Clone for UnboundedSender<T> {
-    fn clone(&self) -> Self {
-        self.shared.clone_sender();
-        Self {
-            shared: self.shared.clone(),
-        }
-    }
 }
 
 impl<T> fmt::Debug for UnboundedSender<T> {
@@ -74,7 +66,7 @@ impl<T> UnboundedSender<T> {
     /// Sends a value without waiting for capacity.
     ///
     /// If all receivers have been dropped, the value is returned in [`SendError`].
-    pub fn send(&self, value: T) -> Result<(), SendError<T>> {
+    pub fn send(&mut self, value: T) -> Result<(), SendError<T>> {
         match self.shared.try_send(value) {
             Ok(()) => Ok(()),
             Err(InternalTrySendError::Disconnected(value)) => Err(send_error(value)),
@@ -115,7 +107,7 @@ impl<T> Drop for UnboundedReceiver<T> {
 impl<T> UnboundedReceiver<T> {
     /// Receives the next available value.
     ///
-    /// Buffered values remain available after the final sender is dropped. Once they are drained,
+    /// Buffered values remain available after the sender is dropped. Once they are drained,
     /// this method returns [`RecvError::Disconnected`].
     ///
     /// # Cancel safety
@@ -129,7 +121,7 @@ impl<T> UnboundedReceiver<T> {
     /// Attempts to receive the next available value without waiting for a message.
     ///
     /// Returns [`TryRecvError::Empty`] while the queue is empty and a sender remains, or
-    /// [`TryRecvError::Disconnected`] once the queue is empty and all senders have been dropped.
+    /// [`TryRecvError::Disconnected`] once the queue is empty and the sender has been dropped.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         self.shared.try_recv().map_err(Into::into)
     }

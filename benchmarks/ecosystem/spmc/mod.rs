@@ -15,24 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A multi-producer, multi-consumer queue for sending values between asynchronous tasks.
-//!
-//! Receivers compete for values: each value accepted by a sender is delivered to exactly one
-//! receiver while a receiver remains. Clone a receiver to distribute work across multiple
-//! asynchronous tasks. Dropping the final receiver releases any buffered values and makes later
-//! sends return their value in an error.
-
+mod adapters;
 mod bounded;
-mod error;
+mod support;
 mod unbounded;
-
-pub use self::bounded::BoundedReceiver;
-pub use self::bounded::BoundedSender;
-pub use self::bounded::bounded;
-pub use self::error::RecvError;
-pub use self::error::SendError;
-pub use self::error::TryRecvError;
-pub use self::error::TrySendError;
-pub use self::unbounded::UnboundedReceiver;
-pub use self::unbounded::UnboundedSender;
-pub use self::unbounded::unbounded;
