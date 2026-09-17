@@ -120,6 +120,7 @@ use crate::internal::mutex::Mutex;
 use crate::internal::semaphore::Acquire;
 use crate::internal::semaphore::Semaphore;
 use crate::internal::wake_all;
+use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerToken;
 
 #[cfg(test)]
@@ -195,7 +196,7 @@ impl<T> Shared<T> {
     /// Hands `freed` released slots back to producers parked in `send`.
     ///
     /// Capacity is `retained()`, which is `buffer.len()`. The buffer grows only in
-    /// `Backlog::publish_retained` and shrinks only in `Backlog::reclaim_consumed`, which is
+    /// `Backlog::publish_retained` and shrinks only in `Backlog::reclaim_vacated`, which is
     /// reachable from exactly two places: a receive that vacates the last cursor at the backlog
     /// head, and removing a subscription. Those are the only callers of this method, so no path
     /// can free capacity without waking a producer. Subscribing cannot: a new cursor starts at the
@@ -438,7 +439,8 @@ impl<T> BoundedSender<T> {
     /// observe an empty buffer and park after this message became visible.
     fn publish<P>(&self, payload: P, into_msg: impl FnOnce(P) -> Arc<T>) -> Result<(), P> {
         let mut discarded = None;
-        let wakers = {
+        let mut wakers = WakerBatch::new();
+        {
             let mut inner = self.shared.inner.lock();
 
             if !inner.log.has_receivers() {
@@ -453,10 +455,10 @@ impl<T> BoundedSender<T> {
                 inner.log.publish_retained(into_msg(payload));
             }
 
-            inner.waiters.drain()
-        };
+            inner.waiters.drain_into(&mut wakers);
+        }
 
-        wake_all(wakers);
+        wake_all(&mut wakers);
         drop(discarded);
         Ok(())
     }
