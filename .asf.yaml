@@ -28,6 +28,9 @@ project:
     programming_languages:
       - Rust
   policy:
+    github_repository_name: asyncband
+    github_compose_workflow_path:
+      - .github/workflows/release-compose.yml
     source_artifact_paths:
       - "apache-asyncband-*-incubating-src.tar.gz"
     vote_mode: email
