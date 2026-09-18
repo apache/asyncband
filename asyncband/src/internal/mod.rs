@@ -90,6 +90,7 @@ pub(crate) mod value_cell;
     feature = "phaser",
     feature = "rwlock",
     feature = "semaphore",
+    feature = "task-group",
     feature = "waitgroup",
     feature = "watch",
 ))]

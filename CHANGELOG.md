@@ -28,6 +28,7 @@ All notable changes to this project will be documented in this file.
 * Add `event::AutoResetEvent`, a reusable signal that releases one waiter, retains at most one unassigned signal that can be cleared with `reset`, and transfers assigned signals when waits are cancelled.
 * Add `ManualResetEvent::try_wait` to check readiness without registering a waiter or consuming the set state.
 * Implement `broadcast::mpmc::bounded`, a lossless bounded broadcast channel that retains at most the requested capacity and makes producers wait for the slowest active receiver.
+* Add an opt-in runtime-agnostic `TaskGroup` with cloneable registration handles, explicit closing, completion-ordered output consumption, and whole-group waiting and collection.
 * Add opt-in bounded and unbounded `asyncband::mpmc` queues with cloneable producers and competing consumers, delivering each accepted value to exactly one receiver while a receiver remains.
 * Add an opt-in runtime-agnostic `Phaser` with shared observer handles, dynamic RAII participants registered individually or in batches through an owning iterator, `u64` phase numbers, split arrival/wait with cancellation-resilient retries, and a `close` operation that releases unfinished waits with `Closed`.
 * Add bounded MPSC `reserve` and `try_reserve` methods returning a `Permit`, allowing callers to wait for capacity before constructing a message; pending sends and reservations receive capacity in wait-queue order, and unused permits release capacity without claiming message order.

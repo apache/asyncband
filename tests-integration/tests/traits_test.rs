@@ -52,6 +52,11 @@ use asyncband::shutdown::Shutdown;
 use asyncband::shutdown::ShutdownGuard;
 use asyncband::shutdown::ShutdownWatch;
 use asyncband::singleflight;
+use asyncband::task_group::JoinNext;
+use asyncband::task_group::Registrar;
+use asyncband::task_group::TaskGroup;
+use asyncband::task_group::TrackError;
+use asyncband::task_group::Tracked;
 use asyncband::waitgroup::Wait;
 use asyncband::waitgroup::WaitGroup;
 use asyncband::watch;
@@ -92,6 +97,9 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<OnceCell<u32>>();
     assert_send_and_sync::<OnceMap<String, u32>>();
     assert_send_and_sync::<singleflight::Group<String, u32>>();
+    assert_send_and_sync::<TaskGroup<i64>>();
+    assert_send_and_sync::<Registrar<i64>>();
+    assert_send_and_sync::<TrackError<i64>>();
     assert_send_and_sync::<Latch>();
     assert_send_and_sync::<Semaphore>();
     assert_send_and_sync::<Shutdown>();
@@ -159,6 +167,10 @@ fn movable_public_types_are_send() {
     let (_completer, completion) = completion::new::<i64>();
     assert_send_value(completion.wait());
 
+    let (mut group, registrar) = TaskGroup::new();
+    assert_send_value(registrar.track(std::future::ready(42)).unwrap());
+    assert_send_value(group.join_next());
+
     let (unbounded_sender, unbounded_receiver) = mpmc::unbounded::<Cell<u8>>();
     assert_send_value(unbounded_receiver.recv());
     drop(unbounded_sender);
@@ -185,6 +197,11 @@ fn public_types_are_unpin() {
     assert_unpin::<OnceCell<u32>>();
     assert_unpin::<OnceMap<String, u32>>();
     assert_unpin::<singleflight::Group<String, u32>>();
+    assert_unpin::<TaskGroup<i64>>();
+    assert_unpin::<Registrar<i64>>();
+    assert_unpin::<TrackError<i64>>();
+    assert_unpin::<Tracked<std::future::Ready<i64>>>();
+    assert_unpin::<JoinNext<'_, i64>>();
     assert_unpin::<Semaphore>();
     assert_unpin::<Shutdown>();
     assert_unpin::<ShutdownGuard>();
