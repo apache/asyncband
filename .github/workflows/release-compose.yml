@@ -27,7 +27,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 defaults:
   run:
@@ -45,6 +44,11 @@ jobs:
     name: Compose source release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.source.outputs.version }}
+      archive: ${{ steps.source.outputs.archive }}
+      artifact-id: ${{ steps.bundle.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -94,46 +98,72 @@ jobs:
             echo
             cat "${source}.tar.gz.sha512"
           } >> "${GITHUB_STEP_SUMMARY}"
-      - id: sign
-        name: Sign with the ASF project key
+      - id: bundle
         if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'apache/asyncband' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source/
+          if-no-files-found: error
+          compression-level: 0
+
+  sign-and-upload:
+    name: Sign and upload source release
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'apache/asyncband' }}
+    needs: compose
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Keep signing secrets in this environment so access requires release approval.
+    environment:
+      name: release
+      url: https://releases.apache.org/projects/asyncband
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.compose.outputs.artifact-id }}
+          path: ${{ runner.temp }}/source
+          merge-multiple: true
+      - id: gpg
+        name: Import the ASF project key
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_SECRET_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+      - name: Sign with the ASF project key
         env:
-          ARCHIVE: ${{ steps.source.outputs.archive }}
-          SIGNING_KEY: ${{ secrets.GPG_SECRET_KEY }}
-          SIGNING_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          ARCHIVE: ${{ needs.compose.outputs.archive }}
+          IMPORTED_FINGERPRINT: ${{ steps.gpg.outputs.fingerprint }}
           SIGNING_FINGERPRINT: ${{ vars.SOURCE_SIGNING_FINGERPRINT }}
         run: |
           set -euo pipefail
-          : "${SIGNING_KEY:?Configure the ASF project key in GPG_SECRET_KEY.}"
           if [[ ! "${SIGNING_FINGERPRINT}" =~ ^([0-9A-F]{40}|[0-9A-F]{64})$ ]]; then
             echo "::error::SOURCE_SIGNING_FINGERPRINT must be the full uppercase primary fingerprint."
             exit 1
           fi
+          if [[ "${IMPORTED_FINGERPRINT}" != "${SIGNING_FINGERPRINT}" ]]; then
+            echo "::error::The imported key does not match SOURCE_SIGNING_FINGERPRINT."
+            exit 1
+          fi
           cd "${RUNNER_TEMP}/source"
-          GNUPGHOME="$(mktemp -d "${RUNNER_TEMP}/gnupg.XXXXXX")"
-          export GNUPGHOME
-          trap 'gpgconf --kill gpg-agent; rm -rf -- "${GNUPGHOME}"' EXIT
-          printf '%s' "${SIGNING_KEY}" | gpg --batch --import
-          unset SIGNING_KEY
-          gpg --batch --list-secret-keys "${SIGNING_FINGERPRINT}"
-          printf '%s' "${SIGNING_PASSPHRASE}" | gpg --batch --pinentry-mode loopback \
-            --passphrase-fd 0 --armor --detach-sign --local-user "${SIGNING_FINGERPRINT}" "${ARCHIVE}"
+          shasum -a 512 --check "${ARCHIVE}.sha512"
+          gpg --batch --armor --detach-sign --local-user "${SIGNING_FINGERPRINT}" "${ARCHIVE}"
           gpg --batch --status-fd 1 --verify "${ARCHIVE}.asc" "${ARCHIVE}" \
             | awk -v fingerprint="${SIGNING_FINGERPRINT}" \
               '$2 == "VALIDSIG" && ($3 == fingerprint || $NF == fingerprint) { valid = 1 } END { exit !valid }'
       - name: Upload to ATR compose
-        if: ${{ steps.sign.outcome == 'success' }}
         uses: apache/tooling-actions/upload-to-atr@fa721a0b176d713807b574da721b96545b587eea
         with:
           project: asyncband
-          version: ${{ steps.source.outputs.version }}
+          version: ${{ needs.compose.outputs.version }}
           src: ${{ runner.temp }}/source
       - name: Record the candidate handoff
-        if: ${{ steps.sign.outcome == 'success' }}
         env:
-          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
-          VERSION: ${{ steps.source.outputs.version }}
-          ARCHIVE: ${{ steps.source.outputs.archive }}
+          SOURCE_COMMIT: ${{ needs.compose.outputs.commit }}
+          VERSION: ${{ needs.compose.outputs.version }}
+          ARCHIVE: ${{ needs.compose.outputs.archive }}
         run: |
           {
             echo "Uploaded RC tag ${GITHUB_REF_NAME} (${SOURCE_COMMIT}) to ATR project asyncband, version ${VERSION}."
@@ -141,5 +171,5 @@ jobs:
             cat "${RUNNER_TEMP}/source/${ARCHIVE}.sha512"
             echo
             echo "Inspect ATR checks and record the candidate URL and revision before starting a vote."
-            echo "Inspect ATR before rerunning this job after an upload failure; reruns rebuild and re-sign the same RC tag."
+            echo "Inspect ATR before rerunning this job after an upload failure; it reuses the source archive and signs it again."
           } >> "${GITHUB_STEP_SUMMARY}"
