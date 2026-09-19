@@ -393,6 +393,15 @@ impl<T> Backlog<T> {
     pub fn set_tail(&mut self, tail: u64) {
         self.tail = tail;
     }
+
+    /// Asserts the cursor accounting invariants: every cursor is counted exactly once, either in
+    /// one slot's `cursors` or in `at_tail`, and `buffer` covers exactly `[head, tail)`.
+    #[cfg(test)]
+    pub fn assert_cursor_accounting(&self) {
+        let in_slots: usize = self.buffer.iter().map(|slot| slot.cursors).sum();
+        assert_eq!(in_slots + self.at_tail, self.receivers.len());
+        assert_eq!(self.tail - self.head, self.buffer.len() as u64);
+    }
 }
 
 /// Buffer, receiver cursors, and parked receivers, all under one lock.
@@ -524,4 +533,66 @@ pub fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Reclaimed<T>) -> T {
     // Another receiver can still hold an in-flight reference to the same message, so the clone
     // remains the fallback.
     Arc::try_unwrap(msg).unwrap_or_else(|msg| (*msg).clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::Backlog;
+
+    /// Drives every cursor-count mutation point — subscribe, publish, receive, and drop — and
+    /// checks the accounting after each step.
+    #[test]
+    fn cursor_accounting_holds_across_subscribe_receive_and_drop() {
+        let mut log = Backlog::<u64>::elastic();
+
+        let a = log.subscribe();
+        let b = log.subscribe();
+        log.assert_cursor_accounting();
+
+        // The first publication picks up the caught-up cursors; a subscription registered
+        // mid-backlog starts at the tail and counts against the next publication.
+        assert!(log.publish(Arc::new(1)).is_none());
+        let c = log.subscribe();
+        assert!(log.publish(Arc::new(2)).is_none());
+        assert!(log.publish(Arc::new(3)).is_none());
+        log.assert_cursor_accounting();
+
+        assert_eq!(*log.receive(a).unwrap().0, 1);
+        log.assert_cursor_accounting();
+
+        // Dropping a subscription parked mid-backlog only decrements that slot and reclaims
+        // nothing.
+        assert!(log.remove_receiver(c).is_empty());
+        log.assert_cursor_accounting();
+
+        // `a` drains to the tail, leaving zero-count slots behind the lagging `b`.
+        assert_eq!(*log.receive(a).unwrap().0, 2);
+        assert_eq!(*log.receive(a).unwrap().0, 3);
+        log.assert_cursor_accounting();
+        assert!(log.receive(a).is_none());
+
+        // Dropping a caught-up subscription reclaims nothing either.
+        let d = log.subscribe();
+        assert!(log.remove_receiver(d).is_empty());
+        log.assert_cursor_accounting();
+
+        // Dropping the lagging subscription releases the whole prefix it held back in one step.
+        assert_eq!(log.remove_receiver(b).len(), 3);
+        log.assert_cursor_accounting();
+
+        // A receive that catches up to the tail releases exactly one message and moves the cursor
+        // back to `at_tail`.
+        assert!(log.publish(Arc::new(4)).is_none());
+        let (msg, reclaimed) = log.receive(a).unwrap();
+        assert_eq!(*msg, 4);
+        assert_eq!(reclaimed.len(), 1);
+        log.assert_cursor_accounting();
+
+        // With no subscription left, a publication is discarded and nothing is counted.
+        assert!(log.remove_receiver(a).is_empty());
+        assert_eq!(*log.publish(Arc::new(5)).unwrap(), 5);
+        log.assert_cursor_accounting();
+    }
 }
