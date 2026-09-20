@@ -127,6 +127,11 @@ impl CommandMiri {
             "tests-integration",
             &["--test", "phaser_test"],
         ));
+        run_command(make_miri_cmd_with_seeds(
+            "tests-integration",
+            &["--test", "semaphore_ordering_test"],
+            "0..8",
+        ));
     }
 }
 
@@ -424,6 +429,13 @@ fn make_miri_cmd(package: &str, target: &[&str]) -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.args(["+nightly", "miri", "test", "--package", package]);
     cmd.args(target);
+    cmd
+}
+
+/// Runs a Miri target under a range of seeds, for tests whose failure depends on the schedule.
+fn make_miri_cmd_with_seeds(package: &str, target: &[&str], seeds: &str) -> StdCommand {
+    let mut cmd = make_miri_cmd(package, target);
+    cmd.env("MIRIFLAGS", format!("-Zmiri-many-seeds={seeds}"));
     cmd
 }
 

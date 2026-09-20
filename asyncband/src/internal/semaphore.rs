@@ -143,6 +143,30 @@ impl Semaphore {
 
     /// Adds `n` permits to the semaphore.
     pub fn release(&self, n: usize) {
+        if n == 0 {
+            return;
+        }
+
+        // A waiter is linked only after the balance has been drained to zero, and permits reach
+        // the balance again only once the queue is empty, so a positive balance means no waiter
+        // is linked and the permits can be added without the queue lock.
+        //
+        // Try the exchange once before falling back to the locked path. Other threads can
+        // still use the fast paths, so a locked balance update may also need to retry.
+        let current = self.permits.load(Ordering::Relaxed);
+        if current != 0 && self.try_add_to_balance(current, n).is_ok() {
+            return;
+        }
+
+        self.insert_permits_with_lock(n, self.waiters.lock());
+    }
+
+    /// Adds `n` permits to a semaphore whose every permit the caller holds.
+    ///
+    /// The balance is zero while one caller holds every permit, so the positive-balance path of
+    /// [`release`](Self::release) cannot succeed and mutex guards skip its probe. The locked path
+    /// is correct for any balance, so the precondition only affects speed.
+    pub fn release_all_held(&self, n: usize) {
         if n != 0 {
             self.insert_permits_with_lock(n, self.waiters.lock());
         }
@@ -181,6 +205,24 @@ impl Semaphore {
         }
         drop(waiters);
         wake_all(&mut wakers);
+    }
+
+    /// Adds `n` permits to a balance expected to hold `current`, or returns the balance observed
+    /// instead.
+    ///
+    /// The overflow check and the addition are one exchange because the positive-balance path of
+    /// [`release`](Self::release) can grow the balance even while the queue lock is held. The
+    /// exchange is the strong form because `release` tries it only once.
+    ///
+    /// ORDERING: Release publishes the work protected by the released permits to the Acquire
+    /// load or exchange that next observes this balance.
+    fn try_add_to_balance(&self, current: usize, n: usize) -> Result<(), usize> {
+        let next = current.checked_add(n).unwrap_or_else(|| {
+            panic!("number of added permits ({n}) would overflow usize::MAX (prev: {current})")
+        });
+        self.permits
+            .compare_exchange(current, next, Ordering::Release, Ordering::Relaxed)
+            .map(|_| ())
     }
 
     fn insert_permits_with_lock(
@@ -231,13 +273,17 @@ impl Semaphore {
                 if rem > 0 && waiters.is_empty() {
                     // Retire the remainder before the overflow check so unwinding cannot retry it.
                     let added = std::mem::take(&mut rem);
-                    // The lock serializes additions; concurrent operations can only remove permits.
-                    let current = self.permits.load(Ordering::Relaxed);
-                    assert!(
-                        current.checked_add(added).is_some(),
-                        "number of added permits ({added}) would overflow usize::MAX (prev: {current})"
-                    );
-                    self.permits.fetch_add(added, Ordering::Release);
+                    // Fast releases can grow the balance under this lock, so the overflow check
+                    // and addition must be one exchange. A zero balance cannot change under the
+                    // lock, but still needs an RMW to extend the previous release sequence.
+                    let mut current = self.permits.load(Ordering::Relaxed);
+                    if current == 0 {
+                        self.permits.fetch_add(added, Ordering::Release);
+                    } else {
+                        while let Err(actual) = self.try_add_to_balance(current, added) {
+                            current = actual;
+                        }
+                    }
                 }
 
                 // Neither wake callbacks nor destruction of the taken waker run under this lock.
@@ -439,6 +485,78 @@ mod tests {
             semaphore.release(1);
             assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
         }
+    }
+
+    #[test]
+    fn release_with_positive_balance_does_not_take_the_queue_lock() {
+        let semaphore = Semaphore::new(1);
+
+        // Holding the queue lock deadlocks a release that needs it.
+        let queue = semaphore.waiters.lock();
+        semaphore.release(2);
+        assert_eq!(semaphore.available_permits(), 3);
+        assert!(semaphore.try_acquire(2));
+        semaphore.release(2);
+        assert_eq!(semaphore.available_permits(), 3);
+        drop(queue);
+    }
+
+    #[test]
+    fn release_with_zero_balance_hands_permits_to_the_queue() {
+        let semaphore = Semaphore::new(0);
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(counter.clone());
+        let mut acquire = semaphore.poll_acquire(2);
+        assert!(acquire.poll_once(&waker).is_pending());
+
+        semaphore.release(3);
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+        assert_eq!(semaphore.available_permits(), 1);
+        assert!(acquire.poll_once(&waker).is_ready());
+
+        // Queue empty and balance positive again: the lock is not needed.
+        let queue = semaphore.waiters.lock();
+        semaphore.release(1);
+        drop(queue);
+        assert_eq!(semaphore.available_permits(), 2);
+    }
+
+    #[test]
+    fn locked_path_adds_to_a_positive_balance() {
+        let semaphore = Semaphore::new(2);
+
+        // A release that observed zero can find a positive balance once it holds the lock.
+        semaphore.insert_permits_with_lock(3, semaphore.waiters.lock());
+        assert_eq!(semaphore.available_permits(), 5);
+    }
+
+    #[test]
+    fn locked_overflow_does_not_retry_during_unwinding() {
+        let semaphore = Semaphore::new(usize::MAX);
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            semaphore.insert_permits_with_lock(1, semaphore.waiters.lock());
+        }));
+        assert!(result.is_err());
+        assert_eq!(semaphore.available_permits(), usize::MAX);
+        assert!(semaphore.waiters.lock().is_empty());
+    }
+
+    #[test]
+    fn release_all_held_hands_permits_to_the_queue() {
+        let semaphore = Semaphore::new(1);
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(counter.clone());
+        assert!(semaphore.try_acquire(1));
+        let mut acquire = semaphore.poll_acquire(1);
+        assert!(acquire.poll_once(&waker).is_pending());
+
+        semaphore.release_all_held(1);
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+        assert_eq!(semaphore.available_permits(), 0);
+        assert!(acquire.poll_once(&waker).is_ready());
+
+        semaphore.release_all_held(1);
+        assert_eq!(semaphore.available_permits(), 1);
     }
 
     #[test]

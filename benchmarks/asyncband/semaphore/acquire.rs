@@ -70,6 +70,15 @@ fn try_acquire_release(bencher: Bencher) {
 }
 
 #[divan::bench]
+fn try_acquire_release_with_spare_permits(bencher: Bencher) {
+    let semaphore = Semaphore::new(8);
+
+    bencher.bench_local(|| {
+        drop(black_box(semaphore.try_acquire(black_box(2)).unwrap()));
+    });
+}
+
+#[divan::bench]
 fn owned_try_acquire_release(bencher: Bencher) {
     let semaphore = Arc::new(Semaphore::new(8));
 
