@@ -16,7 +16,6 @@
 // under the License.
 
 use std::fmt;
-use std::future::Future;
 use std::sync::Arc;
 
 use super::RecvError;
@@ -121,8 +120,8 @@ impl<T> UnboundedReceiver<T> {
     ///
     /// Dropping a pending `recv` does not consume a value or prevent other receivers from receiving
     /// it.
-    pub fn recv(&self) -> impl Future<Output = Result<T, RecvError>> {
-        self.shared.recv()
+    pub async fn recv(&self) -> Result<T, RecvError> {
+        self.shared.recv().await
     }
 
     /// Attempts to receive the next available value without waiting for a message.
