@@ -39,6 +39,7 @@ mod semaphore;
 mod shutdown;
 mod singleflight;
 mod support;
+mod task_group;
 mod waitgroup;
 
 fn main() {
