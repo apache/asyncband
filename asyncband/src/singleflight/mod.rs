@@ -245,10 +245,6 @@ where
     ///
     /// # Examples
     ///
-    /// Share a group between request handlers. While one request is generating a report, other
-    /// requests for the same report wait for its result. Here, `generate_report` is the
-    /// application's asynchronous report generator.
-    ///
     /// ```
     /// use asyncband::singleflight::Group;
     ///
@@ -305,10 +301,6 @@ where
     /// it would wait for its own result. Work for other keys remains independent.
     ///
     /// # Examples
-    ///
-    /// Concurrent requests for the same user can share an in-flight profile lookup. Here,
-    /// `fetch_profile` is the application's asynchronous backend call; each request handles its
-    /// returned `Result` as usual.
     ///
     /// ```
     /// use asyncband::singleflight::Group;
