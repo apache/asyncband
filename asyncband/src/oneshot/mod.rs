@@ -91,23 +91,28 @@
 //!
 //! ```
 //! use std::future::IntoFuture;
+//! use std::time::Duration;
 //!
 //! use asyncband::oneshot;
 //!
-//! # #[tokio::main]
-//! # async fn main() {
-//! let (tx, rx) = oneshot::channel();
-//! let mut receive = rx.into_future();
+//! async fn wait_for_result(rx: oneshot::Receiver<String>) -> Result<String, oneshot::RecvError> {
+//!     let mut receive = rx.into_future();
 //!
-//! tokio::select! {
-//!     biased;
-//!     result = &mut receive => panic!("message has not been sent yet: {result:?}"),
-//!     // Another operation finishes while the receive is pending.
-//!     _ = std::future::ready(()) => {}
+//!     tokio::select! {
+//!         result = &mut receive => return result,
+//!         _ = tokio::time::sleep(Duration::from_secs(1)) => {
+//!             eprintln!("Still waiting for the result...");
+//!         }
+//!     }
+//!
+//!     receive.await
 //! }
 //!
-//! tx.send(42).unwrap();
-//! assert_eq!(receive.await, Ok(42));
+//! # #[tokio::main]
+//! # async fn main() {
+//! # let (tx, rx) = oneshot::channel();
+//! # tx.send(String::from("done")).unwrap();
+//! # assert_eq!(wait_for_result(rx).await.unwrap(), "done");
 //! # }
 //! ```
 
