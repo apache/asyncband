@@ -16,6 +16,7 @@
 // under the License.
 
 use std::fmt;
+use std::future::Future;
 use std::sync::Arc;
 
 use super::RecvError;
@@ -85,8 +86,8 @@ impl<T> BoundedSender<T> {
     /// Dropping a pending `send` drops `value` without sending it or retaining capacity. Use
     /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is
     /// unavailable.
-    pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
-        self.shared.send(value).await
+    pub fn send(&self, value: T) -> impl Future<Output = Result<(), SendError<T>>> {
+        self.shared.send(value)
     }
 
     /// Attempts to send a value without waiting for capacity.
@@ -137,8 +138,8 @@ impl<T> BoundedReceiver<T> {
     ///
     /// Dropping a pending `recv` does not consume a value or prevent other receivers from receiving
     /// it.
-    pub async fn recv(&self) -> Result<T, RecvError> {
-        self.shared.recv().await
+    pub fn recv(&self) -> impl Future<Output = Result<T, RecvError>> {
+        self.shared.recv()
     }
 
     /// Attempts to receive the next available value without waiting for a message.
