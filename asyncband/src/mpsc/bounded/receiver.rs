@@ -24,8 +24,8 @@ use std::task::Poll;
 
 use super::State;
 use crate::internal::mutex::Mutex;
+use crate::internal::waitlist::WaitList;
 use crate::internal::wake_all;
-use crate::internal::waker_batch::WakerBatch;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
 use crate::mpsc::register_waker;
@@ -46,21 +46,24 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        let mut wakers = WakerBatch::new();
-        let (queue, recv_waker) = {
+        let (queue, recv_waker, mut waiters) = {
             let mut state = self.shared.lock();
             state.receiver = false;
             let queue = mem::take(&mut state.queue);
             let recv_waker = state.recv_waker.take();
-            while let Some((_, waiter)) = state.send_waiters.unlink_first_waiter(|_| true) {
-                if let Some(waker) = waiter.waker.take() {
-                    wakers.push(waker);
-                }
-            }
-            (queue, recv_waker)
+            // The disconnected state invalidates both queued and granted waiter IDs.
+            let waiters = mem::replace(&mut state.send_waiters, WaitList::new());
+            (queue, recv_waker, waiters)
         };
         // Local ownership also drains the queue if a wake or waker destructor unwinds.
-        wake_all(&mut wakers);
+        wake_all(std::iter::from_fn(|| {
+            loop {
+                let (_, waiter) = waiters.unlink_first_waiter(|_| true)?;
+                if let Some(waker) = waiter.waker.take() {
+                    return Some(waker);
+                }
+            }
+        }));
         drop(recv_waker);
         drop(queue);
     }

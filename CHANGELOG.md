@@ -44,7 +44,7 @@ All notable changes to this project will be documented in this file.
 * Finish releasing buffered bounded MPSC messages even if one message destructor panics.
 * Improve unbounded MPSC throughput with batched receiving and incremental storage reclamation; empty-buffer retention is bounded independently of previous peak occupancy.
 * Make completed and abandoned `Completion` waits lock-free while preserving cancellable pending registration.
-* Avoid heap allocation when waking up to 32 waiters in Barrier, broadcast, condvar, event, MPSC, phaser, and watch notifications; larger waiter sets spill to a single heap allocation.
+* Reduce allocations when notifying waiters in Barrier, broadcast, condvar, event, MPSC, phaser, and watch.
 
 ## v0.7.2 (2026-09-11)
 

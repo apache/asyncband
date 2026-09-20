@@ -238,6 +238,7 @@ impl<'a, T> Reserve<'a, T> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Permit<'a, T>, SendError<()>>> {
         let mut state = self.shared.lock();
         if !state.receiver {
+            self.waiter = None;
             return Poll::Ready(Err(SendError::new(())));
         }
         if let Some(index) = self.waiter {
@@ -278,6 +279,9 @@ impl<T> Drop for Reserve<'_, T> {
         let Some(index) = self.waiter else { return };
         let (waiter, wake) = {
             let mut state = self.shared.lock();
+            if !state.receiver {
+                return;
+            }
             state.send_waiters.unlink_waiter(index, |_| true);
             let waiter = state.send_waiters.remove_unlinked_waiter(index);
             let wake = if waiter.grant { state.release() } else { None };
