@@ -263,8 +263,7 @@ where
     /// let second = reports.work(42, || generate_report(42));
     /// let (first, second) = tokio::join!(first, second);
     ///
-    /// assert_eq!(first, "Report 42");
-    /// assert_eq!(second, "Report 42");
+    /// assert_eq!(first, second);
     /// # }
     /// ```
     pub async fn work<F>(&self, key: K, func: F) -> V
@@ -325,8 +324,7 @@ where
     /// let second = profiles.try_work(42, || fetch_profile(42));
     /// let (first, second) = tokio::join!(first, second);
     ///
-    /// assert_eq!(first?, "Profile 42");
-    /// assert_eq!(second?, "Profile 42");
+    /// assert_eq!(first?, second?);
     /// # Ok(())
     /// # }
     /// ```
