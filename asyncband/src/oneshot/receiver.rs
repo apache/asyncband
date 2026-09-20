@@ -43,6 +43,13 @@ use super::deallocate_empty_channel;
 use super::drop_message_and_deallocate_channel;
 
 /// Receives a value from the associated [`Sender`].
+///
+/// Awaiting converts this receiver into a [`Recv`] future. Dropping either the receiver or its
+/// future disconnects the channel and discards any unread message.
+///
+/// To keep a pending receive alive when another branch wins, call [`Receiver::into_future`]
+/// before selecting and borrow the resulting future as `&mut Recv`. The receiver itself does not
+/// implement [`Future`].
 pub struct Receiver<T> {
     channel_ptr: NonNull<Channel<T>>,
 }
@@ -190,8 +197,14 @@ impl<T> Drop for Receiver<T> {
     }
 }
 
-/// A future that completes when the message is sent from the associated [`Sender`], or the
-/// [`Sender`] is dropped before sending a message.
+/// A future that receives a value from the associated [`Sender`], or returns [`RecvError`] if the
+/// sender is dropped without sending.
+///
+/// Created by [`Receiver::into_future`], this future owns the receiving endpoint. Dropping it
+/// disconnects the channel and discards any unread message.
+///
+/// Select on `&mut Recv` to keep a pending receive alive when another branch wins. A completed
+/// `Recv` must not be polled again.
 pub struct Recv<T> {
     channel_ptr: NonNull<Channel<T>>,
 }

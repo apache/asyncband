@@ -284,7 +284,7 @@ impl<T: Send> Pool<T> {
     /// Cancelling while the provided future is pending leaves the pool unchanged.
     pub async fn get_or_create<E, F>(self: &Arc<Self>, f: F) -> Result<Object<T>, E>
     where
-        F: AsyncFnOnce() -> Result<T, E> + Send,
+        F: AsyncFnOnce() -> Result<T, E>,
     {
         if let Some(object) = self.try_get() {
             return Ok(object);

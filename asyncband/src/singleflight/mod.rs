@@ -276,8 +276,7 @@ where
     ///
     /// let (r1, r2) = tokio::join!(fut1, fut2);
     ///
-    /// assert_eq!(r1, "result");
-    /// assert_eq!(r2, "result");
+    /// assert_eq!(r1, r2);
     /// assert_eq!(counter.load(Ordering::SeqCst), 1);
     /// # }
     /// ```

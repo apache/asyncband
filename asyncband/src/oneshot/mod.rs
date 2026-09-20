@@ -77,6 +77,15 @@
 //! let error = tx.send(42).unwrap_err();
 //! assert_eq!(error.into_inner(), 42);
 //! ```
+//!
+//! # Cancellation
+//!
+//! Awaiting a [`Receiver`] converts it into a [`Recv`] future that owns the receiving endpoint.
+//! Dropping either the receiver or its future disconnects the channel and discards any unread
+//! message.
+//!
+//! To keep a pending receive alive when another branch wins, call [`Receiver::into_future`]
+//! before selecting and borrow the resulting future as `&mut Recv`.
 
 mod receiver;
 mod sender;

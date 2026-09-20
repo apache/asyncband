@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::Cell;
 use std::convert::Infallible;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
@@ -144,6 +145,24 @@ fn manual_pool_try_get_tracks_return_time() {
     let object = pool.try_get().unwrap();
     assert!(object.status().last_used() >= before_return);
     assert_eq!(object.status().recycle_count(), 2);
+}
+
+#[tokio::test]
+async fn manual_pool_accepts_a_local_factory_and_reuses_its_object() {
+    let pool = unbounded::Pool::<Vec<u8>>::never_manage(unbounded::PoolConfig::default());
+    let created = Cell::new(0);
+    let create = async || {
+        created.set(created.get() + 1);
+        Ok::<_, Infallible>(vec![1, 2, 3])
+    };
+
+    let mut object = pool.get_or_create(&create).await.unwrap();
+    object.push(4);
+    drop(object);
+
+    let object = pool.get_or_create(&create).await.unwrap();
+    assert_eq!(*object, [1, 2, 3, 4]);
+    assert_eq!(created.get(), 1);
 }
 
 #[test]
