@@ -17,7 +17,6 @@
 
 use std::fmt;
 use std::future::Future;
-use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -25,6 +24,7 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
+use crate::internal::register_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::wake_all;
@@ -103,7 +103,8 @@ impl ManualResetEvent {
     /// Panics if waking a selected task panics. The event remains set, and waking is still
     /// attempted for every other selected task before the panic resumes.
     pub fn set(&self) {
-        let wakers = {
+        let mut wakers = WakerBatch::new();
+        {
             let mut state = self.state.lock();
             if state.is_set {
                 return;
@@ -112,7 +113,6 @@ impl ManualResetEvent {
             state.is_set = true;
             // Detach the complete cohort before invoking any waker. A wake callback may reset the
             // event and register a new wait, which must belong to the state current at that point.
-            let mut wakers = WakerBatch::new();
             while let Some((_id, waiter)) = state.waiters.unlink_first_waiter(|waiter| {
                 waiter.notified = true;
                 true
@@ -121,10 +121,9 @@ impl ManualResetEvent {
                     wakers.push(waker);
                 }
             }
-            wakers
-        };
+        }
 
-        wake_all(wakers.into_iter());
+        wake_all(&mut wakers);
     }
 
     /// Clears the set state.
@@ -233,8 +232,11 @@ impl ManualResetEvent {
                         "a linked waiter must belong to an unset event"
                     );
                     let waiter = state.waiters.waiter_mut(id);
-                    let retired = (!waiter.will_wake(cx.waker()))
-                        .then(|| waiter.replace_waker(cx.waker().clone()));
+                    assert!(
+                        waiter.waker.is_some(),
+                        "an unnotified waiter must retain its waker"
+                    );
+                    let retired = register_waker(&mut waiter.waker, cx.waker());
                     (Poll::Pending, retired)
                 }
                 None if state.is_set => (Poll::Ready(()), None),
@@ -296,23 +298,6 @@ impl State {
 struct Waiter {
     notified: bool,
     waker: Option<Waker>,
-}
-
-impl Waiter {
-    fn will_wake(&self, waker: &Waker) -> bool {
-        self.waker
-            .as_ref()
-            .expect("an unnotified waiter must retain its waker")
-            .will_wake(waker)
-    }
-
-    fn replace_waker(&mut self, waker: Waker) -> Waker {
-        let current = self
-            .waker
-            .as_mut()
-            .expect("an unnotified waiter must retain its waker");
-        mem::replace(current, waker)
-    }
 }
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]

@@ -25,6 +25,7 @@ use std::task::Poll;
 use super::State;
 use super::Waiter;
 use crate::internal::mutex::Mutex;
+use crate::internal::register_waker;
 use crate::internal::waitlist::WaiterId;
 use crate::mpsc::SendError;
 use crate::mpsc::TrySendError;
@@ -235,9 +236,9 @@ struct Reserve<'a, T> {
 
 impl<'a, T> Reserve<'a, T> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Permit<'a, T>, SendError<()>>> {
-        let waker = cx.waker().clone();
         let mut state = self.shared.lock();
         if !state.receiver {
+            self.waiter = None;
             return Poll::Ready(Err(SendError::new(())));
         }
         if let Some(index) = self.waiter {
@@ -250,10 +251,9 @@ impl<'a, T> Reserve<'a, T> {
                 };
                 drop(state);
                 drop(waiter);
-                drop(waker);
                 return Poll::Ready(Ok(permit));
             }
-            let old = waiter.waker.replace(waker);
+            let old = register_waker(&mut waiter.waker, cx.waker());
             drop(state);
             drop(old);
             return Poll::Pending;
@@ -264,12 +264,11 @@ impl<'a, T> Reserve<'a, T> {
                 shared: self.shared,
             };
             drop(state);
-            drop(waker);
             return Poll::Ready(Ok(permit));
         }
         self.waiter = Some(state.send_waiters.push_back(Waiter {
             grant: false,
-            waker: Some(waker),
+            waker: Some(cx.waker().clone()),
         }));
         Poll::Pending
     }
@@ -280,6 +279,9 @@ impl<T> Drop for Reserve<'_, T> {
         let Some(index) = self.waiter else { return };
         let (waiter, wake) = {
             let mut state = self.shared.lock();
+            if !state.receiver {
+                return;
+            }
             state.send_waiters.unlink_waiter(index, |_| true);
             let waiter = state.send_waiters.remove_unlinked_waiter(index);
             let wake = if waiter.grant { state.release() } else { None };

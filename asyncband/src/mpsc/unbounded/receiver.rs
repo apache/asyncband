@@ -27,6 +27,7 @@ use super::State;
 use super::buffer::Buffer;
 use super::buffer::pop_batch;
 use crate::internal::mutex::Mutex;
+use crate::internal::register_waker;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
 
@@ -149,8 +150,6 @@ impl<T> UnboundedReceiver<T> {
         if !batch.is_empty() {
             return Poll::Ready(Ok(pop_batch(batch)));
         }
-        // Waker clone/drop callbacks can send into this channel, so run them outside the lock.
-        let waker = cx.waker().clone();
         let mut state = self.shared.lock();
         let retired = state.buffer.refill(batch);
         if !batch.is_empty() {
@@ -165,7 +164,7 @@ impl<T> UnboundedReceiver<T> {
             drop(old);
             return Poll::Ready(Err(RecvError::Disconnected));
         }
-        let old = state.recv_waker.replace(waker);
+        let old = register_waker(&mut state.recv_waker, cx.waker());
         drop(state);
         drop(retired);
         drop(old);

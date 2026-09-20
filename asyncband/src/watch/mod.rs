@@ -75,6 +75,7 @@ pub use self::error::RecvError;
 pub use self::error::SendError;
 use crate::internal::mutex::Mutex;
 use crate::internal::wake_all;
+use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -168,7 +169,8 @@ impl<T> Sender<T> {
     ///
     /// Panics if the channel has already published `u64::MAX` updates.
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
-        let (wakers, replaced) = {
+        let mut wakers = WakerBatch::new();
+        let replaced = {
             let mut state = self.shared.state.lock();
             if state.receivers == 0 {
                 return Err(SendError::new(value));
@@ -179,11 +181,11 @@ impl<T> Sender<T> {
                 .expect("watch channel version counter overflowed");
             let replaced = mem::replace(&mut state.value, value);
             state.version = version;
-            let wakers = state.waiters.drain();
-            (wakers, replaced)
+            state.waiters.drain_into(&mut wakers);
+            replaced
         };
         // Waker callbacks and the replaced value's destructor may reenter this channel.
-        wake_all(wakers);
+        wake_all(&mut wakers);
         drop(replaced);
         Ok(())
     }
@@ -197,7 +199,8 @@ impl<T> Sender<T> {
     ///
     /// Panics if the channel has already published `u64::MAX` updates.
     pub fn send_replace(&self, value: T) -> T {
-        let (wakers, replaced) = {
+        let mut wakers = WakerBatch::new();
+        let replaced = {
             let mut state = self.shared.state.lock();
             let version = state
                 .version
@@ -205,10 +208,10 @@ impl<T> Sender<T> {
                 .expect("watch channel version counter overflowed");
             let replaced = mem::replace(&mut state.value, value);
             state.version = version;
-            let wakers = state.waiters.drain();
-            (wakers, replaced)
+            state.waiters.drain_into(&mut wakers);
+            replaced
         };
-        wake_all(wakers);
+        wake_all(&mut wakers);
         replaced
     }
 

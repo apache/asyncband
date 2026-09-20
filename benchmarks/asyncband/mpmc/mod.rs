@@ -17,3 +17,6 @@
 
 mod bounded;
 mod unbounded;
+
+// Fixed sample sizes keep one-time warm-up work from changing Divan's iteration granularity.
+const FAST_SAMPLE_SIZE: u32 = 256;

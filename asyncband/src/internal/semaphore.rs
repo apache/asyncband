@@ -25,9 +25,7 @@
 // https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/batch_semaphore.rs
 
 use std::future::Future;
-use std::mem::MaybeUninit;
 use std::pin::Pin;
-use std::ptr;
 use std::sync::MutexGuard;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -36,9 +34,11 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
+use crate::internal::register_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::wake_all;
+use crate::internal::waker_batch::WakerBatch;
 
 /// The internal semaphore that provides low-level async primitives.
 #[derive(Debug)]
@@ -54,61 +54,6 @@ struct WaitNode {
     /// A linked node without a waker is permit debt owned by the queue. An acquire node only loses
     /// its waker while being detached, after which its future still owns the node.
     waker: Option<Waker>,
-}
-
-const WAKE_BATCH_SIZE: usize = 32;
-
-/// The initialized entries in `wakers` are exactly `start..end`.
-struct WakeBatch {
-    wakers: [MaybeUninit<Waker>; WAKE_BATCH_SIZE],
-    start: usize,
-    end: usize,
-}
-
-impl WakeBatch {
-    fn new() -> Self {
-        const UNINIT: MaybeUninit<Waker> = MaybeUninit::uninit();
-        Self {
-            wakers: [UNINIT; WAKE_BATCH_SIZE],
-            start: 0,
-            end: 0,
-        }
-    }
-
-    fn push(&mut self, waker: Waker) {
-        debug_assert_eq!(self.start, 0);
-        debug_assert!(self.end < WAKE_BATCH_SIZE);
-        self.wakers[self.end].write(waker);
-        self.end += 1;
-    }
-
-    fn is_full(&self) -> bool {
-        self.end == WAKE_BATCH_SIZE
-    }
-
-    fn take_next(&mut self) -> Option<Waker> {
-        if self.start == self.end {
-            self.start = 0;
-            self.end = 0;
-            return None;
-        }
-
-        let index = self.start;
-        self.start += 1;
-        // SAFETY: `index` was within the initialized range before advancing `start`.
-        Some(unsafe { self.wakers[index].assume_init_read() })
-    }
-}
-
-impl Drop for WakeBatch {
-    fn drop(&mut self) {
-        let start = self.wakers[self.start..self.end]
-            .as_mut_ptr()
-            .cast::<Waker>();
-        let remaining = ptr::slice_from_raw_parts_mut(start, self.end - self.start);
-        // SAFETY: The initialized entries are exactly `start..end`.
-        unsafe { ptr::drop_in_place(remaining) };
-    }
 }
 
 impl Semaphore {
@@ -204,7 +149,7 @@ impl Semaphore {
     }
 
     /// Adds `n` permits to the semaphore if there is any waiter.
-    #[cfg(any(feature = "broadcast", feature = "mpmc", feature = "spmc"))]
+    #[cfg(feature = "broadcast")]
     pub fn release_if_nonempty(&self, n: usize) {
         let waiters = self.waiters.lock();
         if !waiters.is_empty() {
@@ -213,10 +158,10 @@ impl Semaphore {
     }
 
     /// Adds as many permits until there is no waiter.
-    #[cfg(any(feature = "broadcast", feature = "mpmc", feature = "spmc"))]
+    #[cfg(feature = "broadcast")]
     pub fn notify_all(&self) {
         let mut waiters = self.waiters.lock();
-        let mut wakers = vec![];
+        let mut wakers = WakerBatch::new();
         loop {
             match waiters.unlink_first_waiter(|node| {
                 node.permits = 0;
@@ -235,7 +180,7 @@ impl Semaphore {
             }
         }
         drop(waiters);
-        wake_all(wakers.into_iter());
+        wake_all(&mut wakers);
     }
 
     fn insert_permits_with_lock(
@@ -243,14 +188,14 @@ impl Semaphore {
         mut rem: usize,
         waiters: MutexGuard<'_, WaitList<WaitNode>>,
     ) {
-        let mut batch = WakeBatch::new();
+        let mut batch = WakerBatch::new();
         let mut lock = Some(waiters);
 
         // One iterator covers the entire release. If a callback panics, `wake_all` keeps pulling
         // batches during unwinding, so the remaining permits are still distributed and notified.
         wake_all(std::iter::from_fn(|| {
             loop {
-                if let Some(waker) = batch.take_next() {
+                if let Some(waker) = batch.next() {
                     return Some(waker);
                 }
                 if rem == 0 {
@@ -258,7 +203,7 @@ impl Semaphore {
                 }
 
                 let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
-                while !batch.is_full() {
+                while !batch.will_spill() {
                     match waiters.unlink_first_waiter(|node| {
                         if node.permits <= rem {
                             rem -= node.permits;
@@ -351,13 +296,7 @@ impl Acquire<'_> {
                 let ready = {
                     let node = waiters.waiter_mut(*idx);
                     if node.permits > 0 {
-                        let update_waker = node
-                            .waker
-                            .as_ref()
-                            .is_none_or(|current| !current.will_wake(waker));
-                        if update_waker {
-                            old_waker = node.waker.replace(waker.clone());
-                        }
+                        old_waker = register_waker(&mut node.waker, waker);
                         false
                     } else {
                         true

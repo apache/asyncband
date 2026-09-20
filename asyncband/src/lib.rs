@@ -54,33 +54,33 @@
 //!
 //! # API map
 //!
-//! | Area                       | API                                           | Feature        | Use                                                                                                           |
-//! |----------------------------|-----------------------------------------------|----------------|---------------------------------------------------------------------------------------------------------------|
-//! | Locks and conditions       | [`Mutex`](mutex::Mutex)                       | `mutex`        | Protect shared data with asynchronous mutual exclusion.                                                       |
-//! |                            | [`RwLock`](rwlock::RwLock)                    | `rwlock`       | Allow multiple readers or one writer.                                                                         |
-//! |                            | [`Condvar`](condvar::Condvar)                 | `condvar`      | Wait for notifications while releasing a mutex.                                                               |
-//! | Coordination               | [`Semaphore`](semaphore::Semaphore)           | `semaphore`    | Limit concurrent work by acquiring permits.                                                                   |
-//! |                            | [`Barrier`](barrier::Barrier)                 | `barrier`      | Synchronize a fixed number of participants at a reusable rendezvous.                                          |
-//! |                            | [`ManualResetEvent`](event::ManualResetEvent) | `event`        | Signal current and future waits until explicitly reset.                                                       |
-//! |                            | [`AutoResetEvent`](event::AutoResetEvent)     | `event`        | Retain one signal and release one waiter per consumed signal.                                                 |
-//! |                            | [`Latch`](latch::Latch)                       | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                            |
-//! |                            | [`Phaser`](phaser::Phaser)                    | `phaser`       | Coordinate repeated phases with a dynamic participant set.                                                    |
-//! |                            | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Dynamically register participants and wait until all have completed.                                          |
-//! |                            | [`Shutdown`](shutdown::Shutdown)              | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                            |
-//! | Work coalescing            | [`Once`](once::Once)                          | `once`         | Complete one asynchronous initialization; cancelled or panicked attempts may be retried.                       |
-//! |                            | [`OnceCell`](once::OnceCell)                  | `once-cell`    | Store one value from an access-time initializer; failed, cancelled, or panicked attempts may be retried.       |
-//! |                            | [`LazyCell`](once::LazyCell)                  | `lazy-cell`    | Initialize one value with a stored function and resume the same in-flight future after caller cancellation.   |
-//! |                            | [`OnceMap`](once::OnceMap)                    | `once-map`     | Coalesce work per key and retain each successful value until explicitly removed.                              |
-//! |                            | [`Group`](singleflight::Group)                | `singleflight` | Coalesce overlapping work per key without retaining completed values.                                         |
-//! | Communication              | [`Completion`](completion::Completion)       | `completion`   | Publish one shared result to any number of current and future observers.                                       |
-//! |                            | [`oneshot`]                                   | `oneshot`      | Send one value from one sender to one receiver.                                                               |
-//! |                            | [`mpmc`]                                      | `mpmc`         | Distribute each value to exactly one of multiple competing receivers.      |
-//! |                            | [`mpsc`]                                      | `mpsc`         | Send each value from multiple producers to one receiver with bounded backpressure or an unbounded queue.      |
-//! |                            | [`spmc`]                                      | `spmc`         | Distribute work from one exclusive sender to multiple competing receivers, with bounded or unbounded storage. |
-//! |                            | [`broadcast`]                                 | `broadcast`    | Deliver every value to active receivers with bounded backpressure or unbounded retention. |
-//! |                            | [`watch`]                                     | `watch`        | Publish cloneable latest state from one or more senders; receivers independently coalesce intermediate updates. |
-//! | Object reuse               | [`pool`]                                      | `pool`         | Reuse objects through bounded or unbounded pool variants.                                                     |
-//! | Sync interop               | [`FutureExt`](blocking::FutureExt)            | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                                     |
+//! | Area                 | API                                           | Feature        | Use                                                                                                             |
+//! |----------------------|-----------------------------------------------|----------------|-----------------------------------------------------------------------------------------------------------------|
+//! | Locks and conditions | [`Mutex`](mutex::Mutex)                       | `mutex`        | Protect shared data with asynchronous mutual exclusion.                                                         |
+//! |                      | [`RwLock`](rwlock::RwLock)                    | `rwlock`       | Allow multiple readers or one writer.                                                                           |
+//! |                      | [`Condvar`](condvar::Condvar)                 | `condvar`      | Wait for notifications while releasing a mutex.                                                                 |
+//! | Coordination         | [`Semaphore`](semaphore::Semaphore)           | `semaphore`    | Limit concurrent work by acquiring permits.                                                                     |
+//! |                      | [`Barrier`](barrier::Barrier)                 | `barrier`      | Synchronize a fixed number of participants at a reusable rendezvous.                                            |
+//! |                      | [`ManualResetEvent`](event::ManualResetEvent) | `event`        | Signal current and future waits until explicitly reset.                                                         |
+//! |                      | [`AutoResetEvent`](event::AutoResetEvent)     | `event`        | Retain one signal and release one waiter per consumed signal.                                                   |
+//! |                      | [`Latch`](latch::Latch)                       | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                              |
+//! |                      | [`Phaser`](phaser::Phaser)                    | `phaser`       | Coordinate repeated phases with a dynamic participant set.                                                      |
+//! |                      | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Dynamically register participants and wait until all have completed.                                            |
+//! |                      | [`Shutdown`](shutdown::Shutdown)              | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                              |
+//! | Work coalescing      | [`Once`](once::Once)                          | `once`         | Complete one asynchronous initialization; cancelled or panicked attempts may be retried.                        |
+//! |                      | [`OnceCell`](once::OnceCell)                  | `once-cell`    | Store one value from an access-time initializer; failed, cancelled, or panicked attempts may be retried.        |
+//! |                      | [`LazyCell`](once::LazyCell)                  | `lazy-cell`    | Initialize one value with a stored function and resume the same in-flight future after caller cancellation.     |
+//! |                      | [`OnceMap`](once::OnceMap)                    | `once-map`     | Coalesce work per key and retain each successful value until explicitly removed.                                |
+//! |                      | [`Group`](singleflight::Group)                | `singleflight` | Coalesce overlapping work per key without retaining completed values.                                           |
+//! | Communication        | [`Completion`](completion::Completion)        | `completion`   | Publish one shared result to any number of current and future observers.                                        |
+//! |                      | [`oneshot`]                                   | `oneshot`      | Send one value from one sender to one receiver.                                                                 |
+//! |                      | [`mpmc`]                                      | `mpmc`         | Distribute each value to exactly one of multiple competing receivers.                                           |
+//! |                      | [`mpsc`]                                      | `mpsc`         | Send each value from multiple producers to one receiver with bounded backpressure or an unbounded queue.        |
+//! |                      | [`spmc`]                                      | `spmc`         | Distribute work from one exclusive sender to multiple competing receivers, with bounded or unbounded storage.   |
+//! |                      | [`broadcast`]                                 | `broadcast`    | Deliver every value to active receivers with bounded backpressure or unbounded retention.                       |
+//! |                      | [`watch`]                                     | `watch`        | Publish cloneable latest state from one or more senders; receivers independently coalesce intermediate updates. |
+//! | Object reuse         | [`pool`]                                      | `pool`         | Reuse objects through bounded or unbounded pool variants.                                                       |
+//! | Sync interop         | [`FutureExt`](blocking::FutureExt)            | `blocking`     | Drive one runtime-agnostic future from a blocking thread.                                                       |
 //!
 //! # Scope and runtime model
 //!
