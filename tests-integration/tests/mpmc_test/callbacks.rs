@@ -28,34 +28,24 @@ use tests_integration::assert_completes_without_deadlock;
 use tests_integration::expect_ready;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
-use tests_integration::waker_on_clone;
 use tests_integration::waker_on_drop;
 
-// A registering poll clones its waker before taking the queue lock, so a value that the clone
-// callback sends is already queued when the same poll looks for one.
 #[test]
-fn receive_registration_allows_a_waker_clone_to_send() {
-    assert_completes_without_deadlock(|| {
-        let (sender, receiver) = mpmc::unbounded();
-        let reentrant = sender.clone();
-        let waker = waker_on_clone(move || reentrant.send(1).unwrap());
-        let mut recv = Box::pin(receiver.recv());
-
-        assert_eq!(expect_ready(poll_with(recv.as_mut(), &waker)), Ok(1));
-        drop(sender);
-    });
-}
-
-#[test]
-fn send_registration_allows_a_waker_clone_to_receive() {
+fn replacing_a_send_waker_allows_its_destructor_to_receive() {
     assert_completes_without_deadlock(|| {
         let (sender, receiver) = mpmc::bounded(1);
         sender.try_send(0).unwrap();
         let reentrant = receiver.clone();
-        let waker = waker_on_clone(move || assert_eq!(reentrant.try_recv(), Ok(0)));
+        let first = waker_on_drop(move || assert_eq!(reentrant.try_recv(), Ok(0)));
+        let (second, second_wakes) = WakeCounter::new();
         let mut send = Box::pin(sender.send(1));
 
-        expect_ready(poll_with(send.as_mut(), &waker)).unwrap();
+        assert!(poll_with(send.as_mut(), &first).is_pending());
+        drop(first);
+        // Replacing the stored waker frees capacity and wakes the newly registered task.
+        assert!(poll_with(send.as_mut(), &second).is_pending());
+        assert_eq!(second_wakes.count(), 1);
+        expect_ready(poll_with(send.as_mut(), &second)).unwrap();
         assert_eq!(receiver.try_recv(), Ok(1));
     });
 }

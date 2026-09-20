@@ -30,8 +30,8 @@ use super::queue::Shared;
 /// the queue is full.
 ///
 /// Operations briefly acquire an internal mutex; no lock is held across an await point or while
-/// invoking waker callbacks or message destructors. The `try_*` methods do not wait for capacity
-/// or messages, but may wait to acquire this mutex.
+/// waking tasks, dropping wakers, or dropping messages. The `try_*` methods do not wait for
+/// capacity or messages, but may wait to acquire this mutex.
 ///
 /// # Panics
 ///

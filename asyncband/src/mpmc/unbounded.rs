@@ -29,7 +29,7 @@ use super::queue::Shared;
 /// Sends are synchronous and values may be buffered until available memory is exhausted.
 ///
 /// Operations briefly acquire an internal mutex; no lock is held across an await point or while
-/// invoking waker callbacks or message destructors. Sending and trying to receive may wait to
+/// waking tasks, dropping wakers, or dropping messages. Sending and trying to receive may wait to
 /// acquire this mutex, but never wait for capacity or new messages.
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     let shared = Arc::new(Shared::unbounded());

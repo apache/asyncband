@@ -37,8 +37,8 @@ pub struct Shared<T> {
 }
 
 /// Values, endpoint counts, and both waiter queues share one lock, so each transition and the
-/// waiter it selects are decided together. Waker callbacks and value destructors run outside the
-/// lock, because they may reenter the queue.
+/// waiter it selects are decided together. Wake callbacks and waker or value destructors run
+/// outside the lock, because they may reenter the queue.
 struct State<T> {
     values: VecDeque<T>,
     capacity: Option<usize>,
@@ -90,12 +90,10 @@ fn notify_one(waiters: &mut WaitList<Waiter>) -> Option<Waker> {
     Some(waker)
 }
 
-fn notify_all(waiters: &mut WaitList<Waiter>) -> WakerBatch {
-    let mut wakers = WakerBatch::new();
+fn notify_all(waiters: &mut WaitList<Waiter>, wakers: &mut WakerBatch) {
     while let Some(waker) = notify_one(waiters) {
         wakers.push(waker);
     }
-    wakers
 }
 
 fn remove_waiter(waiters: &mut WaitList<Waiter>, id: WaiterId) -> Waiter {
@@ -110,42 +108,30 @@ fn wake(waker: Option<Waker>) {
     }
 }
 
-enum Registration {
-    /// The operation is queued; drop the replaced waker after releasing the lock.
-    Registered(Option<Waker>),
-    /// Clone the current waker outside the lock, then retry.
-    NeedsWaker,
-}
-
 /// Queues a blocked operation or refreshes the waker of a queued one.
 ///
 /// A notified operation that still found no value or slot queues again at the back.
+#[must_use = "drop the replaced waker after releasing the queue lock"]
 fn register(
     waiters: &mut WaitList<Waiter>,
     id: &mut Option<WaiterId>,
     current: &Waker,
-    cloned: &mut Option<Waker>,
-) -> Registration {
+) -> Option<Waker> {
     if let Some(queued) = *id {
         if let Waiter::Waiting(waker) = waiters.waiter_mut(queued) {
             if waker.will_wake(current) {
-                return Registration::Registered(None);
+                return None;
             }
-            return match cloned.take() {
-                Some(new) => Registration::Registered(Some(mem::replace(waker, new))),
-                None => Registration::NeedsWaker,
-            };
+            return Some(mem::replace(waker, current.clone()));
         }
     }
-    let Some(waker) = cloned.take() else {
-        return Registration::NeedsWaker;
-    };
+    let waker = current.clone();
     if let Some(notified) = id.take() {
         // The notification already took this node's waker, so nothing is retired.
         remove_waiter(waiters, notified);
     }
     *id = Some(waiters.push_back(Waiter::Waiting(waker)));
-    Registration::Registered(None)
+    None
 }
 
 impl<T> Shared<T> {
@@ -175,16 +161,17 @@ impl<T> Shared<T> {
     }
 
     pub fn drop_sender(&self) {
-        let wakers = {
+        let mut wakers = WakerBatch::new();
+        {
             let mut state = self.state.lock();
             state.senders -= 1;
             if state.senders != 0 {
                 return;
             }
             // Woken receivers drain buffered values before they observe disconnection.
-            notify_all(&mut state.recv_waiters)
-        };
-        wake_all(wakers.into_iter());
+            notify_all(&mut state.recv_waiters, &mut wakers);
+        }
+        wake_all(&mut wakers);
     }
 
     pub fn clone_receiver(&self) {
@@ -192,20 +179,19 @@ impl<T> Shared<T> {
     }
 
     pub fn drop_receiver(&self) {
-        let (discarded, wakers) = {
+        let mut wakers = WakerBatch::new();
+        let discarded = {
             let mut state = self.state.lock();
             state.receivers -= 1;
             if state.receivers != 0 {
                 return;
             }
-            (
-                mem::take(&mut state.values),
-                notify_all(&mut state.send_waiters),
-            )
+            notify_all(&mut state.send_waiters, &mut wakers);
+            mem::take(&mut state.values)
         };
         // Release blocked senders before destroying buffered values. Local ownership still drops
         // the values if a wake callback unwinds.
-        wake_all(wakers.into_iter());
+        wake_all(&mut wakers);
         drop(discarded);
     }
 
@@ -272,45 +258,26 @@ impl<T> Send<'_, T> {
     }
 
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SendError<T>>> {
-        // The first poll follows a full `try_send` and most likely registers, so it clones before
-        // locking. A later poll clones only when it must store a new waker: its task changed, or a
-        // notification took the stored one.
-        let mut cloned = self.waiter.is_none().then(|| cx.waker().clone());
-        loop {
-            let mut state = self.shared.state.lock();
-            let outcome = if state.receivers == 0 {
-                Err(self.take_value())
-            } else if state.has_capacity() {
-                Ok(state.push(self.take_value()))
-            } else {
-                match register(
-                    &mut state.send_waiters,
-                    &mut self.waiter,
-                    cx.waker(),
-                    &mut cloned,
-                ) {
-                    Registration::Registered(replaced) => {
-                        drop(state);
-                        drop((replaced, cloned));
-                        return Poll::Pending;
-                    }
-                    Registration::NeedsWaker => {
-                        drop(state);
-                        cloned = Some(cx.waker().clone());
-                        continue;
-                    }
-                }
-            };
-            let retired = self
-                .waiter
-                .take()
-                .map(|id| remove_waiter(&mut state.send_waiters, id));
+        let mut state = self.shared.state.lock();
+        let outcome = if state.receivers == 0 {
+            Err(self.take_value())
+        } else if state.has_capacity() {
+            Ok(state.push(self.take_value()))
+        } else {
+            let retired = register(&mut state.send_waiters, &mut self.waiter, cx.waker());
             drop(state);
-            // Deliver the notification before running waker destructors, which may panic.
-            let result = outcome.map(wake).map_err(SendError::new);
-            drop((retired, cloned));
-            return Poll::Ready(result);
-        }
+            drop(retired);
+            return Poll::Pending;
+        };
+        let retired = self
+            .waiter
+            .take()
+            .map(|id| remove_waiter(&mut state.send_waiters, id));
+        drop(state);
+        // Deliver the notification before running waker destructors, which may panic.
+        let result = outcome.map(wake).map_err(SendError::new);
+        drop(retired);
+        Poll::Ready(result)
     }
 }
 
@@ -342,46 +309,29 @@ struct Recv<'a, T> {
 
 impl<T> Recv<'_, T> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
-        // The first poll follows an empty `try_recv` and most likely registers, so it clones before
-        // locking. A later poll clones only when it must store a new waker: its task changed, or a
-        // notification took the stored one.
-        let mut cloned = self.waiter.is_none().then(|| cx.waker().clone());
-        loop {
-            let mut state = self.shared.state.lock();
-            let outcome = match state.pop() {
-                Ok(popped) => Ok(popped),
-                Err(TryRecvError::Disconnected) => Err(RecvError::Disconnected),
-                Err(TryRecvError::Empty) => match register(
-                    &mut state.recv_waiters,
-                    &mut self.waiter,
-                    cx.waker(),
-                    &mut cloned,
-                ) {
-                    Registration::Registered(replaced) => {
-                        drop(state);
-                        drop((replaced, cloned));
-                        return Poll::Pending;
-                    }
-                    Registration::NeedsWaker => {
-                        drop(state);
-                        cloned = Some(cx.waker().clone());
-                        continue;
-                    }
-                },
-            };
-            let retired = self
-                .waiter
-                .take()
-                .map(|id| remove_waiter(&mut state.recv_waiters, id));
-            drop(state);
-            // Deliver the notification before running waker destructors, which may panic.
-            let result = outcome.map(|(value, waker)| {
-                wake(waker);
-                value
-            });
-            drop((retired, cloned));
-            return Poll::Ready(result);
-        }
+        let mut state = self.shared.state.lock();
+        let outcome = match state.pop() {
+            Ok(popped) => Ok(popped),
+            Err(TryRecvError::Disconnected) => Err(RecvError::Disconnected),
+            Err(TryRecvError::Empty) => {
+                let retired = register(&mut state.recv_waiters, &mut self.waiter, cx.waker());
+                drop(state);
+                drop(retired);
+                return Poll::Pending;
+            }
+        };
+        let retired = self
+            .waiter
+            .take()
+            .map(|id| remove_waiter(&mut state.recv_waiters, id));
+        drop(state);
+        // Deliver the notification before running waker destructors, which may panic.
+        let result = outcome.map(|(value, waker)| {
+            wake(waker);
+            value
+        });
+        drop(retired);
+        Poll::Ready(result)
     }
 }
 
