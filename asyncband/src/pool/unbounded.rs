@@ -279,8 +279,6 @@ impl<T: Send> Pool<T> {
     /// [`ManageObject`] implementation, you should use [`Pool::get`] instead, and it will call
     /// [`ManageObject::create`] to create a new object if the pool is empty.
     ///
-    /// The closure runs in the calling task and may borrow local state; it need not be `Send`.
-    ///
     /// # Cancel safety
     ///
     /// Cancelling while the provided future is pending leaves the pool unchanged.
