@@ -80,44 +80,13 @@
 //!
 //! # Cancellation
 //!
-//! Awaiting a [`Receiver`] consumes it through [`IntoFuture`], producing a [`Recv`] future that
-//! owns the receiving endpoint. Dropping that future disconnects the channel and discards any
-//! unread message. Passing the receiver by value to `tokio::select!` therefore gives up receiving
-//! if another branch completes first.
+//! Awaiting a [`Receiver`] converts it into a [`Recv`] future that owns the receiving endpoint.
+//! Dropping either the receiver or its future disconnects the channel and discards any unread
+//! message.
 //!
-//! To keep receiving afterward, call [`into_future`](Receiver::into_future) once and select on
-//! `&mut` of the resulting future. Borrow the [`Recv`], not the [`Receiver`]: only `Recv`
-//! implements [`Future`].
-//!
-//! ```
-//! use std::future::IntoFuture;
-//! use std::io;
-//!
-//! use asyncband::oneshot;
-//! use tokio::net::TcpListener;
-//! use tokio::net::TcpStream;
-//!
-//! async fn serve(listener: TcpListener, shutdown: oneshot::Receiver<()>) -> io::Result<()> {
-//!     let mut shutdown = shutdown.into_future();
-//!
-//!     loop {
-//!         tokio::select! {
-//!             _ = &mut shutdown => return Ok(()),
-//!             connection = listener.accept() => {
-//!                 let (stream, _) = connection?;
-//!                 tokio::spawn(echo(stream));
-//!             }
-//!         }
-//!     }
-//! }
-//!
-//! async fn echo(mut stream: TcpStream) {
-//!     let (mut reader, mut writer) = stream.split();
-//!     if let Err(error) = tokio::io::copy(&mut reader, &mut writer).await {
-//!         eprintln!("Connection failed: {error}");
-//!     }
-//! }
-//! ```
+//! To preserve a pending receive across `tokio::select!`, call [`Receiver::into_future`] before
+//! the select and borrow the resulting future as `&mut Recv`. Passing either [`Receiver`] or
+//! [`Recv`] by value instead gives up receiving when another branch wins.
 
 mod receiver;
 mod sender;

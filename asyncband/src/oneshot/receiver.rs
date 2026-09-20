@@ -44,9 +44,12 @@ use super::drop_message_and_deallocate_channel;
 
 /// Receives a value from the associated [`Sender`].
 ///
-/// Awaiting consumes the receiver. To continue receiving after another `select` branch completes,
-/// convert it with [`into_future`](Self::into_future) and borrow the resulting [`Recv`]. See the
-/// [module documentation](crate::oneshot#cancellation) for an example.
+/// Awaiting converts this receiver into a [`Recv`] future. Dropping either the receiver or its
+/// future disconnects the channel and discards any unread message.
+///
+/// To preserve a pending receive across `tokio::select!`, call [`into_future`](Self::into_future)
+/// before the select and borrow the resulting future as `&mut Recv`. The receiver itself does not
+/// implement [`Future`].
 pub struct Receiver<T> {
     channel_ptr: NonNull<Channel<T>>,
 }
@@ -194,12 +197,14 @@ impl<T> Drop for Receiver<T> {
     }
 }
 
-/// A future that completes when the message is sent from the associated [`Sender`], or the
-/// [`Sender`] is dropped before sending a message.
+/// A future that receives a value from the associated [`Sender`], or returns [`RecvError`] if the
+/// sender is dropped without sending.
 ///
-/// Created by [`Receiver::into_future`]. Dropping this future disconnects the receiving endpoint
-/// and discards any unread message. Selecting on `&mut Recv` keeps the endpoint alive when another
-/// branch completes first; the same future can then be awaited again.
+/// Created by [`Receiver::into_future`], this future owns the receiving endpoint. Dropping it
+/// disconnects the channel and discards any unread message.
+///
+/// Select on `&mut Recv` to keep a pending receive alive when another branch wins. A completed
+/// `Recv` must not be polled again.
 pub struct Recv<T> {
     channel_ptr: NonNull<Channel<T>>,
 }
