@@ -24,7 +24,5 @@
 //! `--bench --color never --sample-count 100 'spmc::'`. Record repeated measurements serially,
 //! without concurrent builds or tests, together with the commit, toolchain, and machine details.
 
-mod adapters;
 mod bounded;
-mod support;
 mod unbounded;

@@ -20,11 +20,12 @@ use std::thread;
 use std::time::Duration;
 
 #[allow(dead_code)]
-#[path = "../mpmc/mod.rs"]
-mod mpmc_support;
+#[path = "../channels/mod.rs"]
+mod channels;
 
-use mpmc_support::adapters;
-use mpmc_support::support;
+use channels::adapters;
+use channels::mpmc;
+use channels::spmc;
 
 // Deliberately drain only after the last producer drops its sender. This makes
 // retaining senders across the completion barrier deadlock deterministically.
@@ -72,8 +73,8 @@ fn assert_completes(run: impl FnOnce() + Send + 'static) {
 #[test]
 fn thread_batch_closes_before_waiting_for_consumers() {
     assert_completes(|| {
-        for &topology in support::TOPOLOGIES {
-            let batch = support::ThreadBatch::new_unbounded::<DrainAfterClose>(topology);
+        for &topology in mpmc::TOPOLOGIES {
+            let batch = mpmc::ThreadBatch::new_unbounded::<DrainAfterClose>(topology);
             batch.run();
         }
     });
@@ -83,7 +84,7 @@ fn thread_batch_closes_before_waiting_for_consumers() {
 fn flume_batches_complete_with_competing_consumers() {
     assert_completes(|| {
         for _ in 0..100 {
-            let batch = support::ThreadBatch::new_unbounded::<adapters::Flume>(support::Topology {
+            let batch = mpmc::ThreadBatch::new_unbounded::<adapters::Flume>(mpmc::Topology {
                 producers: 1,
                 consumers: 8,
             });
@@ -94,31 +95,55 @@ fn flume_batches_complete_with_competing_consumers() {
 
 #[test]
 fn tokio_batches_drain_all_messages_before_completion() {
-    fn check<C: support::ConcurrentMpmc>(runtime: &tokio::runtime::Runtime) {
-        for topology in support::TOPOLOGIES
-            .iter()
-            .copied()
-            .chain([support::Topology {
-                producers: 1,
-                consumers: 3,
-            }])
-        {
+    fn check<C: adapters::Channel>(runtime: &tokio::runtime::Runtime)
+    where
+        C::Sender: Clone,
+    {
+        for topology in mpmc::TOPOLOGIES.iter().copied().chain([mpmc::Topology {
+            producers: 1,
+            consumers: 3,
+        }]) {
             // Three consumers cannot receive equal quotas from a 16,384-message batch.
-            let mut batch = support::TaskBatch::new::<C>(runtime, topology);
+            let mut batch = mpmc::TaskBatch::new::<C>(runtime, topology);
             runtime.block_on(batch.run());
         }
     }
 
     assert_completes(|| {
         for workers in [0, 4] {
-            let runtime = support::runtime(workers);
-            check::<support::Bounded<adapters::Asyncband, 1>>(&runtime);
-            check::<support::Bounded<adapters::AsyncChannel, 1>>(&runtime);
-            check::<support::Bounded<adapters::Flume, 1>>(&runtime);
-            check::<support::Unbounded<adapters::Asyncband>>(&runtime);
-            check::<support::Unbounded<adapters::AsyncChannel>>(&runtime);
-            check::<support::Unbounded<adapters::Flume>>(&runtime);
-            check::<support::Unbounded<DrainAfterClose>>(&runtime);
+            let runtime = channels::runtime(workers);
+            check::<adapters::Bounded<adapters::Mpmc, 1>>(&runtime);
+            check::<adapters::Bounded<adapters::AsyncChannel, 1>>(&runtime);
+            check::<adapters::Bounded<adapters::Flume, 1>>(&runtime);
+            check::<adapters::Unbounded<adapters::Mpmc>>(&runtime);
+            check::<adapters::Unbounded<adapters::AsyncChannel>>(&runtime);
+            check::<adapters::Unbounded<adapters::Flume>>(&runtime);
+            check::<adapters::Unbounded<DrainAfterClose>>(&runtime);
+        }
+    });
+}
+
+#[test]
+fn spmc_batches_drain_all_messages_before_completion() {
+    fn check<C: adapters::Channel>(runtime: &tokio::runtime::Runtime) {
+        for consumers in [1, 3, 8] {
+            let mut batch = spmc::TaskBatch::new::<C>(runtime, consumers);
+            runtime.block_on(batch.run());
+        }
+    }
+
+    assert_completes(|| {
+        for workers in [0, 4] {
+            let runtime = channels::runtime(workers);
+            check::<adapters::Bounded<adapters::Spmc, 1>>(&runtime);
+            check::<adapters::Bounded<adapters::Mpmc, 1>>(&runtime);
+            check::<adapters::Bounded<adapters::AsyncChannel, 1>>(&runtime);
+            check::<adapters::Bounded<adapters::Flume, 1>>(&runtime);
+            check::<adapters::Unbounded<adapters::Spmc>>(&runtime);
+            check::<adapters::Unbounded<adapters::Mpmc>>(&runtime);
+            check::<adapters::Unbounded<adapters::AsyncChannel>>(&runtime);
+            check::<adapters::Unbounded<adapters::Flume>>(&runtime);
+            check::<adapters::Unbounded<DrainAfterClose>>(&runtime);
         }
     });
 }

@@ -18,16 +18,16 @@
 use divan::Bencher;
 use divan::counter::ItemsCount;
 
-use super::adapters::AsyncChannel;
-use super::adapters::Bounded;
-use super::adapters::Channel;
-use super::adapters::Flume;
-use super::adapters::Mpmc;
-use super::adapters::Spmc;
-use super::support::BATCH_MESSAGES;
-use super::support::CONSUMERS;
-use super::support::TaskBatch;
-use super::support::runtime;
+use crate::channels::BATCH_MESSAGES;
+use crate::channels::adapters::AsyncChannel;
+use crate::channels::adapters::Bounded;
+use crate::channels::adapters::Channel;
+use crate::channels::adapters::Flume;
+use crate::channels::adapters::Mpmc;
+use crate::channels::adapters::Spmc;
+use crate::channels::runtime;
+use crate::channels::spmc::CONSUMERS;
+use crate::channels::spmc::TaskBatch;
 
 #[divan::bench(
     types = [Spmc, Mpmc, AsyncChannel, Flume],

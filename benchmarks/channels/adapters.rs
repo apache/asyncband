@@ -16,12 +16,97 @@
 // under the License.
 
 use std::future::Future;
+use std::marker::PhantomData;
 
 use asyncband::blocking::FutureExt;
 
-pub struct Asyncband;
+use super::BOUNDED_CAPACITY;
+
+pub struct Mpmc;
+pub struct Spmc;
 pub struct AsyncChannel;
 pub struct Flume;
+
+pub struct Bounded<C, const CAPACITY: usize = BOUNDED_CAPACITY>(PhantomData<C>);
+pub struct Unbounded<C>(PhantomData<C>);
+
+// Each task owns its sender. Only workloads with multiple producers require Sender: Clone.
+pub trait Channel: Send + Sync + 'static {
+    type Sender: Send + 'static;
+    type Receiver: Clone + Send + Sync + 'static;
+
+    fn channel() -> (Self::Sender, Self::Receiver);
+    fn send(sender: &mut Self::Sender, value: usize) -> impl Future<Output = ()> + Send;
+    fn recv(receiver: &Self::Receiver) -> impl Future<Output = Option<usize>> + Send;
+}
+
+impl<const CAPACITY: usize> Channel for Bounded<Spmc, CAPACITY> {
+    type Sender = asyncband::spmc::BoundedSender<usize>;
+    type Receiver = asyncband::spmc::BoundedReceiver<usize>;
+
+    fn channel() -> (Self::Sender, Self::Receiver) {
+        asyncband::spmc::bounded(CAPACITY)
+    }
+
+    async fn send(sender: &mut Self::Sender, value: usize) {
+        sender.send(value).await.unwrap();
+    }
+
+    async fn recv(receiver: &Self::Receiver) -> Option<usize> {
+        receiver.recv().await.ok()
+    }
+}
+
+impl Channel for Unbounded<Spmc> {
+    type Sender = asyncband::spmc::UnboundedSender<usize>;
+    type Receiver = asyncband::spmc::UnboundedReceiver<usize>;
+
+    fn channel() -> (Self::Sender, Self::Receiver) {
+        asyncband::spmc::unbounded()
+    }
+
+    async fn send(sender: &mut Self::Sender, value: usize) {
+        sender.send(value).unwrap();
+    }
+
+    async fn recv(receiver: &Self::Receiver) -> Option<usize> {
+        receiver.recv().await.ok()
+    }
+}
+
+impl<C: BoundedMpmc, const CAPACITY: usize> Channel for Bounded<C, CAPACITY> {
+    type Sender = C::Sender;
+    type Receiver = C::Receiver;
+
+    fn channel() -> (Self::Sender, Self::Receiver) {
+        C::channel(CAPACITY)
+    }
+
+    async fn send(sender: &mut Self::Sender, value: usize) {
+        C::send_async(sender, value).await;
+    }
+
+    async fn recv(receiver: &Self::Receiver) -> Option<usize> {
+        C::recv_async(receiver).await
+    }
+}
+
+impl<C: UnboundedMpmc> Channel for Unbounded<C> {
+    type Sender = C::Sender;
+    type Receiver = C::Receiver;
+
+    fn channel() -> (Self::Sender, Self::Receiver) {
+        C::channel()
+    }
+
+    async fn send(sender: &mut Self::Sender, value: usize) {
+        C::send(sender, value);
+    }
+
+    async fn recv(receiver: &Self::Receiver) -> Option<usize> {
+        C::recv_async(receiver).await
+    }
+}
 
 pub trait BoundedMpmc: Send + Sync + 'static {
     type Sender: Clone + Send + Sync + 'static;
@@ -57,7 +142,7 @@ pub trait UnboundedMpmc: Send + Sync + 'static {
     }
 }
 
-impl BoundedMpmc for Asyncband {
+impl BoundedMpmc for Mpmc {
     type Receiver = asyncband::mpmc::BoundedReceiver<usize>;
     type Sender = asyncband::mpmc::BoundedSender<usize>;
 
@@ -77,7 +162,7 @@ impl BoundedMpmc for Asyncband {
     }
 }
 
-impl UnboundedMpmc for Asyncband {
+impl UnboundedMpmc for Mpmc {
     type Receiver = asyncband::mpmc::UnboundedReceiver<usize>;
     type Sender = asyncband::mpmc::UnboundedSender<usize>;
 

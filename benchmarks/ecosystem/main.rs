@@ -17,14 +17,14 @@
 
 mod broadcast;
 mod mpmc;
-
-#[allow(dead_code)]
-#[path = "../mpmc/mod.rs"]
-mod mpmc_support;
 mod mpsc;
 mod spmc;
 mod waitgroup;
 mod watch;
+
+#[allow(dead_code)]
+#[path = "../channels/mod.rs"]
+mod channels;
 
 #[allow(dead_code)]
 #[path = "../asyncband/support.rs"]

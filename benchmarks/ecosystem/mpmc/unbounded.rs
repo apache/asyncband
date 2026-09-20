@@ -18,20 +18,20 @@
 use divan::Bencher;
 use divan::counter::ItemsCount;
 
-use crate::mpmc_support::adapters::AsyncChannel;
-use crate::mpmc_support::adapters::Asyncband;
-use crate::mpmc_support::adapters::Flume;
-use crate::mpmc_support::adapters::UnboundedMpmc;
-use crate::mpmc_support::support::BATCH_MESSAGES;
-use crate::mpmc_support::support::TOPOLOGIES;
-use crate::mpmc_support::support::TaskBatch;
-use crate::mpmc_support::support::ThreadBatch;
-use crate::mpmc_support::support::Topology;
-use crate::mpmc_support::support::Unbounded;
-use crate::mpmc_support::support::runtime;
+use crate::channels::BATCH_MESSAGES;
+use crate::channels::adapters::AsyncChannel;
+use crate::channels::adapters::Flume;
+use crate::channels::adapters::Mpmc;
+use crate::channels::adapters::Unbounded;
+use crate::channels::adapters::UnboundedMpmc;
+use crate::channels::mpmc::TOPOLOGIES;
+use crate::channels::mpmc::TaskBatch;
+use crate::channels::mpmc::ThreadBatch;
+use crate::channels::mpmc::Topology;
+use crate::channels::runtime;
 
 #[divan::bench(
-    types = [Asyncband, AsyncChannel, Flume],
+    types = [Mpmc, AsyncChannel, Flume],
     args = TOPOLOGIES,
     sample_count = 20,
     sample_size = 1,
@@ -44,7 +44,7 @@ fn blocking_threads<C: UnboundedMpmc>(bencher: Bencher, topology: Topology) {
 }
 
 #[divan::bench(
-    types = [Asyncband, AsyncChannel, Flume],
+    types = [Mpmc, AsyncChannel, Flume],
     consts = [0, 4],
     args = TOPOLOGIES,
     sample_count = 20,

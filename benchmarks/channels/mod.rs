@@ -15,5 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use tokio::runtime::Runtime;
+
 pub mod adapters;
-pub mod support;
+pub mod mpmc;
+pub mod spmc;
+
+pub const BATCH_MESSAGES: usize = 16_384;
+pub const BOUNDED_CAPACITY: usize = 64;
+
+pub fn runtime(worker_threads: usize) -> Runtime {
+    if worker_threads == 0 {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(worker_threads)
+            .build()
+            .unwrap()
+    }
+}

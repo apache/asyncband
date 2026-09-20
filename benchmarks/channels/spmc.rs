@@ -21,9 +21,8 @@ use divan::black_box;
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 
+use super::BATCH_MESSAGES;
 use super::adapters::Channel;
-pub use crate::mpmc_support::support::BATCH_MESSAGES;
-pub use crate::mpmc_support::support::runtime;
 
 pub const CONSUMERS: &[usize] = &[1, 2, 4, 8];
 
