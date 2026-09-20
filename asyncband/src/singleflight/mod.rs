@@ -245,25 +245,26 @@ where
     ///
     /// # Examples
     ///
+    /// Share a group between request handlers. While one request is generating a report, other
+    /// requests for the same report wait for its result. Here, `generate_report` is the
+    /// application's asynchronous report generator.
+    ///
     /// ```
     /// use asyncband::singleflight::Group;
     ///
+    /// # async fn generate_report(id: u64) -> String {
+    /// #     format!("Report {id}")
+    /// # }
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let group = Group::new();
-    /// let (release, wait) = tokio::sync::oneshot::channel();
+    /// let reports = Group::new();
     ///
-    /// let first = group.work("key", async || {
-    ///     wait.await.unwrap();
-    ///     "result"
-    /// });
-    /// let duplicate = group.work("key", async || "duplicate computation");
-    /// let finish = async { release.send(()).unwrap() };
-    /// // Poll both calls before allowing the first computation to complete.
-    /// let (r1, r2, ()) = tokio::join!(biased; first, duplicate, finish);
+    /// let first = reports.work(42, || generate_report(42));
+    /// let second = reports.work(42, || generate_report(42));
+    /// let (first, second) = tokio::join!(first, second);
     ///
-    /// assert_eq!(r1, "result");
-    /// assert_eq!(r2, "result");
+    /// assert_eq!(first, "Report 42");
+    /// assert_eq!(second, "Report 42");
     /// # }
     /// ```
     pub async fn work<F>(&self, key: K, func: F) -> V
@@ -306,25 +307,27 @@ where
     ///
     /// # Examples
     ///
+    /// Concurrent requests for the same user can share an in-flight profile lookup. Here,
+    /// `fetch_profile` is the application's asynchronous backend call; each request handles its
+    /// returned `Result` as usual.
+    ///
     /// ```
     /// use asyncband::singleflight::Group;
     ///
+    /// # async fn fetch_profile(id: u64) -> Result<String, std::io::Error> {
+    /// #     Ok(format!("Profile {id}"))
+    /// # }
     /// # #[tokio::main]
-    /// # async fn main() {
-    /// let group = Group::new();
-    /// let (release, wait) = tokio::sync::oneshot::channel();
+    /// # async fn main() -> Result<(), std::io::Error> {
+    /// let profiles = Group::new();
     ///
-    /// let first = group.try_work("key", async || {
-    ///     wait.await.unwrap();
-    ///     Err::<&str, _>("first attempt failed")
-    /// });
-    /// let retry = group.try_work("key", async || Ok::<_, &str>("retried"));
-    /// let finish = async { release.send(()).unwrap() };
-    /// // The second caller joins the pending attempt, then retries after its error.
-    /// let (r1, r2, ()) = tokio::join!(biased; first, retry, finish);
+    /// let first = profiles.try_work(42, || fetch_profile(42));
+    /// let second = profiles.try_work(42, || fetch_profile(42));
+    /// let (first, second) = tokio::join!(first, second);
     ///
-    /// assert_eq!(r1, Err("first attempt failed"));
-    /// assert_eq!(r2, Ok("retried"));
+    /// assert_eq!(first?, "Profile 42");
+    /// assert_eq!(second?, "Profile 42");
+    /// # Ok(())
     /// # }
     /// ```
     pub async fn try_work<E, F>(&self, key: K, func: F) -> Result<V, E>
