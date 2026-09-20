@@ -30,7 +30,6 @@ use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::wake_all;
-use crate::internal::waker_batch::WakerBatch;
 
 pub struct Shared<T> {
     state: Mutex<State<T>>,
@@ -88,12 +87,6 @@ fn notify_one(waiters: &mut WaitList<Waiter>) -> Option<Waker> {
         unreachable!("only waiting operations remain linked");
     };
     Some(waker)
-}
-
-fn notify_all(waiters: &mut WaitList<Waiter>, wakers: &mut WakerBatch) {
-    while let Some(waker) = notify_one(waiters) {
-        wakers.push(waker);
-    }
 }
 
 fn remove_waiter(waiters: &mut WaitList<Waiter>, id: WaiterId) -> Waiter {
@@ -161,17 +154,17 @@ impl<T> Shared<T> {
     }
 
     pub fn drop_sender(&self) {
-        let mut wakers = WakerBatch::new();
-        {
+        let mut waiters = {
             let mut state = self.state.lock();
             state.senders -= 1;
             if state.senders != 0 {
                 return;
             }
-            // Woken receivers drain buffered values before they observe disconnection.
-            notify_all(&mut state.recv_waiters, &mut wakers);
-        }
-        wake_all(&mut wakers);
+            // Disconnection invalidates every receiver waiter ID. Move the storage out so both
+            // notification and reclamation happen without holding the queue lock.
+            mem::replace(&mut state.recv_waiters, WaitList::new())
+        };
+        wake_all(std::iter::from_fn(|| notify_one(&mut waiters)));
     }
 
     pub fn clone_receiver(&self) {
@@ -179,19 +172,20 @@ impl<T> Shared<T> {
     }
 
     pub fn drop_receiver(&self) {
-        let mut wakers = WakerBatch::new();
-        let discarded = {
+        let (discarded, mut waiters) = {
             let mut state = self.state.lock();
             state.receivers -= 1;
             if state.receivers != 0 {
                 return;
             }
-            notify_all(&mut state.send_waiters, &mut wakers);
-            mem::take(&mut state.values)
+            (
+                mem::take(&mut state.values),
+                mem::replace(&mut state.send_waiters, WaitList::new()),
+            )
         };
         // Release blocked senders before destroying buffered values. Local ownership still drops
         // the values if a wake callback unwinds.
-        wake_all(&mut wakers);
+        wake_all(std::iter::from_fn(|| notify_one(&mut waiters)));
         drop(discarded);
     }
 
@@ -260,6 +254,7 @@ impl<T> Send<'_, T> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SendError<T>>> {
         let mut state = self.shared.state.lock();
         let outcome = if state.receivers == 0 {
+            self.waiter = None;
             Err(self.take_value())
         } else if state.has_capacity() {
             Ok(state.push(self.take_value()))
@@ -288,6 +283,9 @@ impl<T> Drop for Send<'_, T> {
         };
         let (retired, waker) = {
             let mut state = self.shared.state.lock();
+            if state.receivers == 0 {
+                return;
+            }
             let retired = remove_waiter(&mut state.send_waiters, id);
             // Hand an unconsumed notification to the next sender while the slot is still free.
             let waker = if matches!(retired, Waiter::Notified) && state.has_capacity() {
@@ -310,6 +308,10 @@ struct Recv<'a, T> {
 impl<T> Recv<'_, T> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
         let mut state = self.shared.state.lock();
+        if state.senders == 0 {
+            // Buffered values remain readable after the waiter storage has been detached.
+            self.waiter = None;
+        }
         let outcome = match state.pop() {
             Ok(popped) => Ok(popped),
             Err(TryRecvError::Disconnected) => Err(RecvError::Disconnected),
@@ -342,6 +344,9 @@ impl<T> Drop for Recv<'_, T> {
         };
         let (retired, waker) = {
             let mut state = self.shared.state.lock();
+            if state.senders == 0 {
+                return;
+            }
             let retired = remove_waiter(&mut state.recv_waiters, id);
             // Hand an unconsumed notification to the next receiver while a value still waits.
             let waker = if matches!(retired, Waiter::Notified) && !state.values.is_empty() {

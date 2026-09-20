@@ -270,17 +270,25 @@ fn last_sender_wakes_every_pending_receiver() {
     let competing = receiver.clone();
     let mut first = Box::pin(receiver.recv());
     let mut second = Box::pin(competing.recv());
+    let mut cancelled = Box::pin(receiver.recv());
     let (first_waker, first_wakes) = WakeCounter::new();
     let (second_waker, second_wakes) = WakeCounter::new();
+    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
     assert!(poll_with(first.as_mut(), &first_waker).is_pending());
     assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+    assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
+
+    // Disconnection must handle both notified and still-linked registrations.
+    sender.send(1).unwrap();
 
     drop(sender);
     assert_eq!(first_wakes.count(), 1);
     assert_eq!(second_wakes.count(), 1);
+    assert_eq!(cancelled_wakes.count(), 1);
+    drop(cancelled);
     assert_eq!(
         expect_ready(poll_with(first.as_mut(), &first_waker)),
-        Err(RecvError::Disconnected)
+        Ok(1)
     );
     assert_eq!(
         expect_ready(poll_with(second.as_mut(), &second_waker)),
@@ -295,14 +303,20 @@ fn last_receiver_wakes_every_pending_sender() {
     let competing = sender.clone();
     let mut first = Box::pin(sender.send(1));
     let mut second = Box::pin(competing.send(2));
+    let mut cancelled = Box::pin(sender.send(3));
     let (first_waker, first_wakes) = WakeCounter::new();
     let (second_waker, second_wakes) = WakeCounter::new();
+    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
     assert!(poll_with(first.as_mut(), &first_waker).is_pending());
     assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+    assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
+    assert_eq!(receiver.try_recv(), Ok(0));
 
     drop(receiver);
     assert_eq!(first_wakes.count(), 1);
     assert_eq!(second_wakes.count(), 1);
+    assert_eq!(cancelled_wakes.count(), 1);
+    drop(cancelled);
     assert_eq!(
         expect_ready(poll_with(first.as_mut(), &first_waker))
             .unwrap_err()

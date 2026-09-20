@@ -129,7 +129,6 @@ pub(crate) mod waitlist;
     feature = "event",
     feature = "completion",
     feature = "latch",
-    feature = "mpmc",
     feature = "mpsc",
     feature = "mutex",
     feature = "once",
