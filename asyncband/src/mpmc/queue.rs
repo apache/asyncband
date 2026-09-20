@@ -22,20 +22,15 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
+use super::RecvError;
+use super::SendError;
+use super::TryRecvError;
+use super::TrySendError;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::wake_all;
 
-mod error;
-
-pub use self::error::RecvError;
-pub use self::error::SendError;
-pub use self::error::TryRecvError;
-pub use self::error::TrySendError;
-pub use self::error::send_error;
-
-// Shared by MPMC and SPMC; endpoint wrappers decide which producer capabilities are exposed.
 pub struct Shared<T> {
     state: Mutex<State<T>>,
 }
@@ -146,7 +141,6 @@ impl<T> Shared<T> {
         }
     }
 
-    #[cfg(feature = "mpmc")]
     pub fn clone_sender(&self) {
         self.state.lock().senders += 1;
     }
@@ -207,7 +201,7 @@ impl<T> Shared<T> {
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
         let value = match self.try_send(value) {
             Ok(()) => return Ok(()),
-            Err(TrySendError::Disconnected(value)) => return Err(send_error(value)),
+            Err(TrySendError::Disconnected(value)) => return Err(SendError::new(value)),
             Err(TrySendError::Full(value)) => value,
         };
         let mut send = Send {
@@ -278,7 +272,7 @@ impl<T> Send<'_, T> {
                     waker.wake();
                 }
             })
-            .map_err(send_error);
+            .map_err(SendError::new);
         drop(retired);
         Poll::Ready(result)
     }

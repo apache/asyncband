@@ -22,7 +22,7 @@ use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
 use super::TrySendError;
-use crate::internal::competing_queue::Shared;
+use super::queue::Shared;
 
 /// Creates a bounded multi-producer, multi-consumer queue.
 ///
@@ -86,7 +86,7 @@ impl<T> BoundedSender<T> {
     /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is
     /// unavailable.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
-        self.shared.send(value).await.map_err(Into::into)
+        self.shared.send(value).await
     }
 
     /// Attempts to send a value without waiting for capacity.
@@ -94,7 +94,7 @@ impl<T> BoundedSender<T> {
     /// Returns [`TrySendError::Full`] when the queue has reached its exact capacity and
     /// [`TrySendError::Disconnected`] when all receivers have been dropped.
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        self.shared.try_send(value).map_err(Into::into)
+        self.shared.try_send(value)
     }
 }
 
@@ -138,7 +138,7 @@ impl<T> BoundedReceiver<T> {
     /// Dropping a pending `recv` does not consume a value or prevent other receivers from receiving
     /// it.
     pub async fn recv(&self) -> Result<T, RecvError> {
-        self.shared.recv().await.map_err(Into::into)
+        self.shared.recv().await
     }
 
     /// Attempts to receive the next available value without waiting for a message.
@@ -146,6 +146,6 @@ impl<T> BoundedReceiver<T> {
     /// Returns [`TryRecvError::Empty`] while the queue is empty and a sender remains, or
     /// [`TryRecvError::Disconnected`] once the queue is empty and all senders have been dropped.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        self.shared.try_recv().map_err(Into::into)
+        self.shared.try_recv()
     }
 }

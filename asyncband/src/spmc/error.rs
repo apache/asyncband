@@ -18,11 +18,6 @@
 use std::any::type_name;
 use std::fmt;
 
-use crate::internal::competing_queue::RecvError as InternalRecvError;
-use crate::internal::competing_queue::SendError as InternalSendError;
-use crate::internal::competing_queue::TryRecvError as InternalTryRecvError;
-use crate::internal::competing_queue::TrySendError as InternalTrySendError;
-
 /// An error returned when trying to send on a disconnected queue.
 ///
 /// The value that could not be sent can be retrieved with [`SendError::into_inner`].
@@ -39,15 +34,9 @@ impl<T> SendError<T> {
     pub fn into_inner(self) -> T {
         self.0
     }
-}
 
-pub(super) fn send_error<T>(value: T) -> SendError<T> {
-    SendError(value)
-}
-
-impl<T> From<InternalSendError<T>> for SendError<T> {
-    fn from(error: InternalSendError<T>) -> Self {
-        send_error(error.into_inner())
+    pub(super) fn new(value: T) -> Self {
+        Self(value)
     }
 }
 
@@ -65,7 +54,7 @@ impl<T> fmt::Debug for SendError<T> {
 
 impl<T> std::error::Error for SendError<T> {}
 
-/// Error returned when attempting to send without waiting for capacity.
+/// Error returned by [`BoundedSender::try_send`](crate::spmc::BoundedSender::try_send).
 #[derive(Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
     /// The queue is full, so the value cannot be sent without waiting for capacity.
@@ -86,15 +75,6 @@ impl<T> TrySendError<T> {
     pub fn into_inner(self) -> T {
         match self {
             TrySendError::Full(value) | TrySendError::Disconnected(value) => value,
-        }
-    }
-}
-
-impl<T> From<InternalTrySendError<T>> for TrySendError<T> {
-    fn from(error: InternalTrySendError<T>) -> Self {
-        match error {
-            InternalTrySendError::Full(value) => TrySendError::Full(value),
-            InternalTrySendError::Disconnected(value) => TrySendError::Disconnected(value),
         }
     }
 }
@@ -125,16 +105,8 @@ impl<T> std::error::Error for TrySendError<T> {}
 /// Error returned by a receive operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecvError {
-    /// All senders have been dropped, and no buffered values remain.
+    /// The sender has been dropped, and no buffered values remain.
     Disconnected,
-}
-
-impl From<InternalRecvError> for RecvError {
-    fn from(error: InternalRecvError) -> Self {
-        match error {
-            InternalRecvError::Disconnected => RecvError::Disconnected,
-        }
-    }
 }
 
 impl fmt::Display for RecvError {
@@ -148,19 +120,10 @@ impl std::error::Error for RecvError {}
 /// Error returned by a non-blocking receive operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TryRecvError {
-    /// No value is currently available, but at least one sender remains.
+    /// No value is currently available, but the sender remains.
     Empty,
-    /// All senders have been dropped, and no buffered values remain.
+    /// The sender has been dropped, and no buffered values remain.
     Disconnected,
-}
-
-impl From<InternalTryRecvError> for TryRecvError {
-    fn from(error: InternalTryRecvError) -> Self {
-        match error {
-            InternalTryRecvError::Empty => TryRecvError::Empty,
-            InternalTryRecvError::Disconnected => TryRecvError::Disconnected,
-        }
-    }
 }
 
 impl fmt::Display for TryRecvError {

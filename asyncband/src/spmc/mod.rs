@@ -86,6 +86,7 @@
 
 mod bounded;
 mod error;
+mod queue;
 mod unbounded;
 
 pub use self::bounded::BoundedReceiver;

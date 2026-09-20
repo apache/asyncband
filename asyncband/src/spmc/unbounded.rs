@@ -21,9 +21,8 @@ use std::sync::Arc;
 use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
-use super::error::send_error;
-use crate::internal::competing_queue::Shared;
-use crate::internal::competing_queue::TrySendError as InternalTrySendError;
+use super::TrySendError;
+use super::queue::Shared;
 
 /// Creates an unbounded single-producer, multi-consumer queue.
 ///
@@ -69,8 +68,8 @@ impl<T> UnboundedSender<T> {
     pub fn send(&mut self, value: T) -> Result<(), SendError<T>> {
         match self.shared.try_send(value) {
             Ok(()) => Ok(()),
-            Err(InternalTrySendError::Disconnected(value)) => Err(send_error(value)),
-            Err(InternalTrySendError::Full(_)) => unreachable!("unbounded queue cannot be full"),
+            Err(TrySendError::Disconnected(value)) => Err(SendError::new(value)),
+            Err(TrySendError::Full(_)) => unreachable!("unbounded queue cannot be full"),
         }
     }
 }
@@ -115,7 +114,7 @@ impl<T> UnboundedReceiver<T> {
     /// Dropping a pending `recv` does not consume a value. Any selected value notification is
     /// passed to another waiting receiver, so cancellation does not prevent it from receiving.
     pub async fn recv(&self) -> Result<T, RecvError> {
-        self.shared.recv().await.map_err(Into::into)
+        self.shared.recv().await
     }
 
     /// Attempts to receive the next available value without waiting for a message.
@@ -123,6 +122,6 @@ impl<T> UnboundedReceiver<T> {
     /// Returns [`TryRecvError::Empty`] while the queue is empty and a sender remains, or
     /// [`TryRecvError::Disconnected`] once the queue is empty and the sender has been dropped.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        self.shared.try_recv().map_err(Into::into)
+        self.shared.try_recv()
     }
 }

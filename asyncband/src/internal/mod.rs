@@ -86,9 +86,6 @@ pub(crate) fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
 #[allow(dead_code)]
 pub(crate) mod arena;
 
-#[cfg(any(feature = "mpmc", feature = "spmc"))]
-pub(crate) mod competing_queue;
-
 #[cfg(any(feature = "latch", feature = "once"))]
 pub(crate) mod countdown;
 
