@@ -29,9 +29,8 @@ use super::queue::Shared;
 /// The queue stores at most `capacity` values. Sending waits for a receiver to free capacity when
 /// the queue is full.
 ///
-/// Operations briefly acquire an internal mutex; no lock is held across an await point or while
-/// waking tasks, dropping wakers, or dropping messages. The `try_*` methods do not wait for
-/// capacity or messages, but may wait to acquire this mutex.
+/// The `try_*` methods do not wait for capacity or messages, but may briefly block on an internal
+/// mutex.
 ///
 /// # Panics
 ///
@@ -83,11 +82,8 @@ impl<T> BoundedSender<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `send` removes it from the wait queue and drops `value`; a call that has
-    /// returned `Pending` has not sent the value. If this call was woken for capacity that is still
-    /// free, cancelling it wakes the next waiting sender before `value` is dropped. Use
-    /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is
-    /// unavailable.
+    /// Dropping a pending `send` drops `value` without sending it or retaining capacity. Use
+    /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is unavailable.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
         self.shared.send(value).await
     }
@@ -138,8 +134,7 @@ impl<T> BoundedReceiver<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `recv` does not consume a value. If this call was woken for a value that
-    /// is still queued, cancelling it wakes the next waiting receiver instead.
+    /// Dropping a pending `recv` does not consume a value or prevent other receivers from receiving it.
     pub async fn recv(&self) -> Result<T, RecvError> {
         self.shared.recv().await
     }

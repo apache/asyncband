@@ -28,6 +28,7 @@ use crate::internal::wake_all;
 use crate::internal::waker_batch::WakerBatch;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
+use crate::mpsc::register_waker;
 
 /// The receiving endpoint of a bounded mpsc channel.
 ///
@@ -134,7 +135,6 @@ impl<T> BoundedReceiver<T> {
     }
 
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
-        let waker = cx.waker().clone();
         let mut state = self.shared.lock();
         match state.pop() {
             Ok((value, wake)) => {
@@ -151,7 +151,7 @@ impl<T> BoundedReceiver<T> {
                 Poll::Ready(Err(RecvError::Disconnected))
             }
             Err(TryRecvError::Empty) => {
-                let old = state.recv_waker.replace(waker);
+                let old = register_waker(&mut state.recv_waker, cx.waker());
                 drop(state);
                 drop(old);
                 Poll::Pending

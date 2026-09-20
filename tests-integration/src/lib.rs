@@ -24,8 +24,6 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
-use std::task::RawWaker;
-use std::task::RawWakerVTable;
 use std::task::Wake;
 use std::task::Waker;
 
@@ -122,34 +120,6 @@ pub fn waker_on_drop(callback: impl FnOnce() + Send + 'static) -> Waker {
     }
 
     Waker::from(Arc::new(OnDrop(Mutex::new(Some(Box::new(callback))))))
-}
-
-// RawWaker is needed only to exercise clone callbacks, which the safe Wake trait cannot override.
-pub fn waker_on_clone(callback: impl Fn() + Send + Sync + 'static) -> Waker {
-    struct OnClone(Box<dyn Fn() + Send + Sync>);
-
-    unsafe fn clone(data: *const ()) -> RawWaker {
-        let pointer = data.cast::<OnClone>();
-        // SAFETY: `Waker::clone` borrows the input waker, whose reference keeps the Arc alive while
-        // the callback runs. Taking the new reference last leaves the count unchanged if the
-        // callback panics; the returned waker owns that reference.
-        unsafe {
-            ((*pointer).0)();
-            Arc::increment_strong_count(pointer);
-        }
-        RawWaker::new(data, &VTABLE)
-    }
-
-    unsafe fn release(data: *const ()) {
-        // SAFETY: Consumes the one Arc reference owned by this waker.
-        drop(unsafe { Arc::from_raw(data.cast::<OnClone>()) });
-    }
-
-    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, release, |_| {}, release);
-    let pointer = Arc::into_raw(Arc::new(OnClone(Box::new(callback)))).cast();
-    // SAFETY: Each waker owns one Arc; its callback is Send + Sync and all vtable operations
-    // preserve that ownership. wake_by_ref borrows the reference without changing it.
-    unsafe { Waker::from_raw(RawWaker::new(pointer, &VTABLE)) }
 }
 
 pub fn assert_completes_without_deadlock(test: impl FnOnce() + Send + 'static) {

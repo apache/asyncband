@@ -43,9 +43,8 @@ pub use self::sender::Permit;
 /// Message storage is preallocated for `buffer` values. Queued messages and outstanding
 /// reservations together occupy at most `buffer` capacity units.
 ///
-/// Operations briefly acquire an internal mutex; no lock is held across an await point or while
-/// invoking waker callbacks or message destructors. The `try_*` methods do not wait for capacity
-/// or messages, but may wait to acquire this mutex.
+/// The `try_*` methods do not wait for capacity or messages, but may briefly block on an internal
+/// mutex.
 ///
 /// # Panics
 ///
@@ -72,7 +71,7 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
 }
 
 // While open, capacity belongs to available, a queued message, a Permit, or a granted waiter.
-// All transitions hold one mutex. Waker callbacks and message destruction run after unlocking.
+// All transitions hold one mutex. Wake callbacks and waker or message destruction run unlocked.
 struct State<T> {
     queue: VecDeque<T>,
     available: usize,

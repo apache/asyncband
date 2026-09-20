@@ -28,9 +28,8 @@ use super::queue::Shared;
 ///
 /// Sends are synchronous and values may be buffered until available memory is exhausted.
 ///
-/// Operations briefly acquire an internal mutex; no lock is held across an await point or while
-/// waking tasks, dropping wakers, or dropping messages. Sending and trying to receive may wait to
-/// acquire this mutex, but never wait for capacity or new messages.
+/// Sending and trying to receive never wait for capacity or new messages, but may briefly block
+/// on an internal mutex.
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     let shared = Arc::new(Shared::unbounded());
     (
@@ -119,8 +118,7 @@ impl<T> UnboundedReceiver<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `recv` does not consume a value. If this call was woken for a value that
-    /// is still queued, cancelling it wakes the next waiting receiver instead.
+    /// Dropping a pending `recv` does not consume a value or prevent other receivers from receiving it.
     pub async fn recv(&self) -> Result<T, RecvError> {
         self.shared.recv().await
     }
