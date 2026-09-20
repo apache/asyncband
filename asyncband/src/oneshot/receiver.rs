@@ -43,6 +43,10 @@ use super::deallocate_empty_channel;
 use super::drop_message_and_deallocate_channel;
 
 /// Receives a value from the associated [`Sender`].
+///
+/// Awaiting consumes the receiver. To continue receiving after another `select` branch completes,
+/// convert it with [`into_future`](Self::into_future) and borrow the resulting [`Recv`]. See the
+/// [module documentation](crate::oneshot#cancellation) for an example.
 pub struct Receiver<T> {
     channel_ptr: NonNull<Channel<T>>,
 }
@@ -192,6 +196,10 @@ impl<T> Drop for Receiver<T> {
 
 /// A future that completes when the message is sent from the associated [`Sender`], or the
 /// [`Sender`] is dropped before sending a message.
+///
+/// Created by [`Receiver::into_future`]. Dropping this future disconnects the receiving endpoint
+/// and discards any unread message. Selecting on `&mut Recv` keeps the endpoint alive when another
+/// branch completes first; the same future can then be awaited again.
 pub struct Recv<T> {
     channel_ptr: NonNull<Channel<T>>,
 }

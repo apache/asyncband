@@ -77,6 +77,39 @@
 //! let error = tx.send(42).unwrap_err();
 //! assert_eq!(error.into_inner(), 42);
 //! ```
+//!
+//! # Cancellation
+//!
+//! Awaiting a [`Receiver`] consumes it through [`IntoFuture`], producing a [`Recv`] future that
+//! owns the receiving endpoint. Dropping that future disconnects the channel and discards any
+//! unread message. Passing the receiver by value to `tokio::select!` therefore gives up receiving
+//! if another branch completes first.
+//!
+//! To keep receiving afterward, call [`into_future`](Receiver::into_future) once and select on
+//! `&mut` of the resulting future. Borrow the [`Recv`], not the [`Receiver`]: only `Recv`
+//! implements [`Future`].
+//!
+//! ```
+//! use std::future::IntoFuture;
+//!
+//! use asyncband::oneshot;
+//!
+//! # #[tokio::main]
+//! # async fn main() {
+//! let (tx, rx) = oneshot::channel();
+//! let mut receive = rx.into_future();
+//!
+//! tokio::select! {
+//!     biased;
+//!     result = &mut receive => panic!("message has not been sent yet: {result:?}"),
+//!     // Another operation finishes while the receive is pending.
+//!     _ = std::future::ready(()) => {}
+//! }
+//!
+//! tx.send(42).unwrap();
+//! assert_eq!(receive.await, Ok(42));
+//! # }
+//! ```
 
 mod receiver;
 mod sender;
