@@ -44,6 +44,10 @@ struct State<T> {
     senders: usize,
     receivers: usize,
     recv_waiters: WaitList<Waiter>,
+    // Count notifications until their receiver polls or cancels. Buffered values may be
+    // consumed by another receiver in the meantime; do not issue more notifications than
+    // there are values left to receive.
+    recv_notified: usize,
     send_waiters: WaitList<Waiter>,
 }
 
@@ -56,7 +60,16 @@ impl<T> State<T> {
     /// Queues a value and selects the receiver to wake.
     fn push(&mut self, value: T) -> Option<Waker> {
         self.values.push_back(value);
-        self.recv_waiters.notify_one()
+        self.notify_receiver()
+    }
+
+    fn notify_receiver(&mut self) -> Option<Waker> {
+        if self.recv_waiters.is_empty() || self.recv_notified >= self.values.len() {
+            return None;
+        }
+        let waker = self.recv_waiters.notify_one()?;
+        self.recv_notified += 1;
+        Some(waker)
     }
 
     /// Takes the next value and selects the sender to wake.
@@ -136,6 +149,7 @@ impl<T> Shared<T> {
                 senders: 1,
                 receivers: 1,
                 recv_waiters: WaitList::new(),
+                recv_notified: 0,
                 send_waiters: WaitList::new(),
             }),
         }
@@ -315,6 +329,11 @@ impl<T> Recv<'_, T> {
         if state.senders == 0 {
             // Buffered values remain readable after the waiter storage has been detached.
             self.waiter = None;
+        } else if self
+            .waiter
+            .is_some_and(|id| matches!(state.recv_waiters.waiter_mut(id), Waiter::Notified))
+        {
+            state.recv_notified -= 1;
         }
         let outcome = match state.pop() {
             Ok(popped) => Ok(popped),
@@ -355,8 +374,9 @@ impl<T> Drop for Recv<'_, T> {
             }
             let retired = state.recv_waiters.remove_waiter(id);
             // Hand an unconsumed notification to the next receiver while a value still waits.
-            let waker = if matches!(retired, Waiter::Notified) && !state.values.is_empty() {
-                state.recv_waiters.notify_one()
+            let waker = if matches!(retired, Waiter::Notified) {
+                state.recv_notified -= 1;
+                state.notify_receiver()
             } else {
                 None
             };

@@ -31,7 +31,10 @@ use super::Receiver;
 #[derive(Debug)]
 enum NotifiedReceiver {
     Receive,
+    ReceiveWithBacklog,
     Cancel,
+    TakeValueThenResendAndReceive,
+    TakeValueThenResendAndCancel,
     TakeValueThenCancel,
 }
 
@@ -41,7 +44,14 @@ fn receiver_notifications<S, R: Receiver<usize>>(
 ) {
     use NotifiedReceiver::*;
 
-    for action in [Receive, Cancel, TakeValueThenCancel] {
+    for action in [
+        Receive,
+        ReceiveWithBacklog,
+        Cancel,
+        TakeValueThenCancel,
+        TakeValueThenResendAndReceive,
+        TakeValueThenResendAndCancel,
+    ] {
         let (sender, receiver) = channel();
         let competing = receiver.clone();
         let mut first = Box::pin(receiver.recv());
@@ -55,12 +65,41 @@ fn receiver_notifications<S, R: Receiver<usize>>(
         assert_eq!(first_wakes.count(), 1);
         assert_eq!(second_wakes.count(), 0);
 
+        if matches!(action, ReceiveWithBacklog) {
+            send(&sender, 2);
+            // A real backlog should make both consumers runnable.
+            assert_eq!(second_wakes.count(), 1);
+        }
+        if matches!(
+            action,
+            TakeValueThenResendAndReceive | TakeValueThenResendAndCancel
+        ) {
+            assert_eq!(receiver.try_recv(), Ok(1));
+            send(&sender, 2);
+            // The first notification still covers this value after an active receiver barges.
+            assert_eq!(first_wakes.count(), 1);
+            assert_eq!(second_wakes.count(), 0);
+        }
+
         let expected = match action {
             Receive => {
                 assert_eq!(expect_ready(poll_with(first.as_mut(), &first_waker)), Ok(1));
                 assert!(poll_with(second.as_mut(), &second_waker).is_pending());
                 assert_eq!(second_wakes.count(), 0);
                 send(&sender, 2);
+                2
+            }
+            ReceiveWithBacklog => {
+                assert_eq!(expect_ready(poll_with(first.as_mut(), &first_waker)), Ok(1));
+                2
+            }
+            TakeValueThenResendAndReceive => {
+                assert_eq!(expect_ready(poll_with(first.as_mut(), &first_waker)), Ok(2));
+                send(&sender, 3);
+                3
+            }
+            TakeValueThenResendAndCancel => {
+                drop(first);
                 2
             }
             Cancel => {
