@@ -43,9 +43,8 @@ pub use self::sender::UnboundedSender;
 /// Storage is reclaimed incrementally as messages are received. A bounded amount of empty
 /// storage may be retained for reuse, independently of the channel's previous peak occupancy.
 ///
-/// Operations briefly acquire an internal mutex; no lock is held across an await point or while
-/// invoking waker callbacks or message destructors. Sending and trying to receive may wait to
-/// acquire this mutex, but never wait for capacity or new messages.
+/// Sending and trying to receive never wait for capacity or new messages, but may briefly block
+/// on an internal mutex.
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     let shared = Arc::new(Mutex::new(State {
         buffer: Buffer::new(),

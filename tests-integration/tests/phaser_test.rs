@@ -15,52 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
 use std::panic;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
-use std::task::Context;
 use std::task::Poll;
-use std::task::Wake;
 use std::task::Waker;
 
 use asyncband::blocking::FutureExt;
 use asyncband::phaser::Phaser;
-
-fn poll_once<F: Future>(future: std::pin::Pin<&mut F>) -> Poll<F::Output> {
-    future.poll(&mut Context::from_waker(Waker::noop()))
-}
-
-struct CountWake(AtomicUsize);
-
-impl Wake for CountWake {
-    fn wake(self: Arc<Self>) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-struct PanicWake;
-
-impl Wake for PanicWake {
-    fn wake(self: Arc<Self>) {
-        panic!("wake failed");
-    }
-}
-
-struct CloseOnDrop(Phaser);
-
-impl Wake for CloseOnDrop {
-    fn wake(self: Arc<Self>) {
-        self.0.close();
-    }
-}
-
-impl Drop for CloseOnDrop {
-    fn drop(&mut self) {
-        self.0.close();
-    }
-}
+use tests_integration::PanicWake;
+use tests_integration::WakeCounter;
+use tests_integration::poll_once;
+use tests_integration::poll_with;
+use tests_integration::waker_on_drop;
 
 #[test]
 fn batch_registration_joins_one_observed_phase() {
@@ -78,16 +44,11 @@ fn batch_registration_joins_one_observed_phase() {
     assert_eq!(participants.len(), 1);
     assert_eq!(phaser.phase(), observed);
 
-    let counter = Arc::new(CountWake(AtomicUsize::new(0)));
-    let waker = Waker::from(counter.clone());
+    let (waker, counter) = WakeCounter::new();
     let mut wait = Box::pin(first.wait());
-    assert!(
-        wait.as_mut()
-            .poll(&mut Context::from_waker(&waker))
-            .is_pending()
-    );
+    assert!(poll_with(wait.as_mut(), &waker).is_pending());
     drop(participants);
-    assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+    assert_eq!(counter.count(), 1);
     assert_eq!(poll_once(wait.as_mut()), Poll::Ready(Ok(phaser.phase())));
     assert_ne!(phaser.phase(), observed);
     assert_eq!(phaser.registered_parties(), 2);
@@ -342,20 +303,18 @@ fn registration_after_last_participant_drop_joins_the_advanced_phase() {
 fn observer_wait_is_cancel_safe_and_does_not_participate() {
     let phaser = Phaser::new();
     let phase = phaser.phase();
-    let counter = Arc::new(CountWake(AtomicUsize::new(0)));
-    let waker = Waker::from(Arc::clone(&counter));
-    let mut context = Context::from_waker(&waker);
+    let (waker, counter) = WakeCounter::new();
 
     {
         let mut wait = Box::pin(phaser.wait(phase));
-        assert_eq!(Future::poll(wait.as_mut(), &mut context), Poll::Pending);
+        assert_eq!(poll_with(wait.as_mut(), &waker), Poll::Pending);
         assert_eq!(phaser.registered_parties(), 0);
     }
 
     assert_eq!(phaser.registered_parties(), 0);
     let participant = phaser.register_one().unwrap();
     drop(participant);
-    assert_eq!(counter.0.load(Ordering::Relaxed), 0);
+    assert_eq!(counter.count(), 0);
 }
 
 #[test]
@@ -363,33 +322,26 @@ fn advancing_a_phase_wakes_every_registered_waiter_once() {
     let phaser = Phaser::new();
     let observed = phaser.phase();
     let participant = phaser.register_one().unwrap();
-    let first_counter = Arc::new(CountWake(AtomicUsize::new(0)));
-    let second_counter = Arc::new(CountWake(AtomicUsize::new(0)));
-    let first_waker = Waker::from(Arc::clone(&first_counter));
-    let second_waker = Waker::from(Arc::clone(&second_counter));
-    let mut first_context = Context::from_waker(&first_waker);
-    let mut second_context = Context::from_waker(&second_waker);
+    let (first_waker, first_counter) = WakeCounter::new();
+    let (second_waker, second_counter) = WakeCounter::new();
     let mut first_wait = Box::pin(phaser.wait(observed));
     let mut second_wait = Box::pin(phaser.wait(observed));
 
+    assert_eq!(poll_with(first_wait.as_mut(), &first_waker), Poll::Pending);
     assert_eq!(
-        Future::poll(first_wait.as_mut(), &mut first_context),
-        Poll::Pending
-    );
-    assert_eq!(
-        Future::poll(second_wait.as_mut(), &mut second_context),
+        poll_with(second_wait.as_mut(), &second_waker),
         Poll::Pending
     );
 
     drop(participant);
-    assert_eq!(first_counter.0.load(Ordering::Relaxed), 1);
-    assert_eq!(second_counter.0.load(Ordering::Relaxed), 1);
+    assert_eq!(first_counter.count(), 1);
+    assert_eq!(second_counter.count(), 1);
     assert!(matches!(
-        Future::poll(first_wait.as_mut(), &mut first_context),
+        poll_with(first_wait.as_mut(), &first_waker),
         Poll::Ready(_)
     ));
     assert!(matches!(
-        Future::poll(second_wait.as_mut(), &mut second_context),
+        poll_with(second_wait.as_mut(), &second_waker),
         Poll::Ready(_)
     ));
 }
@@ -398,23 +350,17 @@ fn advancing_a_phase_wakes_every_registered_waiter_once() {
 fn repolling_updates_the_task_that_will_be_notified() {
     let phaser = Phaser::new();
     let participant = phaser.register_one().unwrap();
-    let first = Arc::new(CountWake(AtomicUsize::new(0)));
-    let second = Arc::new(CountWake(AtomicUsize::new(0)));
-    let first_waker = Waker::from(first.clone());
-    let second_waker = Waker::from(second.clone());
+    let (first_waker, first) = WakeCounter::new();
+    let (second_waker, second) = WakeCounter::new();
     let mut wait = Box::pin(phaser.wait(phaser.phase()));
 
     for waker in [&first_waker, &first_waker, &second_waker, &second_waker] {
-        assert!(
-            wait.as_mut()
-                .poll(&mut Context::from_waker(waker))
-                .is_pending()
-        );
+        assert!(poll_with(wait.as_mut(), waker).is_pending());
     }
     drop(participant);
 
-    assert_eq!(first.0.load(Ordering::Relaxed), 0);
-    assert_eq!(second.0.load(Ordering::Relaxed), 1);
+    assert_eq!(first.count(), 0);
+    assert_eq!(second.count(), 1);
     assert_eq!(poll_once(wait.as_mut()), Poll::Ready(Ok(phaser.phase())));
 }
 
@@ -423,35 +369,28 @@ fn cancelling_a_woken_waiter_does_not_unregister_a_next_phase_waiter() {
     let phaser = Phaser::new();
     let phase0 = phaser.phase();
     let participant = phaser.register_one().unwrap();
-    let stale_counter = Arc::new(CountWake(AtomicUsize::new(0)));
-    let stale_waker = Waker::from(Arc::clone(&stale_counter));
-    let mut stale_context = Context::from_waker(&stale_waker);
+    let (stale_waker, stale_counter) = WakeCounter::new();
     let mut stale_wait = Box::pin(phaser.wait(phase0));
 
-    assert_eq!(
-        Future::poll(stale_wait.as_mut(), &mut stale_context),
-        Poll::Pending
-    );
+    assert_eq!(poll_with(stale_wait.as_mut(), &stale_waker), Poll::Pending);
     drop(participant);
     let phase1 = phaser.phase();
     assert_ne!(phase1, phase0);
-    assert_eq!(stale_counter.0.load(Ordering::Relaxed), 1);
+    assert_eq!(stale_counter.count(), 1);
 
     let participant = phaser.register_one().unwrap();
-    let current_counter = Arc::new(CountWake(AtomicUsize::new(0)));
-    let current_waker = Waker::from(Arc::clone(&current_counter));
-    let mut current_context = Context::from_waker(&current_waker);
+    let (current_waker, current_counter) = WakeCounter::new();
     let mut current_wait = Box::pin(phaser.wait(phase1));
     assert_eq!(
-        Future::poll(current_wait.as_mut(), &mut current_context),
+        poll_with(current_wait.as_mut(), &current_waker),
         Poll::Pending
     );
 
     drop(stale_wait);
     drop(participant);
-    assert_eq!(current_counter.0.load(Ordering::Relaxed), 1);
+    assert_eq!(current_counter.count(), 1);
     assert!(matches!(
-        Future::poll(current_wait.as_mut(), &mut current_context),
+        poll_with(current_wait.as_mut(), &current_waker),
         Poll::Ready(_)
     ));
 }
@@ -463,20 +402,15 @@ fn panicking_waker_does_not_lose_a_pending_phase() {
     let mut first = phaser.register_one().unwrap();
     let mut second = phaser.register_one().unwrap();
     let panic_waker = Waker::from(Arc::new(PanicWake));
-    let mut panic_context = Context::from_waker(&panic_waker);
     let mut observer = Box::pin(phaser.wait(phase0));
 
-    assert_eq!(
-        Future::poll(observer.as_mut(), &mut panic_context),
-        Poll::Pending
-    );
+    assert_eq!(poll_with(observer.as_mut(), &panic_waker), Poll::Pending);
     assert_eq!(first.arrive().unwrap(), phase0);
 
-    let polling_waker = Waker::from(Arc::new(CountWake(AtomicUsize::new(0))));
-    let mut polling_context = Context::from_waker(&polling_waker);
+    let (polling_waker, _) = WakeCounter::new();
     let mut wait = Box::pin(second.wait());
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        Future::poll(wait.as_mut(), &mut polling_context)
+        poll_with(wait.as_mut(), &polling_waker)
     }));
 
     assert!(result.is_err());
@@ -580,18 +514,16 @@ fn closing_wakes_all_waiters_once_and_rejects_new_obligations() {
     let mut first = phaser.register_one().unwrap();
     let second = phaser.register_one().unwrap();
     let observed = first.arrive().unwrap();
-    let counter = Arc::new(CountWake(AtomicUsize::new(0)));
-    let waker = Waker::from(counter.clone());
-    let mut context = Context::from_waker(&waker);
+    let (waker, counter) = WakeCounter::new();
     let mut observer = Box::pin(phaser.wait(observed));
     let mut wait = Box::pin(first.wait());
-    assert!(observer.as_mut().poll(&mut context).is_pending());
-    assert!(wait.as_mut().poll(&mut context).is_pending());
+    assert!(poll_with(observer.as_mut(), &waker).is_pending());
+    assert!(poll_with(wait.as_mut(), &waker).is_pending());
 
     phaser.clone().close();
     phaser.close();
     assert!(phaser.is_closed());
-    assert_eq!(counter.0.load(Ordering::Relaxed), 2);
+    assert_eq!(counter.count(), 2);
     assert!(matches!(poll_once(observer.as_mut()), Poll::Ready(Err(_))));
     assert!(matches!(poll_once(wait.as_mut()), Poll::Ready(Err(_))));
     drop(wait);
@@ -637,26 +569,15 @@ fn close_survives_a_panicking_waker_and_notifies_other_waiters() {
     let phaser = Phaser::new();
     let observed = phaser.phase();
     let panic_waker = Waker::from(Arc::new(PanicWake));
-    let counter = Arc::new(CountWake(AtomicUsize::new(0)));
-    let count_waker = Waker::from(counter.clone());
+    let (count_waker, counter) = WakeCounter::new();
     let mut first = Box::pin(phaser.wait(observed));
     let mut second = Box::pin(phaser.wait(observed));
-    assert!(
-        first
-            .as_mut()
-            .poll(&mut Context::from_waker(&panic_waker))
-            .is_pending()
-    );
-    assert!(
-        second
-            .as_mut()
-            .poll(&mut Context::from_waker(&count_waker))
-            .is_pending()
-    );
+    assert!(poll_with(first.as_mut(), &panic_waker).is_pending());
+    assert!(poll_with(second.as_mut(), &count_waker).is_pending());
 
     assert!(panic::catch_unwind(|| phaser.close()).is_err());
     assert!(phaser.is_closed());
-    assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+    assert_eq!(counter.count(), 1);
     assert!(matches!(poll_once(first.as_mut()), Poll::Ready(Err(_))));
     assert!(matches!(poll_once(second.as_mut()), Poll::Ready(Err(_))));
 }
@@ -664,38 +585,31 @@ fn close_survives_a_panicking_waker_and_notifies_other_waiters() {
 #[test]
 fn replacing_a_waiter_waker_can_close_the_phaser_from_its_destructor() {
     let phaser = Phaser::new();
-    let waker = Waker::from(Arc::new(CloseOnDrop(phaser.clone())));
+    let waker = waker_on_drop({
+        let phaser = phaser.clone();
+        move || phaser.close()
+    });
     let mut wait = Box::pin(phaser.wait(phaser.phase()));
-    assert!(
-        wait.as_mut()
-            .poll(&mut Context::from_waker(&waker))
-            .is_pending()
-    );
+    assert!(poll_with(wait.as_mut(), &waker).is_pending());
     drop(waker);
     assert!(!phaser.is_closed());
 
-    let counter = Arc::new(CountWake(AtomicUsize::new(0)));
-    let replacement = Waker::from(counter.clone());
-    assert!(
-        wait.as_mut()
-            .poll(&mut Context::from_waker(&replacement))
-            .is_pending()
-    );
+    let (replacement, counter) = WakeCounter::new();
+    assert!(poll_with(wait.as_mut(), &replacement).is_pending());
     assert!(phaser.is_closed());
-    assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+    assert_eq!(counter.count(), 1);
     assert!(matches!(poll_once(wait.as_mut()), Poll::Ready(Err(_))));
 }
 
 #[test]
 fn cancelling_a_waiter_can_close_the_phaser_from_its_waker_destructor() {
     let phaser = Phaser::new();
-    let waker = Waker::from(Arc::new(CloseOnDrop(phaser.clone())));
+    let waker = waker_on_drop({
+        let phaser = phaser.clone();
+        move || phaser.close()
+    });
     let mut wait = Box::pin(phaser.wait(phaser.phase()));
-    assert!(
-        wait.as_mut()
-            .poll(&mut Context::from_waker(&waker))
-            .is_pending()
-    );
+    assert!(poll_with(wait.as_mut(), &waker).is_pending());
     drop(waker);
     assert!(!phaser.is_closed());
 

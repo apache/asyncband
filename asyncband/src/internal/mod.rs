@@ -19,6 +19,22 @@ use std::panic;
 use std::panic::AssertUnwindSafe;
 use std::task::Waker;
 
+/// Retains the current task waker, returning any replaced registration for unlocked destruction.
+#[inline]
+#[must_use = "drop the replaced waker after releasing the state lock"]
+// Some feature subsets have no primitive that registers a single waker slot.
+#[allow(dead_code)]
+pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> {
+    if slot
+        .as_ref()
+        .is_some_and(|current| current.will_wake(waker))
+    {
+        None
+    } else {
+        slot.replace(waker.clone())
+    }
+}
+
 /// Wakes every waker while preserving the first panic.
 ///
 /// If a wake callback panics, the remaining callbacks are still attempted during unwinding. Any
@@ -99,14 +115,13 @@ pub(crate) mod mutex;
 
 #[cfg(any(
     feature = "broadcast",
-    feature = "mpmc",
     feature = "mutex",
     feature = "rwlock",
     feature = "semaphore",
 ))]
-// Broadcast and MPMC use waiter notifications; mutexes and rwlocks use acquire/release operations;
-// the public semaphore also exposes permit accounting. Single-primitive builds leave part of this
-// API unused.
+// Broadcast uses waiter notifications; mutexes and rwlocks use acquire/release operations; the
+// public semaphore also exposes permit accounting. Single-primitive builds leave part of this API
+// unused.
 #[allow(dead_code)]
 pub(crate) mod semaphore;
 
@@ -130,8 +145,6 @@ pub(crate) mod waitlist;
     feature = "event",
     feature = "completion",
     feature = "latch",
-    feature = "mpmc",
-    feature = "mpsc",
     feature = "mutex",
     feature = "once",
     feature = "phaser",

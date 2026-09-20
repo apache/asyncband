@@ -15,9 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::pin::pin;
+
+use asyncband::mpmc;
 use divan::Bencher;
+use divan::black_box;
 use divan::counter::ItemsCount;
 
+use super::FAST_SAMPLE_SIZE;
 use crate::mpmc_support::adapters::Asyncband;
 use crate::mpmc_support::support::BATCH_MESSAGES;
 use crate::mpmc_support::support::BOUNDED_CAPACITY;
@@ -27,6 +32,10 @@ use crate::mpmc_support::support::TaskBatch;
 use crate::mpmc_support::support::ThreadBatch;
 use crate::mpmc_support::support::Topology;
 use crate::mpmc_support::support::runtime;
+use crate::support::bench_context;
+use crate::support::poll_pending;
+use crate::support::poll_pinned_ready;
+use crate::support::poll_ready;
 
 #[divan::bench(
     args = TOPOLOGIES,
@@ -52,4 +61,36 @@ fn tokio_tasks<const WORKERS: usize>(bencher: Bencher, topology: Topology) {
     bencher
         .with_inputs(|| TaskBatch::new::<Bounded<Asyncband>>(&runtime, topology))
         .bench_local_refs(|batch| runtime.block_on(batch.run()));
+}
+
+#[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
+fn try_send_then_try_recv(bencher: Bencher) {
+    let (sender, receiver) = mpmc::bounded(1);
+    bencher.bench_local(|| {
+        sender.try_send(black_box(1usize)).unwrap();
+        black_box(receiver.try_recv().unwrap())
+    });
+}
+
+#[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
+fn send_then_recv(bencher: Bencher) {
+    let mut context = bench_context();
+    let (sender, receiver) = mpmc::bounded(1);
+    bencher.bench_local(|| {
+        poll_ready(sender.send(black_box(1usize)), &mut context).unwrap();
+        black_box(poll_ready(receiver.recv(), &mut context).unwrap())
+    });
+}
+
+#[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
+fn wake_blocked_sender(bencher: Bencher) {
+    let mut context = bench_context();
+    let (sender, receiver) = mpmc::bounded(1);
+    sender.try_send(0usize).unwrap();
+    bencher.bench_local(|| {
+        let mut send = pin!(sender.send(black_box(1)));
+        poll_pending(send.as_mut(), &mut context);
+        black_box(receiver.try_recv().unwrap());
+        poll_pinned_ready(send.as_mut(), &mut context).unwrap();
+    });
 }

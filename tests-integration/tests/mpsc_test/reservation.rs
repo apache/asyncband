@@ -104,10 +104,13 @@ fn closing_after_a_grant_returns_the_unsent_message() {
     tx.try_send(String::from("queued")).unwrap();
     let mut send = Box::pin(tx.send(String::from("unsent")));
     let mut reservation = Box::pin(tx.reserve());
+    let mut cancelled = Box::pin(tx.reserve());
     assert!(poll_once(send.as_mut()).is_pending());
     assert!(poll_once(reservation.as_mut()).is_pending());
+    assert!(poll_once(cancelled.as_mut()).is_pending());
     assert_eq!(rx.try_recv().unwrap(), "queued");
     drop(rx);
+    drop(cancelled);
     let error = expect_ready(poll_once(send.as_mut())).unwrap_err();
     assert_eq!(error.into_inner(), "unsent");
     assert!(expect_ready(poll_once(reservation.as_mut())).is_err());
