@@ -47,8 +47,8 @@ use super::drop_message_and_deallocate_channel;
 /// Awaiting converts this receiver into a [`Recv`] future. Dropping either the receiver or its
 /// future disconnects the channel and discards any unread message.
 ///
-/// To preserve a pending receive across `tokio::select!`, call [`into_future`](Self::into_future)
-/// before the select and borrow the resulting future as `&mut Recv`. The receiver itself does not
+/// To keep a pending receive alive when another branch wins, call [`Receiver::into_future`]
+/// before selecting and borrow the resulting future as `&mut Recv`. The receiver itself does not
 /// implement [`Future`].
 pub struct Receiver<T> {
     channel_ptr: NonNull<Channel<T>>,

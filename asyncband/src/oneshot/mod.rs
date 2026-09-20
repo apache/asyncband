@@ -84,9 +84,8 @@
 //! Dropping either the receiver or its future disconnects the channel and discards any unread
 //! message.
 //!
-//! To preserve a pending receive across `tokio::select!`, call [`Receiver::into_future`] before
-//! the select and borrow the resulting future as `&mut Recv`. Passing either [`Receiver`] or
-//! [`Recv`] by value instead gives up receiving when another branch wins.
+//! To keep a pending receive alive when another branch wins, call [`Receiver::into_future`]
+//! before selecting and borrow the resulting future as `&mut Recv`.
 
 mod receiver;
 mod sender;
