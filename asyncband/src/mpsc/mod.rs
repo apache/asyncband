@@ -43,7 +43,10 @@ pub use self::unbounded::unbounded;
 #[inline]
 #[must_use = "drop the replaced waker after releasing the channel lock"]
 fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> {
-    if slot.as_ref().is_some_and(|current| current.will_wake(waker)) {
+    if slot
+        .as_ref()
+        .is_some_and(|current| current.will_wake(waker))
+    {
         None
     } else {
         slot.replace(waker.clone())

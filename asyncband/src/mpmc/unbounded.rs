@@ -118,7 +118,8 @@ impl<T> UnboundedReceiver<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `recv` does not consume a value or prevent other receivers from receiving it.
+    /// Dropping a pending `recv` does not consume a value or prevent other receivers from receiving
+    /// it.
     pub async fn recv(&self) -> Result<T, RecvError> {
         self.shared.recv().await
     }

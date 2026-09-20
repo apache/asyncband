@@ -83,7 +83,8 @@ impl<T> BoundedSender<T> {
     /// # Cancel safety
     ///
     /// Dropping a pending `send` drops `value` without sending it or retaining capacity. Use
-    /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is unavailable.
+    /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is
+    /// unavailable.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
         self.shared.send(value).await
     }
@@ -134,7 +135,8 @@ impl<T> BoundedReceiver<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `recv` does not consume a value or prevent other receivers from receiving it.
+    /// Dropping a pending `recv` does not consume a value or prevent other receivers from receiving
+    /// it.
     pub async fn recv(&self) -> Result<T, RecvError> {
         self.shared.recv().await
     }

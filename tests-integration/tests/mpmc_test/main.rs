@@ -33,17 +33,26 @@ mod notification;
 /// Either receiver flavor, so one case can cover both queues.
 trait Receiver<T>: Clone {
     fn recv(&self) -> impl Future<Output = Result<T, RecvError>> + Send;
+    fn try_recv(&self) -> Result<T, TryRecvError>;
 }
 
 impl<T: Send> Receiver<T> for mpmc::BoundedReceiver<T> {
     fn recv(&self) -> impl Future<Output = Result<T, RecvError>> + Send {
         self.recv()
     }
+
+    fn try_recv(&self) -> Result<T, TryRecvError> {
+        self.try_recv()
+    }
 }
 
 impl<T: Send> Receiver<T> for mpmc::UnboundedReceiver<T> {
     fn recv(&self) -> impl Future<Output = Result<T, RecvError>> + Send {
         self.recv()
+    }
+
+    fn try_recv(&self) -> Result<T, TryRecvError> {
+        self.try_recv()
     }
 }
 

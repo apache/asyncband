@@ -28,119 +28,74 @@ use tests_integration::poll_with;
 
 use super::Receiver;
 
-fn send_wakes_only_the_first_receiver(receiver: impl Receiver<usize>, send: impl FnOnce()) {
-    let competing = receiver.clone();
-    let mut first = Box::pin(receiver.recv());
-    let mut second = Box::pin(competing.recv());
-    let (first_waker, first_wakes) = WakeCounter::new();
-    let (second_waker, second_wakes) = WakeCounter::new();
-
-    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
-    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
-    send();
-
-    assert_eq!(first_wakes.count(), 1);
-    assert_eq!(second_wakes.count(), 0);
-    assert_eq!(expect_ready(poll_with(first.as_mut(), &first_waker)), Ok(1));
-    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
-    assert_eq!(second_wakes.count(), 0);
+#[derive(Debug)]
+enum NotifiedReceiver {
+    Receive,
+    Cancel,
+    TakeValueThenCancel,
 }
 
-#[test]
-fn bounded_send_wakes_only_the_first_receiver() {
-    let (sender, receiver) = mpmc::bounded(2);
-    send_wakes_only_the_first_receiver(receiver, || sender.try_send(1).unwrap());
-}
-
-#[test]
-fn unbounded_send_wakes_only_the_first_receiver() {
-    let (sender, receiver) = mpmc::unbounded();
-    send_wakes_only_the_first_receiver(receiver, || sender.send(1).unwrap());
-}
-
-fn cancelled_notified_receiver_wakes_next_receiver(
-    receiver: impl Receiver<usize>,
-    send: impl FnOnce(),
+fn receiver_notifications<S, R: Receiver<usize>>(
+    channel: impl Fn() -> (S, R),
+    send: impl Fn(&S, usize),
 ) {
-    let competing = receiver.clone();
-    let mut cancelled = Box::pin(receiver.recv());
-    let mut waiting = Box::pin(competing.recv());
-    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
-    let (waiting_waker, waiting_wakes) = WakeCounter::new();
+    use NotifiedReceiver::*;
 
-    assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
-    assert!(poll_with(waiting.as_mut(), &waiting_waker).is_pending());
-    send();
-    assert_eq!(cancelled_wakes.count(), 1);
-    assert_eq!(waiting_wakes.count(), 0);
-    drop(cancelled);
+    for action in [Receive, Cancel, TakeValueThenCancel] {
+        let (sender, receiver) = channel();
+        let competing = receiver.clone();
+        let mut first = Box::pin(receiver.recv());
+        let mut second = Box::pin(competing.recv());
+        let (first_waker, first_wakes) = WakeCounter::new();
+        let (second_waker, second_wakes) = WakeCounter::new();
 
-    assert_eq!(waiting_wakes.count(), 1);
-    assert_eq!(
-        expect_ready(poll_with(waiting.as_mut(), &waiting_waker)),
-        Ok(1)
+        assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+        assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+        send(&sender, 1);
+        assert_eq!(first_wakes.count(), 1);
+        assert_eq!(second_wakes.count(), 0);
+
+        let expected = match action {
+            Receive => {
+                assert_eq!(expect_ready(poll_with(first.as_mut(), &first_waker)), Ok(1));
+                assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+                assert_eq!(second_wakes.count(), 0);
+                send(&sender, 2);
+                2
+            }
+            Cancel => {
+                drop(first);
+                1
+            }
+            TakeValueThenCancel => {
+                assert_eq!(receiver.try_recv(), Ok(1));
+                drop(first);
+                assert_eq!(second_wakes.count(), 0);
+                // Cancellation must leave the next send able to notify this waiter.
+                send(&sender, 2);
+                2
+            }
+        };
+        assert_eq!(second_wakes.count(), 1, "{action:?}");
+        assert_eq!(
+            expect_ready(poll_with(second.as_mut(), &second_waker)),
+            Ok(expected),
+            "{action:?}"
+        );
+    }
+}
+
+#[test]
+fn bounded_receiver_notification_is_consumed_or_handed_off() {
+    receiver_notifications(
+        || mpmc::bounded(2),
+        |sender, value| sender.try_send(value).unwrap(),
     );
 }
 
 #[test]
-fn bounded_cancelled_notified_receiver_wakes_next_receiver() {
-    let (sender, receiver) = mpmc::bounded(1);
-    cancelled_notified_receiver_wakes_next_receiver(receiver, || sender.try_send(1).unwrap());
-}
-
-#[test]
-fn unbounded_cancelled_notified_receiver_wakes_next_receiver() {
-    let (sender, receiver) = mpmc::unbounded();
-    cancelled_notified_receiver_wakes_next_receiver(receiver, || sender.send(1).unwrap());
-}
-
-fn cancelling_a_receiver_after_its_value_is_taken_does_not_wake_next(
-    receiver: impl Receiver<usize>,
-    send: impl Fn(usize),
-    take_value: impl FnOnce() -> Result<usize, TryRecvError>,
-) {
-    let competing = receiver.clone();
-    let mut cancelled = Box::pin(receiver.recv());
-    let mut waiting = Box::pin(competing.recv());
-    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
-    let (waiting_waker, waiting_wakes) = WakeCounter::new();
-
-    assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
-    assert!(poll_with(waiting.as_mut(), &waiting_waker).is_pending());
-    send(1);
-    assert_eq!(cancelled_wakes.count(), 1);
-    assert_eq!(waiting_wakes.count(), 0);
-    assert_eq!(take_value(), Ok(1));
-    drop(cancelled);
-    assert_eq!(waiting_wakes.count(), 0);
-
-    // The next value must still notify the waiter whose predecessor was cancelled.
-    send(2);
-    assert_eq!(waiting_wakes.count(), 1);
-    assert_eq!(
-        expect_ready(poll_with(waiting.as_mut(), &waiting_waker)),
-        Ok(2)
-    );
-}
-
-#[test]
-fn bounded_cancelling_a_receiver_after_its_value_is_taken_does_not_wake_next() {
-    let (sender, receiver) = mpmc::bounded(1);
-    cancelling_a_receiver_after_its_value_is_taken_does_not_wake_next(
-        receiver.clone(),
-        |value| sender.try_send(value).unwrap(),
-        || receiver.try_recv(),
-    );
-}
-
-#[test]
-fn unbounded_cancelling_a_receiver_after_its_value_is_taken_does_not_wake_next() {
-    let (sender, receiver) = mpmc::unbounded();
-    cancelling_a_receiver_after_its_value_is_taken_does_not_wake_next(
-        receiver.clone(),
-        |value| sender.send(value).unwrap(),
-        || receiver.try_recv(),
-    );
+fn unbounded_receiver_notification_is_consumed_or_handed_off() {
+    receiver_notifications(mpmc::unbounded, |sender, value| sender.send(value).unwrap());
 }
 
 #[test]
@@ -286,10 +241,7 @@ fn last_sender_wakes_every_pending_receiver() {
     assert_eq!(second_wakes.count(), 1);
     assert_eq!(cancelled_wakes.count(), 1);
     drop(cancelled);
-    assert_eq!(
-        expect_ready(poll_with(first.as_mut(), &first_waker)),
-        Ok(1)
-    );
+    assert_eq!(expect_ready(poll_with(first.as_mut(), &first_waker)), Ok(1));
     assert_eq!(
         expect_ready(poll_with(second.as_mut(), &second_waker)),
         Err(RecvError::Disconnected)
