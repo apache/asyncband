@@ -202,7 +202,7 @@ impl Semaphore {
                 }
 
                 let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
-                while !batch.is_full() {
+                while !batch.will_spill() {
                     match waiters.unlink_first_waiter(|node| {
                         if node.permits <= rem {
                             rem -= node.permits;
