@@ -62,6 +62,7 @@
 //! | Coordination               | [`Semaphore`](semaphore::Semaphore)           | `semaphore`    | Limit concurrent work by acquiring permits.                                                                   |
 //! |                            | [`Barrier`](barrier::Barrier)                 | `barrier`      | Synchronize a fixed number of participants at a reusable rendezvous.                                          |
 //! |                            | [`ManualResetEvent`](event::ManualResetEvent) | `event`        | Signal current and future waits until explicitly reset.                                                       |
+//! |                            | [`AutoResetEvent`](event::AutoResetEvent)     | `event`        | Retain one signal and release one waiter per consumed signal.                                                 |
 //! |                            | [`Latch`](latch::Latch)                       | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                            |
 //! |                            | [`Phaser`](phaser::Phaser)                    | `phaser`       | Coordinate repeated phases with a dynamic participant set.                                                    |
 //! |                            | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Dynamically register participants and wait until all have completed.                                          |

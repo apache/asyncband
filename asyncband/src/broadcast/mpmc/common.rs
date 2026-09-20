@@ -94,6 +94,17 @@ enum Retention {
     Fixed,
 }
 
+/// A retained message together with the number of receiver cursors positioned at its version.
+///
+/// While a cursor sits on a version the message stays readable, so once the count reaches zero the
+/// head can advance past the slot. Tracking the count per slot is what lets reclaim release the
+/// invisible prefix directly instead of scanning every subscription for the slowest cursor.
+struct Slot<T> {
+    msg: Arc<T>,
+    /// The number of receivers whose next read is this message.
+    cursors: usize,
+}
+
 /// The committed backlog: every message whose version falls in `[head, tail)`, plus one cursor for
 /// each active subscription.
 ///
@@ -102,17 +113,20 @@ enum Retention {
 /// is placed in `buffer` in the same critical section, so a later publication can never become
 /// visible ahead of an earlier one.
 pub struct Backlog<T> {
-    /// Messages whose versions are in the range `[head, tail)`.
+    /// Messages whose versions are in the range `[head, tail)`, each with its cursor count.
     ///
     /// Each message is held behind an `Arc` so the receive path can move the payload out of the
     /// critical section. Cloning the `Arc` under the lock keeps `T::clone` — and, for reclaimed
     /// messages, `T::drop` — outside it, which matters because both are arbitrary user code that
     /// may call back into this channel.
-    buffer: VecDeque<Arc<T>>,
+    buffer: VecDeque<Slot<T>>,
     /// The version of the first message in `buffer`.
     head: u64,
-    /// The number of active receivers whose cursor equals `head`.
-    head_receivers: usize,
+    /// The number of receivers whose cursor equals `tail`.
+    ///
+    /// Caught-up cursors have no buffered slot to count against, so they are tallied here. Every
+    /// cursor is counted exactly once: either in one slot's `cursors` or in `at_tail`.
+    at_tail: usize,
     /// The next message version to assign.
     tail: u64,
     /// Cursor for each active receiver.
@@ -131,11 +145,11 @@ impl<T> Backlog<T> {
         Self::new(VecDeque::with_capacity(capacity), Retention::Fixed)
     }
 
-    fn new(buffer: VecDeque<Arc<T>>, retention: Retention) -> Self {
+    fn new(buffer: VecDeque<Slot<T>>, retention: Retention) -> Self {
         Self {
             buffer,
             head: 0,
-            head_receivers: 0,
+            at_tail: 0,
             tail: 0,
             receivers: Arena::new(),
             retention,
@@ -187,7 +201,7 @@ impl<T> Backlog<T> {
     pub fn publish_discarded(&mut self) {
         debug_assert!(!self.has_receivers());
         debug_assert!(self.buffer.is_empty());
-        debug_assert_eq!(self.head_receivers, 0);
+        debug_assert_eq!(self.at_tail, 0);
         self.advance_tail();
         self.head = self.tail;
     }
@@ -222,50 +236,41 @@ impl<T> Backlog<T> {
     pub fn publish_retained(&mut self, msg: Arc<T>) {
         debug_assert!(self.has_receivers());
         self.advance_tail();
-        self.buffer.push_back(msg);
+        // Every cursor that was caught up now has this message as its next read.
+        let cursors = mem::take(&mut self.at_tail);
+        self.buffer.push_back(Slot { msg, cursors });
         if let Retention::Elastic { peak_len } = &mut self.retention {
             *peak_len = (*peak_len).max(self.buffer.len());
         }
-    }
-
-    fn insert_receiver(&mut self, head: u64) -> SlotId {
-        if head == self.head {
-            self.head_receivers += 1;
-        }
-
-        self.receivers.insert(head)
     }
 
     /// Registers a new subscription at the committed tail.
     ///
     /// A new cursor never lowers `retained()`, so this can never release capacity.
     pub fn subscribe(&mut self) -> SlotId {
-        let head = self.tail;
-        self.insert_receiver(head)
+        self.at_tail += 1;
+        self.receivers.insert(self.tail)
     }
 
     pub fn remove_receiver(&mut self, key: SlotId) -> Reclaimed<T> {
-        let head = self.receivers.remove(key);
-
-        if head == self.head {
-            self.release_head_receiver()
-        } else {
-            Reclaimed::empty()
+        let cursor = self.receivers.remove(key);
+        if cursor == self.tail {
+            self.at_tail -= 1;
+            return Reclaimed::empty();
         }
-    }
 
-    fn release_head_receiver(&mut self) -> Reclaimed<T> {
-        self.head_receivers -= 1;
-
-        if self.head_receivers == 0 {
-            self.reclaim_consumed()
+        let offset = (cursor - self.head) as usize;
+        let slot = &mut self.buffer[offset];
+        slot.cursors -= 1;
+        if offset == 0 && slot.cursors == 0 {
+            self.reclaim_vacated()
         } else {
             Reclaimed::empty()
         }
     }
 
     pub fn receive(&mut self, key: SlotId) -> Option<Received<T>> {
-        let head = {
+        let version = {
             let cursor = self
                 .receivers
                 .get_mut(key)
@@ -273,22 +278,32 @@ impl<T> Backlog<T> {
             if *cursor >= self.tail {
                 return None;
             }
-            let head = *cursor;
+            let version = *cursor;
             *cursor += 1;
-            head
+            version
         };
 
-        debug_assert!(head >= self.head);
-        let offset = (head - self.head) as usize;
-        let msg = self.buffer[offset].clone();
-        let reclaimed = if head == self.head {
-            self.release_head_receiver()
+        debug_assert!(version >= self.head);
+        let offset = (version - self.head) as usize;
+        // Count the cursor at its next version before it leaves this one, so a reclaim triggered
+        // by leaving `head` stops at the message this receiver reads next.
+        if version + 1 == self.tail {
+            self.at_tail += 1;
+        } else {
+            self.buffer[offset + 1].cursors += 1;
+        }
+
+        let slot = &mut self.buffer[offset];
+        let msg = slot.msg.clone();
+        slot.cursors -= 1;
+        let reclaimed = if offset == 0 && slot.cursors == 0 {
+            self.reclaim_vacated()
         } else {
             Reclaimed::empty()
         };
         // A reclaim triggered by this receive always begins with this receiver's own message: the
-        // reclaim path runs only for a cursor sitting at `head`, so the first slot drained is
-        // `msg`. `take_msg` relies on this to recognize that it owns the payload.
+        // reclaim path runs only for a cursor leaving `head`, so the first slot drained is `msg`.
+        // `take_msg` relies on this to recognize that it owns the payload.
         debug_assert!(
             reclaimed
                 .first()
@@ -297,47 +312,46 @@ impl<T> Backlog<T> {
         Some((msg, reclaimed))
     }
 
-    /// Advances `head` to the slowest active cursor and hands the released prefix to the caller.
+    /// Releases the prefix no cursor can still read and hands it to the caller.
+    ///
+    /// The head slot's cursor count has just reached zero, so every message up to the next counted
+    /// slot is invisible: each cursor is counted in exactly one place, and none of those places is
+    /// a slot being popped. Popping the zero-count prefix replaces the old scan over every
+    /// subscription for the slowest cursor, so advancing the head costs the messages released
+    /// instead of the receivers subscribed.
+    ///
+    /// A receive releases exactly one message: its cursor is counted at the next version before
+    /// it leaves `head`, so the zero-count prefix ends there. Only removing a lagging subscription
+    /// can release more.
     ///
     /// `buffer` shrinks here and grows only in [`Backlog::publish`], so this is the one place
     /// `retained()` can fall. A bounded channel therefore accounts for released capacity at
     /// exactly the two call sites that reach this: [`Backlog::receive`] and
     /// [`Backlog::remove_receiver`].
-    fn reclaim_consumed(&mut self) -> Reclaimed<T> {
-        let mut next_head = self.tail;
-        let mut head_receivers = 0;
+    fn reclaim_vacated(&mut self) -> Reclaimed<T> {
+        debug_assert!(self.buffer.front().is_some_and(|slot| slot.cursors == 0));
 
-        for head in self.receivers.values() {
-            if *head < next_head {
-                next_head = *head;
-                head_receivers = 1;
-            } else if *head == next_head {
-                head_receivers += 1;
-            }
-        }
-
-        debug_assert!(next_head >= self.head);
-        let consumed = usize::try_from(next_head - self.head)
-            .expect("retained broadcast message count exceeds usize");
         // Move reclaimed messages out so their Drop impls run after the channel is unlocked. Keep
-        // the first one separate so the usual one-message reclaim does not allocate another buffer.
-        let first = if consumed == 0 {
-            None
+        // the first one separate so the usual one-message reclaim does not allocate, and skip
+        // building a `Drain` that would yield nothing: even an empty one costs a few nanoseconds
+        // on every receive. A bulk reclaim counts the zero-count prefix up front so it moves out
+        // in one drain instead of growing a vector geometrically, which measured 15% slower for a
+        // 32-message backlog.
+        let first = self.buffer.pop_front().map(|slot| slot.msg);
+        let extra = self
+            .buffer
+            .iter()
+            .take_while(|slot| slot.cursors == 0)
+            .count();
+        let rest = if extra == 0 {
+            Vec::new()
         } else {
-            self.buffer.pop_front()
-        };
-        // Reclaiming exactly one message is the overwhelmingly common case — a cursor advances by
-        // one at a time — so skip building a `Drain` that would yield nothing.
-        let rest = if consumed > 1 {
-            self.buffer.drain(..consumed - 1).collect()
-        } else {
-            vec![]
+            self.buffer.drain(..extra).map(|slot| slot.msg).collect()
         };
         let reclaimed = Reclaimed { first, rest };
-        debug_assert_eq!(reclaimed.len(), consumed);
 
-        self.head = next_head;
-        self.head_receivers = head_receivers;
+        self.head += reclaimed.len() as u64;
+        debug_assert!(self.head <= self.tail);
         self.shrink_buffer();
         reclaimed
     }
@@ -378,6 +392,15 @@ impl<T> Backlog<T> {
     #[cfg(test)]
     pub fn set_tail(&mut self, tail: u64) {
         self.tail = tail;
+    }
+
+    /// Asserts the cursor accounting invariants: every cursor is counted exactly once, either in
+    /// one slot's `cursors` or in `at_tail`, and `buffer` covers exactly `[head, tail)`.
+    #[cfg(test)]
+    pub fn assert_cursor_accounting(&self) {
+        let in_slots: usize = self.buffer.iter().map(|slot| slot.cursors).sum();
+        assert_eq!(in_slots + self.at_tail, self.receivers.len());
+        assert_eq!(self.tail - self.head, self.buffer.len() as u64);
     }
 }
 
@@ -510,4 +533,66 @@ pub fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Reclaimed<T>) -> T {
     // Another receiver can still hold an in-flight reference to the same message, so the clone
     // remains the fallback.
     Arc::try_unwrap(msg).unwrap_or_else(|msg| (*msg).clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::Backlog;
+
+    /// Drives every cursor-count mutation point — subscribe, publish, receive, and drop — and
+    /// checks the accounting after each step.
+    #[test]
+    fn cursor_accounting_holds_across_subscribe_receive_and_drop() {
+        let mut log = Backlog::<u64>::elastic();
+
+        let a = log.subscribe();
+        let b = log.subscribe();
+        log.assert_cursor_accounting();
+
+        // The first publication picks up the caught-up cursors; a subscription registered
+        // mid-backlog starts at the tail and counts against the next publication.
+        assert!(log.publish(Arc::new(1)).is_none());
+        let c = log.subscribe();
+        assert!(log.publish(Arc::new(2)).is_none());
+        assert!(log.publish(Arc::new(3)).is_none());
+        log.assert_cursor_accounting();
+
+        assert_eq!(*log.receive(a).unwrap().0, 1);
+        log.assert_cursor_accounting();
+
+        // Dropping a subscription parked mid-backlog only decrements that slot and reclaims
+        // nothing.
+        assert!(log.remove_receiver(c).is_empty());
+        log.assert_cursor_accounting();
+
+        // `a` drains to the tail, leaving zero-count slots behind the lagging `b`.
+        assert_eq!(*log.receive(a).unwrap().0, 2);
+        assert_eq!(*log.receive(a).unwrap().0, 3);
+        log.assert_cursor_accounting();
+        assert!(log.receive(a).is_none());
+
+        // Dropping a caught-up subscription reclaims nothing either.
+        let d = log.subscribe();
+        assert!(log.remove_receiver(d).is_empty());
+        log.assert_cursor_accounting();
+
+        // Dropping the lagging subscription releases the whole prefix it held back in one step.
+        assert_eq!(log.remove_receiver(b).len(), 3);
+        log.assert_cursor_accounting();
+
+        // A receive that catches up to the tail releases exactly one message and moves the cursor
+        // back to `at_tail`.
+        assert!(log.publish(Arc::new(4)).is_none());
+        let (msg, reclaimed) = log.receive(a).unwrap();
+        assert_eq!(*msg, 4);
+        assert_eq!(reclaimed.len(), 1);
+        log.assert_cursor_accounting();
+
+        // With no subscription left, a publication is discarded and nothing is counted.
+        assert!(log.remove_receiver(a).is_empty());
+        assert_eq!(*log.publish(Arc::new(5)).unwrap(), 5);
+        log.assert_cursor_accounting();
+    }
 }

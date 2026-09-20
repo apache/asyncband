@@ -25,6 +25,8 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
+* Add `event::AutoResetEvent`, a reusable signal that releases one waiter, retains at most one unassigned signal that can be cleared with `reset`, and transfers assigned signals when waits are cancelled.
+* Add `ManualResetEvent::try_wait` to check readiness without registering a waiter or consuming the set state.
 * Implement `broadcast::mpmc::bounded`, a lossless bounded broadcast channel that retains at most the requested capacity and makes producers wait for the slowest active receiver.
 * Add opt-in bounded and unbounded `asyncband::mpmc` queues with cloneable producers and competing consumers, delivering each accepted value to exactly one receiver while a receiver remains.
 * Add an opt-in runtime-agnostic `Phaser` with shared observer handles, dynamic RAII participants registered individually or in batches through an owning iterator, `u64` phase numbers, split arrival/wait with cancellation-resilient retries, and a `close` operation that releases unfinished waits with `Closed`.
@@ -39,9 +41,11 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
+* Allow `watch::channel` to store non-`Clone` values for publication and change notification; only owning reads through `Receiver::get` and `Receiver::recv` require `Clone`.
 * Finish releasing buffered bounded MPSC messages even if one message destructor panics.
 * Improve unbounded MPSC throughput with batched receiving and incremental storage reclamation; empty-buffer retention is bounded independently of previous peak occupancy.
 * Make completed and abandoned `Completion` waits lock-free while preserving cancellable pending registration.
+* Avoid heap allocation when waking up to 32 waiters in Barrier, broadcast, condvar, event, MPSC, phaser, and watch notifications; larger waiter sets spill to a single heap allocation.
 
 ## v0.7.2 (2026-09-11)
 

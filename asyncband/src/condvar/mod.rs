@@ -157,9 +157,9 @@ impl Condvar {
     /// If no task is currently waiting, this call has no effect. Notifications are not buffered for
     /// future calls to [`wait`](Self::wait) or [`wait_owned`](Self::wait_owned).
     pub fn notify_all(&self) {
-        let wakers = {
+        let mut wakers = WakerBatch::new();
+        {
             let mut waiters = self.waiters.lock();
-            let mut wakers = WakerBatch::new();
 
             while waiters
                 .unlink_first_waiter(|node| {
@@ -173,11 +173,9 @@ impl Condvar {
                 })
                 .is_some()
             {}
+        }
 
-            wakers
-        };
-
-        wake_all(wakers.into_iter());
+        wake_all(&mut wakers);
     }
 
     /// Waits for a notification, atomically releasing and then reacquiring the mutex.

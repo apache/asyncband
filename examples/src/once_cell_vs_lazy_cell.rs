@@ -15,14 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Initialize service endpoints and clients with OnceCell or LazyCell. Compare fixed initializers,
+//! access-time configuration, and a captured credential initializer that survives caller
+//! cancellation.
+
 use std::future::Ready;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use asyncband::event::AutoResetEvent;
 use asyncband::once::LazyCell;
 use asyncband::once::OnceCell;
-use tokio::sync::Notify;
 
 static ONCE_ENDPOINT: OnceCell<String> = OnceCell::new();
 static LAZY_ENDPOINT: LazyCell<String, Ready<String>> = LazyCell::new(load_default_endpoint);
@@ -81,8 +85,8 @@ async fn lazy_cell_owns_a_local_fn_once() {
     }
 
     let attempts = Arc::new(AtomicUsize::new(0));
-    let started = Arc::new(Notify::new());
-    let resume = Arc::new(Notify::new());
+    let started = Arc::new(AutoResetEvent::new());
+    let resume = Arc::new(AutoResetEvent::new());
     let credentials = Credentials {
         token: "secret".to_owned(),
     };
@@ -98,8 +102,8 @@ async fn lazy_cell_owns_a_local_fn_once() {
 
             async move {
                 attempts.fetch_add(1, Ordering::SeqCst);
-                started.notify_one();
-                resume.notified().await;
+                started.set();
+                resume.wait().await;
                 Client { token }
             }
         }
@@ -116,13 +120,13 @@ async fn lazy_cell_owns_a_local_fn_once() {
             LazyCell::force_pin(client.as_ref()).await;
         }
     });
-    started.notified().await;
+    started.wait().await;
     first_caller.abort();
     assert!(first_caller.await.unwrap_err().is_cancelled());
 
     // Cancellation does not consume the captured credentials or restart the initializer. The next
     // caller resumes the same future.
-    resume.notify_one();
+    resume.set();
     assert_eq!(LazyCell::force_pin(client.as_ref()).await.token, "secret");
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }

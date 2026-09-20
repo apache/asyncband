@@ -59,6 +59,8 @@ impl Clone for PanicOnceClone {
     }
 }
 
+struct NonClone(usize);
+
 #[test]
 fn initial_value_is_observed_and_updates_coalesce() {
     let (tx, mut rx) = watch::channel(0);
@@ -145,6 +147,22 @@ fn subscriptions_start_at_the_current_version() {
 
     tx.send(2).unwrap();
     assert_eq!(FutureExt::block_on(subscribed.recv()).unwrap(), 2);
+}
+
+#[test]
+fn non_clone_values_support_publication_and_change_tracking() {
+    let (tx, mut rx) = watch::channel(NonClone(0));
+
+    assert_eq!(rx.has_changed(), Ok(false));
+
+    tx.send(NonClone(1)).unwrap();
+    assert_eq!(rx.has_changed(), Ok(true));
+    FutureExt::block_on(rx.changed()).unwrap();
+    assert_eq!(rx.has_changed(), Ok(false));
+
+    let previous = tx.send_replace(NonClone(2));
+    assert_eq!(previous.0, 1);
+    assert_eq!(rx.has_changed(), Ok(true));
 }
 
 #[test]

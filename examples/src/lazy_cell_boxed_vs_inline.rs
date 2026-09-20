@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Choose how to store a lazy initializer: box its future to keep the cell movable, pin the cell
+//! locally to store the future inline, or share a pinned cell across tasks.
+
 use std::sync::Arc;
 
 use asyncband::once::LazyCell;
