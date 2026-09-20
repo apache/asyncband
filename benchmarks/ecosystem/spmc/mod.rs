@@ -15,5 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod adapters;
-pub mod support;
+//! One producer moves its sender into a task; consumers compete until disconnection. Runtime,
+//! channel, and task creation are excluded from timing; data operations and task completion are
+//! included. Synchronous unbounded sends can finish before consumers run on a current-thread
+//! executor, so the four-worker cases measure concurrent consumer contention.
+//!
+//! Compile with `cargo x bench --no-run`, then run the ecosystem executable with
+//! `--bench --color never --sample-count 100 'spmc::'`. Record repeated measurements serially,
+//! without concurrent builds or tests, together with the commit, toolchain, and machine details.
+
+mod bounded;
+mod unbounded;

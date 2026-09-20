@@ -20,40 +20,29 @@ use divan::counter::ItemsCount;
 
 use crate::channels::BATCH_MESSAGES;
 use crate::channels::adapters::AsyncChannel;
+use crate::channels::adapters::Channel;
 use crate::channels::adapters::Flume;
 use crate::channels::adapters::Mpmc;
+use crate::channels::adapters::Spmc;
 use crate::channels::adapters::Unbounded;
-use crate::channels::adapters::UnboundedMpmc;
-use crate::channels::mpmc::TOPOLOGIES;
-use crate::channels::mpmc::TaskBatch;
-use crate::channels::mpmc::ThreadBatch;
-use crate::channels::mpmc::Topology;
 use crate::channels::runtime;
+use crate::channels::spmc::CONSUMERS;
+use crate::channels::spmc::TaskBatch;
 
 #[divan::bench(
-    types = [Mpmc, AsyncChannel, Flume],
-    args = TOPOLOGIES,
-    sample_count = 20,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
-fn blocking_threads<C: UnboundedMpmc>(bencher: Bencher, topology: Topology) {
-    bencher
-        .with_inputs(|| ThreadBatch::new_unbounded::<C>(topology))
-        .bench_local_refs(|batch| batch.run());
-}
-
-#[divan::bench(
-    types = [Mpmc, AsyncChannel, Flume],
+    types = [Spmc, Mpmc, AsyncChannel, Flume],
     consts = [0, 4],
-    args = TOPOLOGIES,
+    args = CONSUMERS,
     sample_count = 20,
     sample_size = 1,
     counter = ItemsCount::new(BATCH_MESSAGES),
 )]
-fn tokio_tasks<C: UnboundedMpmc, const WORKERS: usize>(bencher: Bencher, topology: Topology) {
+fn tokio_tasks<C, const WORKERS: usize>(bencher: Bencher, consumers: usize)
+where
+    Unbounded<C>: Channel,
+{
     let runtime = runtime(WORKERS);
     bencher
-        .with_inputs(|| TaskBatch::new::<Unbounded<C>>(&runtime, topology))
+        .with_inputs(|| TaskBatch::new::<Unbounded<C>>(&runtime, consumers))
         .bench_local_refs(|batch| runtime.block_on(batch.run()));
 }

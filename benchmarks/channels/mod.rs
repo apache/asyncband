@@ -15,32 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod barrier;
-mod blocking;
-mod broadcast;
-mod completion;
-mod condvar;
-mod event;
-mod latch;
-mod mpmc;
-mod mpsc;
-mod mutex;
-mod once;
-mod once_map;
-mod oneshot;
-mod phaser;
-mod pool;
-mod rwlock;
-mod semaphore;
-mod shutdown;
-mod singleflight;
-mod support;
-mod waitgroup;
+use tokio::runtime::Runtime;
 
-#[allow(dead_code)]
-#[path = "../channels/mod.rs"]
-mod channels;
+pub mod adapters;
+pub mod mpmc;
+pub mod spmc;
 
-fn main() {
-    divan::main();
+pub const BATCH_MESSAGES: usize = 16_384;
+pub const BOUNDED_CAPACITY: usize = 64;
+
+pub fn runtime(worker_threads: usize) -> Runtime {
+    if worker_threads == 0 {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(worker_threads)
+            .build()
+            .unwrap()
+    }
 }

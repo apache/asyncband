@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
@@ -26,11 +24,10 @@ use divan::black_box;
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 
+use super::BATCH_MESSAGES;
 use super::adapters::BoundedMpmc;
+use super::adapters::Channel;
 use super::adapters::UnboundedMpmc;
-
-pub const BATCH_MESSAGES: usize = 16_384;
-pub const BOUNDED_CAPACITY: usize = 64;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Topology {
@@ -57,66 +54,6 @@ pub const TOPOLOGIES: &[Topology] = &[
     },
 ];
 
-pub trait ConcurrentMpmc: Send + Sync + 'static {
-    type Sender: Clone + Send + Sync + 'static;
-    type Receiver: Clone + Send + Sync + 'static;
-
-    fn channel() -> (Self::Sender, Self::Receiver);
-    fn send(sender: &Self::Sender, value: usize) -> impl Future<Output = ()> + Send;
-    fn recv(receiver: &Self::Receiver) -> impl Future<Output = Option<usize>> + Send;
-}
-
-pub struct Bounded<C, const CAPACITY: usize = BOUNDED_CAPACITY>(PhantomData<C>);
-
-impl<C: BoundedMpmc, const CAPACITY: usize> ConcurrentMpmc for Bounded<C, CAPACITY> {
-    type Sender = C::Sender;
-    type Receiver = C::Receiver;
-
-    fn channel() -> (Self::Sender, Self::Receiver) {
-        C::channel(CAPACITY)
-    }
-
-    async fn send(sender: &Self::Sender, value: usize) {
-        C::send_async(sender, value).await;
-    }
-
-    async fn recv(receiver: &Self::Receiver) -> Option<usize> {
-        C::recv_async(receiver).await
-    }
-}
-
-pub struct Unbounded<C>(PhantomData<C>);
-
-impl<C: UnboundedMpmc> ConcurrentMpmc for Unbounded<C> {
-    type Sender = C::Sender;
-    type Receiver = C::Receiver;
-
-    fn channel() -> (Self::Sender, Self::Receiver) {
-        C::channel()
-    }
-
-    async fn send(sender: &Self::Sender, value: usize) {
-        C::send(sender, value);
-    }
-
-    async fn recv(receiver: &Self::Receiver) -> Option<usize> {
-        C::recv_async(receiver).await
-    }
-}
-
-pub fn runtime(worker_threads: usize) -> Runtime {
-    if worker_threads == 0 {
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-    } else {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(worker_threads)
-            .build()
-            .unwrap()
-    }
-}
-
 // The caller only coordinates the batch. All measured sends and receives run in spawned tasks,
 // including on the current-thread runtime; no data is received by Runtime::block_on itself.
 pub struct TaskBatch {
@@ -125,7 +62,10 @@ pub struct TaskBatch {
 }
 
 impl TaskBatch {
-    pub fn new<C: ConcurrentMpmc>(runtime: &Runtime, topology: Topology) -> Self {
+    pub fn new<C: Channel>(runtime: &Runtime, topology: Topology) -> Self
+    where
+        C::Sender: Clone,
+    {
         assert_eq!(BATCH_MESSAGES % topology.producers, 0);
         let (sender, receiver) = C::channel();
         let start = Arc::new(tokio::sync::Barrier::new(
@@ -134,14 +74,14 @@ impl TaskBatch {
         let messages_per_producer = BATCH_MESSAGES / topology.producers;
         let mut workers = JoinSet::new();
         for producer in 0..topology.producers {
-            let sender = sender.clone();
+            let mut sender = sender.clone();
             let start = start.clone();
             workers.spawn_on(
                 async move {
                     start.wait().await;
                     let first = producer * messages_per_producer;
                     for value in first..first + messages_per_producer {
-                        C::send(&sender, black_box(value)).await;
+                        C::send(&mut sender, black_box(value)).await;
                     }
                     // Completion drops this sender so receivers can observe the end of input.
                     (0, 0)

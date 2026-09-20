@@ -23,15 +23,15 @@ use divan::black_box;
 use divan::counter::ItemsCount;
 
 use super::FAST_SAMPLE_SIZE;
-use crate::mpmc_support::adapters::Asyncband;
-use crate::mpmc_support::support::BATCH_MESSAGES;
-use crate::mpmc_support::support::BOUNDED_CAPACITY;
-use crate::mpmc_support::support::Bounded;
-use crate::mpmc_support::support::TOPOLOGIES;
-use crate::mpmc_support::support::TaskBatch;
-use crate::mpmc_support::support::ThreadBatch;
-use crate::mpmc_support::support::Topology;
-use crate::mpmc_support::support::runtime;
+use crate::channels::BATCH_MESSAGES;
+use crate::channels::BOUNDED_CAPACITY;
+use crate::channels::adapters::Bounded;
+use crate::channels::adapters::Mpmc;
+use crate::channels::mpmc::TOPOLOGIES;
+use crate::channels::mpmc::TaskBatch;
+use crate::channels::mpmc::ThreadBatch;
+use crate::channels::mpmc::Topology;
+use crate::channels::runtime;
 use crate::support::bench_context;
 use crate::support::poll_pending;
 use crate::support::poll_pinned_ready;
@@ -45,7 +45,7 @@ use crate::support::poll_ready;
 )]
 fn blocking_threads(bencher: Bencher, topology: Topology) {
     bencher
-        .with_inputs(|| ThreadBatch::new_bounded::<Asyncband>(BOUNDED_CAPACITY, topology))
+        .with_inputs(|| ThreadBatch::new_bounded::<Mpmc>(BOUNDED_CAPACITY, topology))
         .bench_local_refs(|batch| batch.run());
 }
 
@@ -59,7 +59,7 @@ fn blocking_threads(bencher: Bencher, topology: Topology) {
 fn tokio_tasks<const WORKERS: usize>(bencher: Bencher, topology: Topology) {
     let runtime = runtime(WORKERS);
     bencher
-        .with_inputs(|| TaskBatch::new::<Bounded<Asyncband>>(&runtime, topology))
+        .with_inputs(|| TaskBatch::new::<Bounded<Mpmc>>(&runtime, topology))
         .bench_local_refs(|batch| runtime.block_on(batch.run()));
 }
 
