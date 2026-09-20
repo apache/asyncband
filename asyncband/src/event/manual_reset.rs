@@ -103,7 +103,8 @@ impl ManualResetEvent {
     /// Panics if waking a selected task panics. The event remains set, and waking is still
     /// attempted for every other selected task before the panic resumes.
     pub fn set(&self) {
-        let wakers = {
+        let mut wakers = WakerBatch::new();
+        {
             let mut state = self.state.lock();
             if state.is_set {
                 return;
@@ -112,7 +113,6 @@ impl ManualResetEvent {
             state.is_set = true;
             // Detach the complete cohort before invoking any waker. A wake callback may reset the
             // event and register a new wait, which must belong to the state current at that point.
-            let mut wakers = WakerBatch::new();
             while let Some((_id, waiter)) = state.waiters.unlink_first_waiter(|waiter| {
                 waiter.notified = true;
                 true
@@ -121,10 +121,9 @@ impl ManualResetEvent {
                     wakers.push(waker);
                 }
             }
-            wakers
-        };
+        }
 
-        wake_all(wakers.into_iter());
+        wake_all(&mut wakers);
     }
 
     /// Clears the set state.

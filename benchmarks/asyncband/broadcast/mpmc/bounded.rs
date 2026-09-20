@@ -73,8 +73,8 @@ fn try_send_and_drain_fanout(bencher: Bencher, receiver_count: usize) {
         receivers.push(tx.subscribe());
     }
 
-    // One message in, every receiver drains it out: the last one to read pays the reclaim scan and
-    // the capacity release, and the channel is empty again for the next iteration.
+    // One message in, every receiver drains it out: the last one to read pays the head reclaim
+    // and the capacity release, and the channel is empty again for the next iteration.
     bencher.bench_local(|| {
         tx.try_send(black_box(1)).unwrap();
         for receiver in &mut receivers {
