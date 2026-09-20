@@ -279,12 +279,14 @@ impl<T: Send> Pool<T> {
     /// [`ManageObject`] implementation, you should use [`Pool::get`] instead, and it will call
     /// [`ManageObject::create`] to create a new object if the pool is empty.
     ///
+    /// The closure runs in the calling task and may borrow local state; it need not be `Send`.
+    ///
     /// # Cancel safety
     ///
     /// Cancelling while the provided future is pending leaves the pool unchanged.
     pub async fn get_or_create<E, F>(self: &Arc<Self>, f: F) -> Result<Object<T>, E>
     where
-        F: AsyncFnOnce() -> Result<T, E> + Send,
+        F: AsyncFnOnce() -> Result<T, E>,
     {
         if let Some(object) = self.try_get() {
             return Ok(object);
