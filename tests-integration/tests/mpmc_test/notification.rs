@@ -94,6 +94,55 @@ fn unbounded_cancelled_notified_receiver_wakes_next_receiver() {
     cancelled_notified_receiver_wakes_next_receiver(receiver, || sender.send(1).unwrap());
 }
 
+fn cancelling_a_receiver_after_its_value_is_taken_does_not_wake_next(
+    receiver: impl Receiver<usize>,
+    send: impl Fn(usize),
+    take_value: impl FnOnce() -> Result<usize, TryRecvError>,
+) {
+    let competing = receiver.clone();
+    let mut cancelled = Box::pin(receiver.recv());
+    let mut waiting = Box::pin(competing.recv());
+    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
+    let (waiting_waker, waiting_wakes) = WakeCounter::new();
+
+    assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
+    assert!(poll_with(waiting.as_mut(), &waiting_waker).is_pending());
+    send(1);
+    assert_eq!(cancelled_wakes.count(), 1);
+    assert_eq!(waiting_wakes.count(), 0);
+    assert_eq!(take_value(), Ok(1));
+    drop(cancelled);
+    assert_eq!(waiting_wakes.count(), 0);
+
+    // The next value must still notify the waiter whose predecessor was cancelled.
+    send(2);
+    assert_eq!(waiting_wakes.count(), 1);
+    assert_eq!(
+        expect_ready(poll_with(waiting.as_mut(), &waiting_waker)),
+        Ok(2)
+    );
+}
+
+#[test]
+fn bounded_cancelling_a_receiver_after_its_value_is_taken_does_not_wake_next() {
+    let (sender, receiver) = mpmc::bounded(1);
+    cancelling_a_receiver_after_its_value_is_taken_does_not_wake_next(
+        receiver.clone(),
+        |value| sender.try_send(value).unwrap(),
+        || receiver.try_recv(),
+    );
+}
+
+#[test]
+fn unbounded_cancelling_a_receiver_after_its_value_is_taken_does_not_wake_next() {
+    let (sender, receiver) = mpmc::unbounded();
+    cancelling_a_receiver_after_its_value_is_taken_does_not_wake_next(
+        receiver.clone(),
+        |value| sender.send(value).unwrap(),
+        || receiver.try_recv(),
+    );
+}
+
 #[test]
 fn notified_receiver_that_loses_the_value_queues_behind_waiting_receivers() {
     let (sender, receiver) = mpmc::unbounded();
@@ -118,6 +167,59 @@ fn notified_receiver_that_loses_the_value_queues_behind_waiting_receivers() {
         expect_ready(poll_with(second.as_mut(), &second_waker)),
         Ok(2)
     );
+}
+
+#[test]
+fn notified_sender_that_loses_capacity_queues_behind_waiting_senders() {
+    let (sender, receiver) = mpmc::bounded(1);
+    sender.try_send(0).unwrap();
+    let competing = sender.clone();
+    let mut first = Box::pin(sender.send(1));
+    let mut second = Box::pin(competing.send(2));
+    let (first_waker, first_wakes) = WakeCounter::new();
+    let (second_waker, second_wakes) = WakeCounter::new();
+
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+    assert_eq!(receiver.try_recv(), Ok(0));
+    assert_eq!(first_wakes.count(), 1);
+    sender.try_send(3).unwrap();
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+
+    assert_eq!(receiver.try_recv(), Ok(3));
+    assert_eq!(first_wakes.count(), 1);
+    assert_eq!(second_wakes.count(), 1);
+    expect_ready(poll_with(second.as_mut(), &second_waker)).unwrap();
+    assert_eq!(receiver.try_recv(), Ok(2));
+    assert_eq!(first_wakes.count(), 2);
+    expect_ready(poll_with(first.as_mut(), &first_waker)).unwrap();
+    assert_eq!(receiver.try_recv(), Ok(1));
+}
+
+#[test]
+fn cancelling_a_sender_after_capacity_is_taken_does_not_wake_next() {
+    let (sender, receiver) = mpmc::bounded(1);
+    sender.try_send(0).unwrap();
+    let competing = sender.clone();
+    let mut cancelled = Box::pin(sender.send(1));
+    let mut waiting = Box::pin(competing.send(2));
+    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
+    let (waiting_waker, waiting_wakes) = WakeCounter::new();
+
+    assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
+    assert!(poll_with(waiting.as_mut(), &waiting_waker).is_pending());
+    assert_eq!(receiver.try_recv(), Ok(0));
+    assert_eq!(cancelled_wakes.count(), 1);
+    assert_eq!(waiting_wakes.count(), 0);
+    sender.try_send(3).unwrap();
+    drop(cancelled);
+    assert_eq!(waiting_wakes.count(), 0);
+
+    assert_eq!(receiver.try_recv(), Ok(3));
+    assert_eq!(waiting_wakes.count(), 1);
+    expect_ready(poll_with(waiting.as_mut(), &waiting_waker)).unwrap();
+    assert_eq!(receiver.try_recv(), Ok(2));
+    assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[test]
