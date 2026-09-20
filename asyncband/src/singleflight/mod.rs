@@ -248,9 +248,10 @@ where
     /// ```
     /// use asyncband::singleflight::Group;
     ///
-    /// # async fn generate_report(name: &str) -> String {
-    /// #     format!("Report for {name}")
-    /// # }
+    /// async fn generate_report(name: &str) -> String {
+    ///     format!("Report for {name}")
+    /// }
+    ///
     /// # #[tokio::main]
     /// # async fn main() {
     /// let reports = Group::new();
@@ -306,9 +307,10 @@ where
     /// ```
     /// use asyncband::singleflight::Group;
     ///
-    /// # async fn fetch_profile(username: &str) -> Result<String, std::io::Error> {
-    /// #     Ok(format!("Profile for {username}"))
-    /// # }
+    /// async fn fetch_profile(username: &str) -> Result<String, std::io::Error> {
+    ///     Ok(format!("Profile for {username}"))
+    /// }
+    ///
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), std::io::Error> {
     /// let profiles = Group::new();
