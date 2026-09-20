@@ -24,11 +24,11 @@ use std::task::Poll;
 
 use super::State;
 use crate::internal::mutex::Mutex;
+use crate::internal::register_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::wake_all;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
-use crate::mpsc::register_waker;
 
 /// The receiving endpoint of a bounded mpsc channel.
 ///

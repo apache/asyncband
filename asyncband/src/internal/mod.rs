@@ -19,6 +19,22 @@ use std::panic;
 use std::panic::AssertUnwindSafe;
 use std::task::Waker;
 
+/// Retains the current task waker, returning any replaced registration for unlocked destruction.
+#[inline]
+#[must_use = "drop the replaced waker after releasing the state lock"]
+// Some feature subsets have no primitive that registers a single waker slot.
+#[allow(dead_code)]
+pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> {
+    if slot
+        .as_ref()
+        .is_some_and(|current| current.will_wake(waker))
+    {
+        None
+    } else {
+        slot.replace(waker.clone())
+    }
+}
+
 /// Wakes every waker while preserving the first panic.
 ///
 /// If a wake callback panics, the remaining callbacks are still attempted during unwinding. Any

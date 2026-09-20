@@ -27,9 +27,9 @@ use super::State;
 use super::buffer::Buffer;
 use super::buffer::pop_batch;
 use crate::internal::mutex::Mutex;
+use crate::internal::register_waker;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
-use crate::mpsc::register_waker;
 
 /// The receiving endpoint of an unbounded mpsc channel.
 ///

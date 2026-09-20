@@ -25,10 +25,10 @@ use std::task::Poll;
 use super::State;
 use super::Waiter;
 use crate::internal::mutex::Mutex;
+use crate::internal::register_waker;
 use crate::internal::waitlist::WaiterId;
 use crate::mpsc::SendError;
 use crate::mpsc::TrySendError;
-use crate::mpsc::register_waker;
 
 /// The sending endpoint of a bounded mpsc channel.
 ///

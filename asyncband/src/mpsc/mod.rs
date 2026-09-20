@@ -21,8 +21,6 @@
 //! to send while the receiver is alive, but a slow receiver can cause memory use to grow without a
 //! configured limit.
 
-use std::task::Waker;
-
 mod bounded;
 mod error;
 mod unbounded;
@@ -38,17 +36,3 @@ pub use self::error::TrySendError;
 pub use self::unbounded::UnboundedReceiver;
 pub use self::unbounded::UnboundedSender;
 pub use self::unbounded::unbounded;
-
-/// Retains the current task waker, returning any replaced registration for unlocked destruction.
-#[inline]
-#[must_use = "drop the replaced waker after releasing the channel lock"]
-fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> {
-    if slot
-        .as_ref()
-        .is_some_and(|current| current.will_wake(waker))
-    {
-        None
-    } else {
-        slot.replace(waker.clone())
-    }
-}

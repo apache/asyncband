@@ -34,6 +34,7 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
+use crate::internal::register_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::wake_all;
@@ -295,13 +296,7 @@ impl Acquire<'_> {
                 let ready = {
                     let node = waiters.waiter_mut(*idx);
                     if node.permits > 0 {
-                        let update_waker = node
-                            .waker
-                            .as_ref()
-                            .is_none_or(|current| !current.will_wake(waker));
-                        if update_waker {
-                            old_waker = node.waker.replace(waker.clone());
-                        }
+                        old_waker = register_waker(&mut node.waker, waker);
                         false
                     } else {
                         true
