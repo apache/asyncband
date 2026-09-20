@@ -248,15 +248,16 @@ where
     /// ```
     /// use asyncband::singleflight::Group;
     ///
-    /// # async fn generate_report(id: u64) -> String {
-    /// #     format!("Report {id}")
+    /// # async fn generate_report(name: &str) -> String {
+    /// #     format!("Report for {name}")
     /// # }
     /// # #[tokio::main]
     /// # async fn main() {
     /// let reports = Group::new();
+    /// let key = "report:monthly-sales";
     ///
-    /// let first = reports.work(42, || generate_report(42));
-    /// let second = reports.work(42, || generate_report(42));
+    /// let first = reports.work(key, || generate_report("monthly-sales"));
+    /// let second = reports.work(key, || generate_report("monthly-sales"));
     /// let (first, second) = tokio::join!(first, second);
     ///
     /// assert_eq!(first, second);
@@ -305,15 +306,16 @@ where
     /// ```
     /// use asyncband::singleflight::Group;
     ///
-    /// # async fn fetch_profile(id: u64) -> Result<String, std::io::Error> {
-    /// #     Ok(format!("Profile {id}"))
+    /// # async fn fetch_profile(username: &str) -> Result<String, std::io::Error> {
+    /// #     Ok(format!("Profile for {username}"))
     /// # }
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), std::io::Error> {
     /// let profiles = Group::new();
+    /// let key = "profile:alice";
     ///
-    /// let first = profiles.try_work(42, || fetch_profile(42));
-    /// let second = profiles.try_work(42, || fetch_profile(42));
+    /// let first = profiles.try_work(key, || fetch_profile("alice"));
+    /// let second = profiles.try_work(key, || fetch_profile("alice"));
     /// let (first, second) = tokio::join!(first, second);
     ///
     /// assert_eq!(first?, second?);
