@@ -246,39 +246,24 @@ where
     /// # Examples
     ///
     /// ```
-    /// use std::sync::Arc;
-    /// use std::sync::atomic::AtomicUsize;
-    /// use std::sync::atomic::Ordering;
-    /// use std::time::Duration;
-    ///
     /// use asyncband::singleflight::Group;
     ///
     /// # #[tokio::main]
     /// # async fn main() {
     /// let group = Group::new();
-    /// let counter = Arc::new(AtomicUsize::new(0));
+    /// let (release, wait) = tokio::sync::oneshot::channel();
     ///
-    /// let c1 = counter.clone();
-    /// let fut1 = group.work("key", || async move {
-    ///     c1.fetch_add(1, Ordering::SeqCst);
-    ///     // simulate heavy work to avoid immediate completion
-    ///     tokio::time::sleep(Duration::from_millis(100)).await;
+    /// let first = group.work("key", async || {
+    ///     wait.await.unwrap();
     ///     "result"
     /// });
-    ///
-    /// let c2 = counter.clone();
-    /// let fut2 = group.work("key", || async move {
-    ///     c2.fetch_add(1, Ordering::SeqCst);
-    ///     // simulate heavy work to avoid immediate completion
-    ///     tokio::time::sleep(Duration::from_millis(100)).await;
-    ///     "result"
-    /// });
-    ///
-    /// let (r1, r2) = tokio::join!(fut1, fut2);
+    /// let duplicate = group.work("key", async || "duplicate computation");
+    /// let finish = async { release.send(()).unwrap() };
+    /// // Poll both calls before allowing the first computation to complete.
+    /// let (r1, r2, ()) = tokio::join!(biased; first, duplicate, finish);
     ///
     /// assert_eq!(r1, "result");
     /// assert_eq!(r2, "result");
-    /// assert_eq!(counter.load(Ordering::SeqCst), 1);
     /// # }
     /// ```
     pub async fn work<F>(&self, key: K, func: F) -> V
@@ -322,33 +307,24 @@ where
     /// # Examples
     ///
     /// ```
-    /// use std::sync::Arc;
-    /// use std::sync::atomic::AtomicUsize;
-    /// use std::sync::atomic::Ordering;
-    /// use std::time::Duration;
-    ///
     /// use asyncband::singleflight::Group;
     ///
     /// # #[tokio::main]
     /// # async fn main() {
     /// let group = Group::new();
+    /// let (release, wait) = tokio::sync::oneshot::channel();
     ///
-    /// let fut1 = group.try_work("key", || async move {
-    ///     // simulate heavy work to avoid immediate completion
-    ///     tokio::time::sleep(Duration::from_millis(100)).await;
-    ///     Err::<_, &'static str>("fut1")
+    /// let first = group.try_work("key", async || {
+    ///     wait.await.unwrap();
+    ///     Err::<&str, _>("first attempt failed")
     /// });
+    /// let retry = group.try_work("key", async || Ok::<_, &str>("retried"));
+    /// let finish = async { release.send(()).unwrap() };
+    /// // The second caller joins the pending attempt, then retries after its error.
+    /// let (r1, r2, ()) = tokio::join!(biased; first, retry, finish);
     ///
-    /// let fut2 = group.try_work("key", || async move {
-    ///     // simulate heavy work to avoid immediate completion
-    ///     tokio::time::sleep(Duration::from_millis(200)).await;
-    ///     Ok::<_, &'static str>("fut2")
-    /// });
-    ///
-    /// let (r1, r2) = tokio::join!(fut1, fut2);
-    ///
-    /// assert_eq!(r1, Err("fut1"));
-    /// assert_eq!(r2, Ok("fut2"));
+    /// assert_eq!(r1, Err("first attempt failed"));
+    /// assert_eq!(r2, Ok("retried"));
     /// # }
     /// ```
     pub async fn try_work<E, F>(&self, key: K, func: F) -> Result<V, E>
