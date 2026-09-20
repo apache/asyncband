@@ -246,22 +246,38 @@ where
     /// # Examples
     ///
     /// ```
-    /// use asyncband::singleflight::Group;
+    /// use std::sync::Arc;
+    /// use std::sync::atomic::AtomicUsize;
+    /// use std::sync::atomic::Ordering;
+    /// use std::time::Duration;
     ///
-    /// async fn generate_report(name: &str) -> String {
-    ///     format!("Report for {name}")
-    /// }
+    /// use asyncband::singleflight::Group;
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let reports = Group::new();
-    /// let key = "report:monthly-sales";
+    /// let group = Group::new();
+    /// let counter = Arc::new(AtomicUsize::new(0));
     ///
-    /// let first = reports.work(key, || generate_report("monthly-sales"));
-    /// let second = reports.work(key, || generate_report("monthly-sales"));
-    /// let (first, second) = tokio::join!(first, second);
+    /// let c1 = counter.clone();
+    /// let fut1 = group.work("key", || async move {
+    ///     c1.fetch_add(1, Ordering::SeqCst);
+    ///     // simulate heavy work to avoid immediate completion
+    ///     tokio::time::sleep(Duration::from_millis(100)).await;
+    ///     "result"
+    /// });
     ///
-    /// assert_eq!(first, second);
+    /// let c2 = counter.clone();
+    /// let fut2 = group.work("key", || async move {
+    ///     c2.fetch_add(1, Ordering::SeqCst);
+    ///     // simulate heavy work to avoid immediate completion
+    ///     tokio::time::sleep(Duration::from_millis(100)).await;
+    ///     "result"
+    /// });
+    ///
+    /// let (r1, r2) = tokio::join!(fut1, fut2);
+    ///
+    /// assert_eq!(r1, r2);
+    /// assert_eq!(counter.load(Ordering::SeqCst), 1);
     /// # }
     /// ```
     pub async fn work<F>(&self, key: K, func: F) -> V
@@ -305,23 +321,33 @@ where
     /// # Examples
     ///
     /// ```
+    /// use std::sync::Arc;
+    /// use std::sync::atomic::AtomicUsize;
+    /// use std::sync::atomic::Ordering;
+    /// use std::time::Duration;
+    ///
     /// use asyncband::singleflight::Group;
     ///
-    /// async fn fetch_profile(username: &str) -> Result<String, std::io::Error> {
-    ///     Ok(format!("Profile for {username}"))
-    /// }
-    ///
     /// # #[tokio::main]
-    /// # async fn main() -> Result<(), std::io::Error> {
-    /// let profiles = Group::new();
-    /// let key = "profile:alice";
+    /// # async fn main() {
+    /// let group = Group::new();
     ///
-    /// let first = profiles.try_work(key, || fetch_profile("alice"));
-    /// let second = profiles.try_work(key, || fetch_profile("alice"));
-    /// let (first, second) = tokio::join!(first, second);
+    /// let fut1 = group.try_work("key", || async move {
+    ///     // simulate heavy work to avoid immediate completion
+    ///     tokio::time::sleep(Duration::from_millis(100)).await;
+    ///     Err::<_, &'static str>("fut1")
+    /// });
     ///
-    /// assert_eq!(first?, second?);
-    /// # Ok(())
+    /// let fut2 = group.try_work("key", || async move {
+    ///     // simulate heavy work to avoid immediate completion
+    ///     tokio::time::sleep(Duration::from_millis(200)).await;
+    ///     Ok::<_, &'static str>("fut2")
+    /// });
+    ///
+    /// let (r1, r2) = tokio::join!(fut1, fut2);
+    ///
+    /// assert_eq!(r1, Err("fut1"));
+    /// assert_eq!(r2, Ok("fut2"));
     /// # }
     /// ```
     pub async fn try_work<E, F>(&self, key: K, func: F) -> Result<V, E>
