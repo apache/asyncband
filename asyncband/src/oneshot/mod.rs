@@ -91,29 +91,32 @@
 //!
 //! ```
 //! use std::future::IntoFuture;
-//! use std::time::Duration;
+//! use std::io;
 //!
 //! use asyncband::oneshot;
+//! use tokio::net::TcpListener;
+//! use tokio::net::TcpStream;
 //!
-//! async fn wait_for_result(rx: oneshot::Receiver<String>) -> Result<String, oneshot::RecvError> {
-//!     let mut receive = rx.into_future();
+//! async fn serve(listener: TcpListener, shutdown: oneshot::Receiver<()>) -> io::Result<()> {
+//!     let mut shutdown = shutdown.into_future();
 //!
-//!     tokio::select! {
-//!         result = &mut receive => return result,
-//!         _ = tokio::time::sleep(Duration::from_secs(1)) => {
-//!             eprintln!("Still waiting for the result...");
+//!     loop {
+//!         tokio::select! {
+//!             _ = &mut shutdown => return Ok(()),
+//!             connection = listener.accept() => {
+//!                 let (stream, _) = connection?;
+//!                 tokio::spawn(echo(stream));
+//!             }
 //!         }
 //!     }
-//!
-//!     receive.await
 //! }
 //!
-//! # #[tokio::main]
-//! # async fn main() {
-//! # let (tx, rx) = oneshot::channel();
-//! # tx.send(String::from("done")).unwrap();
-//! # assert_eq!(wait_for_result(rx).await.unwrap(), "done");
-//! # }
+//! async fn echo(mut stream: TcpStream) {
+//!     let (mut reader, mut writer) = stream.split();
+//!     if let Err(error) = tokio::io::copy(&mut reader, &mut writer).await {
+//!         eprintln!("Connection failed: {error}");
+//!     }
+//! }
 //! ```
 
 mod receiver;
