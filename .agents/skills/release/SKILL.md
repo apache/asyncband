@@ -24,7 +24,7 @@ under the License.
 
 # Release Apache Asyncband
 
-Use the release tracking issue to coordinate the release and hand it to another PMC member. The normal path assumes signing, GitHub environments, ATR, and crates.io Trusted Publishing are already configured: GitHub builds and stages the candidate; ATR runs the votes and publishes the approved source; the final Git tag publishes the convenience crate.
+Use the release tracking issue to coordinate the release. The normal path assumes that signing, GitHub environments, ATR, and crates.io Trusted Publishing are already configured: GitHub builds and stages the candidate; ATR runs the votes and publishes the approved source; the final Git tag publishes the convenience crate.
 
 Follow the steps below for a new release, or resume from the tracking issue and current GitHub/ATR state. For an independent candidate check, use [verification](references/verification.md).
 
@@ -32,7 +32,7 @@ Follow the steps below for a new release, or resume from the tracking issue and 
 
 Choose the stable `VERSION` (`X.Y.Z`) from the changes since the previous published release; the semver check below validates compatibility. Record a source cutoff commit and any work deferred to a later release.
 
-Find an existing `Tracking Issue to Release ${VERSION}` before creating one. Otherwise create it immediately from the [tracking issue template](references/tracking-issue.md). Use it as the release record: link the release PR, checked revisions, workflow runs, candidate, votes, and publication results; update completed items with evidence and keep the next action current.
+Find an existing `Tracking Issue to Release ${VERSION}` before creating one. Otherwise, create it immediately from the [tracking issue template](references/tracking-issue.md). Use it as the release record: link the release PR, checked revisions, workflow runs, candidate, votes, and publication results; update completed items with evidence and keep the next action current.
 
 ## 2. Audit first, prepare the version, and freeze the source
 
@@ -50,7 +50,7 @@ cd "${RELEASE_DIR}/checkout"
 test -z "$(git status --porcelain)"
 ```
 
-Keep scratch artifacts outside the repository. If a check requires a correction, prepare a new reviewed commit and replace the recorded snapshot explicitly; recheck affected results. After an RC tag exists, changed release contents require a new RC number. Never silently move an existing tag or change the files under a vote.
+Keep scratch artifacts outside the repository. If a check requires a correction, prepare a new reviewed commit and replace the recorded snapshot explicitly; recheck the affected results. After an RC tag exists, changed release contents require a new RC number. Never silently move an existing tag or change the files under a vote.
 
 ## 3. Check the frozen checkout
 
