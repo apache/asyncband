@@ -26,14 +26,14 @@ Fill in known values and leave unfinished items unchecked. Record the checked re
 Set `RUNBOOK_COMMIT` to the full SHA of the upstream commit containing the runbook used when opening the issue. Keep this link pinned throughout the release.
 
 ```markdown
-Release manager: @<login>
-Target version: <VERSION>
-Previous release: <version and tag>
-Source cutoff: <commit and deferred work, if any>
-Release PR: pending
-Frozen release commit: pending
-Current phase / next action: initial license audit
-Runbook: https://github.com/apache/asyncband/blob/<RUNBOOK_COMMIT>/.agents/skills/release/SKILL.md
+- **Release manager:** @<login>
+- **Target version:** <VERSION>
+- **Previous release:** <version and tag>
+- **Source cutoff:** <commit and deferred work, if any>
+- **Release PR:** pending
+- **Frozen release commit:** pending
+- **Current phase / next action:** initial license audit
+- **Runbook:** https://github.com/apache/asyncband/blob/<RUNBOOK_COMMIT>/.agents/skills/release/SKILL.md
 
 ## Prepare and freeze
 
@@ -53,11 +53,11 @@ Runbook: https://github.com/apache/asyncband/blob/<RUNBOOK_COMMIT>/.agents/skill
 
 ## Candidate
 
-RC / signed tag: pending
-Compose run and attempt / package-check run: pending
-ATR candidate URL / revision: pending
-Source SHA-512: pending
-Tag signer / source signer fingerprints and provenance: pending
+- **RC / signed tag:** pending
+- **Compose run and attempt / package-check run:** pending
+- **ATR candidate URL / revision:** pending
+- **Source SHA-512:** pending
+- **Tag signer / source signer fingerprints and provenance:** pending
 
 - [ ] Push the signed RC tag at the frozen commit; confirm both release workflows and ATR upload.
 - [ ] Download and verify the ATR revision: signatures, checksum, source contents against the RC commit, independent archive rebuild for automated signing, build, and packaging.
