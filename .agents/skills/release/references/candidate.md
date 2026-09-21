@@ -34,15 +34,19 @@ cargo x check
 cargo x test --no-capture
 RUSTUP_TOOLCHAIN=1.86.0 cargo x test --no-capture
 cargo x semver --release-version "${VERSION}"
-cargo publish --package asyncband --locked --dry-run --allow-dirty
 ```
-
-The preparation dry run allows the edited version files; the RC workflow and downloaded candidate checks package committed or extracted sources without `--allow-dirty`.
 
 For a semver-major release, including a pre-1.0 minor release such as `0.7.0`, the semver command uses minor compatibility rules to report breaking API changes. When it reports expected changes, record and review them in `CHANGELOG.md`, then rerun:
 
 ```shell
 cargo x semver --release-version "${VERSION}" --acknowledge-breaking-changes
+```
+
+Commit the reviewed release changes, then verify the Cargo package from a clean checkout:
+
+```shell
+test -z "$(git status --porcelain)"
+cargo publish --package asyncband --locked --dry-run
 ```
 
 Before the first automated candidate, confirm the signing secrets, project public key, and ATR policy described in [Infrastructure](infrastructure.md). A successful PR compose check does not exercise signing or ATR authentication.
