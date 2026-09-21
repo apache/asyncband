@@ -27,7 +27,7 @@ Open the [Asyncband project](https://releases.apache.org/projects/asyncband) wit
 2. Open the voting form. Set the first-round recipient to `dev@asyncband.apache.org`, the second-round recipient to `general@incubator.apache.org`, and the minimum duration to at least 72 hours. The second round uses that duration too.
 3. Review the generated subject and body. Identify Apache Asyncband (Incubating), `${VERSION}`, and the RC; include the ATR candidate/revision, RC tag and commit, source checksum, KEYS and signer information, changelog, and verification evidence. Link ATR as the location of the voted files. Submit **Send vote email** when sending the vote is authorized, then record its archive link and closing time.
 
-If publication is authorized, automatic publication can publish the source after IPMC approval; confirm the download suffix is `${VERSION}` when selecting it. Otherwise publish in Finish after both votes pass.
+If publication is authorized, automatic publication can publish the source after IPMC approval; confirm the download suffix is `${VERSION}` when selecting it. Otherwise, publish in Finish after both votes pass.
 
 ## Resolve both rounds
 
@@ -39,7 +39,7 @@ Each round needs at least 72 hours, at least three eligible `+1` votes, and more
 
 ## Publish and announce
 
-In Finish, inspect **Publish to ASF Distribution Area**. If automatic publication already completed, record its result. Otherwise confirm the approved revision and destination `dist/release/incubator/asyncband/${VERSION}/`, then use the publish action. ATR commits the voted files to SVN; record the SVN revision and compare the published archive, signature, and checksum with the candidate.
+In Finish, inspect **Publish to ASF Distribution Area**. If automatic publication already completed, record its result. Otherwise, confirm the approved revision and destination `dist/release/incubator/asyncband/${VERSION}/`, then use the Publish action. ATR commits the voted files to SVN; record the SVN revision and compare the published archive, signature, and checksum with the candidate.
 
 Return to the main runbook to push the final tag and verify crates.io publication. Once both the ASF downloads and the crate are available, use **Announce** in ATR, review the recipients and message, and submit it. ATR sends the announcement and updates its release catalog. Record the announcement link in the tracking issue. See [ATR publication](https://releases.apache.org/docs/promoting-to-release).
 
@@ -51,7 +51,7 @@ Use the website to review the tally, edit emails, and publish. For scripted oper
 
 ## Recover without replacing voted files
 
-- Failed or uncertain upload: inspect ATR before retrying. If all three files arrived and verification succeeds, record that revision even if the GitHub run reported a late failure. Otherwise retry before voting and verify the resulting revision; signing/upload can produce a new signature and revision. If the GitHub source bundle expired, rerun composition from the same RC and compare the recorded checksum.
+- Failed or uncertain upload: inspect ATR before retrying. If all three files arrived and verification succeeds, record that revision even if the GitHub run reported a late failure. Otherwise, retry before voting and verify the resulting revision; signing/upload can produce a new signature and revision. If the GitHub source bundle expired, rerun composition from the same RC and compare the recorded checksum.
 - Source or workflow correction: use a new reviewed commit and refresh affected checks. If an RC already exists, use a new RC number. A workflow rerun uses the old tagged workflow, so changing `main` cannot repair it.
 - Rejected or cancelled vote: resolve that outcome in ATR, which returns the release to Compose. Preserve the previous tag and vote history in the issue, then prepare and verify the replacement candidate. Do not modify an active vote's files.
 - Vote or publication error: inspect the current round, mail-delivery status, Finish state, and destination files before retrying. Resume a completed transition; do not resend an IPMC vote or republish matching files merely to obtain a green status.
