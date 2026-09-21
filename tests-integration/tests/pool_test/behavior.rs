@@ -19,65 +19,23 @@ use std::cell::Cell;
 use std::convert::Infallible;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use asyncband::pool::ManageObject;
-use asyncband::pool::ObjectStatus;
 use asyncband::pool::QueueStrategy;
 use asyncband::pool::bounded;
 use asyncband::pool::unbounded;
 
-struct CountingManager {
-    next: Arc<AtomicUsize>,
-    detached: Arc<AtomicUsize>,
-}
-
-impl ManageObject for CountingManager {
-    type Object = usize;
-    type Error = Infallible;
-
-    async fn create(&self) -> Result<Self::Object, Self::Error> {
-        Ok(self.next.fetch_add(1, Ordering::Relaxed))
-    }
-
-    async fn is_recyclable(
-        &self,
-        _object: &mut Self::Object,
-        _status: &ObjectStatus,
-    ) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    fn on_detached(&self, object: &mut Self::Object) {
-        self.detached.fetch_add(1, Ordering::Relaxed);
-        *object += 1000;
-    }
-}
+use super::support::Manager;
 
 #[test]
 #[should_panic(expected = "bounded pool max_size must be greater than zero")]
 fn bounded_pool_rejects_zero_capacity() {
-    bounded::Pool::new(
-        bounded::PoolConfig::new(0),
-        CountingManager {
-            next: Arc::new(AtomicUsize::new(0)),
-            detached: Arc::new(AtomicUsize::new(0)),
-        },
-    );
+    bounded::Pool::new(bounded::PoolConfig::new(0), Manager::default());
 }
 
 #[test]
 fn bounded_construction_allocates_idle_storage_lazily() {
-    let pool = bounded::Pool::new(
-        bounded::PoolConfig::new(usize::MAX),
-        CountingManager {
-            next: Arc::new(AtomicUsize::new(0)),
-            detached: Arc::new(AtomicUsize::new(0)),
-        },
-    );
+    let pool = bounded::Pool::new(bounded::PoolConfig::new(usize::MAX), Manager::default());
 
     assert_eq!(pool.status().max_size, usize::MAX);
     assert_eq!(pool.status().current_size, 0);
@@ -86,13 +44,7 @@ fn bounded_construction_allocates_idle_storage_lazily() {
 
 #[tokio::test]
 async fn bounded_last_used_tracks_the_end_of_a_checkout() {
-    let pool = bounded::Pool::new(
-        bounded::PoolConfig::new(1),
-        CountingManager {
-            next: Arc::new(AtomicUsize::new(0)),
-            detached: Arc::new(AtomicUsize::new(0)),
-        },
-    );
+    let pool = bounded::Pool::new(bounded::PoolConfig::new(1), Manager::default());
 
     let object = pool.get().await.unwrap();
     let before_return = Instant::now();
@@ -105,14 +57,8 @@ async fn bounded_last_used_tracks_the_end_of_a_checkout() {
 
 #[tokio::test]
 async fn retain_invokes_detachment_hook_once_per_removed_object() {
-    let detached = Arc::new(AtomicUsize::new(0));
-    let pool = bounded::Pool::new(
-        bounded::PoolConfig::new(4),
-        CountingManager {
-            next: Arc::new(AtomicUsize::new(0)),
-            detached: detached.clone(),
-        },
-    );
+    let manager = Manager::default();
+    let pool = bounded::Pool::new(bounded::PoolConfig::new(4), manager.clone());
 
     let mut objects = vec![];
     for _ in 0..4 {
@@ -125,7 +71,7 @@ async fn retain_invokes_detachment_hook_once_per_removed_object() {
 
     assert_eq!(result.retained, 2);
     assert_eq!(result.removed, [1001, 1003]);
-    assert_eq!(detached.load(Ordering::Relaxed), 2);
+    assert_eq!(manager.detached(), [1, 3]);
     assert_eq!(pool.status().current_size, 2);
     assert_eq!(pool.status().idle_count, 2);
 }

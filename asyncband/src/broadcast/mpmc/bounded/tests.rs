@@ -16,7 +16,7 @@
 // under the License.
 
 // These run under Miri via `cargo x miri`, so they stay single-threaded and small. Behavior
-// reachable from the public API is covered in `tests-integration/broadcast_mpmc_bounded_test.rs`.
+// reachable from the public API is covered in `tests-integration/tests/broadcast_test/bounded.rs`.
 
 use std::task::Waker;
 

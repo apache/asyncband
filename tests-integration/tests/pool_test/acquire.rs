@@ -16,61 +16,30 @@
 // under the License.
 
 use std::future::Future;
-use std::future::poll_fn;
 use std::pin::pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
 
-use asyncband::pool::ManageObject;
-use asyncband::pool::ObjectStatus;
 use asyncband::pool::bounded::Pool;
 use asyncband::pool::bounded::PoolConfig;
 use tests_integration::WakeCounter;
 
-struct Manager {
-    create_calls: Arc<AtomicUsize>,
-    create_ready: Arc<AtomicBool>,
-}
+use super::support::Manager;
+use super::support::ManagerError;
 
-impl ManageObject for Manager {
-    type Object = usize;
-    type Error = ();
-
-    async fn create(&self) -> Result<Self::Object, Self::Error> {
-        let id = self.create_calls.fetch_add(1, Ordering::Relaxed);
-        // Tests explicitly poll again after changing this gate; no executor drives it.
-        poll_fn(|_| {
-            if self.create_ready.load(Ordering::Acquire) {
-                Poll::Ready(Ok(id))
-            } else {
-                Poll::Pending
-            }
-        })
-        .await
-    }
-
-    async fn is_recyclable(
-        &self,
-        _object: &mut Self::Object,
-        _status: &ObjectStatus,
-    ) -> Result<(), Self::Error> {
-        Ok(())
-    }
-}
-
-fn ready<T>(future: impl Future<Output = Result<T, ()>>) -> T {
+fn ready<T>(future: impl Future<Output = Result<T, ManagerError>>) -> T {
     let wakes = Arc::new(WakeCounter::default());
     wakes.wake_by_ref();
     ready_after_wake(future, &wakes)
 }
 
-fn ready_after_wake<T>(future: impl Future<Output = Result<T, ()>>, wakes: &Arc<WakeCounter>) -> T {
+fn ready_after_wake<T>(
+    future: impl Future<Output = Result<T, ManagerError>>,
+    wakes: &Arc<WakeCounter>,
+) -> T {
     let mut future = pin!(future);
     let waker = Waker::from(wakes.clone());
     // Allow cooperative yields, but never poll away a missing notification or spin forever.
@@ -78,7 +47,7 @@ fn ready_after_wake<T>(future: impl Future<Output = Result<T, ()>>, wakes: &Arc<
         assert!(wakes.take() > 0, "missing wake");
         match future.as_mut().poll(&mut Context::from_waker(&waker)) {
             Poll::Ready(Ok(value)) => return value,
-            Poll::Ready(Err(())) => panic!("operation should succeed"),
+            Poll::Ready(Err(ManagerError)) => panic!("operation should succeed"),
             Poll::Pending => {}
         }
     }
@@ -86,14 +55,8 @@ fn ready_after_wake<T>(future: impl Future<Output = Result<T, ()>>, wakes: &Arc<
 }
 
 fn cancel_waiter(return_before_cancel: bool) {
-    let create_calls = Arc::new(AtomicUsize::new(0));
-    let pool = Pool::new(
-        PoolConfig::new(1),
-        Manager {
-            create_calls: create_calls.clone(),
-            create_ready: Arc::new(AtomicBool::new(true)),
-        },
-    );
+    let manager = Manager::default();
+    let pool = Pool::new(PoolConfig::new(1), manager.clone());
     let held = ready(pool.get());
     let mut first_wakes = Arc::new(WakeCounter::default());
     let mut next_wakes = Arc::new(WakeCounter::default());
@@ -112,7 +75,7 @@ fn cancel_waiter(return_before_cancel: bool) {
             .poll(&mut Context::from_waker(&next_waker))
             .is_pending()
     );
-    assert_eq!(create_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(manager.created(), 1);
 
     if return_before_cancel {
         drop(held);
@@ -132,13 +95,13 @@ fn cancel_waiter(return_before_cancel: bool) {
     // A notification from returning the object is just as valid as one from cancellation.
     let object = ready_after_wake(next.as_mut(), &next_wakes);
     assert_eq!(*object, 0);
-    assert_eq!(create_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(manager.created(), 1);
     assert_eq!(pool.status().current_size, 1);
     assert_eq!(pool.status().idle_count, 0);
 
     let mut extra = Box::pin(pool.get());
     assert!(tests_integration::poll_once(extra.as_mut()).is_pending());
-    assert_eq!(create_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(manager.created(), 1);
     drop(extra);
     drop(object);
     assert_eq!(pool.status().idle_count, 1);
@@ -157,18 +120,12 @@ fn cancelling_notified_get_preserves_follower_progress() {
 
 #[test]
 fn cancelling_create_restores_capacity_for_waiting_get() {
-    let create_calls = Arc::new(AtomicUsize::new(0));
-    let create_ready = Arc::new(AtomicBool::new(false));
-    let pool = Pool::new(
-        PoolConfig::new(1),
-        Manager {
-            create_calls: create_calls.clone(),
-            create_ready: create_ready.clone(),
-        },
-    );
+    let manager = Manager::default();
+    let creation = manager.pause_create();
+    let pool = Pool::new(PoolConfig::new(1), manager.clone());
     let mut creating = Box::pin(pool.get());
     assert!(tests_integration::poll_once(creating.as_mut()).is_pending());
-    assert_eq!(create_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(manager.created(), 1);
     assert_eq!(pool.status().current_size, 0);
 
     let wakes = Arc::new(WakeCounter::default());
@@ -179,24 +136,24 @@ fn cancelling_create_restores_capacity_for_waiting_get() {
             .poll(&mut Context::from_waker(&waker))
             .is_pending()
     );
-    assert_eq!(create_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(manager.created(), 1);
     drop(creating);
     assert!(wakes.count() > 0);
     assert_eq!(pool.status().current_size, 0);
     assert_eq!(pool.status().idle_count, 0);
 
-    create_ready.store(true, Ordering::Release);
+    assert!(creation.is_closed());
     let object = ready_after_wake(next.as_mut(), &wakes);
     assert_eq!(*object, 1);
-    assert_eq!(create_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(manager.created(), 2);
     assert_eq!(pool.status().current_size, 1);
     assert_eq!(pool.status().idle_count, 0);
     let mut extra = Box::pin(pool.get());
     assert!(tests_integration::poll_once(extra.as_mut()).is_pending());
-    assert_eq!(create_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(manager.created(), 2);
     drop(extra);
     drop(object);
     assert_eq!(pool.status().idle_count, 1);
     assert_eq!(*ready(pool.get()), 1);
-    assert_eq!(create_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(manager.created(), 2);
 }
