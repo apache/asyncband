@@ -256,3 +256,28 @@ fn wait_owned_reacquires_the_mutex() {
         assert_eq!(*mutex.lock().await, 1);
     });
 }
+
+#[test]
+fn predicate_waits_support_unsized_state() {
+    let mutex: Arc<Mutex<[u8]>> = Arc::new(Mutex::new([0, 0]));
+    let condvar = Condvar::new();
+
+    let guard = mutex.try_lock().unwrap();
+    let mut borrowed = Box::pin(condvar.wait_while(guard, |bytes| bytes[0] == 0));
+    assert!(poll_once(borrowed.as_mut()).is_pending());
+    mutex.try_lock().unwrap()[0] = 1;
+    condvar.notify_one();
+    let guard = expect_ready(poll_once(borrowed.as_mut()));
+    assert_eq!(&*guard, &[1, 0]);
+    assert!(mutex.try_lock().is_none());
+    drop(guard);
+
+    let guard = mutex.clone().try_lock_owned().unwrap();
+    let mut owned = Box::pin(condvar.wait_while_owned(guard, |bytes| bytes[1] == 0));
+    assert!(poll_once(owned.as_mut()).is_pending());
+    mutex.try_lock().unwrap()[1] = 2;
+    condvar.notify_one();
+    let guard = expect_ready(poll_once(owned.as_mut()));
+    assert_eq!(&*guard, &[1, 2]);
+    assert!(mutex.try_lock().is_none());
+}
