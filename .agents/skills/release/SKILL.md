@@ -1,6 +1,6 @@
 ---
 name: release
-description: Prepare, resume, or verify Apache Asyncband releases when release-manager work is requested, including candidate artifacts, votes, publication, and recovery.
+description: Run or resume an Apache Asyncband (Incubating) release, from its tracking issue and frozen source through RC composition, ATR voting, publication, and follow-up; also verify an existing candidate.
 ---
 
 <!--
@@ -22,54 +22,106 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Release Apache Asyncband
+# Release Apache Asyncband (Incubating)
 
-Help the release manager carry out the requested release work, explain the current state, and propose practical next steps. Keep release coordination in the main conversation. Delegate substantial candidate verification when it can run independently, and use the shared license-audit skill for the licensing review. The release manager and project community make release decisions.
+Use the release tracking issue to coordinate the release. The normal path assumes that signing, GitHub environments, ATR, and crates.io Trusted Publishing are already configured: GitHub builds and stages the candidate; ATR runs the votes and publishes the approved source; the final Git tag publishes the convenience crate.
 
-## Resume the requested work
+Follow the steps below for a new release, or resume from the tracking issue and current GitHub/ATR state. For an independent candidate check, use [verification](references/verification.md).
 
-Establish the requested scope and what has already happened from the conversation, current checkout, and relevant external records. Read the affected parts of `asyncband/Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`, `.github/workflows/release.yml`, `.asf.yaml`, and `xtask/src/main.rs` when needed. Use live GitHub, ASF distribution, mailing-list archives, and registry records to resolve uncertain state. Load only the reference for the current phase; an existing candidate does not require repeating preparation or setup.
+## 1. Choose the version and open the tracking issue
 
-Carry forward the user's existing authorization. A status check, review, or plan stays read-only. For execution, complete authorized work and prepare any proposed external action before asking about authorization that is actually missing. Sending vote or announcement messages, publishing, merging, or changing tags needs authorization for that action; opening this skill does not provide it. Preserve the user's work when selecting a checkout or creating a release worktree.
+Choose the stable `VERSION` (`X.Y.Z`) from the changes since the previous published release; the semver check below validates compatibility. Record a source cutoff commit and any work deferred to a later release.
 
-Keep these values and supporting links in the conversation so work can resume across turns:
+Find an existing `Tracking Issue to Release ${VERSION}` before creating one. Otherwise, create it immediately from the [tracking issue template](references/tracking-issue.md). Use it as the release record: link the release PR, checked revisions, workflow runs, candidate, votes, and publication results; update completed items with evidence and keep the next action current.
 
-- `VERSION`: the final crate version, such as `0.7.2`; RCs do not change the package version.
-- `RC`: the positive candidate number; `RC_TAG` is `v${VERSION}-rc.${RC}`.
-- `RELEASE_COMMIT`: the merged release pull request commit bound to the candidate.
-- `RELEASE_DIR`: an absolute working directory outside the repository for artifacts, verification, and SVN checkouts; reuse it while continuing the same candidate.
-- Candidate tag and artifact location, checksum/signature results, relevant CI runs, PPMC/IPMC vote threads and results, and completed publication steps.
+## 2. Audit first, prepare the version, and freeze the source
 
-Report completed work with evidence, the next useful step, and any input still needed. Distinguish pending, failed, and unverified steps. Keep handoff notes in the conversation unless the user requests a file.
+Audit the selected checkout with the `license-audit` skill.
 
-## Choose the current phase
+Prepare a release PR from the chosen scope: update `asyncband/Cargo.toml`, refresh `Cargo.lock` with Cargo, and move the final user-visible changelog entries from `Unreleased` into an undated `v${VERSION}` section, leaving `Unreleased` empty. Include necessary audit corrections; defer unrelated source changes. Respect required CI and merge authorization.
 
-| Current work                                      | Read                                                 |
-| ------------------------------------------------- | ---------------------------------------------------- |
-| Version/changelog PR, RC, artifacts, or staging   | [Candidate preparation](references/candidate.md)     |
-| Checking an existing candidate's artifacts        | [Candidate verification](references/verification.md) |
-| Voting, approved publication, follow-up, or retry | [Publication](references/publication.md)             |
+Review the merged PR's tree, including any changes added since the source cutoff, and update affected audit results. Record its merge commit as `RELEASE_COMMIT` in the issue. Use a detached checkout of this frozen snapshot for all remaining checks and tags:
 
-The phase guides are the maintained release procedure for both people and agents. Existing infrastructure is described in [Infrastructure](references/infrastructure.md); read it only for configuration changes, a new release manager's signing key, or infrastructure troubleshooting.
+```shell
+RELEASE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/asyncband-release.XXXXXX")"
+git fetch https://github.com/apache/asyncband.git main
+git worktree add --detach "${RELEASE_DIR}/checkout" "${RELEASE_COMMIT}"
+cd "${RELEASE_DIR}/checkout"
+test -z "$(git status --porcelain)"
+```
 
-Links within this skill resolve from the containing document and stay within this skill's files. Repository paths such as `.github/workflows/release.yml` resolve from the caller's Asyncband repository root, which may differ from the current working directory. Locate the `license-audit` skill and configured agents by name; if skill discovery is unavailable, read `.agents/skills/license-audit/SKILL.md` from that repository root. Do not infer repository locations by walking upward from this skill's installation directory.
+Keep scratch artifacts outside the repository. If a check requires a correction, prepare a new reviewed commit and replace the recorded snapshot explicitly; recheck the affected results. After an RC tag exists, changed release contents require a new RC number. Never silently move an existing tag or change the files under a vote.
 
-Read `cargo x --help` and the relevant subcommand help before running repository checks.
+## 3. Check the frozen checkout
 
-## Delegate candidate verification
+Read `cargo x --help` and each relevant subcommand's help, then run:
 
-Use the `release_verifier` Codex agent for a substantial check of an existing candidate when the main agent can continue independent work, such as preparing vote materials. Other coding agents can delegate the same candidate-verification guide to a worker or follow it directly. Keep a small status query in the main conversation.
+```shell
+cargo x lint
+cargo x check
+cargo x test --no-capture
+RUSTUP_TOOLCHAIN=1.86.0 cargo x test --no-capture
+cargo x semver --release-version "${VERSION}"
+cargo publish --package asyncband --locked --dry-run
+```
 
-Give the verifier the repository root, candidate commit and tag, version, absolute artifact paths, expected signing fingerprint and its provenance, requested checks, and a scratch directory outside the checkout. It returns the checked revision and artifacts, observed results, and remaining gaps. Preserve the original artifacts for a separate `license-audit` review; the verifier does not duplicate that audit. Collect the results before staging or publishing the candidate.
+Record results against `RELEASE_COMMIT`, including its required CI result. Pass the generated `target/package/asyncband-${VERSION}.crate` to the license review.
 
-## Candidate and publication continuity
+For a semver-major release, including a pre-1.0 minor bump, document and review expected API breaks before rerunning `cargo x semver --release-version "${VERSION}" --acknowledge-breaking-changes`. An incompatible patch release needs a corrected version or source before the snapshot can pass.
 
-The signed source archive approved by the Apache Incubator PMC and published through ASF distribution is the official Apache release. Its name is `apache-asyncband-${VERSION}-incubating-src.tar.gz`. The crates.io package is a convenience distribution from the same approved commit; keep its Cargo-generated name and layout.
+## 4. Push the RC and verify the ATR candidate
 
-Keep the RC tag, commit, artifacts, and vote tied together. A later `main` commit does not invalidate an existing candidate. Reuse an existing signed tag and staged bytes when retrying a transient failure. If candidate content changes or the community rejects it, agree on the replacement candidate and increment `RC`; preserve existing tags rather than rewriting them.
+Use the release manager's personal OpenPGP code-signing key. It must be valid for signing, have a user ID containing their `<asf-id>@apache.org` address, and have its public key published in the [KEYS](https://downloads.apache.org/incubator/asyncband/KEYS) file. List the matching local keys and set `SIGNING_KEY_FINGERPRINT` to the selected key's primary fingerprint:
 
-After both vote results record approval, promote the exact voted source artifacts. The signed final `v${VERSION}` tag uses the approved RC commit and starts the crates.io publication workflow, subject to the configured `release` environment review. Successful CI alone does not establish vote approval. Confirm each external action's result before reporting completion or retrying it.
+```shell
+gpg --list-secret-keys --with-fingerprint '<asf-id>@apache.org'
+SIGNING_KEY_FINGERPRINT='<primary key fingerprint>'
+```
 
-Use the shared `license-audit` skill to examine the relevant checkout or artifact contents. In Codex, the configured `license_auditor` can perform a delegated review; another agent can follow the same skill directly. Provide the candidate revision and actual artifact paths, then discuss the review's evidence and suggestions with the release manager.
+Set `RC` to the next unused positive candidate number. The package and ATR version remain `${VERSION}`; only the Git tag carries the RC suffix:
 
-Follow the current [ASF Release Policy](https://www.apache.org/legal/release-policy.html), [Release Distribution Policy](https://infra.apache.org/release-distribution), [Release Creation Process](https://infra.apache.org/release-publishing.html), and [Incubator release guidance](https://incubator.apache.org/guides/releasemanagement.html). Explain any relevant ambiguity with its source and practical options instead of treating incomplete evidence as a project defect.
+```shell
+RC_TAG="v${VERSION}-rc.${RC}"
+test "$(git rev-parse HEAD)" = "${RELEASE_COMMIT}"
+test -z "$(git status --porcelain)"
+git tag --sign --local-user "${SIGNING_KEY_FINGERPRINT}" "${RC_TAG}" --message "Apache Asyncband (Incubating) ${VERSION} release candidate ${RC}" "${RELEASE_COMMIT}"
+git verify-tag "${RC_TAG}"
+git push https://github.com/apache/asyncband.git "${RC_TAG}"
+```
+
+Follow both workflows for this tag:
+
+- `Release` checks the `${VERSION}` Cargo package.
+- `Compose source release` builds `apache-asyncband-${VERSION}-incubating-src.tar.gz` and its checksum. Approve its `release` environment job to sign with the automated project key and upload the archive, `.asc`, and `.sha512` to ATR project `asyncband`, version `${VERSION}`.
+
+Open the candidate in [ATR](https://releases.apache.org/projects/asyncband), inspect its checks, and record its URL, ATR revision, workflow run, and SHA-512 in the issue. Download that revision and complete [verification](references/verification.md) and `license-audit` on the actual distributions before voting. The `release_verifier` and `license_auditor` agents can perform these checks independently; reuse completed checks for the same candidate.
+
+## 5. Vote and publish through ATR
+
+Follow the [ATR operations guide](references/atr.md). In the configured email-vote mode, the normal sequence is:
+
+1. Review the candidate and vote email, then start the PPMC vote in ATR.
+2. After at least 72 hours and sufficient PPMC votes, review the tally and resolve it as `Passed`. ATR sends the result and starts the IPMC vote automatically; check that thread and supply the PPMC result/tally link and any carried IPMC votes if missing.
+3. After at least another 72 hours and sufficient binding IPMC votes, review and resolve that vote as `Passed`. ATR sends the result and moves the release to Finish.
+4. In Finish, publish the exact approved revision to ASF distribution, or verify the completed automatic publication if it was enabled. Keep the candidate bytes unchanged.
+
+Record both rounds' `[VOTE]` threads and `[RESULT]` messages in the tracking issue using their `lists.apache.org` permalinks.
+
+## 6. Publish the crate and close the issue
+
+Once both votes have passed and the source publication is confirmed, create the signed final tag at the approved commit:
+
+```shell
+git verify-tag "${RC_TAG}"
+test "$(git rev-parse "${RC_TAG}^{commit}")" = "${RELEASE_COMMIT}"
+git tag --sign --local-user "${SIGNING_KEY_FINGERPRINT}" "v${VERSION}" --message "Apache Asyncband (Incubating) ${VERSION}" "${RELEASE_COMMIT}"
+git push https://github.com/apache/asyncband.git "v${VERSION}"
+```
+
+Approve the final tag's `release` environment deployment in `release.yml`, then verify crates.io, docs.rs, and the ASF downloads. Use ATR's Announce action after both distributions are available; review the message and recipients and record the announcement. Submit the changelog publication-date PR, confirm any superseded-release archival, and close the tracking issue after its required items are complete. Remove the detached worktree and scratch directory when no longer needed.
+
+## Resume or recover
+
+Use the issue's frozen commit and candidate revision rather than the latest `main`. Reuse an existing tag after checking its signature and target. For uncertain uploads, votes, or publications, inspect ATR and the destination before repeating an action; signing/upload retries can create a new signature and revision. See [ATR recovery](references/atr.md#recover-without-replacing-voted-files). For a failed crates.io run, check whether that version already exists before retrying; a published package is immutable.
+
+Consult [infrastructure](references/infrastructure.md) for setup or access failures. Resolve repository paths from the caller's supplied repository root.

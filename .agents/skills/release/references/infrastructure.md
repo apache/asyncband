@@ -17,18 +17,18 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Release infrastructure
+# Troubleshoot release services
 
-This is a reference for the existing design, not a recurring release checklist. Consult it when changing configuration, troubleshooting publication, or arranging a new release manager's signing key.
+Start with the failed workflow step or ATR operation, then check the corresponding configuration below.
 
-## crates.io Trusted Publishing
+## Source composition
 
-Trusted Publishing is already configured for `asyncband`: repository `apache/asyncband`, workflow `release.yml`, and environment `release`. Routine releases reuse this configuration.
+For a blocked or failed compose run, check the `release` environment approval and the settings required by `.github/workflows/release-compose.yml`. For ATR authentication or key-recognition failures, compare the project's Trusted Publishing settings with `.asf.yaml` and confirm that the signing key is available in the project's [KEYS](https://downloads.apache.org/incubator/asyncband/KEYS). See [ATR Trusted Publishing](https://releases.apache.org/docs/trusted-publishing).
 
-`.github/workflows/release.yml` obtains a short-lived crates.io token through GitHub OIDC. Only a final `v${VERSION}` tag can enter the publish job; RC tags run package checks. `.asf.yaml` configures version-tag deployments and required reviewers for the `release` environment. Consult those repository files and the live crate settings when diagnosing a mismatch. See the [crates.io Trusted Publishing documentation](https://crates.io/docs/trusted-publishing) for changes to this setup.
+## ATR voting and publication
 
-## Signing and ASF distribution
+Check Asyncband's podling status and voting settings in ATR, and compare its synchronized settings with `.asf.yaml`. For publication failures, inspect Finish's result and the destination `https://dist.apache.org/repos/dist/release/incubator/asyncband/${VERSION}/`. Published files propagate to `https://downloads.apache.org/incubator/asyncband/${VERSION}/`. See [ATR publication](https://releases.apache.org/docs/promoting-to-release).
 
-Candidates are staged under `https://dist.apache.org/repos/dist/dev/incubator/asyncband/`; approved releases are promoted to `https://dist.apache.org/repos/dist/release/incubator/asyncband/`. The public verification key list is `https://downloads.apache.org/incubator/asyncband/KEYS`.
+## crates.io publication
 
-The release manager uses an ASF-associated signing key published in the existing project `KEYS` file. For a new signing key, follow the [ASF release signing guide](https://infra.apache.org/release-signing.html), verify the fingerprint through an independent channel, and add the public key while preserving existing keys. Reuse established distribution areas and signing configuration; investigate a reported access or verification failure before proposing infrastructure changes.
+Check the final tag's run of `.github/workflows/release.yml` and its `release` environment approval. For an authentication failure, confirm that the crate's Trusted Publisher matches repository `apache/asyncband`, workflow `release.yml`, and environment `release`. See [crates.io Trusted Publishing](https://crates.io/docs/trusted-publishing).

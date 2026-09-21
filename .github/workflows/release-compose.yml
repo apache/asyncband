@@ -113,7 +113,7 @@ jobs:
     needs: compose
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # Keep signing secrets in this environment so access requires release approval.
+    # Release approval gates signing with the ASF-provisioned secrets and ATR upload.
     environment:
       name: release
       url: https://releases.apache.org/projects/asyncband
@@ -136,11 +136,11 @@ jobs:
         env:
           ARCHIVE: ${{ needs.compose.outputs.archive }}
           IMPORTED_FINGERPRINT: ${{ steps.gpg.outputs.fingerprint }}
-          SIGNING_FINGERPRINT: ${{ vars.SOURCE_SIGNING_FINGERPRINT }}
+          SIGNING_FINGERPRINT: ${{ secrets.SOURCE_SIGNING_FINGERPRINT }}
         run: |
           set -euo pipefail
           if [[ ! "${SIGNING_FINGERPRINT}" =~ ^([0-9A-F]{40}|[0-9A-F]{64})$ ]]; then
-            echo "::error::SOURCE_SIGNING_FINGERPRINT must be the full uppercase primary fingerprint."
+            echo "::error::The SOURCE_SIGNING_FINGERPRINT secret must be the full uppercase primary fingerprint."
             exit 1
           fi
           if [[ "${IMPORTED_FINGERPRINT}" != "${SIGNING_FINGERPRINT}" ]]; then
