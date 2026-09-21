@@ -1,6 +1,6 @@
 ---
 name: release
-description: Run or resume an Apache Asyncband release, from its tracking issue and frozen source through RC composition, ATR voting, publication, and follow-up; also verify an existing candidate.
+description: Run or resume an Apache Asyncband (Incubating) release, from its tracking issue and frozen source through RC composition, ATR voting, publication, and follow-up; also verify an existing candidate.
 ---
 
 <!--
@@ -22,7 +22,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Release Apache Asyncband
+# Release Apache Asyncband (Incubating)
 
 Use the release tracking issue to coordinate the release. The normal path assumes that signing, GitHub environments, ATR, and crates.io Trusted Publishing are already configured: GitHub builds and stages the candidate; ATR runs the votes and publishes the approved source; the final Git tag publishes the convenience crate.
 
@@ -71,7 +71,7 @@ For a semver-major release, including a pre-1.0 minor bump, document and review 
 
 ## 4. Push the RC and verify the ATR candidate
 
-Use the release manager's personal OpenPGP code-signing key. It must be valid for signing, have a user ID containing their `<asf-id>@apache.org` address, and have its public key published in Asyncband's [KEYS](https://downloads.apache.org/incubator/asyncband/KEYS). List the matching local keys and set `SIGNING_KEY_FINGERPRINT` to the selected key's primary fingerprint:
+Use the release manager's personal OpenPGP code-signing key. It must be valid for signing, have a user ID containing their `<asf-id>@apache.org` address, and have its public key published in the [KEYS](https://downloads.apache.org/incubator/asyncband/KEYS) file. List the matching local keys and set `SIGNING_KEY_FINGERPRINT` to the selected key's primary fingerprint:
 
 ```shell
 gpg --list-secret-keys --with-fingerprint '<asf-id>@apache.org'
@@ -84,8 +84,7 @@ Set `RC` to the next unused positive candidate number. The package and ATR versi
 RC_TAG="v${VERSION}-rc.${RC}"
 test "$(git rev-parse HEAD)" = "${RELEASE_COMMIT}"
 test -z "$(git status --porcelain)"
-git tag --sign --local-user "${SIGNING_KEY_FINGERPRINT}" "${RC_TAG}" \
-  --message "Apache Asyncband ${VERSION} release candidate ${RC}" "${RELEASE_COMMIT}"
+git tag --sign --local-user "${SIGNING_KEY_FINGERPRINT}" "${RC_TAG}" --message "Apache Asyncband (Incubating) ${VERSION} release candidate ${RC}" "${RELEASE_COMMIT}"
 git verify-tag "${RC_TAG}"
 git push https://github.com/apache/asyncband.git "${RC_TAG}"
 ```
@@ -115,12 +114,11 @@ Once both votes have passed and the source publication is confirmed, create the 
 ```shell
 git verify-tag "${RC_TAG}"
 test "$(git rev-parse "${RC_TAG}^{commit}")" = "${RELEASE_COMMIT}"
-git tag --sign --local-user "${SIGNING_KEY_FINGERPRINT}" "v${VERSION}" \
-  --message "Apache Asyncband ${VERSION}" "${RELEASE_COMMIT}"
+git tag --sign --local-user "${SIGNING_KEY_FINGERPRINT}" "v${VERSION}" --message "Apache Asyncband (Incubating) ${VERSION}" "${RELEASE_COMMIT}"
 git push https://github.com/apache/asyncband.git "v${VERSION}"
 ```
 
-Approve the final tag's `release` environment deployment in `release.yml`, then verify crates.io, docs.rs, and the ASF downloads. Use ATR's Announce action after both distributions are available; review the message and recipients and record the sent announcement. Submit the changelog publication-date PR, confirm any superseded-release archival, and close the tracking issue after its required items are complete. Remove the detached worktree and scratch directory when no longer needed.
+Approve the final tag's `release` environment deployment in `release.yml`, then verify crates.io, docs.rs, and the ASF downloads. Use ATR's Announce action after both distributions are available; review the message and recipients and record the announcement. Submit the changelog publication-date PR, confirm any superseded-release archival, and close the tracking issue after its required items are complete. Remove the detached worktree and scratch directory when no longer needed.
 
 ## Resume or recover
 
