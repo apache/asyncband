@@ -21,7 +21,7 @@ under the License.
 
 Use title `Tracking Issue to Release ${VERSION}` in `apache/asyncband`. Keep the release's current state, check results, and next action in this issue so another release manager can take over.
 
-Fill in known values and leave future evidence pending. With `gh`, send the prepared body through standard input using `--body-file -` for creation and updates. Preserve other participants' edits. Do not check an item merely because a command was suggested, a job started, or an earlier candidate passed; attach the checked revision and outcome.
+Fill in known values and leave unfinished items unchecked. Record the checked revision and result for each completed item. With `gh`, pass the body through standard input using `--body-file -` and preserve other participants' edits.
 
 Set `RUNBOOK_COMMIT` to the full SHA of the upstream commit containing the runbook used when opening the issue. Keep this link pinned throughout the release.
 
@@ -76,4 +76,4 @@ Tag signer / source signer fingerprints and provenance: pending
 - [ ] Close this issue after the preceding required items are complete.
 ```
 
-For a replacement candidate, retain the previous tag, commit, ATR revision, and vote outcome in the issue history. Update the active candidate fields, invalidate checks affected by changed contents, and make the next action explicit. Keep local scratch paths in the conversation; another release manager should be able to resume from the public issue and artifact links.
+For a replacement candidate, retain the previous tag, commit, ATR revision, and vote outcome in the issue history. Update the active candidate fields, invalidate checks affected by changed contents, and make the next action explicit.

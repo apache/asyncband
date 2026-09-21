@@ -26,21 +26,21 @@ under the License.
 
 Use the release tracking issue to coordinate the release and hand it to another PMC member. The normal path assumes signing, GitHub environments, ATR, and crates.io Trusted Publishing are already configured: GitHub builds and stages the candidate; ATR runs the votes and publishes the approved source; the final Git tag publishes the convenience crate.
 
-For an actual release, follow the steps below. For a status check, resume from the issue and live workflow/ATR state. For an independent candidate check, use [verification](references/verification.md). A request to edit this skill does not start a release. Carry forward the user's authorization; prepare concrete tags, messages, and publication actions before asking only for authorization that is still missing. When the release manager operates ATR, provide the current page and next action, then confirm the result before proceeding.
+Follow the steps below for a new release, or resume from the tracking issue and current GitHub/ATR state. For an independent candidate check, use [verification](references/verification.md).
 
 ## 1. Choose the version and open the tracking issue
 
-Set `VERSION` to the target stable crate version, such as `0.7.3`, after comparing the previous published crate and changes since its release tag. Use the user's proposed version when compatible; `cargo x semver` below verifies the decision. Record a source cutoff commit and defer unrelated pending work so the release does not keep following `main`.
+Choose the stable `VERSION` (`X.Y.Z`) from the changes since the previous published release; the semver check below validates compatibility. Record a source cutoff commit and any work deferred to a later release.
 
 Find an existing `Tracking Issue to Release ${VERSION}` before creating one. Otherwise create it immediately from the [tracking issue template](references/tracking-issue.md). Use it as the release record: link the release PR, checked revisions, workflow runs, candidate, votes, and publication results; update completed items with evidence and keep the next action current.
 
 ## 2. Audit first, prepare the version, and freeze the source
 
-Start with the `license-audit` skill on the selected checkout. Resolve release-blocking licensing or attribution findings before packaging. The configured `license_auditor` can perform this review independently. A checkout audit does not yet verify the distributed archive or Cargo package.
+Audit the selected checkout with the `license-audit` skill.
 
 Prepare a release PR from the chosen scope: update `asyncband/Cargo.toml`, refresh `Cargo.lock` with Cargo, and move the final user-visible changelog entries from `Unreleased` into an undated `v${VERSION}` section, leaving `Unreleased` empty. Include necessary audit corrections; defer unrelated source changes. Respect required CI and merge authorization.
 
-Before freezing, check that the merged PR's tree matches the reviewed release scope. If `main` advanced during preparation and the merge includes additional changes, review them and update the scope and affected audit results first. Record the PR's merge commit, not a later `main` HEAD, as `RELEASE_COMMIT` in the issue. This freezes the entire release tree, including manifests, licensing, and documentation. `main` may then advance without changing this release. Use a detached checkout for all remaining checks and tags:
+Review the merged PR's tree, including any changes added since the source cutoff, and update affected audit results. Record its merge commit as `RELEASE_COMMIT` in the issue. Use a detached checkout of this frozen snapshot for all remaining checks and tags:
 
 ```shell
 RELEASE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/asyncband-release.XXXXXX")"
@@ -65,7 +65,7 @@ cargo x semver --release-version "${VERSION}"
 cargo publish --package asyncband --locked --dry-run
 ```
 
-Record results against `RELEASE_COMMIT`, including the required CI result for that commit. Do not use `--allow-dirty`. Pass the generated `target/package/asyncband-${VERSION}.crate` to the license review to check the actual Cargo distribution. If audit fixes changed the selected source, include those changes in the final review.
+Record results against `RELEASE_COMMIT`, including its required CI result. Pass the generated `target/package/asyncband-${VERSION}.crate` to the license review.
 
 For a semver-major release, including a pre-1.0 minor bump, document and review expected API breaks before rerunning `cargo x semver --release-version "${VERSION}" --acknowledge-breaking-changes`. An incompatible patch release needs a corrected version or source before the snapshot can pass.
 
@@ -85,10 +85,10 @@ git push https://github.com/apache/asyncband.git "${RC_TAG}"
 
 Follow both workflows for this tag:
 
-- `Release` checks the unchanged `${VERSION}` Cargo package and skips crates.io publication.
+- `Release` checks the `${VERSION}` Cargo package.
 - `Compose source release` builds `apache-asyncband-${VERSION}-incubating-src.tar.gz` and its checksum. Approve its `release` environment job to sign with the automated project key and upload the archive, `.asc`, and `.sha512` to ATR project `asyncband`, version `${VERSION}`.
 
-Open the uploaded candidate in [ATR](https://releases.apache.org/projects/asyncband), inspect its checks, and record its actual URL and revision with the tag, commit, workflow run, and SHA-512. The ATR revision is not the Git RC number. Download that revision and follow [verification](references/verification.md): check signatures and checksum, compare the source contents with the RC commit, and test the build and Cargo package. Use `release_verifier` for substantial independent verification, including the archive rebuild required for automated signing, and the `license-audit` skill (or `license_auditor` agent) for the actual distributions. Collect both results before voting; reuse completed checks for the same candidate.
+Open the candidate in [ATR](https://releases.apache.org/projects/asyncband), inspect its checks, and record its URL, ATR revision, workflow run, and SHA-512 in the issue. Download that revision and complete [verification](references/verification.md) and `license-audit` on the actual distributions before voting. The `release_verifier` and `license_auditor` agents can perform these checks independently; reuse completed checks for the same candidate.
 
 ## 5. Vote and publish through ATR
 
@@ -99,7 +99,7 @@ Follow the [ATR operations guide](references/atr.md). In the configured email-vo
 3. After at least another 72 hours and sufficient binding IPMC votes, review and resolve that vote as `Passed`. ATR sends the result and moves the release to Finish.
 4. In Finish, publish the exact approved revision to ASF distribution, or verify the completed automatic publication if it was enabled. Keep the candidate bytes unchanged.
 
-Record both rounds' vote and result links in the issue. Do not send duplicate vote/result emails yourself. GitHub checks and a passing PPMC vote alone do not authorize an ASF release.
+Record both rounds' vote and result links in the issue.
 
 ## 6. Publish the crate and close the issue
 
@@ -113,10 +113,10 @@ git tag --sign --local-user "${TAG_SIGNING_FINGERPRINT}" "v${VERSION}" \
 git push https://github.com/apache/asyncband.git "v${VERSION}"
 ```
 
-Approve the final tag's `release` environment deployment in `release.yml`, then verify crates.io, docs.rs, and the ASF downloads. Final tags do not compose another source candidate. Use ATR's Announce action after both distributions are available; review the message and recipients and record the sent announcement. Submit the changelog publication-date PR, confirm any superseded-release archival, and close the tracking issue only after its required items are complete. Remove the detached worktree and scratch directory when no longer needed.
+Approve the final tag's `release` environment deployment in `release.yml`, then verify crates.io, docs.rs, and the ASF downloads. Use ATR's Announce action after both distributions are available; review the message and recipients and record the sent announcement. Submit the changelog publication-date PR, confirm any superseded-release archival, and close the tracking issue after its required items are complete. Remove the detached worktree and scratch directory when no longer needed.
 
 ## Resume or recover
 
 Use the issue's frozen commit and candidate revision rather than the latest `main`. Reuse an existing tag after checking its signature and target. For uncertain uploads, votes, or publications, inspect ATR and the destination before repeating an action; signing/upload retries can create a new signature and revision. See [ATR recovery](references/atr.md#recover-without-replacing-voted-files). For a failed crates.io run, check whether that version already exists before retrying; a published package is immutable.
 
-Consult [infrastructure](references/infrastructure.md) only for a concrete setup or access problem. Resolve repository paths from the caller's supplied repository root; skill reference links stay inside this directory. Discover `license-audit` by name, or use `.agents/skills/license-audit/SKILL.md` under that root.
+Consult [infrastructure](references/infrastructure.md) for setup or access failures. Resolve repository paths from the caller's supplied repository root.

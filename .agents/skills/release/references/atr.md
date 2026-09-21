@@ -19,7 +19,7 @@ under the License.
 
 # Operate the release in ATR
 
-Use the [Asyncband project](https://releases.apache.org/projects/asyncband) with the release manager's ASF login. The normal interface is the ATR website. The repository configures email voting; voters reply on the mailing lists and the release manager reviews the tally in ATR. Do not switch to Trusted Vote mode as an incidental release step.
+Open the [Asyncband project](https://releases.apache.org/projects/asyncband) with the release manager's ASF login. Use email voting: voters reply on the mailing lists and the release manager reviews the tally in ATR.
 
 ## Start the vote
 
@@ -27,31 +27,27 @@ Use the [Asyncband project](https://releases.apache.org/projects/asyncband) with
 2. Open the voting form. Set the first-round recipient to `dev@asyncband.apache.org`, the second-round recipient to `general@incubator.apache.org`, and the minimum duration to at least 72 hours. The second round uses that duration too.
 3. Review the generated subject and body. Identify Apache Asyncband (Incubating), `${VERSION}`, and the RC; include the ATR candidate/revision, RC tag and commit, source checksum, KEYS and signer information, changelog, and verification evidence. Link ATR as the location of the voted files. Submit **Send vote email** when sending the vote is authorized, then record its archive link and closing time.
 
-The automatic publication option is optional. Enable it only when publication after successful completion of both rounds is within the authorized scope, and confirm the download suffix is `${VERSION}`. For podlings, ATR carries this setting into round two and publishes only after that round passes; it does not publish on PPMC approval alone. Otherwise publish manually in Finish.
+If publication is authorized, automatic publication can publish the source after IPMC approval; confirm the download suffix is `${VERSION}` when selecting it. Otherwise publish in Finish after both votes pass.
 
 ## Resolve both rounds
 
 Each round needs at least 72 hours, at least three eligible `+1` votes, and more eligible `+1` than `-1` votes. Eligibility is PPMC membership for round one and IPMC membership for round two. Allow at least six days for the two sequential votes. See the [Incubator vote rules](https://incubator.apache.org/cookbook/#two-phase-vote-on-podling-releases).
 
 1. After the PPMC period, open the vote resolution page. Compare ATR's email tally with the thread, including voters' roles and any carried IPMC votes, and review the result body. Select `Passed` only if the requirements are met, then resolve the vote.
-2. ATR sends the PPMC result and automatically starts the IPMC vote on the selected second-round list. Confirm delivery and record both links. Check the actual IPMC email for the PPMC result, its `lists.apache.org` tally link, and any IPMC votes carried from round one. ATR currently regenerates this email from the project template without adding that evidence; if missing, have the release manager supplement the existing IPMC thread. Do not start another vote. The files stay in the same candidate revision.
+2. ATR sends the PPMC result and automatically starts the IPMC vote on the selected second-round list. Confirm delivery and record both links. Check that the IPMC thread includes the PPMC result, its `lists.apache.org` tally link, and any IPMC votes carried from round one; supplement that thread with any missing evidence.
 3. After the IPMC period, review its binding tally, including eligible votes carried from round one and counting only each voter's latest vote, and review the result body before resolving it as `Passed`. ATR sends the result, also reports the passing result to the first-round thread, and moves the release to Finish. Record both vote results before final publication.
-
-These transitions are implemented for email votes in ATR's [vote resolution](https://github.com/apache/tooling-trusted-releases/blob/0d156e9a/atr/storage/writers/vote.py#L676). A recorded state change and an email delivery can succeed or fail separately; check both before reporting completion.
 
 ## Publish and announce
 
-In Finish, inspect **Publish to ASF Distribution Area**. If automatic publication already completed, record its result. Otherwise confirm the approved revision and destination `dist/release/incubator/asyncband/${VERSION}/`, then use the publish action. ATR commits the voted files to SVN; record the SVN revision and compare the published archive, signature, and checksum with the candidate. No local rebuild, re-signing, or `svn move` is needed.
+In Finish, inspect **Publish to ASF Distribution Area**. If automatic publication already completed, record its result. Otherwise confirm the approved revision and destination `dist/release/incubator/asyncband/${VERSION}/`, then use the publish action. ATR commits the voted files to SVN; record the SVN revision and compare the published archive, signature, and checksum with the candidate.
 
-Return to the main runbook to push the final tag and verify crates.io publication. Once both the ASF downloads and the crate are available, use **Announce** in ATR, review the recipients and message, and submit it. ATR sends the announcement and updates its release catalog. Record the announcement link in the tracking issue instead of sending the same email manually. See [ATR publication](https://releases.apache.org/docs/promoting-to-release).
+Return to the main runbook to push the final tag and verify crates.io publication. Once both the ASF downloads and the crate are available, use **Announce** in ATR, review the recipients and message, and submit it. ATR sends the announcement and updates its release catalog. Record the announcement link in the tracking issue. See [ATR publication](https://releases.apache.org/docs/promoting-to-release).
 
-Use ATR's archive action or the configured auto-archive option for superseded releases. Confirm the archive and distribution results; follow up on any cleanup warning rather than assuming a catalog entry proves completion.
+Use ATR's archive action or the configured auto-archive option for superseded releases. Confirm archival and removal from active downloads, and resolve any cleanup warnings.
 
 ## API and CLI alternative
 
-ATR has a [CLI](https://github.com/apache/tooling-releases-client) and authenticated API. The CLI exposes `atr vote start`, `atr vote tabulate`, `atr vote resolve`, and `atr announce`; the server exposes `/api/vote/start`, `/api/vote/tabulate`, `/api/vote/resolve`, and `/api/release/announce`. See the [CLI command reference](https://github.com/apache/tooling-releases-client/blob/main/COMMANDS.md) and [server API](https://github.com/apache/tooling-trusted-releases/blob/0d156e9a/atr/api/__init__.py).
-
-Use the website for the ordinary handoff: it exposes the current tally, editable result email, and publication state together. The CLI/API are evolving, and the current API's vote resolution sends only a short generic result body. If automation is explicitly requested, check the installed client's help and current API schema and use existing authorized credentials; do not invent endpoints or introduce vote/finish workflows as part of a routine release. Our registered GitHub workflow handles composition only.
+Use the website to review the tally, edit emails, and publish. For scripted operations, consult the [CLI](https://github.com/apache/tooling-releases-client) and [server API](https://github.com/apache/tooling-trusted-releases/blob/0d156e9a/atr/api/__init__.py). Check the client's help, current API schema, and generated vote/result messages against the steps above.
 
 ## Recover without replacing voted files
 
