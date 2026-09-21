@@ -193,7 +193,7 @@ impl Condvar {
     /// [`notify_one`](Self::notify_one) but has not yet reacquired the mutex, the notification is
     /// passed to another task that is waiting at that point, if one exists. It is never buffered
     /// for a future waiter.
-    pub async fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
+    pub async fn wait<'a, T: ?Sized>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
         let mutex = mutex::guard_lock(&guard);
         let notify_one_baton = Wait {
             condvar: self,
@@ -212,7 +212,7 @@ impl Condvar {
     ///
     /// This has the same notification and cancellation semantics as [`wait`](Self::wait), but
     /// accepts and returns an owned guard.
-    pub async fn wait_owned<T>(&self, guard: OwnedMutexGuard<T>) -> OwnedMutexGuard<T> {
+    pub async fn wait_owned<T: ?Sized>(&self, guard: OwnedMutexGuard<T>) -> OwnedMutexGuard<T> {
         let mutex = mutex::owned_guard_lock(&guard);
         let notify_one_baton = Wait {
             condvar: self,
@@ -263,7 +263,7 @@ impl Condvar {
     ///
     /// Each wait iteration has the same cancellation semantics as [`wait`](Self::wait). Cancelling
     /// drops the mutex guard; mutations already made by `condition` are not rolled back.
-    pub async fn wait_while<'a, T, F>(
+    pub async fn wait_while<'a, T: ?Sized, F>(
         &self,
         mut guard: MutexGuard<'a, T>,
         mut condition: F,
@@ -314,7 +314,7 @@ impl Condvar {
     /// Each wait iteration has the same cancellation semantics as
     /// [`wait_owned`](Self::wait_owned). Cancelling drops the owned mutex guard; mutations already
     /// made by `condition` are not rolled back.
-    pub async fn wait_while_owned<T, F>(
+    pub async fn wait_while_owned<T: ?Sized, F>(
         &self,
         mut guard: OwnedMutexGuard<T>,
         mut condition: F,

@@ -41,6 +41,7 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
+* Allow `Condvar` waits with unsized mutex contents, including slices and trait objects, for both borrowed and owned guards.
 * Allow manual unbounded pools to use non-`Send` factory closures with `get_or_create`, including factories that borrow task-local state.
 * Allow `watch::channel` to store non-`Clone` values for publication and change notification; only owning reads through `Receiver::get` and `Receiver::recv` require `Clone`.
 * Finish releasing buffered bounded MPSC messages even if one message destructor panics.

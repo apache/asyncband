@@ -32,8 +32,11 @@ use crate::semaphore::Semaphore;
 ///
 /// This type also intentionally omits "poisoning" semantics. If an initialization future is
 /// cancelled or panics, the attempt is abandoned and other tasks may retry the operation.
-/// Encode partial-initialization detection in the future itself (e.g. return a `Result`)
-/// when needed.
+/// Retrying does not undo side effects from the abandoned attempt.
+///
+/// [`call_once`](Self::call_once) accepts only initializers returning `()`. For fallible
+/// initialization, enable the `once-cell` feature and use `OnceCell::get_or_try_init`, which leaves
+/// the cell empty on error. Use `OnceCell<()>` when no initialized value needs to be stored.
 ///
 /// See the [module level documentation](super) for additional context.
 ///
