@@ -316,6 +316,10 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     ///
     /// If no idle object is available, this method calls [`ManageObject::create`].
     ///
+    /// Idle objects are checked with [`ManageObject::is_recyclable`]. A failed check detaches the
+    /// object and retries checkout; its error is discarded. Only errors from
+    /// [`ManageObject::create`] are returned to the caller.
+    ///
     /// # Cancel safety
     ///
     /// Cancelling while creating a new object leaves the pool unchanged. Cancelling while

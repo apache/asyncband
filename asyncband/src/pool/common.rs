@@ -89,7 +89,9 @@ pub trait ManageObject: Send + Sync {
 
     /// Whether the object `o` is recyclable.
     ///
-    /// Returns `Ok(())` if the object is recyclable; otherwise, returns an error.
+    /// Returns `Ok(())` if the object is recyclable. On error, the pool detaches the object and
+    /// retries checkout with another idle object or creates a replacement. The error is discarded
+    /// rather than returned by `Pool::get`; record any needed diagnostics in this implementation.
     fn is_recyclable(
         &self,
         o: &mut Self::Object,

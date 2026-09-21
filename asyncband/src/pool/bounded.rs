@@ -264,6 +264,10 @@ impl<M: ManageObject> Pool<M> {
     /// If the pool has reached its maximum size and has no idle object, this method waits until an
     /// object is returned to or detached from the pool.
     ///
+    /// Idle objects are checked with [`ManageObject::is_recyclable`]. A failed check detaches the
+    /// object and retries checkout; its error is discarded. Only errors from
+    /// [`ManageObject::create`] are returned to the caller.
+    ///
     /// # Cancel safety
     ///
     /// Cancelling while waiting for capacity or creating a new object restores the reserved pool
