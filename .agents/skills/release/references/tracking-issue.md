@@ -23,6 +23,8 @@ Use title `Tracking Issue to Release ${VERSION}` in `apache/asyncband`. Keep the
 
 Fill in known values and leave future evidence pending. With `gh`, send the prepared body through standard input using `--body-file -` for creation and updates. Preserve other participants' edits. Do not check an item merely because a command was suggested, a job started, or an earlier candidate passed; attach the checked revision and outcome.
 
+Set `RUNBOOK_COMMIT` to the full SHA of the upstream commit containing the runbook used when opening the issue. Keep this link pinned throughout the release.
+
 ```markdown
 Release manager: @<login>
 Target version: <VERSION>
@@ -31,7 +33,7 @@ Source cutoff: <commit and deferred work, if any>
 Release PR: pending
 Frozen release commit: pending
 Current phase / next action: initial license audit
-Runbook: https://github.com/apache/asyncband/blob/main/.agents/skills/release/SKILL.md
+Runbook: https://github.com/apache/asyncband/blob/<RUNBOOK_COMMIT>/.agents/skills/release/SKILL.md
 
 ## Prepare and freeze
 
