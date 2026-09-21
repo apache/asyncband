@@ -71,13 +71,20 @@ For a semver-major release, including a pre-1.0 minor bump, document and review 
 
 ## 4. Push the RC and verify the ATR candidate
 
-Set `RC` to the next unused positive candidate number and `TAG_SIGNING_FINGERPRINT` to the release manager's verified signing-key fingerprint. The package and ATR version remain `${VERSION}`; only the Git tag carries the RC suffix:
+Use the release manager's personal OpenPGP code-signing key. It must be valid for signing, have a user ID containing their `<asf-id>@apache.org` address, and have its public key published in Asyncband's [KEYS](https://downloads.apache.org/incubator/asyncband/KEYS). List the matching local keys and set `SIGNING_KEY_FINGERPRINT` to the selected key's primary fingerprint:
+
+```shell
+gpg --list-secret-keys --with-fingerprint '<asf-id>@apache.org'
+SIGNING_KEY_FINGERPRINT='<primary key fingerprint>'
+```
+
+Set `RC` to the next unused positive candidate number. The package and ATR version remain `${VERSION}`; only the Git tag carries the RC suffix:
 
 ```shell
 RC_TAG="v${VERSION}-rc.${RC}"
 test "$(git rev-parse HEAD)" = "${RELEASE_COMMIT}"
 test -z "$(git status --porcelain)"
-git tag --sign --local-user "${TAG_SIGNING_FINGERPRINT}" "${RC_TAG}" \
+git tag --sign --local-user "${SIGNING_KEY_FINGERPRINT}" "${RC_TAG}" \
   --message "Apache Asyncband ${VERSION} release candidate ${RC}" "${RELEASE_COMMIT}"
 git verify-tag "${RC_TAG}"
 git push https://github.com/apache/asyncband.git "${RC_TAG}"
@@ -108,7 +115,7 @@ Once both votes have passed and the source publication is confirmed, create the 
 ```shell
 git verify-tag "${RC_TAG}"
 test "$(git rev-parse "${RC_TAG}^{commit}")" = "${RELEASE_COMMIT}"
-git tag --sign --local-user "${TAG_SIGNING_FINGERPRINT}" "v${VERSION}" \
+git tag --sign --local-user "${SIGNING_KEY_FINGERPRINT}" "v${VERSION}" \
   --message "Apache Asyncband ${VERSION}" "${RELEASE_COMMIT}"
 git push https://github.com/apache/asyncband.git "v${VERSION}"
 ```

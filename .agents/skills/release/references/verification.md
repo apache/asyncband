@@ -29,7 +29,7 @@ Obtain signing fingerprints from trusted project key records and import verifica
 
 ## Verify identity and source contents
 
-1. Record the resolved commit, ATR revision, and artifact paths. Check the RC tag's commit and signature against `RELEASE_COMMIT` and the release manager's expected tag-signing fingerprint.
+1. Record the resolved commit, ATR revision, and artifact paths. Check the RC tag's commit and signature against `RELEASE_COMMIT` and the release manager's personal signing-key fingerprint recorded in the issue.
 2. Verify the downloaded archive's SHA-512 against its checksum file and the compose summary. Verify its detached signature against the expected source-signing fingerprint, recording the primary fingerprint when a signing subkey is used. The archive signer can differ from the Git tag signer; check both identities.
 3. Inspect the archive member list before extracting. Check the expected `apache-asyncband-${VERSION}-incubating-src/` root, reject paths that escape the extraction directory, and inspect symlinks without following them outside the extracted tree.
 4. Compare the archived source inventory, file contents, executable bits, and symlink targets with `git archive` of the resolved candidate commit, using a separate temporary extraction. Report missing, added, or changed entries with concrete paths. Check the package version in the extracted manifest against `VERSION`.
