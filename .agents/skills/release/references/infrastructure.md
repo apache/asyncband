@@ -33,6 +33,6 @@ Git tags are signed with the release manager's individual key. Source archives a
 
 ## Final publication
 
-ATR publishes approved files to `https://dist.apache.org/repos/dist/release/incubator/asyncband/${VERSION}/`; they propagate to `https://downloads.apache.org/incubator/asyncband/${VERSION}/`. Inspect Finish's actual destination and result when diagnosing publication. Legacy releases retain their recorded vote artifacts and provenance.
+ATR publishes approved files to `https://dist.apache.org/repos/dist/release/incubator/asyncband/${VERSION}/`; they propagate to `https://downloads.apache.org/incubator/asyncband/${VERSION}/`. Inspect Finish's actual destination and result when diagnosing publication.
 
 crates.io Trusted Publishing is configured for repository `apache/asyncband`, workflow `release.yml`, and environment `release`. Only the final `v${VERSION}` tag enters the publication job, with a separate environment approval and short-lived OIDC token. Consult the workflow and [crates.io documentation](https://crates.io/docs/trusted-publishing) for an authentication failure; do not repeat initial setup for each release.

@@ -19,7 +19,7 @@ under the License.
 
 # Release tracking issue
 
-Use title `Tracking Issue to Release ${VERSION}` in `apache/asyncband`. The [0.7.2 issue](https://github.com/apache/asyncband/issues/285) is historical context; its manual packaging, SVN staging, and initial setup tasks are superseded. The issue below is the handoff record, not a request to perform every external action regardless of the user's scope.
+Use title `Tracking Issue to Release ${VERSION}` in `apache/asyncband`. Keep the release's current state, check results, and next action in this issue so another release manager can take over.
 
 Fill in known values and leave future evidence pending. With `gh`, send the prepared body through standard input using `--body-file -` for creation and updates. Preserve other participants' edits. Do not check an item merely because a command was suggested, a job started, or an earlier candidate passed; attach the checked revision and outcome.
 
@@ -58,7 +58,7 @@ Source SHA-512: pending
 Tag signer / source signer fingerprints and provenance: pending
 
 - [ ] Push the signed RC tag at the frozen commit; confirm both release workflows and ATR upload.
-- [ ] Download and verify the ATR revision: signatures, checksum, source identity, reproducibility, build, and packaging.
+- [ ] Download and verify the ATR revision: signatures, checksum, source contents against the RC commit, independent archive rebuild for automated signing, build, and packaging.
 - [ ] Complete the license review of the actual source archive and Cargo distribution; address ATR findings.
 
 ## Vote and publish

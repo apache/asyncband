@@ -32,7 +32,7 @@ For an actual release, follow the steps below. For a status check, resume from t
 
 Set `VERSION` to the target stable crate version, such as `0.7.3`, after comparing the previous published crate and changes since its release tag. Use the user's proposed version when compatible; `cargo x semver` below verifies the decision. Record a source cutoff commit and defer unrelated pending work so the release does not keep following `main`.
 
-Find an existing `Tracking Issue to Release ${VERSION}` before creating one. Otherwise create it immediately from the [tracking issue template](references/tracking-issue.md). Use it as the release record: link the release PR, checked revisions, workflow runs, candidate, votes, and publication results; update completed items with evidence and keep the next action current. Do not copy an old release's checked boxes or one-time setup tasks.
+Find an existing `Tracking Issue to Release ${VERSION}` before creating one. Otherwise create it immediately from the [tracking issue template](references/tracking-issue.md). Use it as the release record: link the release PR, checked revisions, workflow runs, candidate, votes, and publication results; update completed items with evidence and keep the next action current.
 
 ## 2. Audit first, prepare the version, and freeze the source
 
@@ -86,9 +86,9 @@ git push https://github.com/apache/asyncband.git "${RC_TAG}"
 Follow both workflows for this tag:
 
 - `Release` checks the unchanged `${VERSION}` Cargo package and skips crates.io publication.
-- `Compose source release` builds `apache-asyncband-${VERSION}-incubating-src.tar.gz` and its checksum. Approve its `release` environment job to sign with the automated project key and upload the archive, `.asc`, and `.sha512` to ATR project `asyncband`, version `${VERSION}`. There is no manual packaging or SVN staging step.
+- `Compose source release` builds `apache-asyncband-${VERSION}-incubating-src.tar.gz` and its checksum. Approve its `release` environment job to sign with the automated project key and upload the archive, `.asc`, and `.sha512` to ATR project `asyncband`, version `${VERSION}`.
 
-Open the uploaded candidate in [ATR](https://releases.apache.org/projects/asyncband), inspect its checks, and record its actual URL and revision with the tag, commit, workflow run, and SHA-512. The ATR revision is not the Git RC number. Download that revision and follow [verification](references/verification.md): verify the tag and archive against their separate signing identities, independently reproduce the source archive, and check its build and Cargo package. Use `release_verifier` for substantial independent verification and the `license-audit` skill (or `license_auditor` agent) for the actual distributions; collect both results before voting.
+Open the uploaded candidate in [ATR](https://releases.apache.org/projects/asyncband), inspect its checks, and record its actual URL and revision with the tag, commit, workflow run, and SHA-512. The ATR revision is not the Git RC number. Download that revision and follow [verification](references/verification.md): check signatures and checksum, compare the source contents with the RC commit, and test the build and Cargo package. Use `release_verifier` for substantial independent verification, including the archive rebuild required for automated signing, and the `license-audit` skill (or `license_auditor` agent) for the actual distributions. Collect both results before voting; reuse completed checks for the same candidate.
 
 ## 5. Vote and publish through ATR
 
