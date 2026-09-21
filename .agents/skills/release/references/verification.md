@@ -23,18 +23,33 @@ Perform the requested checks against the supplied candidate and return evidence 
 
 ## Inputs and scope
 
-Use the caller's repository root, `VERSION`, `RC_TAG`, `RELEASE_COMMIT`, absolute archive/signature/checksum paths, expected signing fingerprint and its provenance, and requested verification scope. The caller may supply an existing Cargo package as well. Resolve repository files from that explicit root; this guide's location does not identify the audited checkout.
+Use the caller's repository root, `VERSION`, `RC_TAG`, `RELEASE_COMMIT`, ATR candidate URL and revision, compose run and attempt, absolute archive/signature/checksum paths, expected tag and source signing fingerprints with their provenance, and requested verification scope. The caller may supply an existing Cargo package as well. Resolve repository files from that explicit root; this guide's location does not identify the audited checkout.
 
 Establish which checks are requested and which inputs are available. Continue independent checks when an input is missing and report the resulting gap. A key bundled with an archive is not independent evidence of signer identity. Use a temporary GPG home when importing supplied verification keys so the user's keyring stays unchanged.
 
 ## Verify identity and source contents
 
-1. Record the resolved commit and artifact paths. Check the supplied RC tag's commit and signature against `RELEASE_COMMIT` and the expected signing fingerprint. Keep an existing candidate tied to that commit even if `main` has advanced.
-2. Verify the SHA-512 checksum and detached archive signature on the original bytes. Record signature validity separately from whether the signer matches the expected identity; a checksum or signature alone does not establish agreement with the candidate commit.
+1. Record the resolved commit, ATR revision, and artifact paths. Check the supplied RC tag's commit and signature against `RELEASE_COMMIT` and the release manager's expected tag-signing fingerprint. Keep an existing candidate tied to that commit even if `main` has advanced.
+2. Verify the SHA-512 checksum and detached archive signature on the original downloaded bytes against the expected source-signing fingerprint: the automated project key for CI candidates, or the recorded release manager's key for legacy candidates. For CI candidates, check the archive checksum against the compose summary as well. Record signature validity separately from signer identity, including the primary fingerprint when a signing subkey is used. The archive signer can differ from the Git tag signer; neither signature alone establishes agreement with the candidate commit.
 3. Inspect the archive member list before extracting. Check the expected `apache-asyncband-${VERSION}-incubating-src/` root, reject paths that escape the extraction directory, and inspect symlinks without following them outside the extracted tree.
-4. Compare the archived source inventory, file contents, executable bits, and symlink targets with `git archive` of the resolved candidate commit, using a separate temporary extraction. Compare logical entries rather than compressed bytes or timestamps. Report missing, added, or changed entries with concrete paths. Check the package version in the extracted manifest against `VERSION`.
+4. Compare the archived source inventory, file contents, executable bits, and symlink targets with `git archive` of the resolved candidate commit, using a separate temporary extraction. Report missing, added, or changed entries with concrete paths. Check the package version in the extracted manifest against `VERSION`.
 
 For example, use `git -C "${REPO_ROOT}" rev-parse "${RC_TAG}^{commit}"` to resolve a candidate and `git -C "${REPO_ROOT}" verify-tag "${RC_TAG}"` to inspect its signature. Run `shasum -a 512 --check` from the artifact directory and `gpg --verify` with the explicitly supplied signature and archive. Inspect checksum filenames before using the checksum file so it checks the intended artifact.
+
+## Independently reproduce the automated archive
+
+For an automated source candidate, reproduce the archive using the recipe in its tagged `.github/workflows/release-compose.yml`, writing the result separately from the downloaded archive. The current recipe runs on Ubuntu 24.04 and archives the commit, not the annotated tag object:
+
+```shell
+set -euo pipefail
+SOURCE_DIR="apache-asyncband-${VERSION}-incubating-src"
+git -C "${REPO_ROOT}" -c core.attributesFile=/dev/null -c tar.umask=0022 archive \
+  --format=tar --prefix="${SOURCE_DIR}/" "${RELEASE_COMMIT}" \
+  | gzip -n -9 > "${VERIFY_DIR}/${SOURCE_DIR}.reproduced.tar.gz"
+cmp "${ARCHIVE_PATH}" "${VERIFY_DIR}/${SOURCE_DIR}.reproduced.tar.gz"
+```
+
+Use a clean verification checkout and a scratch `VERIFY_DIR` outside it. Record the Git and gzip versions. If compressed bytes differ, compare logical archive entries to diagnose the difference and repeat with the workflow's Linux toolchain; logical equality alone does not establish reproducibility. Do not compare detached signature bytes from independently signed archives, since signature creation times can differ. Preserve and verify the original ATR signature. Record the independent reproduction result for the vote, following [ATR Trusted Publishing](https://releases.apache.org/docs/trusted-publishing#step-6-confirm-reproducibility-during-the-vote).
 
 ## Verify the build and Cargo package
 
@@ -52,4 +67,4 @@ Preserve the original archive inventory when builds add files to the extracted d
 
 ## Return the result
 
-Return a concise account of the checked candidate, signature/checksum and source-comparison results, requested build/package results, concrete discrepancies, and checks not completed. Include commands and exit results when they matter. Give the caller the extracted source and package paths for `license-audit`; retain these scratch outputs until the caller has finished with them. Do not create a report file unless requested.
+Return a concise account of the checked candidate and ATR revision, the two signing identities, signature/checksum, source-comparison and byte-reproduction results, requested build/package results, concrete discrepancies, and checks not completed. Include commands and exit results when they matter. Give the caller the extracted source and package paths for `license-audit`; retain these scratch outputs until the caller has finished with them. Do not create a report file unless requested.

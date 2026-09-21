@@ -28,17 +28,18 @@ Help the release manager carry out the requested release work, explain the curre
 
 ## Resume the requested work
 
-Establish the requested scope and what has already happened from the conversation, current checkout, and relevant external records. Read the affected parts of `asyncband/Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`, `.github/workflows/release.yml`, `.asf.yaml`, and `xtask/src/main.rs` when needed. Use live GitHub, ASF distribution, mailing-list archives, and registry records to resolve uncertain state. Load only the reference for the current phase; an existing candidate does not require repeating preparation or setup.
+Establish the requested scope and what has already happened from the conversation, current checkout, and relevant external records. Read the affected parts of `asyncband/Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`, `.github/workflows/release-compose.yml`, `.github/workflows/release.yml`, `.asf.yaml`, and `xtask/src/main.rs` when needed. Use live GitHub, Apache Trusted Releases (ATR), ASF distribution, mailing-list archives, and registry records to resolve uncertain state. Load only the reference for the current phase; an existing candidate does not require repeating preparation or setup.
 
 Carry forward the user's existing authorization. A status check, review, or plan stays read-only. For execution, complete authorized work and prepare any proposed external action before asking about authorization that is actually missing. Sending vote or announcement messages, publishing, merging, or changing tags needs authorization for that action; opening this skill does not provide it. Preserve the user's work when selecting a checkout or creating a release worktree.
 
 Keep these values and supporting links in the conversation so work can resume across turns:
 
-- `VERSION`: the final crate version, such as `0.7.2`; RCs do not change the package version.
+- `VERSION`: the final crate and ATR version, such as `0.7.3`; RCs do not change the package version.
 - `RC`: the positive candidate number; `RC_TAG` is `v${VERSION}-rc.${RC}`.
 - `RELEASE_COMMIT`: the merged release pull request commit bound to the candidate.
-- `RELEASE_DIR`: an absolute working directory outside the repository for artifacts, verification, and SVN checkouts; reuse it while continuing the same candidate.
-- Candidate tag and artifact location, checksum/signature results, relevant CI runs, PPMC/IPMC vote threads and results, and completed publication steps.
+- `RELEASE_DIR`: an absolute working directory outside the repository for downloaded artifacts, verification, and the release checkout; reuse it while continuing the same candidate.
+- The ATR candidate URL and revision, RC tag, source checksum, compose run URL and attempt, and separate tag-signer and automated source-signer fingerprints with their provenance.
+- Signature, reproducibility, build, and license-review results, both release workflow results, PPMC/IPMC vote threads and results, and completed publication steps.
 
 Report completed work with evidence, the next useful step, and any input still needed. Distinguish pending, failed, and unverified steps. Keep handoff notes in the conversation unless the user requests a file.
 
@@ -60,15 +61,17 @@ Read `cargo x --help` and the relevant subcommand help before running repository
 
 Use the `release_verifier` Codex agent for a substantial check of an existing candidate when the main agent can continue independent work, such as preparing vote materials. Other coding agents can delegate the same candidate-verification guide to a worker or follow it directly. Keep a small status query in the main conversation.
 
-Give the verifier the repository root, candidate commit and tag, version, absolute artifact paths, expected signing fingerprint and its provenance, requested checks, and a scratch directory outside the checkout. It returns the checked revision and artifacts, observed results, and remaining gaps. Preserve the original artifacts for a separate `license-audit` review; the verifier does not duplicate that audit. Collect the results before staging or publishing the candidate.
+Give the verifier the repository root, candidate commit and tag, version, ATR candidate URL and revision, absolute artifact paths, expected tag and source signing fingerprints with their provenance, requested checks, and a scratch directory outside the checkout. It returns the checked revision and artifacts, observed results, and remaining gaps. Preserve the original artifacts for a separate `license-audit` review; the verifier does not duplicate that audit. Collect the results before starting a vote or publishing the candidate.
 
 ## Candidate and publication continuity
 
 The signed source archive approved by the Apache Incubator PMC and published through ASF distribution is the official Apache release. Its name is `apache-asyncband-${VERSION}-incubating-src.tar.gz`. The crates.io package is a convenience distribution from the same approved commit; keep its Cargo-generated name and layout.
 
-Keep the RC tag, commit, artifacts, and vote tied together. A later `main` commit does not invalidate an existing candidate. Reuse an existing signed tag and staged bytes when retrying a transient failure. If candidate content changes or the community rejects it, agree on the replacement candidate and increment `RC`; preserve existing tags rather than rewriting them.
+RC tag pushes run two workflows: `release-compose.yml` builds, signs, and uploads the source candidate to ATR after `release` environment approval; `release.yml` checks the Cargo package and skips publication. PR compose runs only exercise packaging. Git tags use the release manager's key; CI source signatures use the ASF-provisioned automated project key.
 
-After both vote results record approval, promote the exact voted source artifacts. The signed final `v${VERSION}` tag uses the approved RC commit and starts the crates.io publication workflow, subject to the configured `release` environment review. Successful CI alone does not establish vote approval. Confirm each external action's result before reporting completion or retrying it.
+Keep the RC tag, commit, ATR revision, artifacts, and vote tied together. A later `main` commit does not invalidate an existing candidate. Reuse an existing signed tag and staged bytes when retrying a transient failure. Re-running signing/upload can create a new signature and ATR revision, so inspect ATR before retrying and never replace the revision under an active vote. If candidate content changes or the community rejects it, agree on the replacement candidate and increment `RC`; preserve existing tags rather than rewriting them.
+
+After both vote results record approval, publish the exact voted source revision through ATR's finish phase, which writes to ASF distribution. Keep automatic publication disabled during the PPMC vote because IPMC approval is still required. The signed final `v${VERSION}` tag uses the approved RC commit and starts the crates.io publication workflow, subject to a separate `release` environment review. Successful CI or ATR checks alone do not establish vote approval. Confirm each external action's result before reporting completion or retrying it.
 
 Use the shared `license-audit` skill to examine the relevant checkout or artifact contents. In Codex, the configured `license_auditor` can perform a delegated review; another agent can follow the same skill directly. Provide the candidate revision and actual artifact paths, then discuss the review's evidence and suggestions with the release manager.
 
