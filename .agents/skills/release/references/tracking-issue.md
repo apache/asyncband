@@ -65,6 +65,13 @@ Set `RUNBOOK_COMMIT` to the full SHA of the upstream commit containing the runbo
 
 ## Vote and publish
 
+- **ATR vote page:** pending
+- **PPMC vote thread:** pending
+- **PPMC result:** pending
+- **IPMC vote thread:** pending
+- **IPMC result:** pending
+- **Announcement:** pending
+
 - [ ] Start the PPMC vote in ATR; record the vote link and closing time.
 - [ ] After the required duration and votes, resolve PPMC as Passed in ATR; record its result and the automatically started IPMC vote, and ensure that thread includes the PPMC tally link and any carried IPMC votes.
 - [ ] After the required duration and binding votes, resolve IPMC as Passed in ATR; record its result.

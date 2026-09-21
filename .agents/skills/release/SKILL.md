@@ -105,7 +105,7 @@ Follow the [ATR operations guide](references/atr.md). In the configured email-vo
 3. After at least another 72 hours and sufficient binding IPMC votes, review and resolve that vote as `Passed`. ATR sends the result and moves the release to Finish.
 4. In Finish, publish the exact approved revision to ASF distribution, or verify the completed automatic publication if it was enabled. Keep the candidate bytes unchanged.
 
-Record both rounds' vote and result links in the issue.
+Record both rounds' `[VOTE]` threads and `[RESULT]` messages in the tracking issue using their `lists.apache.org` permalinks.
 
 ## 6. Publish the crate and close the issue
 

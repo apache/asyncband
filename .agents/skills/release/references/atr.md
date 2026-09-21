@@ -21,6 +21,8 @@ under the License.
 
 Open the [Asyncband project](https://releases.apache.org/projects/asyncband) with the release manager's ASF login. Use email voting: voters reply on the mailing lists and the release manager reviews the tally in ATR.
 
+Fill the tracking issue's ATR vote page and communication links as each step completes. Use `lists.apache.org` permalinks for the PPMC and IPMC vote threads, their result messages, and the announcement. Each result link should open the message containing the outcome and tally.
+
 ## Start the vote
 
 1. Open the uploaded `${VERSION}` draft in Compose. Confirm the revision and checksum recorded in the tracking issue, inspect ATR's checks, and complete the candidate verification and artifact license review. Resolve blockers and review any concerns before acknowledging them. If ATR's commit field is empty, enter the frozen `RELEASE_COMMIT` using its commit-hash form.
