@@ -40,7 +40,6 @@ use self::support::spawn_named;
 use self::support::spin_until;
 
 mod support;
-mod traits;
 
 #[test]
 fn send_before_await() {

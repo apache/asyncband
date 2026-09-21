@@ -20,4 +20,3 @@ mod behavior;
 mod recycle;
 mod replenish;
 mod support;
-mod traits;

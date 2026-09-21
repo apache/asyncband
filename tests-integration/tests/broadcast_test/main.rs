@@ -16,5 +16,4 @@
 // under the License.
 
 mod bounded;
-mod traits;
 mod unbounded;

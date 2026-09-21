@@ -17,4 +17,3 @@
 
 mod auto_reset;
 mod manual_reset;
-mod traits;
