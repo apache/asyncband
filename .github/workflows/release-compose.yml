@@ -1,0 +1,175 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Compose source release
+
+on:
+  push:
+    tags: [ "v*.*.*-rc.*" ]
+  pull_request:
+    paths:
+      - .github/workflows/release-compose.yml
+      - .asf.yaml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  LC_ALL: C
+
+concurrency:
+  group: source-release-${{ github.event_name == 'pull_request' && github.event.number || 'compose' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  compose:
+    name: Compose source release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.source.outputs.version }}
+      archive: ${{ steps.source.outputs.archive }}
+      artifact-id: ${{ steps.bundle.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - id: source
+        name: Archive the release candidate
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          package_version="$(git show "${commit}:asyncband/Cargo.toml" | python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["package"]["version"])')"
+          if [[ "${GITHUB_EVENT_NAME}" == push ]]; then
+            if [[ ! "${GITHUB_REF_NAME}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)$ ]]; then
+              echo "::error::Expected an RC tag named vX.Y.Z-rc.N with a positive RC number."
+              exit 1
+            fi
+            version="${BASH_REMATCH[1]}"
+            if [[ "${version}" != "${package_version}" ]]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not match package version ${package_version}."
+              exit 1
+            fi
+            test "$(git rev-parse "${GITHUB_REF}^{commit}")" = "${commit}"
+            git merge-base --is-ancestor "${commit}" origin/main
+          else
+            version="${package_version}"
+          fi
+          if [[ ! "${version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::The package must have a stable X.Y.Z version."
+            exit 1
+          fi
+          source="apache-asyncband-${version}-incubating-src"
+          mkdir "${RUNNER_TEMP}/source"
+          git -c core.attributesFile=/dev/null -c tar.umask=0022 archive \
+            --format=tar --prefix="${source}/" "${commit}" \
+            | gzip -n -9 > "${RUNNER_TEMP}/source/${source}.tar.gz"
+          cd "${RUNNER_TEMP}/source"
+          shasum -a 512 "${source}.tar.gz" > "${source}.tar.gz.sha512"
+          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "archive=${source}.tar.gz" >> "${GITHUB_OUTPUT}"
+          {
+            echo "Source ref: ${GITHUB_REF}"
+            echo "Source commit: ${commit}"
+            echo
+            cat "${source}.tar.gz.sha512"
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - id: bundle
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'apache/asyncband' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source/
+          if-no-files-found: error
+          compression-level: 0
+
+  sign-and-upload:
+    name: Sign and upload source release
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'apache/asyncband' }}
+    needs: compose
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Keep signing secrets in this environment so access requires release approval.
+    environment:
+      name: release
+      url: https://releases.apache.org/projects/asyncband
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.compose.outputs.artifact-id }}
+          path: ${{ runner.temp }}/source
+          merge-multiple: true
+      - id: gpg
+        name: Import the ASF project key
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_SECRET_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+      - name: Sign with the ASF project key
+        env:
+          ARCHIVE: ${{ needs.compose.outputs.archive }}
+          IMPORTED_FINGERPRINT: ${{ steps.gpg.outputs.fingerprint }}
+          SIGNING_FINGERPRINT: ${{ vars.SOURCE_SIGNING_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${SIGNING_FINGERPRINT}" =~ ^([0-9A-F]{40}|[0-9A-F]{64})$ ]]; then
+            echo "::error::SOURCE_SIGNING_FINGERPRINT must be the full uppercase primary fingerprint."
+            exit 1
+          fi
+          if [[ "${IMPORTED_FINGERPRINT}" != "${SIGNING_FINGERPRINT}" ]]; then
+            echo "::error::The imported key does not match SOURCE_SIGNING_FINGERPRINT."
+            exit 1
+          fi
+          cd "${RUNNER_TEMP}/source"
+          shasum -a 512 --check "${ARCHIVE}.sha512"
+          gpg --batch --armor --detach-sign --local-user "${SIGNING_FINGERPRINT}" "${ARCHIVE}"
+          gpg --batch --status-fd 1 --verify "${ARCHIVE}.asc" "${ARCHIVE}" \
+            | awk -v fingerprint="${SIGNING_FINGERPRINT}" \
+              '$2 == "VALIDSIG" && ($3 == fingerprint || $NF == fingerprint) { valid = 1 } END { exit !valid }'
+      - name: Upload to ATR compose
+        uses: apache/tooling-actions/upload-to-atr@fa721a0b176d713807b574da721b96545b587eea
+        with:
+          project: asyncband
+          version: ${{ needs.compose.outputs.version }}
+          src: ${{ runner.temp }}/source
+      - name: Record the candidate handoff
+        env:
+          SOURCE_COMMIT: ${{ needs.compose.outputs.commit }}
+          VERSION: ${{ needs.compose.outputs.version }}
+          ARCHIVE: ${{ needs.compose.outputs.archive }}
+        run: |
+          {
+            echo "Uploaded RC tag ${GITHUB_REF_NAME} (${SOURCE_COMMIT}) to ATR project asyncband, version ${VERSION}."
+            echo
+            cat "${RUNNER_TEMP}/source/${ARCHIVE}.sha512"
+            echo
+            echo "Inspect ATR checks and record the candidate URL and revision before starting a vote."
+            echo "Inspect ATR before rerunning this job after an upload failure; it reuses the source archive and signs it again."
+          } >> "${GITHUB_STEP_SUMMARY}"
