@@ -37,8 +37,6 @@ excludes = [
   "asyncband/src/rwlock/owned_write_guard.rs",
   "asyncband/src/rwlock/read_guard.rs",
   "asyncband/src/rwlock/write_guard.rs",
-  "tests-integration/tests/pool_recycle_cancelled_test.rs",
-  "tests-integration/tests/pool_replenish_test.rs",
 ]
 includes = [
   "**/*.md",

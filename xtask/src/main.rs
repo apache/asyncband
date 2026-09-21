@@ -116,10 +116,12 @@ impl CommandMiri {
             "tests-integration",
             &["--test", "oneshot_test"],
         ));
-        run_command(make_miri_cmd(
-            "tests-integration",
-            &["--test", "unsafe_paths_test"],
-        ));
+        for target in ["mutex_test", "rwlock_test", "lazy_cell_test"] {
+            run_command(make_miri_cmd(
+                "tests-integration",
+                &["--test", target, "unsafe_paths::"],
+            ));
+        }
         run_command(make_miri_cmd("tests-integration", &["--test", "mpsc_test"]));
         run_command(make_miri_cmd("tests-integration", &["--test", "mpmc_test"]));
         run_command(make_miri_cmd("tests-integration", &["--test", "spmc_test"]));

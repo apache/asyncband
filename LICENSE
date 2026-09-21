@@ -426,10 +426,6 @@ is followed by its upstream source path or paths:
     fastpool/src/unbounded.rs
   asyncband/src/pool/unbounded.rs
     fastpool/src/unbounded.rs
-  tests-integration/tests/pool_recycle_cancelled_test.rs
-    fastpool/tests/recycle_cancelled_tests.rs
-  tests-integration/tests/pool_replenish_test.rs
-    fastpool/tests/replenish_tests.rs
 
 The exact upstream revision is:
 
