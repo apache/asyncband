@@ -87,6 +87,8 @@ github:
           type: User
         - id: PragmaTwice
           type: User
+        - id: orthur2
+          type: User
       wait_timer: 0
       prevent_self_review: false
       deployment_branch_policy:
