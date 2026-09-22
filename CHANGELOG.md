@@ -23,6 +23,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## v0.7.3
+
 ### New features
 
 * Add `event::AutoResetEvent`, a reusable signal that releases one waiter, retains at most one unassigned signal that can be cleared with `reset`, and transfers assigned signals when waits are cancelled.
@@ -47,7 +49,7 @@ All notable changes to this project will be documented in this file.
 * Finish releasing buffered bounded MPSC messages even if one message destructor panics.
 * Improve unbounded MPSC throughput with batched receiving and incremental storage reclamation; empty-buffer retention is bounded independently of previous peak occupancy.
 * Make completed and abandoned `Completion` waits lock-free while preserving cancellable pending registration.
-* Reduce allocations when notifying waiters in Barrier, broadcast, condvar, event, MPSC, phaser, and watch.
+* Reduce allocations when notifying waiters in Barrier, broadcast, condvar, event, MPSC, and watch.
 
 ## v0.7.2 (2026-09-11)
 
