@@ -59,6 +59,8 @@ Set `RUNBOOK_COMMIT` to the full SHA of the upstream commit containing the runbo
 - **Source SHA-512:** pending
 - **Tag signer / source signer fingerprints and provenance:** pending
 
+Checklist:
+
 - [ ] Push the signed RC tag at the frozen commit; confirm both release workflows and ATR upload.
 - [ ] Download and verify the ATR revision: signatures, checksum, source contents against the RC commit, independent archive rebuild for automated signing, build, and packaging.
 - [ ] Complete the license review of the actual source archive and Cargo distribution; address ATR findings.
@@ -71,6 +73,8 @@ Set `RUNBOOK_COMMIT` to the full SHA of the upstream commit containing the runbo
 - **IPMC vote thread:** pending
 - **IPMC result:** pending
 - **Announcement:** pending
+
+Checklist:
 
 - [ ] Start the PPMC vote in ATR; record the vote link and closing time.
 - [ ] After the required duration and votes, resolve PPMC as Passed in ATR; record its result and the automatically started IPMC vote, and ensure that thread includes the PPMC tally link and any carried IPMC votes.
