@@ -23,7 +23,7 @@ Start with the failed workflow step or ATR operation, then check the correspondi
 
 ## Source composition
 
-For a blocked or failed compose run, check the `release` environment approval and the settings required by `.github/workflows/release-compose.yml`. For ATR authentication or key-recognition failures, compare the project's Trusted Publishing settings with `.asf.yaml` and confirm that the signing key is available in the project's [KEYS](https://downloads.apache.org/incubator/asyncband/KEYS). See [ATR Trusted Publishing](https://releases.apache.org/docs/trusted-publishing).
+For a blocked or failed compose run, check the `release` environment approval and the settings required by `.github/workflows/release-compose.yml`. For ATR authentication or key-recognition failures, compare the project's Trusted Publishing settings with `.asf.yaml` and confirm that the signing key is available in the project's [KEYS](https://downloads.apache.org/incubator/asyncband/KEYS). ATR accepts an upload only while the committee has an automated signing key whose primary user ID contains `Automated Release Signing` or `Services RM` together with the address `private@asyncband.apache.org`; otherwise the upload step fails on `publisher/ssh/register` with `Project asyncband is not in a committee that can make automated releases`. See [ATR Trusted Publishing](https://releases.apache.org/docs/trusted-publishing).
 
 ## ATR voting and publication
 

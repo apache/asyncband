@@ -82,6 +82,7 @@ Checklist:
 - [ ] Confirm ATR publishes the voted revision to ASF distribution; record the SVN revision and download URL.
 - [ ] Push the signed final tag at the approved commit and approve/verify crates.io publication.
 - [ ] Verify ASF downloads and signatures, crates.io, and docs.rs.
+- [ ] Update the website Downloads page to this release and confirm it is live.
 - [ ] Send the announcement through ATR and record its archive link.
 - [ ] Merge the publication-date changelog PR and confirm superseded-release archival as applicable.
 - [ ] Close this issue after the preceding required items are complete.

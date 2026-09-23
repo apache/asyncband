@@ -71,7 +71,7 @@ For a semver-major release, including a pre-1.0 minor bump, document and review 
 
 ## 4. Push the RC and verify the ATR candidate
 
-Use the release manager's personal OpenPGP code-signing key. It must be valid for signing, have a user ID containing their `<asf-id>@apache.org` address, and have its public key published in the [KEYS](https://downloads.apache.org/incubator/asyncband/KEYS) file. List the matching local keys and set `SIGNING_KEY_FINGERPRINT` to the selected key's primary fingerprint:
+Use the release manager's personal OpenPGP code-signing key. It must be valid for signing, have a user ID containing their `<asf-id>@apache.org` address, and have its public key published in the [KEYS](https://downloads.apache.org/incubator/asyncband/KEYS) file. A new release manager appends their exported public key to that file in `https://dist.apache.org/repos/dist/release/incubator/asyncband`, keeping every existing key; ATR imports the committee's keys from there. List the matching local keys and set `SIGNING_KEY_FINGERPRINT` to the selected key's primary fingerprint:
 
 ```shell
 gpg --list-secret-keys --with-fingerprint '<asf-id>@apache.org'
@@ -92,7 +92,7 @@ git push https://github.com/apache/asyncband.git "${RC_TAG}"
 Follow both workflows for this tag:
 
 - `Release` checks the `${VERSION}` Cargo package.
-- `Compose source release` builds `apache-asyncband-${VERSION}-incubating-src.tar.gz` and its checksum. Approve its `release` environment job to sign with the automated project key and upload the archive, `.asc`, and `.sha512` to ATR project `asyncband`, version `${VERSION}`.
+- `Compose source release` builds `apache-asyncband-${VERSION}-incubating-src.tar.gz` and its checksum. After a `release` environment reviewer listed in `.asf.yaml` approves its job, which the release manager can do when listed there, it signs with the automated project key and uploads the archive, `.asc`, and `.sha512` to ATR project `asyncband`, version `${VERSION}`.
 
 Open the candidate in [ATR](https://releases.apache.org/projects/asyncband), inspect its checks, and record its URL, ATR revision, workflow run, and SHA-512 in the issue. Download that revision and complete [verification](references/verification.md) and `license-audit` on the actual distributions before voting. The `release_verifier` and `license_auditor` agents can perform these checks independently; reuse completed checks for the same candidate.
 
@@ -118,7 +118,7 @@ git tag --sign --local-user "${SIGNING_KEY_FINGERPRINT}" "v${VERSION}" --message
 git push https://github.com/apache/asyncband.git "v${VERSION}"
 ```
 
-Approve the final tag's `release` environment deployment in `release.yml`, then verify crates.io, docs.rs, and the ASF downloads. Use ATR's Announce action after both distributions are available; review the message and recipients and record the announcement. Submit the changelog publication-date PR, confirm any superseded-release archival, and close the tracking issue after its required items are complete. Remove the detached worktree and scratch directory when no longer needed.
+Have a `release` environment reviewer approve the final tag's deployment in `release.yml`, then verify crates.io, docs.rs, and the ASF downloads. Update the Downloads page in `apache/asyncband-site` to the new release and publish it before announcing; the announcement points readers there, and archiving the prior release removes the files that page lists. Use ATR's Announce action after both distributions are available; review the message and recipients and record the announcement. Submit the changelog publication-date PR, confirm any superseded-release archival, and close the tracking issue after its required items are complete. Remove the detached worktree and scratch directory when no longer needed.
 
 ## Resume or recover
 
