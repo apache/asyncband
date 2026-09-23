@@ -313,7 +313,7 @@ Cancellation detaches the queue-owned node and returns permits already assigned
 to it, while Asyncband's own batching machinery moves waker drops and wakeups
 outside the waiter lock.
 
-The standard ASF source headers on these four files apply to the substantial
+The standard ASF source headers on these files apply to the substantial
 modifications contributed to Apache Asyncband. They do not replace the Tokio
 copyright notice or MIT License applicable to the incorporated portions.
 
