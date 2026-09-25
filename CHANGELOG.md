@@ -29,6 +29,7 @@ All notable changes to this project will be documented in this file.
 
 * Add `event::AutoResetEvent`, a reusable signal that releases one waiter, retains at most one unassigned signal that can be cleared with `reset`, and transfers assigned signals when waits are cancelled.
 * Add `ManualResetEvent::try_wait` to check readiness without registering a waiter or consuming the set state.
+* Add `broadcast::spmc`, a lossless single-producer broadcast family with the same public surface and retention contract as `broadcast::mpmc` but a non-cloneable sender whose publish methods require exclusive access; receivers drain already-published slots without taking the publication lock, bounded retains at most the requested capacity and makes the producer wait for the slowest active subscription, and unbounded never waits and lets the retained backlog grow while releasing the storage the backlog has left behind.
 * Implement `broadcast::mpmc::bounded`, a lossless bounded broadcast channel that retains at most the requested capacity and makes producers wait for the slowest active receiver.
 * Add opt-in bounded and unbounded `asyncband::spmc` queues with one non-cloneable sender requiring exclusive access, cloneable competing receivers, and cancellation-safe receive notification handoff.
 * Add opt-in bounded and unbounded `asyncband::mpmc` queues with cloneable producers and competing consumers, delivering each accepted value to exactly one receiver while a receiver remains.
