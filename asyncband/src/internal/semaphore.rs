@@ -27,6 +27,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::MutexGuard;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -44,6 +45,10 @@ use crate::internal::waker_batch::WakerBatch;
 pub struct Semaphore {
     /// The current number of available permits in the semaphore.
     permits: AtomicUsize,
+    /// Set while a locked release is losing races on the balance, so that other releases join
+    /// the lock instead of adding to the traffic. A hint only: a stale read in either direction
+    /// is still correct.
+    contended: AtomicBool,
     waiters: Mutex<WaitList<WaitNode>>,
 }
 
@@ -59,6 +64,7 @@ impl Semaphore {
     pub const fn new(permits: usize) -> Self {
         Self {
             permits: AtomicUsize::new(permits),
+            contended: AtomicBool::new(false),
             waiters: Mutex::new(WaitList::new()),
         }
     }
@@ -153,7 +159,10 @@ impl Semaphore {
         // Try the exchange once before falling back to the locked path. Other threads can
         // still use the fast paths, so a locked balance update may also need to retry.
         let current = self.permits.load(Ordering::Relaxed);
-        if current != 0 && self.try_add_to_balance(current, n).is_ok() {
+        if current != 0
+            && !self.contended.load(Ordering::Relaxed)
+            && self.try_add_to_balance(current, n).is_ok()
+        {
             return;
         }
 
@@ -250,8 +259,12 @@ impl Semaphore {
                     self.permits.fetch_add(rem, Ordering::Release);
                 } else {
                     while let Err(actual) = self.try_add_to_balance(current, rem) {
+                        // Losing under the lock means another thread is on the balance now:
+                        // route its release through the lock as well.
+                        self.contended.store(true, Ordering::Relaxed);
                         current = actual;
                     }
+                    self.contended.store(false, Ordering::Relaxed);
                 }
                 rem = 0;
             }
@@ -472,6 +485,17 @@ mod tests {
         semaphore.release(2);
         assert_eq!(semaphore.available_permits(), 3);
         drop(queue);
+    }
+
+    #[test]
+    fn contended_release_takes_the_locked_path_and_clears_the_flag() {
+        let semaphore = Semaphore::new(1);
+        semaphore.contended.store(true, Ordering::Relaxed);
+
+        // Only the locked path clears the flag, so a cleared flag proves the fast path was skipped.
+        semaphore.release(1);
+        assert_eq!(semaphore.available_permits(), 2);
+        assert!(!semaphore.contended.load(Ordering::Relaxed));
     }
 
     #[test]
