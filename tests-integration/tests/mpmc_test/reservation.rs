@@ -64,7 +64,14 @@ fn mixed_sends_and_reservations_receive_grants_in_wait_queue_order() {
     assert!(poll_with(third.as_mut(), &third_waker).is_pending());
 
     assert_eq!(receiver.try_recv(), Ok(0));
-    assert_eq!((first_wakes.count(), second_wakes.count(), third_wakes.count()), (1, 0, 0));
+    assert_eq!(
+        (
+            first_wakes.count(),
+            second_wakes.count(),
+            third_wakes.count()
+        ),
+        (1, 0, 0)
+    );
     assert_eq!(sender.try_send(9), Err(TrySendError::Full(9)));
     assert!(matches!(sender.try_reserve(), Err(TrySendError::Full(()))));
     let first_permit = expect_ready(poll_with(first.as_mut(), &first_waker)).unwrap();
@@ -225,7 +232,10 @@ fn last_receiver_drop_fails_pending_and_granted_reservations() {
     assert!(second_wakes.count() >= 1);
     assert!(expect_ready(poll_with(granted.as_mut(), &first_waker)).is_err());
     assert!(expect_ready(poll_with(pending.as_mut(), &second_waker)).is_err());
-    assert!(matches!(sender.try_reserve(), Err(TrySendError::Disconnected(()))));
+    assert!(matches!(
+        sender.try_reserve(),
+        Err(TrySendError::Disconnected(()))
+    ));
 }
 
 #[test]
@@ -237,10 +247,16 @@ fn permit_does_not_keep_receivers_alive_and_returns_the_unsent_value() {
     sender.try_send(String::from("still connected")).unwrap();
     drop(competing);
     assert_eq!(
-        permit.send(String::from("unsent")).unwrap_err().into_inner(),
+        permit
+            .send(String::from("unsent"))
+            .unwrap_err()
+            .into_inner(),
         "unsent"
     );
-    assert!(matches!(sender.try_reserve(), Err(TrySendError::Disconnected(()))));
+    assert!(matches!(
+        sender.try_reserve(),
+        Err(TrySendError::Disconnected(()))
+    ));
     let error = match expect_ready(poll_once(Box::pin(sender.reserve()).as_mut())) {
         Ok(_) => panic!("reservation succeeded after the last receiver dropped"),
         Err(error) => error,
