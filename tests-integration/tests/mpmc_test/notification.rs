@@ -125,59 +125,6 @@ fn notified_receiver_that_loses_the_value_queues_behind_waiting_receivers() {
 }
 
 #[test]
-fn notified_sender_that_loses_capacity_queues_behind_waiting_senders() {
-    let (sender, receiver) = mpmc::bounded(1);
-    sender.try_send(0).unwrap();
-    let competing = sender.clone();
-    let mut first = Box::pin(sender.send(1));
-    let mut second = Box::pin(competing.send(2));
-    let (first_waker, first_wakes) = WakeCounter::new();
-    let (second_waker, second_wakes) = WakeCounter::new();
-
-    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
-    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
-    assert_eq!(receiver.try_recv(), Ok(0));
-    assert_eq!(first_wakes.count(), 1);
-    sender.try_send(3).unwrap();
-    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
-
-    assert_eq!(receiver.try_recv(), Ok(3));
-    assert_eq!(first_wakes.count(), 1);
-    assert_eq!(second_wakes.count(), 1);
-    expect_ready(poll_with(second.as_mut(), &second_waker)).unwrap();
-    assert_eq!(receiver.try_recv(), Ok(2));
-    assert_eq!(first_wakes.count(), 2);
-    expect_ready(poll_with(first.as_mut(), &first_waker)).unwrap();
-    assert_eq!(receiver.try_recv(), Ok(1));
-}
-
-#[test]
-fn cancelling_a_sender_after_capacity_is_taken_does_not_wake_next() {
-    let (sender, receiver) = mpmc::bounded(1);
-    sender.try_send(0).unwrap();
-    let competing = sender.clone();
-    let mut cancelled = Box::pin(sender.send(1));
-    let mut waiting = Box::pin(competing.send(2));
-    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
-    let (waiting_waker, waiting_wakes) = WakeCounter::new();
-
-    assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
-    assert!(poll_with(waiting.as_mut(), &waiting_waker).is_pending());
-    assert_eq!(receiver.try_recv(), Ok(0));
-    assert_eq!(cancelled_wakes.count(), 1);
-    assert_eq!(waiting_wakes.count(), 0);
-    sender.try_send(3).unwrap();
-    drop(cancelled);
-    assert_eq!(waiting_wakes.count(), 0);
-
-    assert_eq!(receiver.try_recv(), Ok(3));
-    assert_eq!(waiting_wakes.count(), 1);
-    expect_ready(poll_with(waiting.as_mut(), &waiting_waker)).unwrap();
-    assert_eq!(receiver.try_recv(), Ok(2));
-    assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
-}
-
-#[test]
 fn bounded_cancelled_sender_notifies_next_sender_before_dropping_value() {
     // A message destructor may depend on another blocked sender making progress.
     struct WakesSeenOnDrop {

@@ -54,10 +54,11 @@ impl<T> fmt::Debug for SendError<T> {
 
 impl<T> std::error::Error for SendError<T> {}
 
-/// Error returned by [`BoundedSender::try_send`](crate::mpmc::BoundedSender::try_send).
+/// Error returned by [`BoundedSender::try_send`](crate::mpmc::BoundedSender::try_send) or
+/// [`BoundedSender::try_reserve`](crate::mpmc::BoundedSender::try_reserve).
 #[derive(Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
-    /// The queue is full, so the value cannot be sent without waiting for capacity.
+    /// No unassigned capacity remains, so the value cannot be sent without waiting.
     Full(T),
     /// All receivers have been dropped, so the value can never be received.
     Disconnected(T),
