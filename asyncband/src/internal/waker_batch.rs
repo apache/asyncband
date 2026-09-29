@@ -75,7 +75,7 @@ impl WakerBatch {
     }
 
     pub fn empty(&self) -> bool {
-        self.start == self.end
+        self.start == self.end && self.spilled.is_empty()
     }
 }
 

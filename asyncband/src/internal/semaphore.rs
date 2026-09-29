@@ -238,14 +238,11 @@ impl Semaphore {
             if batch.empty() {
                 break;
             }
-            for waker in batch {
-                let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                    waker.wake();
-                }));
-                // Do not interrupt the current loop and only retain
-                if let Err(payload) = result {
-                    guard.record(payload);
-                }
+            let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                wake_all(batch);
+            }));
+            if let Err(payload) = result {
+                guard.record(payload);
             }
         }
     }
