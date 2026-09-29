@@ -22,12 +22,14 @@ use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
 use super::TrySendError;
+pub use super::queue::Permit;
 use super::queue::Shared;
 
 /// Creates a bounded multi-producer, multi-consumer queue.
 ///
-/// The queue stores at most `capacity` values. Sending waits for a receiver to free capacity when
-/// the queue is full.
+/// Queued values, held permits, and capacity granted to waiting senders occupy at most `capacity`
+/// slots. Pending sends and reservations receive capacity in wait-queue order. Sending waits for
+/// a receiver to free capacity when none is available.
 ///
 /// The `try_*` methods do not wait for capacity or messages, but may briefly block on an internal
 /// mutex.
@@ -82,16 +84,55 @@ impl<T> BoundedSender<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `send` drops `value` without sending it or retaining capacity. Use
-    /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is
-    /// unavailable.
+    /// Dropping a pending `send` releases its waiting resources before dropping `value`, without
+    /// sending it or retaining capacity. Use [`reserve`](Self::reserve) to wait for capacity before
+    /// constructing a value.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
         self.shared.send(value).await
     }
 
+    /// Reserves capacity for one value before constructing it.
+    ///
+    /// A successful reservation returns a [`Permit`]. Dropping it releases capacity. A permit
+    /// reserves space, not message order, and does not keep receivers alive.
+    ///
+    /// Returns `SendError(())` if all receivers have been dropped.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending reservation releases its place in the wait queue. If it was already
+    /// granted capacity, that capacity passes to the next waiter or becomes available again.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let (sender, receiver) = asyncband::mpmc::bounded(1);
+    /// let permit = sender.reserve().await.unwrap();
+    /// let message = String::from("constructed after capacity became available");
+    /// permit.send(message).unwrap();
+    /// assert_eq!(
+    ///     receiver.recv().await.unwrap(),
+    ///     "constructed after capacity became available"
+    /// );
+    /// # }
+    /// ```
+    pub async fn reserve(&self) -> Result<Permit<'_, T>, SendError<()>> {
+        self.shared.reserve().await
+    }
+
+    /// Reserves capacity for one value without waiting.
+    ///
+    /// Returns [`TrySendError::Full`] when all capacity belongs to queued values, held permits,
+    /// or granted waiters, and [`TrySendError::Disconnected`] when all receivers are gone.
+    pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
+        self.shared.try_reserve()
+    }
+
     /// Attempts to send a value without waiting for capacity.
     ///
-    /// Returns [`TrySendError::Full`] when the queue has reached its exact capacity and
+    /// Returns [`TrySendError::Full`] when no unassigned capacity remains and
     /// [`TrySendError::Disconnected`] when all receivers have been dropped.
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
         self.shared.try_send(value)
