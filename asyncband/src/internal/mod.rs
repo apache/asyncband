@@ -156,8 +156,8 @@ pub(crate) mod waitlist;
     feature = "waitgroup",
     feature = "watch",
 ))]
-// Only the semaphore refills a batch and asks whether it will spill, so other feature subsets
-// leave that method unused.
+// The semaphore and the waker set use different batch operations, so single-feature builds leave
+// part of this API unused.
 #[allow(dead_code)]
 pub(crate) mod waker_batch;
 
