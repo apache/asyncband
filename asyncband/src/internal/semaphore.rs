@@ -236,7 +236,7 @@ impl Semaphore {
             drop(waiters);
 
             let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                wake_all(batch);
+                wake_all(&mut batch);
             }));
             if let Err(payload) = result {
                 guard.record(payload);
