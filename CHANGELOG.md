@@ -23,6 +23,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Improvements
+
+* Reduce `Semaphore::release` latency when it notifies waiting acquirers.
+
 ## v0.7.3
 
 ### New features

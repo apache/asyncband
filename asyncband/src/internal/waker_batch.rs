@@ -24,8 +24,9 @@ use std::task::Waker;
 ///
 /// The batch is filled through [`WakerBatch::push`] or [`Extend`] and consumed as its own
 /// iterator. Entries are written only as they are pushed, so constructing an empty or small batch
-/// touches nothing beyond the two indices, and only a batch that outgrows the inline storage
-/// touches the heap.
+/// touches nothing beyond the two indices. Once every inline entry has been yielded the batch
+/// reuses that storage, so a caller that alternates between filling and draining, as the
+/// semaphore does, keeps running on the stack.
 pub struct WakerBatch {
     /// The initialized entries are exactly `start..end`.
     inline: [MaybeUninit<Waker>; Self::STACK_SIZE],
@@ -42,6 +43,9 @@ pub struct WakerBatch {
 
 impl WakerBatch {
     /// Wakers kept on the stack before the batch spills to the heap.
+    ///
+    /// This is also the most wakers the semaphore collects per lock acquisition, so a drain that
+    /// wakes a typical waiter set never allocates; larger sets pay one allocation for the overflow.
     pub const STACK_SIZE: usize = 32;
 
     pub const fn new() -> Self {
@@ -54,8 +58,10 @@ impl WakerBatch {
     }
 
     /// Whether the next push would spill to the heap.
-    #[cfg(test)]
-    fn will_spill(&self) -> bool {
+    ///
+    /// The semaphore stops filling a batch here so it can release its lock and wake what it has
+    /// before collecting more.
+    pub fn will_spill(&self) -> bool {
         self.end == Self::STACK_SIZE || !self.spilled.is_empty()
     }
 
