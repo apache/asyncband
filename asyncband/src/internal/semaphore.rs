@@ -24,7 +24,6 @@
 // Upstream source:
 // https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/batch_semaphore.rs
 
-use std::any::Any;
 use std::future::Future;
 use std::panic;
 use std::panic::AssertUnwindSafe;
@@ -191,7 +190,9 @@ impl Semaphore {
         mut rem: usize,
         waiters: MutexGuard<'_, WaitList<WaitNode>>,
     ) {
-        let mut guard = PanicGuard::new();
+        // A panicking wake callback must not stop the remaining permits from being distributed, so
+        // keep the first payload here and rethrow it once the release is complete.
+        let mut first_panic = None;
         let mut lock = Some(waiters);
         while rem > 0 {
             let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
@@ -239,33 +240,13 @@ impl Semaphore {
                 wake_all(&mut batch);
             }));
             if let Err(payload) = result {
-                guard.record(payload);
+                if first_panic.is_none() {
+                    first_panic = Some(payload);
+                }
             }
         }
-    }
-}
 
-struct PanicGuard {
-    first: Option<Box<dyn Any + Send>>,
-}
-
-impl PanicGuard {
-    fn new() -> Self {
-        Self { first: None }
-    }
-
-    fn record(&mut self, payload: Box<dyn Any + Send>) {
-        if self.first.is_none() {
-            self.first = Some(payload);
-        } else {
-            let _ = panic::catch_unwind(AssertUnwindSafe(move || drop(payload)));
-        }
-    }
-}
-
-impl Drop for PanicGuard {
-    fn drop(&mut self) {
-        if let Some(payload) = self.first.take() {
+        if let Some(payload) = first_panic {
             panic::resume_unwind(payload);
         }
     }
