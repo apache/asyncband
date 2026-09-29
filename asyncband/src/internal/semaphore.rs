@@ -24,7 +24,10 @@
 // Upstream source:
 // https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/batch_semaphore.rs
 
+use std::any::Any;
 use std::future::Future;
+use std::panic;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::MutexGuard;
 use std::sync::atomic::AtomicUsize;
@@ -188,62 +191,89 @@ impl Semaphore {
         mut rem: usize,
         waiters: MutexGuard<'_, WaitList<WaitNode>>,
     ) {
-        let mut batch = WakerBatch::new();
+        let mut guard = PanicGuard::new();
         let mut lock = Some(waiters);
-
-        // One iterator covers the entire release. If a callback panics, `wake_all` keeps pulling
-        // batches during unwinding, so the remaining permits are still distributed and notified.
-        wake_all(std::iter::from_fn(|| {
-            loop {
-                if let Some(waker) = batch.next() {
-                    return Some(waker);
-                }
-                if rem == 0 {
-                    return None;
-                }
-
-                let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
-                while !batch.will_spill() {
-                    match waiters.unlink_first_waiter(|node| {
-                        if node.permits <= rem {
-                            rem -= node.permits;
-                            node.permits = 0;
-                            true
-                        } else {
-                            node.permits -= rem;
-                            rem = 0;
-                            false
+        while rem > 0 {
+            let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
+            let mut batch = WakerBatch::new();
+            while !batch.will_spill() {
+                match waiters.unlink_first_waiter(|node| {
+                    if node.permits <= rem {
+                        rem -= node.permits;
+                        node.permits = 0;
+                        true
+                    } else {
+                        node.permits -= rem;
+                        rem = 0;
+                        false
+                    }
+                }) {
+                    None => break,
+                    Some((id, waiter)) => {
+                        let remove_now = waiter.waker.is_none();
+                        if let Some(waker) = waiter.waker.take() {
+                            batch.push(waker);
                         }
-                    }) {
-                        None => break,
-                        Some((id, waiter)) => {
-                            let remove_now = waiter.waker.is_none();
-                            if let Some(waker) = waiter.waker.take() {
-                                batch.push(waker);
-                            }
-                            if remove_now {
-                                waiters.remove_unlinked_waiter(id);
-                            }
+                        if remove_now {
+                            waiters.remove_unlinked_waiter(id);
                         }
                     }
                 }
-
-                if rem > 0 && waiters.is_empty() {
-                    // Retire the remainder before the overflow check so unwinding cannot retry it.
-                    let added = std::mem::take(&mut rem);
-                    // The lock serializes additions; concurrent operations can only remove permits.
-                    let current = self.permits.load(Ordering::Relaxed);
-                    assert!(
-                        current.checked_add(added).is_some(),
-                        "number of added permits ({added}) would overflow usize::MAX (prev: {current})"
-                    );
-                    self.permits.fetch_add(added, Ordering::Release);
-                }
-
-                // Neither wake callbacks nor destruction of the taken waker run under this lock.
-                drop(waiters);
             }
-        }));
+
+            if rem > 0 && waiters.is_empty() {
+                // Retire the remainder before the overflow check so unwinding cannot retry it.
+                let added = std::mem::take(&mut rem);
+                // The lock serializes additions; concurrent operations can only remove permits.
+                let current = self.permits.load(Ordering::Relaxed);
+                assert!(
+                    current.checked_add(added).is_some(),
+                    "number of added permits ({added}) would overflow usize::MAX (prev: {current})"
+                );
+                self.permits.fetch_add(added, Ordering::Release);
+            }
+
+            drop(waiters);
+
+            if batch.empty() {
+                break;
+            }
+            for waker in batch {
+                let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                    waker.wake();
+                }));
+                // Do not interrupt the current loop and only retain
+                if let Err(payload) = result {
+                    guard.record(payload);
+                }
+            }
+        }
+    }
+}
+
+struct PanicGuard {
+    first: Option<Box<dyn Any + Send>>,
+}
+
+impl PanicGuard {
+    fn new() -> Self {
+        Self { first: None }
+    }
+
+    fn record(&mut self, payload: Box<dyn Any + Send>) {
+        if self.first.is_none() {
+            self.first = Some(payload);
+        } else {
+            let _ = panic::catch_unwind(AssertUnwindSafe(move || drop(payload)));
+        }
+    }
+}
+
+impl Drop for PanicGuard {
+    fn drop(&mut self) {
+        if let Some(payload) = self.first.take() {
+            panic::resume_unwind(payload);
+        }
     }
 }
 
