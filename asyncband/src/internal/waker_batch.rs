@@ -73,10 +73,6 @@ impl WakerBatch {
             self.spilled.push_back(waker);
         }
     }
-
-    pub fn empty(&self) -> bool {
-        self.start == self.end && self.spilled.is_empty()
-    }
 }
 
 impl Extend<Waker> for WakerBatch {

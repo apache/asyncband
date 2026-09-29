@@ -235,9 +235,6 @@ impl Semaphore {
 
             drop(waiters);
 
-            if batch.empty() {
-                break;
-            }
             let result = panic::catch_unwind(AssertUnwindSafe(|| {
                 wake_all(batch);
             }));
