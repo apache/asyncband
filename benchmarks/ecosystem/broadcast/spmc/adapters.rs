@@ -1,0 +1,310 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+use std::future::Future;
+use std::task::Context;
+
+use asyncband::blocking::FutureExt;
+
+use crate::support::poll_ready;
+
+pub struct Asyncband;
+pub struct AsyncbandMpmc;
+pub struct Tokio;
+pub struct AsyncBroadcast;
+
+/// Single-producer broadcast: publish takes `&mut` so a non-`Clone` sender still fits.
+pub trait BroadcastSpmc: Send + Sync + 'static {
+    type Sender: Send + 'static;
+    type Receiver: Send + 'static;
+
+    fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>);
+    fn send(sender: &mut Self::Sender, value: usize);
+    fn try_recv(receiver: &mut Self::Receiver) -> Option<usize>;
+    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize;
+}
+
+impl BroadcastSpmc for Asyncband {
+    type Receiver = asyncband::broadcast::spmc::UnboundedReceiver<usize>;
+    type Sender = asyncband::broadcast::spmc::UnboundedSender<usize>;
+
+    fn channel(_capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
+        let (sender, receiver) = asyncband::broadcast::spmc::unbounded();
+        let mut receivers = Vec::with_capacity(receiver_count);
+        receivers.push(receiver);
+        for _ in 1..receiver_count {
+            receivers.push(sender.subscribe());
+        }
+        (sender, receivers)
+    }
+
+    fn send(sender: &mut Self::Sender, value: usize) {
+        sender.send(value);
+    }
+
+    fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
+        match receiver.try_recv() {
+            Ok(value) => Some(value),
+            Err(asyncband::broadcast::spmc::TryRecvError::Empty) => None,
+            Err(asyncband::broadcast::spmc::TryRecvError::Disconnected) => {
+                panic!("asyncband channel closed during benchmark")
+            }
+        }
+    }
+
+    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
+        poll_ready(receiver.recv(), context).unwrap()
+    }
+}
+
+impl BroadcastSpmc for AsyncbandMpmc {
+    type Receiver = asyncband::broadcast::mpmc::UnboundedReceiver<usize>;
+    type Sender = asyncband::broadcast::mpmc::UnboundedSender<usize>;
+
+    fn channel(_capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
+        let (sender, receiver) = asyncband::broadcast::mpmc::unbounded();
+        let mut receivers = Vec::with_capacity(receiver_count);
+        receivers.push(receiver);
+        for _ in 1..receiver_count {
+            receivers.push(sender.subscribe());
+        }
+        (sender, receivers)
+    }
+
+    fn send(sender: &mut Self::Sender, value: usize) {
+        asyncband::broadcast::mpmc::UnboundedSender::send(sender, value);
+    }
+
+    fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
+        match receiver.try_recv() {
+            Ok(value) => Some(value),
+            Err(asyncband::broadcast::mpmc::TryRecvError::Empty) => None,
+            Err(asyncband::broadcast::mpmc::TryRecvError::Disconnected) => {
+                panic!("asyncband channel closed during benchmark")
+            }
+        }
+    }
+
+    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
+        poll_ready(receiver.recv(), context).unwrap()
+    }
+}
+
+impl BroadcastSpmc for Tokio {
+    type Receiver = tokio::sync::broadcast::Receiver<usize>;
+    type Sender = tokio::sync::broadcast::Sender<usize>;
+
+    fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
+        let (sender, receiver) = tokio::sync::broadcast::channel(capacity);
+        let mut receivers = Vec::with_capacity(receiver_count);
+        receivers.push(receiver);
+        for _ in 1..receiver_count {
+            receivers.push(sender.subscribe());
+        }
+        (sender, receivers)
+    }
+
+    fn send(sender: &mut Self::Sender, value: usize) {
+        sender.send(value).unwrap();
+    }
+
+    fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
+        match receiver.try_recv() {
+            Ok(value) => Some(value),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => None,
+            Err(error) => panic!("unexpected Tokio receive error: {error}"),
+        }
+    }
+
+    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
+        poll_ready(receiver.recv(), context).unwrap()
+    }
+}
+
+impl BroadcastSpmc for AsyncBroadcast {
+    type Receiver = async_broadcast::Receiver<usize>;
+    type Sender = async_broadcast::Sender<usize>;
+
+    fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
+        let (sender, receiver) = async_broadcast::broadcast(capacity);
+        let mut receivers = Vec::with_capacity(receiver_count);
+        receivers.push(receiver);
+        for _ in 1..receiver_count {
+            let receiver = receivers[0].clone();
+            receivers.push(receiver);
+        }
+        (sender, receivers)
+    }
+
+    fn send(sender: &mut Self::Sender, value: usize) {
+        sender.try_broadcast(value).unwrap();
+    }
+
+    fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
+        match receiver.try_recv() {
+            Ok(value) => Some(value),
+            Err(async_broadcast::TryRecvError::Empty) => None,
+            Err(error) => panic!("unexpected async-broadcast receive error: {error}"),
+        }
+    }
+
+    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
+        poll_ready(receiver.recv_direct(), context).unwrap()
+    }
+}
+
+/// Lossless bounded broadcast with exclusive send. Tokio is omitted: it overwrites at capacity.
+pub trait BoundedBroadcastSpmc: Send + Sync + 'static {
+    type Sender: Send + 'static;
+    type Receiver: Send + 'static;
+
+    fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>);
+    fn try_send(sender: &mut Self::Sender, value: usize);
+    fn send_async(sender: &mut Self::Sender, value: usize) -> impl Future<Output = ()> + Send;
+    fn recv_async(receiver: &mut Self::Receiver) -> impl Future<Output = usize> + Send;
+
+    fn send_ready(sender: &mut Self::Sender, value: usize, context: &mut Context<'_>) {
+        poll_ready(Self::send_async(sender, value), context);
+    }
+
+    fn send_blocking(sender: &mut Self::Sender, value: usize) {
+        FutureExt::block_on(Self::send_async(sender, value));
+    }
+
+    fn try_recv(receiver: &mut Self::Receiver) -> Option<usize>;
+
+    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
+        poll_ready(Self::recv_async(receiver), context)
+    }
+
+    fn recv_blocking(receiver: &mut Self::Receiver) -> usize {
+        FutureExt::block_on(Self::recv_async(receiver))
+    }
+}
+
+impl BoundedBroadcastSpmc for Asyncband {
+    type Receiver = asyncband::broadcast::spmc::BoundedReceiver<usize>;
+    type Sender = asyncband::broadcast::spmc::BoundedSender<usize>;
+
+    fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
+        let (sender, receiver) = asyncband::broadcast::spmc::bounded(capacity);
+        let mut receivers = Vec::with_capacity(receiver_count);
+        receivers.push(receiver);
+        for _ in 1..receiver_count {
+            receivers.push(sender.subscribe());
+        }
+        (sender, receivers)
+    }
+
+    fn try_send(sender: &mut Self::Sender, value: usize) {
+        sender.try_send(value).unwrap();
+    }
+
+    async fn send_async(sender: &mut Self::Sender, value: usize) {
+        sender.send(value).await;
+    }
+
+    async fn recv_async(receiver: &mut Self::Receiver) -> usize {
+        receiver.recv().await.unwrap()
+    }
+
+    fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
+        match receiver.try_recv() {
+            Ok(value) => Some(value),
+            Err(asyncband::broadcast::spmc::TryRecvError::Empty) => None,
+            Err(asyncband::broadcast::spmc::TryRecvError::Disconnected) => {
+                panic!("asyncband channel closed during benchmark")
+            }
+        }
+    }
+}
+
+impl BoundedBroadcastSpmc for AsyncbandMpmc {
+    type Receiver = asyncband::broadcast::mpmc::BoundedReceiver<usize>;
+    type Sender = asyncband::broadcast::mpmc::BoundedSender<usize>;
+
+    fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
+        let (sender, receiver) = asyncband::broadcast::mpmc::bounded(capacity);
+        let mut receivers = Vec::with_capacity(receiver_count);
+        receivers.push(receiver);
+        for _ in 1..receiver_count {
+            receivers.push(sender.subscribe());
+        }
+        (sender, receivers)
+    }
+
+    fn try_send(sender: &mut Self::Sender, value: usize) {
+        sender.try_send(value).unwrap();
+    }
+
+    async fn send_async(sender: &mut Self::Sender, value: usize) {
+        sender.send(value).await;
+    }
+
+    async fn recv_async(receiver: &mut Self::Receiver) -> usize {
+        receiver.recv().await.unwrap()
+    }
+
+    fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
+        match receiver.try_recv() {
+            Ok(value) => Some(value),
+            Err(asyncband::broadcast::mpmc::TryRecvError::Empty) => None,
+            Err(asyncband::broadcast::mpmc::TryRecvError::Disconnected) => {
+                panic!("asyncband channel closed during benchmark")
+            }
+        }
+    }
+}
+
+impl BoundedBroadcastSpmc for AsyncBroadcast {
+    type Receiver = async_broadcast::Receiver<usize>;
+    type Sender = async_broadcast::Sender<usize>;
+
+    fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
+        let (sender, receiver) = async_broadcast::broadcast(capacity);
+        let mut receivers = Vec::with_capacity(receiver_count);
+        receivers.push(receiver);
+        for _ in 1..receiver_count {
+            let receiver = receivers[0].clone();
+            receivers.push(receiver);
+        }
+        (sender, receivers)
+    }
+
+    fn try_send(sender: &mut Self::Sender, value: usize) {
+        sender.try_broadcast(value).unwrap();
+    }
+
+    async fn send_async(sender: &mut Self::Sender, value: usize) {
+        sender
+            .broadcast_direct(value)
+            .await
+            .expect("async-broadcast lost every receiver during benchmark");
+    }
+
+    async fn recv_async(receiver: &mut Self::Receiver) -> usize {
+        receiver.recv_direct().await.unwrap()
+    }
+
+    fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
+        match receiver.try_recv() {
+            Ok(value) => Some(value),
+            Err(async_broadcast::TryRecvError::Empty) => None,
+            Err(error) => panic!("unexpected async-broadcast receive error: {error}"),
+        }
+    }
+}
