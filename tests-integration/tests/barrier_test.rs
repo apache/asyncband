@@ -21,42 +21,18 @@ use tokio_test::assert_ready;
 use tokio_test::task::spawn;
 
 #[test]
-fn zero_does_not_block() {
-    let b = Barrier::new(0);
-    {
-        let mut f = spawn(b.wait());
-        let leader = assert_ready!(f.poll());
-        assert!(leader.is_leader());
-    }
-    {
-        let mut f = spawn(b.wait());
-        let leader = assert_ready!(f.poll());
-        assert!(leader.is_leader());
+fn zero_and_one_participant_generations_never_block() {
+    for participants in [0, 1] {
+        let barrier = Barrier::new(participants);
+        for _ in 0..3 {
+            let mut wait = spawn(barrier.wait());
+            assert!(assert_ready!(wait.poll()).is_leader());
+        }
     }
 }
 
 #[test]
-fn single() {
-    let b = Barrier::new(1);
-    {
-        let mut f = spawn(b.wait());
-        let leader = assert_ready!(f.poll());
-        assert!(leader.is_leader());
-    }
-    {
-        let mut f = spawn(b.wait());
-        let leader = assert_ready!(f.poll());
-        assert!(leader.is_leader());
-    }
-    {
-        let mut f = spawn(b.wait());
-        let leader = assert_ready!(f.poll());
-        assert!(leader.is_leader());
-    }
-}
-
-#[test]
-fn tango() {
+fn one_leader_completes_each_two_participant_generation() {
     let b = Barrier::new(2);
 
     let mut f1 = spawn(b.wait());
@@ -101,7 +77,7 @@ fn dropping_a_woken_wait_keeps_the_next_generation_registered() {
 }
 
 #[test]
-fn lots() {
+fn repeated_generations_elect_exactly_one_leader() {
     let b = Barrier::new(100);
 
     for _ in 0..10 {

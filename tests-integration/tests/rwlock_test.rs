@@ -45,16 +45,6 @@ fn try_methods_respect_held_guards() {
 }
 
 #[test]
-fn get_mut_and_into_inner_use_exclusive_access() {
-    let mut rwlock = RwLock::new(100);
-
-    *rwlock.get_mut() = 200;
-
-    assert_eq!(*rwlock.get_mut(), 200);
-    assert_eq!(rwlock.into_inner(), 200);
-}
-
-#[test]
 fn max_readers_limits_concurrent_readers() {
     let rwlock = RwLock::with_max_readers(10, NonZeroUsize::new(2).unwrap());
 

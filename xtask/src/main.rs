@@ -71,11 +71,25 @@ enum SubCommand {
 struct CommandBench {
     #[arg(long, help = "Compile benchmarks without running them.")]
     no_run: bool,
+
+    #[arg(long, help = "Select one benchmark target (primitives or ecosystem).")]
+    bench: Option<String>,
+
+    #[arg(
+        last = true,
+        conflicts_with = "no_run",
+        help = "Arguments passed to Divan."
+    )]
+    args: Vec<String>,
 }
 
 impl CommandBench {
     fn run(self) {
-        run_command(make_bench_cmd(self.no_run));
+        run_command(make_bench_cmd(
+            self.no_run,
+            self.bench.as_deref(),
+            &self.args,
+        ));
     }
 }
 
@@ -365,11 +379,20 @@ fn classify_release_type(baseline: &Version, release: &Version) -> SemverRelease
     }
 }
 
-fn make_bench_cmd(no_run: bool) -> StdCommand {
+fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> StdCommand {
     let mut cmd = find_command("cargo");
-    cmd.args(["bench", "--workspace", "--all-features", "--bench", "*"]);
+    cmd.args([
+        "bench",
+        "--workspace",
+        "--all-features",
+        "--bench",
+        bench.unwrap_or("*"),
+    ]);
     if no_run {
         cmd.arg("--no-run");
+    }
+    if !args.is_empty() {
+        cmd.arg("--").args(args);
     }
     cmd
 }

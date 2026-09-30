@@ -53,20 +53,26 @@ fn mapped_mutex_guards_preserve_lock_ownership() {
     drop(mapped);
     assert_eq!(mutex.into_inner(), (vec![1, 4], 3));
 
-    let mutex = Arc::new(Mutex::new(Some(vec![5, 6])));
-    let weak = Arc::downgrade(&mutex);
-    let guard = mutex.clone().try_lock_owned().unwrap();
-    let mapped = OwnedMutexGuard::filter_map(guard, Option::as_mut).unwrap();
-    let mut mapped = OwnedMappedMutexGuard::map(mapped, |values| &mut values[0]);
-    assert!(mutex.try_lock().is_none());
-    *mapped = 7;
-    drop(mapped);
-    let guard = mutex.try_lock().unwrap();
-    assert_eq!(guard.as_deref(), Some([7, 6].as_slice()));
-    drop(guard);
+    for fallible_projection in [false, true] {
+        let mutex = Arc::new(Mutex::new(Some(vec![5, 6])));
+        let weak = Arc::downgrade(&mutex);
+        let guard = mutex.clone().try_lock_owned().unwrap();
+        let mapped = if fallible_projection {
+            OwnedMutexGuard::filter_map(guard, Option::as_mut).unwrap()
+        } else {
+            OwnedMutexGuard::map(guard, |value| value.as_mut().unwrap())
+        };
+        let mut mapped = OwnedMappedMutexGuard::map(mapped, |values| &mut values[0]);
+        assert!(mutex.try_lock().is_none());
+        *mapped = 7;
+        drop(mapped);
+        let guard = mutex.try_lock().unwrap();
+        assert_eq!(guard.as_deref(), Some([7, 6].as_slice()));
+        drop(guard);
 
-    drop(mutex);
-    assert!(weak.upgrade().is_none());
+        drop(mutex);
+        assert!(weak.upgrade().is_none());
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
