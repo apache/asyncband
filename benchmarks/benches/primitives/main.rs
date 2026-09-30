@@ -15,18 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Primitive operation costs, with hand-polled waiters unless a case explicitly uses threads.
-//! Ready paths reuse initialized state; handoff/fanout cycles include waiter registration, wake
-//! callbacks and repolling. Boxed waiter vectors in those cycles are timed too. The shared waker
-//! accounts for reference counting but does not schedule tasks, so these are not executor
-//! latencies.
-//!
-//! `diagnostics` groups are opt-in: cancellation, repeated Pending, construction bookkeeping,
-//! no-consumer paths and large reclaim probes. Do not give them the weight of ordinary operations.
-//!
-//! Run `cargo x bench --bench primitives -- --list` to inspect scenarios, or pass a path filter.
-//! Run `cargo x bench -- --test --include-ignored` to smoke every scenario without collecting
-//! timings. Use `--include-ignored diagnostics` to measure diagnostic probes explicitly.
+//! Hand-polled operation costs. The waker exercises reference counting without task scheduling.
 
 mod barrier;
 mod blocking;

@@ -15,8 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Reused read/write state: eight reads followed by one write on one thread; separately, existing
-//! readers release a queued writer. The latter includes fresh state and waiter setup.
-
 mod read;
 mod write;

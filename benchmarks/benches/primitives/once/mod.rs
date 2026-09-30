@@ -15,9 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! One-time initialization and observation: immediate initialization, suspended initialization
-//! joined by waiters, and explicit wait-before-completion. Initialization work is deliberately
-//! trivial.
-
 mod get_or_init;
 mod wait;

@@ -78,7 +78,7 @@ struct CommandBench {
     #[arg(
         last = true,
         conflicts_with = "no_run",
-        help = "Arguments passed to Divan, such as --list or --test --include-ignored."
+        help = "Arguments passed to Divan."
     )]
     args: Vec<String>,
 }

@@ -15,7 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Reusable generations: one arriving leader releases 1/4/16 registered followers. Waiter
-//! allocation and registration are part of each cycle.
-
 mod wait;

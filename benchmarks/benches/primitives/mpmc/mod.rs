@@ -15,9 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Single-thread channel operations: ready send/receive pairs and explicit producer/consumer
-//! handoff. Runtime throughput comparisons live only in ecosystem::mpmc.
-
 mod bounded;
 mod unbounded;
 

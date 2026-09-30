@@ -34,8 +34,7 @@ use super::support::FAST_SAMPLE_SIZE;
 use super::support::THREAD_COUNTS;
 use super::support::unique_thread_key;
 
-// The group is intentionally long-lived. Every call starts with no in-flight entry, while the
-// table can retain capacity just as a production Group does across completed calls.
+// Reuse the group so table capacity survives completed calls.
 #[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
 fn leader_success(bencher: Bencher) {
     let group = BenchGroup::default();
@@ -48,8 +47,7 @@ fn leader_success(bencher: Bencher) {
     });
 }
 
-// Suspends every leader before completing it so all distinct-key entries coexist. This isolates
-// the table bookkeeping from same-key duplicate suppression without depending on thread timing.
+// Suspend all leaders so their distinct-key entries coexist.
 #[divan::bench(args = BATCH_SIZES, sample_size = BATCH_SAMPLE_SIZE)]
 fn distinct_keys(bencher: Bencher, caller_count: usize) {
     let group = BenchGroup::default();
@@ -78,9 +76,7 @@ fn distinct_keys(bencher: Bencher, caller_count: usize) {
         });
 }
 
-// Every call owns a unique key, so this measures cross-thread contention on the shared table while
-// preserving SingleFlight's normal insert-work-remove lifecycle. It deliberately does not claim
-// to measure same-key coalescing, which cannot be guaranteed by Divan's thread scheduling.
+// Unique keys isolate shared-table contention from same-key coalescing.
 #[divan::bench(threads = THREAD_COUNTS, sample_size = CONTENDED_SAMPLE_SIZE)]
 fn distributed_leaders(bencher: Bencher) {
     let group = BenchGroup::default();
@@ -93,20 +89,14 @@ fn distributed_leaders(bencher: Bencher) {
     });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
-
-    #[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
-    fn leader_error(bencher: Bencher) {
-        let group = BenchGroup::default();
-        let mut context = bench_context();
-        bencher.bench_local(|| {
-            black_box(poll_ready(
-                group.try_work(black_box(0), || async { Err::<usize, ()>(()) }),
-                &mut context,
-            ))
-        });
-    }
+#[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
+fn leader_error(bencher: Bencher) {
+    let group = BenchGroup::default();
+    let mut context = bench_context();
+    bencher.bench_local(|| {
+        black_box(poll_ready(
+            group.try_work(black_box(0), || async { Err::<usize, ()>(()) }),
+            &mut context,
+        ))
+    });
 }

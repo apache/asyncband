@@ -15,7 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Single-value lifecycle: send before the receiver polls, or register a receiver before sending.
-//! Both include channel construction and completion; neither measures executor latency.
-
 mod send;

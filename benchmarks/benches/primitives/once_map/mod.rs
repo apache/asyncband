@@ -15,9 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Memoization: distributed or single-key cache lookups, absent-key initialization/coalescing, and
-//! removal. Keys are usize with a deterministic hasher; initializer work is trivial. Threaded
-//! lookups measure table contention, while coalescing is hand-polled.
+//! Uses usize keys, a deterministic hasher, and trivial initializers.
+//! Lookups use threads; coalescing uses controlled polling.
 
 mod initialize;
 mod lookup;

@@ -119,22 +119,16 @@ fn reused_tasks<C: Reservable, const CAPACITY: usize>(
     bencher.bench_local(|| batch.run());
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    #[divan::bench(types = [Asyncband, Tokio], sample_count = 20, sample_size = 1,
-        counter = ItemsCount::new(BATCH_MESSAGES))]
-    fn capacity_one_task_handoff<C: Reservable>(bencher: Bencher) {
-        let mut batch = RepeatedTasks::<Reserved<C, 1>>::new(4, 4);
-        batch.run();
-        bencher.bench_local(|| batch.run());
-    }
+#[divan::bench(types = [Asyncband, Tokio], sample_count = 20, sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES))]
+fn capacity_one_task_handoff<C: Reservable>(bencher: Bencher) {
+    let mut batch = RepeatedTasks::<Reserved<C, 1>>::new(4, 4);
+    batch.run();
+    bencher.bench_local(|| batch.run());
+}
 
-    use super::*;
-
-    #[divan::bench(types = [Asyncband, Tokio], sample_size = 1024)]
-    fn cancel_reserved_capacity<C: Reservable>(bencher: Bencher) {
-        let (sender, _receiver) = C::channel(64);
-        bencher.bench_local(|| drop(black_box(C::try_reserve(&sender))));
-    }
+#[divan::bench(types = [Asyncband, Tokio], sample_size = 1024)]
+fn cancel_reserved_capacity<C: Reservable>(bencher: Bencher) {
+    let (sender, _receiver) = C::channel(64);
+    bencher.bench_local(|| drop(black_box(C::try_reserve(&sender))));
 }

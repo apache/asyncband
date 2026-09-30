@@ -15,9 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Warm object reuse and capacity-one waiter handoff. The manager immediately creates/validates
-//! usize objects, so results measure pool bookkeeping, not connection establishment or remote
-//! health checks.
+//! The manager creates and validates usize objects immediately, with no I/O.
 
 mod bounded;
 mod unbounded;

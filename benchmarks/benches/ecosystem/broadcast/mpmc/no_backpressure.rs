@@ -15,10 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Asyncband is the only unbounded channel in this comparison. Tokio broadcast overwrites messages
-// at capacity, while async-broadcast applies backpressure by default. Every bounded peer gets room
-// for the entire measured batch, so these workloads compare their common lossless, non-blocking
-// path rather than their different lag and capacity policies.
+// Bounded peers have room for the entire batch, excluding their differing overflow policies.
 
 use benchmarks::support::bench_context;
 use divan::Bencher;

@@ -60,39 +60,33 @@ fn complete_coalesced(bencher: Bencher, caller_count: usize) {
         });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+// The first leader fails; each waiter then retries with an immediately ready initializer.
+// Those retries complete sequentially, so they do not coalesce with each other.
+#[divan::bench(args = BATCH_SIZES, sample_size = BATCH_SAMPLE_SIZE)]
+fn sequential_retries_after_leader_error(bencher: Bencher, caller_count: usize) {
+    let group = BenchGroup::default();
+    let mut context = bench_context();
+    bencher
+        .counter(ItemsCount::new(caller_count))
+        .bench_local(|| {
+            let gate = Cell::new(false);
+            let mut leader = Box::pin(group.try_work(0, || async {
+                wait_until_open(&gate).await;
+                Err::<usize, ()>(())
+            }));
+            poll_pending(leader.as_mut(), &mut context);
 
-    // The first leader fails; each waiter then retries with an immediately ready initializer.
-    // Those retries complete sequentially, so they do not coalesce with each other.
-    #[divan::bench(args = BATCH_SIZES, sample_size = BATCH_SAMPLE_SIZE)]
-    fn sequential_retries_after_leader_error(bencher: Bencher, caller_count: usize) {
-        let group = BenchGroup::default();
-        let mut context = bench_context();
-        bencher
-            .counter(ItemsCount::new(caller_count))
-            .bench_local(|| {
-                let gate = Cell::new(false);
-                let mut leader = Box::pin(group.try_work(0, || async {
-                    wait_until_open(&gate).await;
-                    Err::<usize, ()>(())
-                }));
-                poll_pending(leader.as_mut(), &mut context);
+            let mut retries = (1..caller_count)
+                .map(|_| Box::pin(group.try_work(0, || async { Ok::<usize, ()>(1) })))
+                .collect::<Vec<_>>();
+            for retry in &mut retries {
+                poll_pending(retry.as_mut(), &mut context);
+            }
 
-                let mut retries = (1..caller_count)
-                    .map(|_| Box::pin(group.try_work(0, || async { Ok::<usize, ()>(1) })))
-                    .collect::<Vec<_>>();
-                for retry in &mut retries {
-                    poll_pending(retry.as_mut(), &mut context);
-                }
-
-                gate.set(true);
-                let _ = black_box(poll_pinned_ready(leader.as_mut(), &mut context));
-                for mut retry in retries {
-                    let _ = black_box(poll_pinned_ready(retry.as_mut(), &mut context));
-                }
-            });
-    }
+            gate.set(true);
+            let _ = black_box(poll_pinned_ready(leader.as_mut(), &mut context));
+            for mut retry in retries {
+                let _ = black_box(poll_pinned_ready(retry.as_mut(), &mut context));
+            }
+        });
 }

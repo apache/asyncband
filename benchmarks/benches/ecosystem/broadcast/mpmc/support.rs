@@ -32,16 +32,8 @@ use super::adapters::BroadcastMpmc;
 pub const BATCH_MESSAGES: usize = 4096;
 pub const PRODUCER_COUNTS: &[usize] = &[1, 2, 4, 8];
 pub const RECEIVER_COUNTS: &[usize] = &[1, 2, 4, 8];
-/// Capacity for the round-trip benches, which pair every send with a receive and so never fill
-/// the channel.
 pub const ROUND_TRIP_CAPACITY: usize = 64;
 
-/// One bounded workload: the channel capacity, how many producers publish, and how many
-/// subscriptions read.
-///
-/// Capacity bounds the shared backlog, independently of the subscription count. Capacity one
-/// forces the next publication to wait until every subscription advances; larger capacities let
-/// producers run ahead by that many messages, subject to scheduling and consumer progress.
 #[derive(Clone, Copy)]
 pub struct BoundedShape {
     pub capacity: usize,
@@ -207,9 +199,6 @@ impl<C: BroadcastMpmc> Drop for Fanout<C> {
     }
 }
 
-/// Concurrent producers and subscribers on native threads. Each subscriber drains the full batch.
-/// Construction is outside timing; `run` includes barrier release, transfers, checksum validation,
-/// and worker joins.
 pub struct BoundedConcurrent {
     start: Arc<Barrier>,
     workers: Vec<JoinHandle<()>>,
@@ -262,8 +251,6 @@ impl BoundedConcurrent {
     }
 }
 
-/// The same bounded workload on async tasks. Construction and spawning are outside timing; `run`
-/// includes barrier release, transfers, checksum validation, and task joins.
 pub struct BoundedTasks {
     start: Arc<tokio::sync::Barrier>,
     tasks: JoinSet<()>,

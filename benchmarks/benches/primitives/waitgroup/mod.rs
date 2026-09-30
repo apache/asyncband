@@ -15,7 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! One worker completing releases several cloned wait futures. Includes group
-//! creation and waiter allocation, without executing application work.
-
 mod wait;

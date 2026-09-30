@@ -15,7 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Predicate-style handoff: register waiters while releasing the associated mutex, notify them,
-//! then reacquire it. The measured cycle includes setup and waiter allocation.
-
 mod wait;

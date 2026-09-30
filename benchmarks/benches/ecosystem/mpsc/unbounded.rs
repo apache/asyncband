@@ -166,118 +166,112 @@ fn check_inline_message(value: [u8; 1024], expected: &mut [u64]) -> usize {
     usize::from(value[1023])
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
+fn clone_drop_sender<C: UnboundedMpsc>(bencher: Bencher) {
+    let (sender, _receiver) = C::channel();
+    bencher.bench_local(|| drop(black_box(sender.clone())));
+}
 
-    #[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
-    fn clone_drop_sender<C: UnboundedMpsc>(bencher: Bencher) {
-        let (sender, _receiver) = C::channel();
-        bencher.bench_local(|| drop(black_box(sender.clone())));
-    }
-
-    #[divan::bench(
-        types = [Asyncband, Tokio, AsyncChannel, Flume],
-        args = [(1, 64), (8, 64), (1, 1024), (8, 1024)],
-        sample_count = 50,
-        sample_size = 1,
-        counter = ItemsCount::new(BATCH_MESSAGES),
-    )]
-    fn scheduled_bursts_inline<C: UnboundedMpsc<[u8; 1024]>>(
-        bencher: Bencher,
-        (producers, burst_messages): (usize, usize),
-    ) {
-        assert_eq!(BATCH_MESSAGES % burst_messages, 0);
-        assert_eq!(burst_messages % producers, 0);
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)
-            .build()
-            .unwrap();
-        let (sender, mut receiver) = C::channel();
-        let start: Vec<_> = (0..producers)
-            .map(|_| Arc::new(tokio::sync::Notify::new()))
-            .collect();
-        let stop = Arc::new(AtomicBool::new(false));
-        let workers: Vec<_> = start
-            .iter()
-            .enumerate()
-            .map(|(producer, start)| {
-                let sender = sender.clone();
-                let start = start.clone();
-                let stop = stop.clone();
-                runtime.spawn(async move {
-                    let mut sequence = 0u64;
-                    loop {
-                        start.notified().await;
-                        if stop.load(Ordering::Acquire) {
-                            break;
-                        }
-                        for _ in 0..burst_messages / producers {
-                            let mut value = [1; 1024];
-                            value[..8].copy_from_slice(&(producer as u64).to_le_bytes());
-                            value[8..16].copy_from_slice(&sequence.to_le_bytes());
-                            C::send(&sender, black_box(value));
-                            sequence += 1;
-                        }
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    args = [(1, 64), (8, 64), (1, 1024), (8, 1024)],
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn scheduled_bursts_inline<C: UnboundedMpsc<[u8; 1024]>>(
+    bencher: Bencher,
+    (producers, burst_messages): (usize, usize),
+) {
+    assert_eq!(BATCH_MESSAGES % burst_messages, 0);
+    assert_eq!(burst_messages % producers, 0);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .build()
+        .unwrap();
+    let (sender, mut receiver) = C::channel();
+    let start: Vec<_> = (0..producers)
+        .map(|_| Arc::new(tokio::sync::Notify::new()))
+        .collect();
+    let stop = Arc::new(AtomicBool::new(false));
+    let workers: Vec<_> = start
+        .iter()
+        .enumerate()
+        .map(|(producer, start)| {
+            let sender = sender.clone();
+            let start = start.clone();
+            let stop = stop.clone();
+            runtime.spawn(async move {
+                let mut sequence = 0u64;
+                loop {
+                    start.notified().await;
+                    if stop.load(Ordering::Acquire) {
+                        break;
                     }
-                })
-            })
-            .collect();
-        drop(sender);
-
-        let mut expected = vec![0u64; producers];
-        let mut run = || {
-            runtime.block_on(async {
-                let mut checksum = 0;
-                for _ in 0..BATCH_MESSAGES / burst_messages {
-                    let first = {
-                        // Exclude Tokio's cooperative-budget Pending from the initial empty probe.
-                        // Retain the same receive future so its channel registration drives the
-                        // wake.
-                        let mut receive =
-                            pin!(tokio::task::unconstrained(C::recv_async(&mut receiver)));
-                        let mut released = false;
-                        poll_fn(|cx| {
-                            let result = receive.as_mut().poll(cx);
-                            if !released {
-                                assert!(
-                                    result.is_pending(),
-                                    "each burst must start with an empty wait"
-                                );
-                                released = true;
-                                for producer in &start {
-                                    producer.notify_one();
-                                }
-                            }
-                            result
-                        })
-                        .await
-                    };
-                    checksum += check_inline_message(first, &mut expected);
-                    for _ in 1..burst_messages {
-                        checksum +=
-                            check_inline_message(C::recv_async(&mut receiver).await, &mut expected);
+                    for _ in 0..burst_messages / producers {
+                        let mut value = [1; 1024];
+                        value[..8].copy_from_slice(&(producer as u64).to_le_bytes());
+                        value[8..16].copy_from_slice(&sequence.to_le_bytes());
+                        C::send(&sender, black_box(value));
+                        sequence += 1;
                     }
                 }
-                assert_eq!(checksum, BATCH_MESSAGES);
-                assert!(expected.iter().all(|count| *count == expected[0]));
-                black_box(checksum)
             })
-        };
-        // Reuse the channel and tasks, including across bursts. Timing includes producer release,
-        // channel wakeups, concurrent payload movement, and storage reclamation, not task creation.
-        run();
-        bencher.bench_local(run);
+        })
+        .collect();
+    drop(sender);
 
-        stop.store(true, Ordering::Release);
-        for producer in &start {
-            producer.notify_one();
-        }
+    let mut expected = vec![0u64; producers];
+    let mut run = || {
         runtime.block_on(async {
-            for worker in workers {
-                worker.await.expect("benchmark producer panicked");
+            let mut checksum = 0;
+            for _ in 0..BATCH_MESSAGES / burst_messages {
+                let first = {
+                    // Exclude Tokio's cooperative-budget Pending from the initial empty probe.
+                    // Retain the same receive future so its channel registration drives the
+                    // wake.
+                    let mut receive =
+                        pin!(tokio::task::unconstrained(C::recv_async(&mut receiver)));
+                    let mut released = false;
+                    poll_fn(|cx| {
+                        let result = receive.as_mut().poll(cx);
+                        if !released {
+                            assert!(
+                                result.is_pending(),
+                                "each burst must start with an empty wait"
+                            );
+                            released = true;
+                            for producer in &start {
+                                producer.notify_one();
+                            }
+                        }
+                        result
+                    })
+                    .await
+                };
+                checksum += check_inline_message(first, &mut expected);
+                for _ in 1..burst_messages {
+                    checksum +=
+                        check_inline_message(C::recv_async(&mut receiver).await, &mut expected);
+                }
             }
-        });
+            assert_eq!(checksum, BATCH_MESSAGES);
+            assert!(expected.iter().all(|count| *count == expected[0]));
+            black_box(checksum)
+        })
+    };
+    // Reuse the channel and tasks, including across bursts. Timing includes producer release,
+    // channel wakeups, concurrent payload movement, and storage reclamation, not task creation.
+    run();
+    bencher.bench_local(run);
+
+    stop.store(true, Ordering::Release);
+    for producer in &start {
+        producer.notify_one();
     }
+    runtime.block_on(async {
+        for worker in workers {
+            worker.await.expect("benchmark producer panicked");
+        }
+    });
 }

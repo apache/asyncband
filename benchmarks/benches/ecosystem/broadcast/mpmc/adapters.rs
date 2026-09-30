@@ -131,10 +131,7 @@ impl BroadcastMpmc for AsyncBroadcast {
     }
 }
 
-/// A lossless bounded broadcast channel: every accepted value reaches every active subscription,
-/// and a full channel makes producers wait rather than displacing anything.
-///
-/// `tokio::sync::broadcast` deliberately has no implementation here — see the note in `bounded.rs`.
+/// Every subscription receives each accepted value; producers wait when capacity is exhausted.
 pub trait BoundedBroadcastMpmc: Send + Sync + 'static {
     type Sender: Clone + Send + Sync + 'static;
     type Receiver: Send + 'static;

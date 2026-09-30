@@ -71,9 +71,7 @@ thread_local! {
     static THREAD_TICKET: Cell<usize> = const { Cell::new(0) };
 }
 
-// Key derivation for the contended benches: a shared counter would itself be a cross-thread
-// contention point inside the timed loop, so keys derive from a slot that is distinct for every OS
-// thread and a ticket that counts this thread's calls.
+// Thread-local tickets avoid adding shared-counter contention to the timed loop.
 pub fn thread_slot_ticket() -> (usize, usize) {
     let slot = THREAD_SLOT.with(|slot| *slot);
     let ticket = THREAD_TICKET.with(|ticket| {

@@ -51,32 +51,26 @@ fn drain_backpressured_senders(bencher: Bencher, sender_count: usize) {
     });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+#[divan::bench(args = SENDER_COUNTS)]
+fn cancel_backpressured_senders(bencher: Bencher, sender_count: usize) {
+    let mut context = bench_context();
+    let (sender, mut receiver) = mpsc::bounded(1);
+    let senders = (0..sender_count)
+        .map(|_| sender.clone())
+        .collect::<Vec<_>>();
 
-    #[divan::bench(args = SENDER_COUNTS)]
-    fn cancel_backpressured_senders(bencher: Bencher, sender_count: usize) {
-        let mut context = bench_context();
-        let (sender, mut receiver) = mpsc::bounded(1);
-        let senders = (0..sender_count)
-            .map(|_| sender.clone())
+    bencher.bench_local(|| {
+        sender.try_send(black_box(usize::MAX)).unwrap();
+        let mut sends = senders
+            .iter()
+            .enumerate()
+            .map(|(index, sender)| Box::pin(sender.send(index)))
             .collect::<Vec<_>>();
+        for send in &mut sends {
+            poll_pending(send.as_mut(), &mut context);
+        }
 
-        bencher.bench_local(|| {
-            sender.try_send(black_box(usize::MAX)).unwrap();
-            let mut sends = senders
-                .iter()
-                .enumerate()
-                .map(|(index, sender)| Box::pin(sender.send(index)))
-                .collect::<Vec<_>>();
-            for send in &mut sends {
-                poll_pending(send.as_mut(), &mut context);
-            }
-
-            drop(sends);
-            black_box(receiver.try_recv().unwrap())
-        });
-    }
+        drop(sends);
+        black_box(receiver.try_recv().unwrap())
+    });
 }

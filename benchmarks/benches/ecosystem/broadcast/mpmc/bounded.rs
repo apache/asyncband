@@ -15,17 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Asyncband and async-broadcast are compared here because both are lossless and both make
-// producers wait at capacity, so a small channel measures the same contract on each side.
-//
-// `tokio::sync::broadcast` is deliberately absent. It overwrites at capacity and reports `Lagged`
-// rather than waiting, so it has no lossless bounded path to compare: it would be measuring the
-// cheaper workload of dropping messages. It appears in `no_backpressure.rs` instead, where every
-// peer is given room for the whole batch and the comparison is over their shared non-blocking path.
-//
-// Sweep capacity and producer/subscription counts independently. Capacity one measures the
-// per-message handoff; larger backlogs allow several messages to be outstanding. How effectively
-// that headroom is used depends on scheduling and the slowest subscription, not just fanout.
+// Tokio broadcast overwrites at capacity, so it cannot participate in lossless backpressure cases.
 
 use benchmarks::support::bench_context;
 use divan::Bencher;
@@ -35,6 +25,7 @@ use divan::counter::ItemsCount;
 use super::adapters::AsyncBroadcast;
 use super::adapters::Asyncband;
 use super::adapters::BoundedBroadcastMpmc;
+use super::support::BACKPRESSURE_SHAPE;
 use super::support::BATCH_MESSAGES;
 use super::support::BOUNDED_SHAPES;
 use super::support::BoundedConcurrent;
@@ -97,17 +88,11 @@ fn task_batch<C: BoundedBroadcastMpmc>(bencher: Bencher, shape: BoundedShape) {
         .bench_local_refs(|tasks| tasks.run(&runtime));
 }
 
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::super::support::BACKPRESSURE_SHAPE;
-    use super::*;
-
-    #[divan::bench(types = [Asyncband, AsyncBroadcast], sample_count = 10, sample_size = 1,
-        counter = ItemsCount::new(BATCH_MESSAGES))]
-    fn capacity_one_task_handoff<C: BoundedBroadcastMpmc>(bencher: Bencher) {
-        let runtime = benchmarks::channels::runtime(4);
-        bencher
-            .with_inputs(|| BoundedTasks::new::<C>(&runtime, BACKPRESSURE_SHAPE))
-            .bench_local_refs(|tasks| tasks.run(&runtime));
-    }
+#[divan::bench(types = [Asyncband, AsyncBroadcast], sample_count = 10, sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES))]
+fn capacity_one_task_handoff<C: BoundedBroadcastMpmc>(bencher: Bencher) {
+    let runtime = benchmarks::channels::runtime(4);
+    bencher
+        .with_inputs(|| BoundedTasks::new::<C>(&runtime, BACKPRESSURE_SHAPE))
+        .bench_local_refs(|tasks| tasks.run(&runtime));
 }

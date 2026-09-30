@@ -15,11 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Competing consumers drain each 16,384-message batch until producer disconnection. Threads and
-//! tasks use the same topologies and validate aggregate count/checksum; no consumer has a quota.
-//! Runtime/channel/worker creation is outside timing; start, transfer, close, drain and join are
-//! in. Bounded capacity is 64. Topology names state producers and consumers; 8x8 is the contention
-//! end. Threads use each peer's blocking API; Asyncband drives futures with its blocking bridge.
-
 mod bounded;
 mod unbounded;

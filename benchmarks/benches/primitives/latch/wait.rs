@@ -64,22 +64,16 @@ fn waiter_fan_out(bencher: Bencher, waiter_count: usize) {
     });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+#[divan::bench]
+fn cancel_pending(bencher: Bencher) {
+    let mut context = bench_context();
 
-    #[divan::bench]
-    fn cancel_pending(bencher: Bencher) {
-        let mut context = bench_context();
-
-        bencher.bench_local(|| {
-            let latch = Latch::new(1);
-            {
-                let mut wait = pin!(latch.wait());
-                poll_pending(wait.as_mut(), &mut context);
-            }
-            black_box(latch)
-        });
-    }
+    bencher.bench_local(|| {
+        let latch = Latch::new(1);
+        {
+            let mut wait = pin!(latch.wait());
+            poll_pending(wait.as_mut(), &mut context);
+        }
+        black_box(latch)
+    });
 }

@@ -15,10 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Asyncband clones the current value while Tokio returns a read-lock-backed Ref. These benchmarks
-// immediately read a usize, so both sides finish with an owned value and release any lock before
-// continuing. The recv adapter combines Tokio's changed and borrow_and_update operations to match
-// Asyncband's owned receive contract.
+// Both adapters return an owned usize. Tokio's recv combines changed and borrow_and_update.
 
 use std::pin::pin;
 

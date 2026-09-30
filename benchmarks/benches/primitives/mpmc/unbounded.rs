@@ -58,17 +58,11 @@ fn wake_pending_receiver(bencher: Bencher) {
     });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
-
-    #[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
-    fn repoll_pending_receiver(bencher: Bencher) {
-        let mut context = bench_context();
-        let (_sender, receiver) = mpmc::unbounded::<usize>();
-        let mut recv = pin!(receiver.recv());
-        poll_pending(recv.as_mut(), &mut context);
-        bencher.bench_local(|| poll_pending(recv.as_mut(), &mut context));
-    }
+#[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
+fn repoll_pending_receiver(bencher: Bencher) {
+    let mut context = bench_context();
+    let (_sender, receiver) = mpmc::unbounded::<usize>();
+    let mut recv = pin!(receiver.recv());
+    poll_pending(recv.as_mut(), &mut context);
+    bencher.bench_local(|| poll_pending(recv.as_mut(), &mut context));
 }

@@ -49,22 +49,16 @@ fn reused_generation_fanout(bencher: Bencher, participant_count: usize) {
     });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+#[divan::bench]
+fn cancel_pending(bencher: Bencher) {
+    let mut context = bench_context();
 
-    #[divan::bench]
-    fn cancel_pending(bencher: Bencher) {
-        let mut context = bench_context();
-
-        bencher.bench_local(|| {
-            let barrier = Barrier::new(2);
-            {
-                let mut wait = pin!(barrier.wait());
-                poll_pending(wait.as_mut(), &mut context);
-            }
-            black_box(barrier)
-        });
-    }
+    bencher.bench_local(|| {
+        let barrier = Barrier::new(2);
+        {
+            let mut wait = pin!(barrier.wait());
+            poll_pending(wait.as_mut(), &mut context);
+        }
+        black_box(barrier)
+    });
 }

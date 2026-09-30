@@ -108,59 +108,53 @@ fn complete_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
     });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+#[divan::bench(types = [Asyncband, WaitgroupRs])]
+fn ready_empty<C: WaitGroup>(bencher: Bencher) {
+    let mut context = bench_context();
 
-    #[divan::bench(types = [Asyncband, WaitgroupRs])]
-    fn ready_empty<C: WaitGroup>(bencher: Bencher) {
-        let mut context = bench_context();
+    bencher.bench_local(|| {
+        let mut wait = pin!(C::wait(C::new()));
+        poll_pinned_ready(wait.as_mut(), &mut context);
+    });
+}
 
-        bencher.bench_local(|| {
-            let mut wait = pin!(C::wait(C::new()));
-            poll_pinned_ready(wait.as_mut(), &mut context);
-        });
-    }
+#[divan::bench(types = [Asyncband, WaitgroupRs])]
+fn cancel_pending<C: WaitGroup>(bencher: Bencher) {
+    let mut context = bench_context();
 
-    #[divan::bench(types = [Asyncband, WaitgroupRs])]
-    fn cancel_pending<C: WaitGroup>(bencher: Bencher) {
-        let mut context = bench_context();
+    bencher.bench_local(|| {
+        let group = C::new();
+        let worker = C::worker(&group);
+        {
+            let mut wait = pin!(C::wait(group));
+            poll_pending(wait.as_mut(), &mut context);
+        }
+        drop(worker);
+    });
+}
 
-        bencher.bench_local(|| {
-            let group = C::new();
-            let worker = C::worker(&group);
-            {
-                let mut wait = pin!(C::wait(group));
-                poll_pending(wait.as_mut(), &mut context);
-            }
-            drop(worker);
-        });
-    }
+#[divan::bench(types = [Asyncband, WaitgroupRs], args = WORKER_COUNTS)]
+fn worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
+    bencher.bench_local(|| {
+        let group = C::new();
+        let workers = (0..worker_count)
+            .map(|_| C::worker(&group))
+            .collect::<Vec<_>>();
+        black_box(workers);
+        black_box(group);
+    });
+}
 
-    #[divan::bench(types = [Asyncband, WaitgroupRs], args = WORKER_COUNTS)]
-    fn worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
-        bencher.bench_local(|| {
-            let group = C::new();
-            let workers = (0..worker_count)
-                .map(|_| C::worker(&group))
-                .collect::<Vec<_>>();
-            black_box(workers);
-            black_box(group);
-        });
-    }
-
-    #[divan::bench(types = [Asyncband, WaitgroupRs], args = WORKER_COUNTS)]
-    fn nested_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
-        bencher.bench_local(|| {
-            let group = C::new();
-            let worker = C::worker(&group);
-            let workers = (0..worker_count)
-                .map(|_| worker.clone())
-                .collect::<Vec<_>>();
-            black_box(workers);
-            black_box(worker);
-            black_box(group);
-        });
-    }
+#[divan::bench(types = [Asyncband, WaitgroupRs], args = WORKER_COUNTS)]
+fn nested_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
+    bencher.bench_local(|| {
+        let group = C::new();
+        let worker = C::worker(&group);
+        let workers = (0..worker_count)
+            .map(|_| worker.clone())
+            .collect::<Vec<_>>();
+        black_box(workers);
+        black_box(worker);
+        black_box(group);
+    });
 }

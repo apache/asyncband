@@ -15,7 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! One-shot countdown: several arrivals release one waiter, or one final arrival releases several
-//! waiters. Each sample includes fresh state and registration.
-
 mod wait;

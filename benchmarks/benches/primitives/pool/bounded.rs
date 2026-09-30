@@ -78,24 +78,18 @@ fn bounded_contended_handoff(bencher: Bencher) {
     });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+#[divan::bench]
+fn cancel_bounded_waiter(bencher: Bencher) {
+    let pool = bounded::Pool::new(bounded::PoolConfig::new(1), Manager);
+    let mut context = bench_context();
+    drop(poll_ready(pool.get(), &mut context).unwrap());
 
-    #[divan::bench]
-    fn cancel_bounded_waiter(bencher: Bencher) {
-        let pool = bounded::Pool::new(bounded::PoolConfig::new(1), Manager);
-        let mut context = bench_context();
-        drop(poll_ready(pool.get(), &mut context).unwrap());
-
-        bencher.bench_local(|| {
-            let held = poll_ready(pool.get(), &mut context).unwrap();
-            {
-                let mut waiter = pin!(pool.get());
-                poll_pending(waiter.as_mut(), &mut context);
-            }
-            drop(held);
-        });
-    }
+    bencher.bench_local(|| {
+        let held = poll_ready(pool.get(), &mut context).unwrap();
+        {
+            let mut waiter = pin!(pool.get());
+            poll_pending(waiter.as_mut(), &mut context);
+        }
+        drop(held);
+    });
 }

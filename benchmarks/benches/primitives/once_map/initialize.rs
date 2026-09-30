@@ -115,22 +115,15 @@ fn initialize_distinct_keys(bencher: Bencher, caller_count: usize) {
         });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
-
-    // A failed initializer leaves no value behind, so the same long-lived map can exercise a stable
-    // retryable miss without mixing map construction or deletion into the measurement.
-    #[divan::bench(args = READY_ENTRY_COUNTS, sample_size = FAST_SAMPLE_SIZE)]
-    fn initialize_error(bencher: Bencher, ready_entries: usize) {
-        let map = ready_map(ready_entries);
-        let mut context = bench_context();
-        bencher.bench_local(|| {
-            black_box(poll_ready(
-                map.try_compute(black_box(ABSENT_KEY), || async { Err::<usize, ()>(()) }),
-                &mut context,
-            ))
-        });
-    }
+// Failed initialization leaves the key absent, allowing retries on the same map.
+#[divan::bench(args = READY_ENTRY_COUNTS, sample_size = FAST_SAMPLE_SIZE)]
+fn initialize_error(bencher: Bencher, ready_entries: usize) {
+    let map = ready_map(ready_entries);
+    let mut context = bench_context();
+    bencher.bench_local(|| {
+        black_box(poll_ready(
+            map.try_compute(black_box(ABSENT_KEY), || async { Err::<usize, ()>(()) }),
+            &mut context,
+        ))
+    });
 }

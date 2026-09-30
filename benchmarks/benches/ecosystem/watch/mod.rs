@@ -15,10 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Latest-value observation: snapshot reads, publish/observe pairs and registered observer fanout.
-//! The payload is usize; Asyncband's owned clone is matched with Tokio's short-lived borrowed read.
-//! Hand-polled notifications include registration and repolling, without task scheduling. These
-//! cases do not predict String clone costs or slow-reader behavior.
-
 mod adapters;
 mod paths;

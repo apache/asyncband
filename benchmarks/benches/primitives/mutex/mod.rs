@@ -15,7 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Reused mutex: uncontended lock/update/unlock and a manually queued handoff cycle. The queue
-//! cycle includes boxed waiter registration and completion, without executor scheduling.
-
 mod lock;

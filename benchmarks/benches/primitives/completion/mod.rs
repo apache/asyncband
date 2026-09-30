@@ -15,10 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Shared result: an already-completed read, completion before observation, and
-//! registration/completion/observation for one or several waiters. Each completion cycle creates
-//! fresh state because completion is one-shot.
-
 use std::pin::pin;
 
 use asyncband::completion;
@@ -85,39 +81,33 @@ fn notify_pending_fanout(bencher: Bencher, observer_count: usize) {
     });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+#[divan::bench]
+fn abandoned_wait(bencher: Bencher) {
+    let mut context = bench_context();
+    let (completer, completion) = completion::new::<usize>();
+    drop(completer);
 
-    #[divan::bench]
-    fn abandoned_wait(bencher: Bencher) {
-        let mut context = bench_context();
-        let (completer, completion) = completion::new::<usize>();
-        drop(completer);
+    bencher.bench_local(|| black_box(poll_ready(completion.wait(), &mut context).unwrap_err()));
+}
 
-        bencher.bench_local(|| black_box(poll_ready(completion.wait(), &mut context).unwrap_err()));
-    }
+#[divan::bench]
+fn repoll_pending(bencher: Bencher) {
+    let mut context = bench_context();
+    let (_completer, completion) = completion::new::<usize>();
+    let mut wait = pin!(completion.wait());
+    poll_pending(wait.as_mut(), &mut context);
 
-    #[divan::bench]
-    fn repoll_pending(bencher: Bencher) {
-        let mut context = bench_context();
-        let (_completer, completion) = completion::new::<usize>();
+    bencher.bench_local(|| poll_pending(wait.as_mut(), &mut context));
+}
+
+#[divan::bench]
+fn cancel_pending(bencher: Bencher) {
+    let mut context = bench_context();
+    let (_completer, completion) = completion::new::<usize>();
+
+    bencher.bench_local(|| {
         let mut wait = pin!(completion.wait());
         poll_pending(wait.as_mut(), &mut context);
-
-        bencher.bench_local(|| poll_pending(wait.as_mut(), &mut context));
-    }
-
-    #[divan::bench]
-    fn cancel_pending(bencher: Bencher) {
-        let mut context = bench_context();
-        let (_completer, completion) = completion::new::<usize>();
-
-        bencher.bench_local(|| {
-            let mut wait = pin!(completion.wait());
-            poll_pending(wait.as_mut(), &mut context);
-        });
-        black_box(completion);
-    }
+    });
+    black_box(completion);
 }

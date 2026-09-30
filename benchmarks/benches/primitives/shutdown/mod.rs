@@ -15,7 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Shutdown lifecycle: create guards, register their shutdown waits, request shutdown, then drop
-//! guards and observe completion. No executor or application cleanup is included.
-
 mod request_shutdown;

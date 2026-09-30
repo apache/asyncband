@@ -254,8 +254,7 @@ enum Receiver<C: ConcurrentMpsc> {
     External(C::Receiver),
 }
 
-// Reuse every task and the channel. The small control exchange happens once per 16,384-message
-// batch; it never forwards measured messages. Both payload sizes use this same start protocol.
+// Control messages coordinate each batch without forwarding measured payloads.
 pub struct RepeatedTasks<C: ConcurrentMpsc> {
     runtime: tokio::runtime::Runtime,
     receiver: Receiver<C>,

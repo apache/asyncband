@@ -93,53 +93,46 @@ fn queued_owned_burst(bencher: Bencher, queue_depth: usize) {
     });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+#[divan::bench]
+fn cancel_pending_acquire(bencher: Bencher) {
+    let mut context = bench_context();
 
-    #[divan::bench]
-    fn cancel_pending_acquire(bencher: Bencher) {
-        let mut context = bench_context();
+    bencher.bench_local(|| {
+        let semaphore = Semaphore::new(0);
+        {
+            let mut acquire = pin!(semaphore.acquire(black_box(1)));
+            poll_pending(acquire.as_mut(), &mut context);
+        }
+        black_box(semaphore.available_permits())
+    });
+}
 
-        bencher.bench_local(|| {
-            let semaphore = Semaphore::new(0);
-            {
-                let mut acquire = pin!(semaphore.acquire(black_box(1)));
-                poll_pending(acquire.as_mut(), &mut context);
-            }
-            black_box(semaphore.available_permits())
-        });
-    }
+#[divan::bench]
+fn owned_try_acquire_rejected(bencher: Bencher) {
+    let semaphore = Arc::new(Semaphore::new(8));
+    let held = semaphore
+        .clone()
+        .try_acquire_owned(8)
+        .expect("all permits must be available");
 
-    #[divan::bench]
-    fn owned_try_acquire_rejected(bencher: Bencher) {
-        let semaphore = Arc::new(Semaphore::new(8));
-        let held = semaphore
-            .clone()
-            .try_acquire_owned(8)
-            .expect("all permits must be available");
+    bencher.bench_local(|| black_box(semaphore.clone().try_acquire_owned(black_box(1)).is_none()));
 
-        bencher
-            .bench_local(|| black_box(semaphore.clone().try_acquire_owned(black_box(1)).is_none()));
+    drop(held);
+}
 
-        drop(held);
-    }
+#[divan::bench(args = QUEUE_DEPTHS)]
+fn cancel_pending_owned_batch(bencher: Bencher, queue_depth: usize) {
+    let semaphore = Arc::new(Semaphore::new(0));
+    let mut context = bench_context();
 
-    #[divan::bench(args = QUEUE_DEPTHS)]
-    fn cancel_pending_owned_batch(bencher: Bencher, queue_depth: usize) {
-        let semaphore = Arc::new(Semaphore::new(0));
-        let mut context = bench_context();
-
-        bencher.bench_local(|| {
-            let mut waiters = (0..queue_depth)
-                .map(|index| Box::pin(semaphore.clone().acquire_owned(1 << (index % 3))))
-                .collect::<Vec<_>>();
-            for waiter in &mut waiters {
-                poll_pending(waiter.as_mut(), &mut context);
-            }
-            drop(waiters);
-            black_box(semaphore.available_permits())
-        });
-    }
+    bencher.bench_local(|| {
+        let mut waiters = (0..queue_depth)
+            .map(|index| Box::pin(semaphore.clone().acquire_owned(1 << (index % 3))))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            poll_pending(waiter.as_mut(), &mut context);
+        }
+        drop(waiters);
+        black_box(semaphore.available_permits())
+    });
 }

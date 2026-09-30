@@ -24,46 +24,38 @@ use benchmarks::support::poll_pending;
 use divan::Bencher;
 use divan::black_box;
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+#[divan::bench]
+fn fulfill_debt_repeatedly(bencher: Bencher) {
+    const CYCLES: usize = 64;
 
-    #[divan::bench]
-    fn fulfill_debt_repeatedly(bencher: Bencher) {
-        const CYCLES: usize = 64;
+    bencher.bench_local(|| {
+        let semaphore = Semaphore::new(0);
+        for _ in 0..CYCLES {
+            semaphore.reduce_permits(black_box(1));
+            semaphore.release(black_box(1));
+        }
+        black_box(semaphore.available_permits())
+    });
+}
 
-        bencher.bench_local(|| {
-            let semaphore = Semaphore::new(0);
-            for _ in 0..CYCLES {
-                semaphore.reduce_permits(black_box(1));
-                semaphore.release(black_box(1));
+#[divan::bench(args = [1, 2, 32, 256], sample_size = 64)]
+fn release_to_waiters(bencher: Bencher, waiter_count: usize) {
+    bencher
+        .with_inputs(|| {
+            let semaphore = Arc::new(Semaphore::new(0));
+            let mut context = bench_context();
+            let mut waiters = (0..waiter_count)
+                .map(|_| Box::pin(semaphore.clone().acquire_owned(1)))
+                .collect::<Vec<_>>();
+            for waiter in &mut waiters {
+                poll_pending(waiter.as_mut(), &mut context);
             }
-            black_box(semaphore.available_permits())
+            (semaphore, waiters)
+        })
+        .bench_local_values(|(semaphore, waiters)| {
+            // Only release and wake callbacks are timed; registration and future cleanup are
+            // not.
+            semaphore.release(black_box(waiter_count));
+            defer_input_drop((semaphore, waiters), ())
         });
-    }
-
-    // The first two sizes distinguish a single handoff from fan-out; larger sizes measure bulk
-    // release.
-    #[divan::bench(args = [1, 2, 32, 256], sample_size = 64)]
-    fn release_to_waiters(bencher: Bencher, waiter_count: usize) {
-        bencher
-            .with_inputs(|| {
-                let semaphore = Arc::new(Semaphore::new(0));
-                let mut context = bench_context();
-                let mut waiters = (0..waiter_count)
-                    .map(|_| Box::pin(semaphore.clone().acquire_owned(1)))
-                    .collect::<Vec<_>>();
-                for waiter in &mut waiters {
-                    poll_pending(waiter.as_mut(), &mut context);
-                }
-                (semaphore, waiters)
-            })
-            .bench_local_values(|(semaphore, waiters)| {
-                // Only release and wake callbacks are timed; registration and future cleanup are
-                // not.
-                semaphore.release(black_box(waiter_count));
-                defer_input_drop((semaphore, waiters), ())
-            });
-    }
 }

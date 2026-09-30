@@ -15,8 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Blocking bridge: already-ready completion, same-thread self-wake and a persistent helper thread
-//! delivering a wake through std::sync::mpsc. The cross-thread case includes that control channel.
+//! Cross-thread wake timing includes the std::sync::mpsc control channel.
 
 mod block_on;
 mod wait_timeout;

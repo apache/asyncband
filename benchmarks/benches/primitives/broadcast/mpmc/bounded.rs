@@ -15,10 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Every benchmark here must return the channel to a steady state on each iteration: the retained
-// backlog back where it started, no parked producer left behind, and no permit slack in the
-// producer wait queue. Unlike the unbounded channel the hazard is not unbounded memory but a
-// wedged timed loop — a send that never gets its capacity back would hang the bench, not slow it.
+// Restore backlog and permits each iteration so later samples cannot stall on exhausted capacity.
 
 use std::pin::pin;
 
@@ -112,72 +109,62 @@ fn deliver_to_waiting_receiver(bencher: Bencher) {
     });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+#[divan::bench]
+fn send_without_receivers(bencher: Bencher) {
+    // With no subscribers, this measures the discard path.
+    let (tx, rx) = mpmc::bounded(CAPACITY);
+    drop(rx);
 
-    #[divan::bench]
-    fn send_without_receivers(bencher: Bencher) {
-        // No subscription means nothing is retained, so this measures the discard path, which never
-        // allocates and never waits.
-        let (tx, rx) = mpmc::bounded(CAPACITY);
-        drop(rx);
+    bencher.bench_local(|| tx.try_send(black_box(1)));
+}
 
-        bencher.bench_local(|| tx.try_send(black_box(1)));
-    }
+#[divan::bench]
+fn try_send_when_full(bencher: Bencher) {
+    let (tx, _rx) = mpmc::bounded(1);
+    tx.try_send(0).unwrap();
 
-    #[divan::bench]
-    fn try_send_when_full(bencher: Bencher) {
-        let (tx, _rx) = mpmc::bounded(1);
-        tx.try_send(0).unwrap();
+    bencher.bench_local(|| black_box(tx.try_send(black_box(1))).is_err());
+}
 
-        // The rejected value comes straight back, so the channel stays exactly as full as it
-        // started.
-        bencher.bench_local(|| black_box(tx.try_send(black_box(1))).is_err());
-    }
+#[divan::bench]
+fn cancel_blocked_send(bencher: Bencher) {
+    let mut context = bench_context();
+    let (tx, _rx) = mpmc::bounded(1);
+    tx.try_send(0).unwrap();
 
-    #[divan::bench]
-    fn cancel_blocked_send(bencher: Bencher) {
-        let mut context = bench_context();
-        let (tx, _rx) = mpmc::bounded(1);
-        tx.try_send(0).unwrap();
+    bencher.bench_local(|| {
+        let send = pin!(tx.send(black_box(1)));
+        poll_pending(send, &mut context);
+    });
+}
 
-        // Park a producer and immediately cancel it: measures registering and unlinking one waiter.
-        bencher.bench_local(|| {
-            let send = pin!(tx.send(black_box(1)));
-            poll_pending(send, &mut context);
+#[divan::bench(args = [1, 2, 32, 256], sample_size = 64)]
+fn drop_lagging_receiver_wakes_senders(bencher: Bencher, backlog: usize) {
+    bencher
+        .with_inputs(|| {
+            let (sender, mut fast) = mpmc::bounded(backlog);
+            let slow = sender.subscribe();
+            for value in 0..backlog {
+                sender.try_send(value).unwrap();
+                assert_eq!(fast.try_recv().unwrap(), value);
+            }
+            let mut context = bench_context();
+            let mut sends = (0..backlog)
+                .map(|value| {
+                    let sender = sender.clone();
+                    Box::pin(async move { sender.send(value).await })
+                })
+                .collect::<Vec<_>>();
+            for send in &mut sends {
+                poll_pending(send.as_mut(), &mut context);
+            }
+            (slow, fast, sends)
+        })
+        .bench_local_values(|(slow, fast, sends)| {
+            // The fast subscription stays alive so this measures reclaim, not last-receiver
+            // exit. Preparing the backlog, parking senders, and disposing of
+            // futures are outside timing.
+            drop(slow);
+            defer_input_drop((fast, sends), ())
         });
-    }
-
-    #[divan::bench(args = [1, 2, 32, 256], sample_size = 64)]
-    fn drop_lagging_receiver_wakes_senders(bencher: Bencher, backlog: usize) {
-        bencher
-            .with_inputs(|| {
-                let (sender, mut fast) = mpmc::bounded(backlog);
-                let slow = sender.subscribe();
-                for value in 0..backlog {
-                    sender.try_send(value).unwrap();
-                    assert_eq!(fast.try_recv().unwrap(), value);
-                }
-                let mut context = bench_context();
-                let mut sends = (0..backlog)
-                    .map(|value| {
-                        let sender = sender.clone();
-                        Box::pin(async move { sender.send(value).await })
-                    })
-                    .collect::<Vec<_>>();
-                for send in &mut sends {
-                    poll_pending(send.as_mut(), &mut context);
-                }
-                (slow, fast, sends)
-            })
-            .bench_local_values(|(slow, fast, sends)| {
-                // The fast subscription stays alive so this measures reclaim, not last-receiver
-                // exit. Preparing the backlog, parking senders, and disposing of
-                // futures are outside timing.
-                drop(slow);
-                defer_input_drop((fast, sends), ())
-            });
-    }
 }

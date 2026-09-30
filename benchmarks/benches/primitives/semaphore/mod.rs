@@ -15,8 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Permit lifecycle: successful borrowed/owned acquire-and-return and queued handoff. Cancellation,
-//! rejected acquisition, reduction debt and isolated bulk release are opt-in diagnostic probes.
-
 mod acquire;
 mod release;

@@ -15,11 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Lossless bounded comparisons use Asyncband and async-broadcast at identical capacities and
-//! producer/subscriber counts. Tokio's overwrite-on-full contract cannot substitute for
-//! backpressure. The preallocated batch comparison gives bounded peers space for the entire batch:
-//! it compares only their common no-loss path, not overflow handling or equivalent memory
-//! consumption. Counters count publications; every subscription consumes the complete batch.
+//! Throughput counters count publications; each subscriber receives the entire batch.
 
 mod adapters;
 mod bounded;

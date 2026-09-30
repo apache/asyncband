@@ -15,16 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Each 16,384-message batch has 1 or 4 producers and one consumer. Channels and workers persist
-//! across samples, including storage reuse; an untimed warm-up precedes measurements. Tasks put
-//! both ends on the executor. Native-thread cases receive on the caller thread. Batch coordination
-//! and checksum validation are timed; neither fixture times worker creation or destruction.
-//!
-//! Bounded sends and reservations share capacities 64/1024 and executor shapes. Unbounded burst
-//! cases send then drain on one thread, with inline/boxed payloads and an optional retained
-//! backlog. Diagnostic probes isolate capacity-one handoff and external receivers. Forced parked 1
-//! KiB bursts also validate every sequence number, so their timing includes substantially more
-//! harness work.
+//! Reused workers and channels are warmed up before timing; batch coordination and checksums are
+//! timed.
 
 mod adapters;
 mod bounded;

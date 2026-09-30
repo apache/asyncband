@@ -15,8 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Local wake mechanics: drain a queue of backpressured senders or deliver to a parked receiver.
-//! Executor throughput and payload comparisons live in ecosystem::mpsc.
-
 mod bounded;
 mod unbounded;

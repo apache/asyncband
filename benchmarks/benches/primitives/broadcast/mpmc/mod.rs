@@ -15,9 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Lossless delivery: same-thread send/drain and registered-receiver handoff; bounded cases
-//! additionally exercise full-channel producer handoff. Fanout cycles include registration;
-//! diagnostics isolate backlog reclamation and absent subscribers.
-
 mod bounded;
 mod unbounded;

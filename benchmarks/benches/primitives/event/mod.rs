@@ -15,7 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Manual-reset event: sticky ready waits, set/reset reuse and registered-waiter handoff/fanout.
-//! This suite currently does not measure AutoResetEvent.
-
 mod wait;

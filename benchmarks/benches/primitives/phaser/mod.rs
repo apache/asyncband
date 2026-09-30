@@ -15,10 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Reusable phases: already-completed observation, arrival followed by observation, or registered
-//! participants released by the last arrival. Registration bookkeeping and cancellation are opt-in
-//! probes.
-
 use std::pin::pin;
 
 use asyncband::phaser::Phaser;
@@ -76,53 +72,47 @@ fn reused_phase_handoff(bencher: Bencher, parties: usize) {
     });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+#[divan::bench]
+fn repoll_pending(bencher: Bencher) {
+    let mut context = bench_context();
+    let phaser = Phaser::new();
+    let mut wait = pin!(phaser.wait(phaser.phase()));
+    poll_pending(wait.as_mut(), &mut context);
 
-    #[divan::bench]
-    fn repoll_pending(bencher: Bencher) {
-        let mut context = bench_context();
-        let phaser = Phaser::new();
-        let mut wait = pin!(phaser.wait(phaser.phase()));
+    bencher.bench_local(|| poll_pending(wait.as_mut(), &mut context));
+}
+
+#[divan::bench]
+fn cancel_pending(bencher: Bencher) {
+    let mut context = bench_context();
+    let phaser = Phaser::new();
+    let observed = phaser.phase();
+
+    bencher.bench_local(|| {
+        let mut wait = pin!(phaser.wait(observed));
         poll_pending(wait.as_mut(), &mut context);
+    });
+    black_box(phaser);
+}
 
-        bencher.bench_local(|| poll_pending(wait.as_mut(), &mut context));
-    }
+#[divan::bench(args = PARTICIPANT_COUNTS)]
+fn register_batch(bencher: Bencher, parties: usize) {
+    let phaser = Phaser::new();
 
-    #[divan::bench]
-    fn cancel_pending(bencher: Bencher) {
-        let mut context = bench_context();
-        let phaser = Phaser::new();
-        let observed = phaser.phase();
+    bencher.bench_local(|| {
+        let participants: Vec<_> = phaser.register(black_box(parties)).unwrap().collect();
+        drop(black_box(participants));
+    });
+}
 
-        bencher.bench_local(|| {
-            let mut wait = pin!(phaser.wait(observed));
-            poll_pending(wait.as_mut(), &mut context);
-        });
-        black_box(phaser);
-    }
+#[divan::bench(args = PARTICIPANT_COUNTS)]
+fn register_individually(bencher: Bencher, parties: usize) {
+    let phaser = Phaser::new();
 
-    #[divan::bench(args = PARTICIPANT_COUNTS)]
-    fn register_batch(bencher: Bencher, parties: usize) {
-        let phaser = Phaser::new();
-
-        bencher.bench_local(|| {
-            let participants: Vec<_> = phaser.register(black_box(parties)).unwrap().collect();
-            drop(black_box(participants));
-        });
-    }
-
-    #[divan::bench(args = PARTICIPANT_COUNTS)]
-    fn register_individually(bencher: Bencher, parties: usize) {
-        let phaser = Phaser::new();
-
-        bencher.bench_local(|| {
-            let participants: Vec<_> = (0..black_box(parties))
-                .map(|_| phaser.register_one().unwrap())
-                .collect();
-            drop(black_box(participants));
-        });
-    }
+    bencher.bench_local(|| {
+        let participants: Vec<_> = (0..black_box(parties))
+            .map(|_| phaser.register_one().unwrap())
+            .collect();
+        drop(black_box(participants));
+    });
 }

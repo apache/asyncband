@@ -15,8 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Shared fixtures for the benchmark entry points in `benches`.
-//! Run `cargo x bench -- --test --include-ignored` to exercise the scenarios and their assertions.
-
 pub mod channels;
 pub mod support;

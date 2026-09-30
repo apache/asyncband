@@ -15,9 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Every benchmark here must return the channel to a drained state on each iteration. Unlike the
-// overflow policy, this channel has no capacity ceiling, so a timed loop that only sends would
-// grow the retained backlog until the process runs out of memory.
+// Drain each iteration to keep retained memory bounded across samples.
 
 use std::fmt;
 use std::pin::pin;
@@ -31,11 +29,7 @@ use divan::black_box;
 
 const RECEIVER_COUNTS: &[usize] = &[1, 4, 16];
 
-/// A channel that peaked at `peak` receivers and currently has `live` of them.
-///
-/// The two are measured separately to show that a dropped receiver no longer costs the channels
-/// that outlive it: reclaim releases the prefix no cursor can read, without walking the
-/// subscription slots a peak left behind.
+/// Retains subscription storage from `peak` receivers while only `live` remain.
 #[derive(Clone, Copy)]
 struct Fanout {
     peak: usize,
@@ -141,58 +135,50 @@ fn register_and_deliver_fanout(bencher: Bencher, receiver_count: usize) {
     });
 }
 
-// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
-#[divan::bench_group(ignore)]
-mod diagnostics {
-    use super::*;
+#[divan::bench]
+fn send_without_receivers(bencher: Bencher) {
+    let (sender, receiver) = mpmc::unbounded::<usize>();
+    drop(receiver);
+    bencher.bench_local(|| sender.send(black_box(1)));
+}
 
-    #[divan::bench]
-    fn send_without_receivers(bencher: Bencher) {
-        let (sender, receiver) = mpmc::unbounded::<usize>();
-        drop(receiver);
-        bencher.bench_local(|| sender.send(black_box(1)));
-    }
+#[divan::bench]
+fn try_recv_empty(bencher: Bencher) {
+    let (sender, mut receiver) = mpmc::unbounded::<usize>();
+    bencher.bench_local(|| black_box(receiver.try_recv()));
+    black_box(sender);
+}
 
-    #[divan::bench]
-    fn try_recv_empty(bencher: Bencher) {
+// Compare reclamation with identical historical peaks but different live subscriber counts.
+#[divan::bench(args = RECLAIM_FANOUTS)]
+fn drain_with_receivers(bencher: Bencher, fanout: Fanout) {
+    let (sender, receiver) = mpmc::unbounded();
+    drop(receiver);
+    let mut receivers = (0..fanout.peak)
+        .map(|_| sender.subscribe())
+        .collect::<Vec<_>>();
+    // Dropping down to `live` leaves the arena holding a slot for every receiver that ever
+    // existed.
+    receivers.truncate(fanout.live);
+
+    bencher.bench_local(|| {
+        sender.send(black_box(1usize));
+        for receiver in &mut receivers {
+            black_box(receiver.try_recv().unwrap());
+        }
+    });
+}
+
+#[divan::bench]
+fn cancel_pending(bencher: Bencher) {
+    let mut context = bench_context();
+
+    bencher.bench_local(|| {
         let (sender, mut receiver) = mpmc::unbounded::<usize>();
-        bencher.bench_local(|| black_box(receiver.try_recv()));
-        black_box(sender);
-    }
-
-    // Measures advancing the shared backlog head: the receive that vacates the last cursor at the
-    // head releases the invisible prefix. Comparing a peak against the same peak drained down to
-    // fewer receivers confirms the slots left behind no longer add to that cost.
-    #[divan::bench(args = RECLAIM_FANOUTS)]
-    fn drain_with_receivers(bencher: Bencher, fanout: Fanout) {
-        let (sender, receiver) = mpmc::unbounded();
-        drop(receiver);
-        let mut receivers = (0..fanout.peak)
-            .map(|_| sender.subscribe())
-            .collect::<Vec<_>>();
-        // Dropping down to `live` leaves the arena holding a slot for every receiver that ever
-        // existed.
-        receivers.truncate(fanout.live);
-
-        bencher.bench_local(|| {
-            sender.send(black_box(1usize));
-            for receiver in &mut receivers {
-                black_box(receiver.try_recv().unwrap());
-            }
-        });
-    }
-
-    #[divan::bench]
-    fn cancel_pending(bencher: Bencher) {
-        let mut context = bench_context();
-
-        bencher.bench_local(|| {
-            let (sender, mut receiver) = mpmc::unbounded::<usize>();
-            {
-                let mut recv = pin!(receiver.recv());
-                poll_pending(recv.as_mut(), &mut context);
-            }
-            black_box((sender, receiver))
-        });
-    }
+        {
+            let mut recv = pin!(receiver.recv());
+            poll_pending(recv.as_mut(), &mut context);
+        }
+        black_box((sender, receiver))
+    });
 }

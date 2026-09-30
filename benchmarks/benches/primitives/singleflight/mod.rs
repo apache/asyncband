@@ -15,10 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Transient deduplication: successful leaders, distinct simultaneous keys, distributed
-//! thread-local leader keys and same-key coalescing. Completed values are not cached; initializers
-//! do no application work.
-
 mod coalescing;
 mod leaders;
 mod support;
