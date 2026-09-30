@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Shared benchmark fixtures. Timed scenarios live in `benches`; harness regressions live in
-//! the workspace's integration test package.
+//! Shared fixtures for the benchmark entry points in `benches`.
+//! Run `cargo x bench -- --test --include-ignored` to exercise the scenarios and their assertions.
 
 pub mod channels;
 pub mod support;
