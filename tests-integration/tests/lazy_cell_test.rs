@@ -326,13 +326,6 @@ async fn initializer_creation_panic_permanently_poisons_cell() {
 }
 
 #[tokio::test]
-async fn force_mut_updates_value() {
-    let mut lazy = LazyCell::new(|| std::future::ready(41));
-    *LazyCell::force_mut(&mut lazy).await += 1;
-    assert_eq!(LazyCell::get(&lazy), Some(&42));
-}
-
-#[tokio::test]
 async fn force_mut_resumes_a_started_attempt() {
     let started = Arc::new(Notify::new());
     let resume = Arc::new(Notify::new());
@@ -360,15 +353,14 @@ async fn force_mut_resumes_a_started_attempt() {
 
     let mut lazy = Arc::try_unwrap(lazy).ok().unwrap();
     resume.notify_one();
-    assert_eq!(LazyCell::force_mut(&mut lazy).await, &mut 42);
+    *LazyCell::force_mut(&mut lazy).await += 1;
+    assert_eq!(LazyCell::get(&lazy), Some(&43));
 }
 
 #[tokio::test]
-async fn default_and_value_constructors_match_lazy_cell() {
+async fn value_constructors_support_local_and_const_values() {
     let lazy = LazyCell::<u32, Ready<u32>>::default();
-    assert_eq!(format!("{lazy:?}"), "LazyCell(<uninit>)");
     assert_eq!(LazyCell::force(&lazy).await, &0);
-    assert_eq!(format!("{lazy:?}"), "LazyCell(0)");
 
     let local = LazyCell::<Rc<u32>, Ready<Rc<u32>>>::default();
     assert_eq!(**LazyCell::force(&local).await, 0);

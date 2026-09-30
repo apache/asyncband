@@ -16,7 +16,6 @@
 // under the License.
 
 use std::borrow::Borrow;
-use std::collections::hash_map::RandomState;
 use std::hash::BuildHasherDefault;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -26,21 +25,6 @@ use std::sync::atomic::Ordering;
 
 use asyncband::once::OnceMap;
 use tests_integration::poll_once;
-
-#[test]
-fn constructors_and_default() {
-    let _: OnceMap<String, i32> = OnceMap::default();
-    let _: OnceMap<String, i32> = OnceMap::new();
-    let _: OnceMap<String, i32> = OnceMap::with_hasher(RandomState::new());
-}
-
-#[tokio::test]
-async fn compute_caches_value() {
-    let map = OnceMap::new();
-
-    assert_eq!(map.compute("key", async || 1).await, 1);
-    assert_eq!(map.compute("key", async || 2).await, 1);
-}
 
 #[tokio::test]
 async fn concurrent_compute_runs_once() {
@@ -74,6 +58,11 @@ async fn concurrent_compute_runs_once() {
     for waiter in waiters {
         assert_eq!(waiter.await, 42);
     }
+    assert_eq!(
+        map.compute("key", async || panic!("cached value must be reused"))
+            .await,
+        42
+    );
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
 

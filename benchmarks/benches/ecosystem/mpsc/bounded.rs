@@ -1,0 +1,157 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+use benchmarks::support::bench_context;
+use divan::Bencher;
+use divan::black_box;
+use divan::counter::ItemsCount;
+
+use super::adapters::AsyncChannel;
+use super::adapters::Asyncband;
+use super::adapters::BoundedMpsc;
+use super::adapters::Flume;
+use super::adapters::Tokio;
+use super::support::BATCH_MESSAGES;
+use super::support::BOUNDED_CAPACITY;
+use super::support::Bounded;
+use super::support::PARALLEL_TASK_SHAPES;
+use super::support::PRODUCER_COUNTS;
+use super::support::RepeatedBatch;
+use super::support::RepeatedTasks;
+use super::support::TASK_SHAPES;
+use super::support::TaskShape;
+
+// Nanosecond-scale benches pin `sample_size`: divan's auto-tuning starts at 1
+// iteration per sample and stops once a sample exceeds 100x timer precision,
+// so a cold first call (lazy initialization, cache misses) can end tuning
+// immediately and quantize every sample to one timer tick (41 ns on macOS).
+#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume], sample_size = 512)]
+fn try_send_receive<C: BoundedMpsc>(bencher: Bencher) {
+    let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
+
+    bencher.bench_local(|| {
+        C::try_send(&sender, black_box(usize::MAX));
+        black_box(C::try_recv(&mut receiver))
+    });
+}
+
+#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume], sample_size = 256)]
+fn ready_send_receive<C: BoundedMpsc>(bencher: Bencher) {
+    let mut context = bench_context();
+    let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
+
+    bencher.bench_local(|| {
+        C::send_ready(&sender, black_box(usize::MAX), &mut context);
+        black_box(C::recv_ready(&mut receiver, &mut context))
+    });
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    args = PRODUCER_COUNTS,
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn reused_threads<C: BoundedMpsc>(bencher: Bencher, producer_count: usize) {
+    let mut batch = RepeatedBatch::<Bounded<C>>::new(producer_count);
+    batch.run();
+    bencher.bench_local(|| batch.run());
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    consts = [64, 1024],
+    args = TASK_SHAPES,
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn reused_tasks<C: BoundedMpsc, const CAPACITY: usize>(
+    bencher: Bencher,
+    TaskShape { producers, workers }: TaskShape,
+) {
+    let mut batch = RepeatedTasks::<Bounded<C, CAPACITY>>::new(producers, workers);
+    batch.run();
+    bencher.bench_local(|| batch.run());
+}
+
+#[divan::bench(
+    types = [Asyncband, Tokio, AsyncChannel, Flume],
+    consts = [64, 1024],
+    args = PARALLEL_TASK_SHAPES,
+    sample_count = 50,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn reused_tasks_inline_1k<C: BoundedMpsc<[u8; 1024]>, const CAPACITY: usize>(
+    bencher: Bencher,
+    TaskShape { producers, workers }: TaskShape,
+) {
+    let mut batch = RepeatedTasks::<Bounded<C, CAPACITY, [u8; 1024]>>::new(producers, workers);
+    batch.run();
+    bencher.bench_local(|| batch.run());
+}
+
+// Opt-in probes for cancellation, lifecycle bookkeeping, or forced boundary conditions.
+#[divan::bench_group(ignore)]
+mod diagnostics {
+    #[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume], sample_count = 20, sample_size = 1,
+        counter = ItemsCount::new(BATCH_MESSAGES))]
+    fn capacity_one_task_handoff<C: BoundedMpsc>(bencher: Bencher) {
+        let mut batch = RepeatedTasks::<Bounded<C, 1>>::new(4, 4);
+        batch.run();
+        bencher.bench_local(|| batch.run());
+    }
+
+    use super::*;
+
+    #[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume], sample_size = 2048)]
+    fn clone_drop_sender<C: BoundedMpsc>(bencher: Bencher) {
+        let (sender, _receiver) = C::channel(BOUNDED_CAPACITY);
+        bencher.bench_local(|| drop(black_box(sender.clone())));
+    }
+
+    #[divan::bench(
+        types = [Asyncband, Tokio, AsyncChannel, Flume],
+        args = [1, 8],
+        sample_count = 50,
+        sample_size = 1,
+        counter = ItemsCount::new(BATCH_MESSAGES),
+    )]
+    fn external_receiver<C: BoundedMpsc>(bencher: Bencher, producers: usize) {
+        let mut batch = RepeatedTasks::<Bounded<C>>::external_receiver(producers, 4);
+        batch.run();
+        bencher.bench_local(|| batch.run());
+    }
+
+    #[divan::bench(
+        types = [Asyncband, Tokio, AsyncChannel, Flume],
+        args = [1, 8],
+        sample_count = 50,
+        sample_size = 1,
+        counter = ItemsCount::new(BATCH_MESSAGES),
+    )]
+    fn external_receiver_inline<C: BoundedMpsc<[u8; 1024]>>(bencher: Bencher, producers: usize) {
+        let mut batch =
+            RepeatedTasks::<Bounded<C, BOUNDED_CAPACITY, [u8; 1024]>>::external_receiver(
+                producers, 4,
+            );
+        batch.run();
+        bencher.bench_local(|| batch.run());
+    }
+}

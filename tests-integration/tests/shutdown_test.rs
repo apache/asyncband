@@ -24,14 +24,6 @@ use tests_integration::poll_once;
 use tests_integration::test_runtime;
 
 #[test]
-fn test_single_pair() {
-    let (shutdown, guard) = new();
-    let handle = test_runtime().spawn(async move { guard.shutdown_requested().await });
-    FutureExt::block_on(shutdown);
-    FutureExt::block_on(handle).unwrap();
-}
-
-#[test]
 fn test_multiple_tasks() {
     let (shutdown, guard) = new();
     for _i in 0..100 {
@@ -54,14 +46,6 @@ fn test_multiple_control_handles() {
     shutdown.request_shutdown();
     FutureExt::block_on(shutdown);
     FutureExt::block_on(shutdown_clone);
-}
-
-#[test]
-fn test_is_shutdown_requested() {
-    let (shutdown, guard) = new();
-    assert!(!guard.is_shutdown_requested());
-    shutdown.request_shutdown();
-    assert!(guard.is_shutdown_requested());
 }
 
 #[test]

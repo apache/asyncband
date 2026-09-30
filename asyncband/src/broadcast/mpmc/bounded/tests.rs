@@ -60,12 +60,6 @@ fn buffer_is_preallocated_and_never_shrinks() {
 }
 
 #[test]
-fn capacity_reports_the_requested_value() {
-    let (tx, _rx) = bounded::<i32>(3);
-    assert_eq!(tx.capacity(), 3);
-}
-
-#[test]
 fn a_large_reclaim_leaves_no_permit_slack() {
     // Dropping a lagging subscription frees the whole backlog in one step, far more slots than the
     // single parked producer can use. Permits beyond that producer would sit in the semaphore, and

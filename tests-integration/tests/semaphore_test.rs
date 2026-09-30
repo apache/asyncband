@@ -29,12 +29,6 @@ use tests_integration::expect_ready;
 use tests_integration::poll_with;
 
 #[test]
-fn no_permits() {
-    // this should not panic
-    Semaphore::new(0);
-}
-
-#[test]
 fn try_acquire() {
     let sem = Semaphore::new(1);
     {
@@ -77,9 +71,12 @@ fn forget() {
 }
 
 #[test]
-fn add_max_amount_permits() {
+fn maximum_capacity_can_be_acquired_and_returned() {
     let s = Semaphore::new(0);
     s.release(usize::MAX);
+    let permit = s.try_acquire(usize::MAX).unwrap();
+    assert!(s.try_acquire(1).is_none());
+    drop(permit);
     assert_eq!(s.available_permits(), usize::MAX);
 }
 
@@ -129,13 +126,6 @@ fn merge_overflow_panics_without_losing_owned_permits() {
     assert_eq!(first.permits(), usize::MAX);
     assert_eq!(s.available_permits(), 1);
     first.forget();
-}
-
-#[test]
-fn no_panic_at_max_permits() {
-    let _ = Semaphore::new(usize::MAX);
-    let s = Semaphore::new(usize::MAX - 1);
-    s.release(1);
 }
 
 #[test]

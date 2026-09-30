@@ -52,6 +52,8 @@ asyncband = { workspace = true, features = [
   "waitgroup",
   "watch",
 ] }
+benchmarks = { path = "../benchmarks" }
+flume = { workspace = true, features = ["async"] }
 tokio-test = { workspace = true }
 
 [lib]

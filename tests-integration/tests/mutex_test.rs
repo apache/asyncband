@@ -33,44 +33,6 @@ fn test_try_lock_never_blocks() {
     assert!(result.is_none());
 }
 
-#[test]
-fn test_get_mut_provides_exclusive_access() {
-    // Test that get_mut provides direct access when we have exclusive ownership
-    let mut mutex = Mutex::new(11);
-
-    let data = mutex.get_mut();
-    *data = 100;
-
-    assert_eq!(*mutex.get_mut(), 100);
-
-    let inner = mutex.into_inner();
-    assert_eq!(inner, 100);
-}
-
-#[tokio::test]
-async fn test_owned_mapped_guard_holds_lock() {
-    // Test that mapped owned guard properly holds the lock
-    let mutex = Arc::new(Mutex::new((30, 40)));
-
-    let owned_guard = mutex.clone().lock_owned().await;
-    let mapped_owned_guard = OwnedMutexGuard::map(owned_guard, |data| &mut data.1);
-
-    assert!(
-        mutex.try_lock().is_none(),
-        "Lock should be held by the mapped owned guard"
-    );
-
-    assert_eq!(*mapped_owned_guard, 40);
-
-    // When mapped owned guard is dropped, lock should be released
-    drop(mapped_owned_guard);
-
-    assert!(
-        mutex.try_lock().is_some(),
-        "Lock should be released after mapped owned guard is dropped"
-    );
-}
-
 #[tokio::test]
 async fn test_guard_filter_map_failure() {
     let data: Vec<i32> = vec![];

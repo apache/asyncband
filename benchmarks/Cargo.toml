@@ -22,8 +22,7 @@ publish = false
 edition.workspace = true
 rust-version.workspace = true
 
-[dev-dependencies]
-async-broadcast = { workspace = true }
+[dependencies]
 async-channel = { workspace = true }
 asyncband = { workspace = true, features = [
   "barrier",
@@ -53,17 +52,25 @@ asyncband = { workspace = true, features = [
 divan = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+
+[dev-dependencies]
+async-broadcast = { workspace = true }
 waitgroup = { workspace = true }
+
+[lib]
+bench = false
+doctest = false
+test = false
 
 [[bench]]
 harness = false
-name = "benchmarks"
-path = "asyncband/main.rs"
+name = "primitives"
+path = "benches/primitives/main.rs"
 
 [[bench]]
 harness = false
 name = "ecosystem"
-path = "ecosystem/main.rs"
+path = "benches/ecosystem/main.rs"
 
 [lints]
 workspace = true
