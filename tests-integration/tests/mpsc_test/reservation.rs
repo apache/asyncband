@@ -17,15 +17,10 @@
 
 use std::cell::Cell;
 use std::mem;
-use std::panic::AssertUnwindSafe;
-use std::panic::catch_unwind;
-use std::sync::Arc;
-use std::task::Waker;
 
 use asyncband::mpsc;
 use asyncband::mpsc::TryRecvError;
 use asyncband::mpsc::TrySendError;
-use tests_integration::PanicWake;
 use tests_integration::WakeCounter;
 use tests_integration::expect_ready;
 use tests_integration::poll_once;
@@ -151,21 +146,6 @@ fn a_permit_can_publish_send_only_payloads_from_another_thread() {
             .unwrap();
     });
     assert_eq!(rx.try_recv().unwrap().get(), 42);
-}
-
-#[test]
-fn a_panicking_publication_wake_cannot_return_capacity_twice() {
-    let (tx, mut rx) = mpsc::bounded(1);
-    let permit = tx.try_reserve().unwrap();
-    let waker = Waker::from(Arc::new(PanicWake));
-    let mut receive = Box::pin(rx.recv());
-    assert!(poll_with(receive.as_mut(), &waker).is_pending());
-    assert!(catch_unwind(AssertUnwindSafe(|| permit.send(1))).is_err());
-    assert_eq!(tx.try_send(2), Err(TrySendError::Full(2)));
-    assert_eq!(expect_ready(poll_once(receive.as_mut())), Ok(1));
-    drop(receive);
-    tx.try_send(2).unwrap();
-    assert_eq!(rx.try_recv(), Ok(2));
 }
 
 #[test]

@@ -79,14 +79,6 @@ impl Wake for WakeCounter {
     }
 }
 
-pub struct PanicWake;
-
-impl Wake for PanicWake {
-    fn wake(self: Arc<Self>) {
-        panic!("wake failed");
-    }
-}
-
 pub fn waker_on_wake(callback: impl FnOnce() + Send + 'static) -> Waker {
     struct OnWake(Mutex<Option<Box<dyn FnOnce() + Send>>>);
 

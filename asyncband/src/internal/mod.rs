@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::panic;
-use std::panic::AssertUnwindSafe;
 use std::task::Waker;
 
 /// Retains the current task waker, returning any replaced registration for unlocked destruction.
@@ -35,32 +33,12 @@ pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> 
     }
 }
 
-/// Wakes every waker while preserving the first panic.
-///
-/// If a wake callback panics, the remaining callbacks are still attempted during unwinding. Any
-/// later panic is suppressed so the first panic can continue to the caller.
+/// Wakes every waker.
 #[inline]
 // A no-feature or blocking-only build has no primitive that fans notifications out.
 #[allow(dead_code)]
-pub(crate) fn wake_all(mut wakers: impl Iterator<Item = Waker>) {
-    struct WakeRemaining<'a, I: Iterator<Item = Waker>> {
-        wakers: &'a mut I,
-    }
-
-    impl<I: Iterator<Item = Waker>> Drop for WakeRemaining<'_, I> {
-        fn drop(&mut self) {
-            // This iterator is empty after normal completion. During unwinding, attempt every
-            // callback left after the one that panicked without replacing the original panic.
-            for waker in self.wakers.by_ref() {
-                let _ = panic::catch_unwind(AssertUnwindSafe(|| waker.wake()));
-            }
-        }
-    }
-
-    let remaining = WakeRemaining {
-        wakers: &mut wakers,
-    };
-    for waker in remaining.wakers.by_ref() {
+pub(crate) fn wake_all(wakers: impl Iterator<Item = Waker>) {
+    for waker in wakers {
         waker.wake();
     }
 }

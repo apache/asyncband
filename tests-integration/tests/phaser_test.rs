@@ -16,13 +16,10 @@
 // under the License.
 
 use std::panic;
-use std::sync::Arc;
 use std::task::Poll;
-use std::task::Waker;
 
 use asyncband::blocking::FutureExt;
 use asyncband::phaser::Phaser;
-use tests_integration::PanicWake;
 use tests_integration::WakeCounter;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
@@ -396,37 +393,6 @@ fn cancelling_a_woken_waiter_does_not_unregister_a_next_phase_waiter() {
 }
 
 #[test]
-fn panicking_waker_does_not_lose_a_pending_phase() {
-    let phaser = Phaser::new();
-    let phase0 = phaser.phase();
-    let mut first = phaser.register_one().unwrap();
-    let mut second = phaser.register_one().unwrap();
-    let panic_waker = Waker::from(Arc::new(PanicWake));
-    let mut observer = Box::pin(phaser.wait(phase0));
-
-    assert_eq!(poll_with(observer.as_mut(), &panic_waker), Poll::Pending);
-    assert_eq!(first.arrive().unwrap(), phase0);
-
-    let (polling_waker, _) = WakeCounter::new();
-    let mut wait = Box::pin(second.wait());
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        poll_with(wait.as_mut(), &polling_waker)
-    }));
-
-    assert!(result.is_err());
-    drop(wait);
-    drop(observer);
-
-    let phase1 = phaser.phase();
-    assert_ne!(phase1, phase0);
-    assert_eq!(phaser.arrived_parties(), 0);
-
-    let mut retry = Box::pin(second.wait());
-    assert_eq!(poll_once(retry.as_mut()), Poll::Ready(Ok(phase1)));
-    assert_eq!(phaser.arrived_parties(), 0);
-}
-
-#[test]
 fn a_late_waiter_for_a_completed_phase_is_immediately_ready() {
     let phaser = Phaser::new();
     let observed = phaser.phase();
@@ -562,24 +528,6 @@ fn completed_arrival_remains_successful_after_close_but_cannot_start_another_rou
     drop(first);
     drop(second);
     assert_eq!(phaser.phase(), completed);
-}
-
-#[test]
-fn close_survives_a_panicking_waker_and_notifies_other_waiters() {
-    let phaser = Phaser::new();
-    let observed = phaser.phase();
-    let panic_waker = Waker::from(Arc::new(PanicWake));
-    let (count_waker, counter) = WakeCounter::new();
-    let mut first = Box::pin(phaser.wait(observed));
-    let mut second = Box::pin(phaser.wait(observed));
-    assert!(poll_with(first.as_mut(), &panic_waker).is_pending());
-    assert!(poll_with(second.as_mut(), &count_waker).is_pending());
-
-    assert!(panic::catch_unwind(|| phaser.close()).is_err());
-    assert!(phaser.is_closed());
-    assert_eq!(counter.count(), 1);
-    assert!(matches!(poll_once(first.as_mut()), Poll::Ready(Err(_))));
-    assert!(matches!(poll_once(second.as_mut()), Poll::Ready(Err(_))));
 }
 
 #[test]

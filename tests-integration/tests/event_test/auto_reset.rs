@@ -16,8 +16,6 @@
 // under the License.
 
 use std::future::Future;
-use std::panic;
-use std::panic::AssertUnwindSafe;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Barrier;
@@ -30,7 +28,6 @@ use std::thread;
 
 use asyncband::blocking::FutureExt;
 use asyncband::event::AutoResetEvent;
-use tests_integration::PanicWake;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
@@ -311,26 +308,6 @@ fn wake_and_waker_destruction_happen_outside_the_event_lock() {
         }
         drop(cancelled); // Both replaced and cancelled registrations release their last waker.
     });
-}
-
-#[test]
-fn a_panicking_wake_leaves_its_signal_available_for_cancellation_handoff() {
-    let event = AutoResetEvent::new();
-    let waker = Waker::from(Arc::new(PanicWake));
-    let mut selected = Box::pin(event.wait());
-    let mut next = Box::pin(event.wait());
-    assert!(
-        selected
-            .as_mut()
-            .poll(&mut Context::from_waker(&waker))
-            .is_pending()
-    );
-    assert!(panic::catch_unwind(AssertUnwindSafe(|| event.set())).is_err());
-    assert!(!event.try_wait());
-    assert!(poll_once(next.as_mut()).is_pending());
-    drop(selected);
-    assert!(poll_once(next.as_mut()).is_ready());
-    assert!(!event.try_wait());
 }
 
 #[test]

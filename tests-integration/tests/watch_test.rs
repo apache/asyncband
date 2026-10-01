@@ -23,7 +23,6 @@ use std::task::Waker;
 
 use asyncband::blocking::FutureExt;
 use asyncband::watch;
-use tests_integration::PanicWake;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_with;
@@ -298,28 +297,6 @@ fn one_update_wakes_every_waiting_receiver_once() {
     drop(second_changed);
     assert_eq!(first.get(), 1);
     assert_eq!(second.get(), 1);
-}
-
-#[test]
-fn panicking_waker_does_not_skip_other_waiters() {
-    let (tx, mut first) = watch::channel(0);
-    let mut second = first.clone();
-    let panicking = Waker::from(Arc::new(PanicWake));
-    let tracker = Arc::new(WakeCounter::default());
-    let tracked = Waker::from(tracker.clone());
-    let mut first_changed = Box::pin(first.changed());
-    let mut second_changed = Box::pin(second.changed());
-
-    assert!(poll_with(first_changed.as_mut(), &panicking).is_pending());
-    assert!(poll_with(second_changed.as_mut(), &tracked).is_pending());
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tx.send(1)));
-    assert!(result.is_err());
-    assert_eq!(tracker.count(), 1);
-    assert_eq!(
-        poll_with(second_changed.as_mut(), &tracked),
-        Poll::Ready(Ok(()))
-    );
 }
 
 #[test]

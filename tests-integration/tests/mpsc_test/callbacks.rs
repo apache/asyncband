@@ -16,7 +16,6 @@
 // under the License.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -230,7 +229,7 @@ fn unbounded_disconnect_drops_partial_and_queued_batches_outside_lock() {
 
 #[cfg(panic = "unwind")]
 #[test]
-fn bounded_disconnect_finishes_cleanup_when_a_callback_panics() {
+fn bounded_disconnect_finishes_cleanup_when_a_value_destructor_panics() {
     struct Value {
         id: usize,
         drops: Arc<[AtomicUsize; 5]>,
@@ -243,68 +242,48 @@ fn bounded_disconnect_finishes_cleanup_when_a_callback_panics() {
             assert!(!self.panic_on_drop, "payload destructor panicked");
         }
     }
-    struct Notify {
-        woken: AtomicBool,
-        panic_on_wake: bool,
-    }
-    impl Wake for Notify {
-        fn wake(self: Arc<Self>) {
-            self.woken.store(true, Ordering::Relaxed);
-            assert!(!self.panic_on_wake, "wake callback panicked");
-        }
-    }
 
-    for panic_on_wake in [false, true] {
-        let (tx, rx) = mpsc::bounded(3);
-        let drops = Arc::new(std::array::from_fn(|_| AtomicUsize::new(0)));
-        for id in 0..3 {
-            assert!(
-                tx.try_send(Value {
-                    id,
-                    drops: drops.clone(),
-                    panic_on_drop: id == 0 && !panic_on_wake,
-                    _sender: Some(tx.clone()),
-                })
-                .is_ok()
-            );
-        }
-        let notify = [false, true].map(|second| {
-            Arc::new(Notify {
-                woken: AtomicBool::new(false),
-                panic_on_wake: !second && panic_on_wake,
-            })
-        });
-        let wakers = notify.each_ref().map(|notify| Waker::from(notify.clone()));
-        let mut sends = (3..5)
-            .map(|id| {
-                Box::pin(tx.send(Value {
-                    id,
-                    drops: drops.clone(),
-                    panic_on_drop: false,
-                    _sender: None,
-                }))
-            })
-            .collect::<Vec<_>>();
-        for (send, waker) in sends.iter_mut().zip(&wakers) {
-            assert!(poll_with(send.as_mut(), waker).is_pending());
-        }
-        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(rx))).is_err());
+    let (tx, rx) = mpsc::bounded(3);
+    let drops = Arc::new(std::array::from_fn(|_| AtomicUsize::new(0)));
+    for id in 0..3 {
         assert!(
-            notify
-                .iter()
-                .all(|notify| notify.woken.load(Ordering::Relaxed))
+            tx.try_send(Value {
+                id,
+                drops: drops.clone(),
+                panic_on_drop: id == 0,
+                _sender: Some(tx.clone()),
+            })
+            .is_ok()
         );
-        for count in &drops[..3] {
-            assert_eq!(count.load(Ordering::Relaxed), 1);
-        }
-        for (id, send) in (3..5).zip(&mut sends) {
-            assert_eq!(drops[id].load(Ordering::Relaxed), 0);
-            let error = match expect_ready(poll_once(send.as_mut())) {
-                Err(error) => error,
-                Ok(()) => panic!("the receiver is disconnected"),
-            };
-            assert_eq!(error.into_inner().id, id);
-            assert_eq!(drops[id].load(Ordering::Relaxed), 1);
-        }
+    }
+    let notifications = [WakeCounter::new(), WakeCounter::new()];
+    let mut sends = (3..5)
+        .map(|id| {
+            Box::pin(tx.send(Value {
+                id,
+                drops: drops.clone(),
+                panic_on_drop: false,
+                _sender: None,
+            }))
+        })
+        .collect::<Vec<_>>();
+    for (send, (waker, _)) in sends.iter_mut().zip(&notifications) {
+        assert!(poll_with(send.as_mut(), waker).is_pending());
+    }
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(rx))).is_err());
+    for (_, wakes) in &notifications {
+        assert_eq!(wakes.count(), 1);
+    }
+    for count in &drops[..3] {
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+    }
+    for (id, send) in (3..5).zip(&mut sends) {
+        assert_eq!(drops[id].load(Ordering::Relaxed), 0);
+        let error = match expect_ready(poll_once(send.as_mut())) {
+            Err(error) => error,
+            Ok(()) => panic!("the receiver is disconnected"),
+        };
+        assert_eq!(error.into_inner().id, id);
+        assert_eq!(drops[id].load(Ordering::Relaxed), 1);
     }
 }

@@ -19,7 +19,6 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::task::Context;
-use std::task::Wake;
 use std::task::Waker;
 use std::thread;
 
@@ -28,7 +27,6 @@ use asyncband::broadcast::mpmc::*;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
-use tests_integration::waker_on_wake;
 
 /// A payload whose destructor re-enters the channel it was sent through.
 struct Reentrant {
@@ -541,12 +539,8 @@ fn bounded_parked_recv_wakes_when_the_last_sender_drops() {
     );
 }
 
-// ---------------------------------------------------------------------------------------------
-// Panic safety
-// ---------------------------------------------------------------------------------------------
-
 #[test]
-fn panicking_wake_does_not_strand_senders_after_a_large_reclaim() {
+fn large_reclaim_notifies_every_blocked_sender() {
     let (tx, mut fast) = bounded(40);
     let slow = tx.subscribe();
     for value in 0..40 {
@@ -559,14 +553,7 @@ fn panicking_wake_does_not_strand_senders_after_a_large_reclaim() {
         .collect::<Vec<_>>();
     let wakers = trackers
         .iter()
-        .enumerate()
-        .map(|(index, tracker)| {
-            let tracker = tracker.clone();
-            waker_on_wake(move || {
-                tracker.wake();
-                assert_ne!(index, 0, "first sender wake panics");
-            })
-        })
+        .map(|tracker| Waker::from(tracker.clone()))
         .collect::<Vec<_>>();
     let mut sends = (40..80)
         .map(|value| Box::pin(tx.send(value)))
@@ -579,8 +566,7 @@ fn panicking_wake_does_not_strand_senders_after_a_large_reclaim() {
         );
     }
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(slow)));
-    assert!(result.is_err());
+    drop(slow);
     assert_eq!(tx.retained_message_count(), 0);
     for tracker in trackers {
         assert_eq!(tracker.count(), 1);
@@ -594,6 +580,10 @@ fn panicking_wake_does_not_strand_senders_after_a_large_reclaim() {
         assert_eq!(fast.try_recv(), Ok(value));
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Panic safety
+// ---------------------------------------------------------------------------------------------
 
 #[test]
 fn bounded_panicking_clone_leaves_the_channel_consistent() {

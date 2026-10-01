@@ -16,8 +16,6 @@
 // under the License.
 
 use std::future::Future;
-use std::panic;
-use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
@@ -29,7 +27,6 @@ use std::task::Wake;
 use std::task::Waker;
 
 use asyncband::event::ManualResetEvent;
-use tests_integration::PanicWake;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
@@ -113,52 +110,6 @@ fn cancelling_a_committed_waiter_leaves_the_others_committed() {
     drop(cancelled);
     assert!(survivor.as_mut().poll(&mut context).is_ready());
     assert!(!event.is_set());
-}
-
-// `set` releases every waiter registered for the current unset period, so one broken waker must
-// not strand the waiters queued behind it.
-#[test]
-fn a_panicking_waker_still_releases_the_remaining_waiters() {
-    let event = ManualResetEvent::new();
-    let tracker = Arc::new(WakeCounter::default());
-    let tracking_waker = Waker::from(tracker.clone());
-    let panicking_waker = Waker::from(Arc::new(PanicWake));
-
-    let mut first = Box::pin(event.wait());
-    let mut exploding = Box::pin(event.wait());
-    let mut last = Box::pin(event.wait());
-    assert!(
-        first
-            .as_mut()
-            .poll(&mut Context::from_waker(&tracking_waker))
-            .is_pending()
-    );
-    assert!(
-        exploding
-            .as_mut()
-            .poll(&mut Context::from_waker(&panicking_waker))
-            .is_pending()
-    );
-    assert!(
-        last.as_mut()
-            .poll(&mut Context::from_waker(&tracking_waker))
-            .is_pending()
-    );
-
-    let panicked = panic::catch_unwind(AssertUnwindSafe(|| event.set()));
-
-    assert!(panicked.is_err(), "the waker panic must reach the caller");
-    assert_eq!(
-        tracker.count(),
-        2,
-        "the waiter queued behind the panicking waker was never woken"
-    );
-    assert!(event.is_set());
-    assert!(
-        last.as_mut()
-            .poll(&mut Context::from_waker(&tracking_waker))
-            .is_ready()
-    );
 }
 
 // A waker that re-enters the event it belongs to, both when woken and when dropped. The internal

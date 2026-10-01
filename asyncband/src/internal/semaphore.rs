@@ -191,8 +191,6 @@ impl Semaphore {
         let mut batch = WakerBatch::new();
         let mut lock = Some(waiters);
 
-        // One iterator covers the entire release. If a callback panics, `wake_all` keeps pulling
-        // batches during unwinding, so the remaining permits are still distributed and notified.
         wake_all(std::iter::from_fn(|| {
             loop {
                 if let Some(waker) = batch.next() {
@@ -411,8 +409,6 @@ fn acquired_or_enqueue(
 
 #[cfg(test)]
 mod tests {
-    use std::panic;
-    use std::panic::AssertUnwindSafe;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -463,66 +459,6 @@ mod tests {
         for acquire in &mut acquires {
             assert!(acquire.poll_once(&waker).is_ready());
         }
-        assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
-    }
-
-    #[test]
-    fn panicking_wakes_preserve_permits_and_the_first_panic() {
-        const WAITER_COUNT: usize = 65;
-
-        struct TrackedWake {
-            count: AtomicUsize,
-            panic_message: Option<&'static str>,
-        }
-
-        impl Wake for TrackedWake {
-            fn wake(self: Arc<Self>) {
-                self.count.fetch_add(1, Ordering::Relaxed);
-                if let Some(message) = self.panic_message {
-                    panic::panic_any(message);
-                }
-            }
-        }
-
-        let semaphore = Semaphore::new(0);
-        let trackers = (0..WAITER_COUNT)
-            .map(|index| {
-                Arc::new(TrackedWake {
-                    count: AtomicUsize::new(0),
-                    panic_message: if index == 0 {
-                        Some("first wake panic")
-                    } else if index == WAITER_COUNT / 2 {
-                        Some("later wake panic")
-                    } else {
-                        None
-                    },
-                })
-            })
-            .collect::<Vec<_>>();
-        let mut acquires = trackers
-            .iter()
-            .map(|tracker| {
-                let mut acquire = semaphore.poll_acquire(1);
-                assert!(
-                    acquire
-                        .poll_once(&Waker::from(tracker.clone()))
-                        .is_pending()
-                );
-                acquire
-            })
-            .collect::<Vec<_>>();
-
-        let payload = panic::catch_unwind(AssertUnwindSafe(|| semaphore.release(WAITER_COUNT + 2)))
-            .expect_err("the original wake panic must reach the caller");
-        assert_eq!(payload.downcast_ref::<&str>(), Some(&"first wake panic"));
-
-        for tracker in trackers {
-            assert_eq!(tracker.count.load(Ordering::Relaxed), 1);
-        }
-        for acquire in &mut acquires {
-            assert!(acquire.poll_once(Waker::noop()).is_ready());
-        }
-        assert_eq!(semaphore.available_permits(), 2);
         assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
     }
 }

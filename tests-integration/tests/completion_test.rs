@@ -24,7 +24,6 @@ use std::thread;
 
 use asyncband::blocking::FutureExt;
 use asyncband::completion;
-use tests_integration::PanicWake;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_with;
@@ -188,28 +187,6 @@ fn cancelling_after_abandonment_does_not_retain_the_waker() {
     drop(wait);
     assert_eq!(Arc::strong_count(&tracker), baseline);
     assert!(FutureExt::block_on(completion.wait()).is_err());
-}
-
-#[test]
-fn completion_attempts_every_waker_after_one_panics() {
-    let (completer, first) = completion::new();
-    let second = first.clone();
-    let panicking = Waker::from(Arc::new(PanicWake));
-    let tracker = Arc::new(WakeCounter::default());
-    let tracked = Waker::from(tracker.clone());
-    let mut first_wait = Box::pin(first.wait());
-    let mut second_wait = Box::pin(second.wait());
-
-    assert!(poll_with(first_wait.as_mut(), &panicking).is_pending());
-    assert!(poll_with(second_wait.as_mut(), &tracked).is_pending());
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| completer.complete(11)));
-    assert!(result.is_err());
-    assert_eq!(tracker.count(), 1);
-    assert_eq!(
-        poll_with(second_wait.as_mut(), &tracked),
-        Poll::Ready(Ok(&11))
-    );
 }
 
 #[test]

@@ -29,7 +29,7 @@ All notable changes to this project will be documented in this file.
 
 ### Notable changes
 
-* Recovery from panicking wake callbacks is no longer part of the public API contract; executor waker operations, including cloning, waking, and dropping, are expected not to panic.
+* Executor waker operations, including cloning, waking, and dropping, are expected not to panic; recovery from panicking waker callbacks is no longer supported.
 
 ## v0.7.3 (2026-09-29)
 

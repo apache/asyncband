@@ -23,7 +23,6 @@ use std::task::Wake;
 use std::task::Waker;
 
 use asyncband::semaphore::Semaphore;
-use tests_integration::PanicWake;
 use tests_integration::WakeCounter;
 use tests_integration::expect_ready;
 use tests_integration::poll_with;
@@ -163,46 +162,6 @@ fn wake_then_drop() {
         }
     }
     assert_eq!(s.available_permits(), 2);
-}
-
-#[test]
-fn release_attempts_every_waker_after_one_panics() {
-    let semaphore = Semaphore::new(0);
-    let mut panicking = pin!(semaphore.acquire(1));
-    let mut tracked = pin!(semaphore.acquire(1));
-    let panic_waker = Waker::from(Arc::new(PanicWake));
-    let wake_count = Arc::new(WakeCounter::default());
-    let tracked_waker = Waker::from(wake_count.clone());
-
-    assert!(
-        panicking
-            .as_mut()
-            .poll(&mut Context::from_waker(&panic_waker))
-            .is_pending()
-    );
-    assert!(
-        tracked
-            .as_mut()
-            .poll(&mut Context::from_waker(&tracked_waker))
-            .is_pending()
-    );
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| semaphore.release(2)));
-
-    assert!(result.is_err());
-    assert_eq!(wake_count.count(), 1);
-    assert!(
-        panicking
-            .as_mut()
-            .poll(&mut Context::from_waker(Waker::noop()))
-            .is_ready()
-    );
-    assert!(
-        tracked
-            .as_mut()
-            .poll(&mut Context::from_waker(Waker::noop()))
-            .is_ready()
-    );
 }
 
 #[test]
