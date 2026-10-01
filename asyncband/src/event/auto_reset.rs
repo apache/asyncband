@@ -102,11 +102,6 @@ impl AutoResetEvent {
     /// A stored signal is available to a future wait. Further sets coalesce while it remains
     /// unassigned. Creating a wait future does not register it; registration happens when it is
     /// first polled without a stored signal.
-    ///
-    /// # Panics
-    ///
-    /// Panics if waking a selected task panics. Its signal remains assigned and can still be
-    /// consumed by polling that wait or passed on by dropping it.
     pub fn set(&self) {
         let waker = self.state.lock().signal();
         if let Some(waker) = waker {

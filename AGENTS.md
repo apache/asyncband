@@ -35,7 +35,9 @@ Declare restricted visibility at the module boundary and use `pub` for items in 
 
 - Allow normal executor `Waker::clone` inside short state critical sections. Custom clone panic recovery and reentrancy are not general guarantees; do not require them in reviews unless an explicit local contract does.
 - Reuse borrowed-waker registration and avoid redundant clones.
-- Keep wake callbacks and replaced or cancelled waker destruction outside primitive locks. If a batch wake panics, attempt the remaining wakes and propagate the first panic.
+- Keep wake callbacks and replaced or cancelled waker destruction outside primitive locks.
+- Once wakers are detached for notification, attempt every wake. If a callback panics, use unwind cleanup to attempt the remaining wakes and let the first panic continue.
+- Recovery from waker callback panics is not a public API guarantee; normal executor wakers are the supported case.
 
 Decision: [#257](https://github.com/apache/asyncband/pull/257).
 

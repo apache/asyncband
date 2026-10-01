@@ -240,11 +240,6 @@ impl Phaser {
     ///
     /// This operation is idempotent and affects every handle and participant. Existing participants
     /// may still deregister or be dropped; their removal no longer advances the phase.
-    ///
-    /// # Panics
-    ///
-    /// If a waker panics, the phaser remains closed and notification is attempted for the other
-    /// waiters before the panic resumes.
     pub fn close(&self) {
         let wakers = {
             let mut state = self.state.lock();
@@ -437,8 +432,6 @@ impl PhaserParticipant {
     /// Returns the phase in which arrival was recorded, or [`Closed`] without recording one.
     /// Repeated calls within one phase count only once. After advancement, an explicit new call
     /// arrives in the new phase and replaces any previous pending observation.
-    ///
-    /// Arrival and the pending observation remain committed if notifying a waker panics.
     pub fn arrive(&mut self) -> Result<u64, Closed> {
         let mut wakers = WakerBatch::new();
         let phase = {

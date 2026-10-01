@@ -121,11 +121,6 @@ impl<T> Completer<T> {
     ///
     /// Returns `value` if all observers were already dropped. A successful completion does not
     /// guarantee that an observer will remain alive long enough to read the value.
-    ///
-    /// # Panics
-    ///
-    /// Panics if notifying a waiting observer panics. The value remains committed, and notification
-    /// is still attempted for every other pending observer before the panic resumes.
     pub fn complete(mut self, value: T) -> Result<(), T> {
         let Some(shared) = self.shared.upgrade() else {
             return Err(value);

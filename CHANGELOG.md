@@ -27,6 +27,10 @@ All notable changes to this project will be documented in this file.
 
 * Add bounded MPMC `reserve` and `try_reserve` methods returning a borrowed `Permit`, so callers can wait for capacity before constructing a value; sends and reservations receive capacity in wait-queue order, and unused permits release it.
 
+### Notable changes
+
+* Recovery from panicking waker callbacks is no longer part of the public API contract; executor wakers are expected not to panic.
+
 ## v0.7.3 (2026-09-29)
 
 ### New features

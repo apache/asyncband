@@ -97,11 +97,6 @@ impl ManualResetEvent {
     ///
     /// The event remains set until [`reset`](Self::reset) is called. Calling `set` while it is
     /// already set has no effect.
-    ///
-    /// # Panics
-    ///
-    /// Panics if waking a selected task panics. The event remains set, and waking is still
-    /// attempted for every other selected task before the panic resumes.
     pub fn set(&self) {
         let mut wakers = WakerBatch::new();
         {

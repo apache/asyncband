@@ -152,9 +152,7 @@ impl Semaphore {
     ///
     /// # Panics
     ///
-    /// Panics if adding the permits would overflow the total permit count, or if notifying a waiter
-    /// panics. Added permits remain available, and notification is still attempted for every other
-    /// eligible waiter before the panic resumes.
+    /// Panics if adding the permits would overflow the total permit count.
     ///
     /// # Examples
     ///
