@@ -37,7 +37,7 @@ Declare restricted visibility at the module boundary and use `pub` for items in 
 - Reuse borrowed-waker registration and avoid redundant clones.
 - Keep wake callbacks and replaced or cancelled waker destruction outside primitive locks.
 - Once wakers are detached for notification, attempt every wake. If a callback panics, use unwind cleanup to attempt the remaining wakes and let the first panic continue.
-- Recovery from waker callback panics is not a public API guarantee; normal executor wakers are the supported case.
+- Executor waker operations, including cloning, waking, and dropping, are expected not to panic; recovery from panicking waker operations is not a public API guarantee.
 
 Decision: [#257](https://github.com/apache/asyncband/pull/257).
 
