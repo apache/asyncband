@@ -162,86 +162,62 @@ impl Semaphore {
     pub fn notify_all(&self) {
         let mut waiters = self.waiters.lock();
         let mut wakers = WakerBatch::new();
-        loop {
-            match waiters.unlink_first_waiter(|node| {
-                node.permits = 0;
-                true
-            }) {
-                None => break,
-                Some((id, waiter)) => {
-                    let remove_now = waiter.waker.is_none();
-                    if let Some(waker) = waiter.waker.take() {
-                        wakers.push(waker);
-                    }
-                    if remove_now {
-                        waiters.remove_unlinked_waiter(id);
-                    }
-                }
+        while let Some((id, waiter)) = waiters.unlink_first_waiter(|node| {
+            node.permits = 0;
+            true
+        }) {
+            if let Some(waker) = waiter.waker.take() {
+                wakers.push(waker);
+            } else {
+                waiters.remove_unlinked_waiter(id);
             }
         }
         drop(waiters);
         wake_all(&mut wakers);
     }
 
-    fn insert_permits_with_lock(
-        &self,
+    fn insert_permits_with_lock<'a>(
+        &'a self,
         mut rem: usize,
-        waiters: MutexGuard<'_, WaitList<WaitNode>>,
+        mut waiters: MutexGuard<'a, WaitList<WaitNode>>,
     ) {
         let mut batch = WakerBatch::new();
-        let mut lock = Some(waiters);
 
-        wake_all(std::iter::from_fn(|| {
-            loop {
-                if let Some(waker) = batch.next() {
-                    return Some(waker);
+        loop {
+            while rem > 0 && !batch.will_spill() {
+                let Some((id, waiter)) = waiters.unlink_first_waiter(|node| {
+                    let acquired = node.permits.min(rem);
+                    node.permits -= acquired;
+                    rem -= acquired;
+                    node.permits == 0
+                }) else {
+                    break;
+                };
+                if let Some(waker) = waiter.waker.take() {
+                    batch.push(waker);
+                } else {
+                    waiters.remove_unlinked_waiter(id);
                 }
-                if rem == 0 {
-                    return None;
-                }
-
-                let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
-                while !batch.will_spill() {
-                    match waiters.unlink_first_waiter(|node| {
-                        if node.permits <= rem {
-                            rem -= node.permits;
-                            node.permits = 0;
-                            true
-                        } else {
-                            node.permits -= rem;
-                            rem = 0;
-                            false
-                        }
-                    }) {
-                        None => break,
-                        Some((id, waiter)) => {
-                            let remove_now = waiter.waker.is_none();
-                            if let Some(waker) = waiter.waker.take() {
-                                batch.push(waker);
-                            }
-                            if remove_now {
-                                waiters.remove_unlinked_waiter(id);
-                            }
-                        }
-                    }
-                }
-
-                if rem > 0 && waiters.is_empty() {
-                    // Retire the remainder before the overflow check so unwinding cannot retry it.
-                    let added = std::mem::take(&mut rem);
-                    // The lock serializes additions; concurrent operations can only remove permits.
-                    let current = self.permits.load(Ordering::Relaxed);
-                    assert!(
-                        current.checked_add(added).is_some(),
-                        "number of added permits ({added}) would overflow usize::MAX (prev: {current})"
-                    );
-                    self.permits.fetch_add(added, Ordering::Release);
-                }
-
-                // Neither wake callbacks nor destruction of the taken waker run under this lock.
-                drop(waiters);
             }
-        }));
+
+            if rem > 0 && waiters.is_empty() {
+                // The lock serializes additions; concurrent operations can only remove permits.
+                let current = self.permits.load(Ordering::Relaxed);
+                assert!(
+                    current.checked_add(rem).is_some(),
+                    "number of added permits ({rem}) would overflow usize::MAX (prev: {current})"
+                );
+                self.permits.fetch_add(rem, Ordering::Release);
+                rem = 0;
+            }
+
+            drop(waiters);
+            wake_all(&mut batch);
+            if rem == 0 {
+                return;
+            }
+            waiters = self.waiters.lock();
+        }
     }
 }
 
@@ -438,26 +414,34 @@ mod tests {
     }
 
     #[test]
-    fn release_distributes_permits_to_all_waiters() {
-        const WAITER_COUNT: usize = 35;
+    fn release_distributes_permits_across_multiple_batches() {
+        const WAITER_COUNT: usize = WakerBatch::STACK_SIZE * 2 + 1;
 
         let semaphore = Semaphore::new(0);
-        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-        let waker = Waker::from(counter.clone());
+        let counters = (0..WAITER_COUNT)
+            .map(|_| Arc::new(WakeCounter(AtomicUsize::new(0))))
+            .collect::<Vec<_>>();
+        let wakers = counters
+            .iter()
+            .map(|counter| Waker::from(counter.clone()))
+            .collect::<Vec<_>>();
         let mut acquires = (0..WAITER_COUNT)
             .map(|_| semaphore.poll_acquire(1))
             .collect::<Vec<_>>();
 
-        for acquire in &mut acquires {
-            assert!(acquire.poll_once(&waker).is_pending());
+        for (acquire, waker) in acquires.iter_mut().zip(&wakers) {
+            assert!(acquire.poll_once(waker).is_pending());
         }
         assert_eq!(semaphore.waiters.lock().occupied_len(), WAITER_COUNT);
 
-        semaphore.release(WAITER_COUNT);
-        assert_eq!(counter.0.load(Ordering::Relaxed), WAITER_COUNT);
+        semaphore.release(WAITER_COUNT + 2);
+        for counter in counters {
+            assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+        }
+        assert_eq!(semaphore.available_permits(), 2);
 
         for acquire in &mut acquires {
-            assert!(acquire.poll_once(&waker).is_ready());
+            assert!(acquire.poll_once(Waker::noop()).is_ready());
         }
         assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
     }
