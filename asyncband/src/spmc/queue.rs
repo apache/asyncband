@@ -29,7 +29,6 @@ use super::TrySendError;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
-use crate::internal::wake_all;
 
 pub struct Shared<T> {
     state: Mutex<State<T>>,
@@ -109,12 +108,11 @@ impl WaitList<Waiter> {
                 return Some(mem::replace(waker, current.clone()));
             }
         }
-        let waker = current.clone();
         if let Some(notified) = id.take() {
             // The notification already took this node's waker, so nothing is retired.
             self.remove_waiter(notified);
         }
-        *id = Some(self.push_back(Waiter::Waiting(waker)));
+        *id = Some(self.push_back(Waiter::Waiting(current.clone())));
         None
     }
 }
@@ -149,7 +147,9 @@ impl<T> Shared<T> {
             // notification and reclamation happen without holding the queue lock.
             mem::replace(&mut state.recv_waiters, WaitList::new())
         };
-        wake_all(std::iter::from_fn(|| waiters.notify_one()));
+        while let Some(waker) = waiters.notify_one() {
+            waker.wake();
+        }
     }
 
     pub fn clone_receiver(&self) {
@@ -168,9 +168,10 @@ impl<T> Shared<T> {
                 mem::replace(&mut state.send_waiters, WaitList::new()),
             )
         };
-        // Release blocked senders before destroying buffered values. Local ownership still drops
-        // the values if a wake callback unwinds.
-        wake_all(std::iter::from_fn(|| waiters.notify_one()));
+        // Notify blocked senders before destroying buffered values, whose destructors may panic.
+        while let Some(waker) = waiters.notify_one() {
+            waker.wake();
+        }
         drop(discarded);
     }
 
@@ -258,7 +259,6 @@ impl<T> Send<'_, T> {
             .take()
             .map(|id| state.send_waiters.remove_waiter(id));
         drop(state);
-        // Deliver the notification before running waker destructors, which may panic.
         let result = outcome
             .map(|waker| {
                 if let Some(waker) = waker {
@@ -324,7 +324,6 @@ impl<T> Recv<'_, T> {
             .take()
             .map(|id| state.recv_waiters.remove_waiter(id));
         drop(state);
-        // Deliver the notification before running waker destructors, which may panic.
         let result = outcome.map(|(value, waker)| {
             if let Some(waker) = waker {
                 waker.wake();

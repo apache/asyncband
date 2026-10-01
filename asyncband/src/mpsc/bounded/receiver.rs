@@ -26,7 +26,6 @@ use super::State;
 use crate::internal::mutex::Mutex;
 use crate::internal::register_waker;
 use crate::internal::waitlist::WaitList;
-use crate::internal::wake_all;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
 
@@ -55,15 +54,12 @@ impl<T> Drop for BoundedReceiver<T> {
             let waiters = mem::replace(&mut state.send_waiters, WaitList::new());
             (queue, recv_waker, waiters)
         };
-        // Local ownership also drains the queue if a wake or waker destructor unwinds.
-        wake_all(std::iter::from_fn(|| {
-            loop {
-                let (_, waiter) = waiters.unlink_first_waiter(|_| true)?;
-                if let Some(waker) = waiter.waker.take() {
-                    return Some(waker);
-                }
+        // Notify blocked senders before destroying buffered values, whose destructors may panic.
+        while let Some((_, waiter)) = waiters.unlink_first_waiter(|_| true) {
+            if let Some(waker) = waiter.waker.take() {
+                waker.wake();
             }
-        }));
+        }
         drop(recv_waker);
         drop(queue);
     }

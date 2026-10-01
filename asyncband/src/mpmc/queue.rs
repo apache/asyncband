@@ -30,7 +30,6 @@ use super::TrySendError;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
-use crate::internal::wake_all;
 
 pub struct Shared<T> {
     state: Mutex<State<T>>,
@@ -140,12 +139,11 @@ impl WaitList<RecvWaiter> {
                 return Some(mem::replace(waker, current.clone()));
             }
         }
-        let waker = current.clone();
         if let Some(notified) = id.take() {
             // The notification already took this node's waker, so nothing is retired.
             remove_waiter(self, notified);
         }
-        *id = Some(self.push_back(RecvWaiter::Waiting(waker)));
+        *id = Some(self.push_back(RecvWaiter::Waiting(current.clone())));
         None
     }
 }
@@ -221,7 +219,9 @@ impl<T> Shared<T> {
             // notification and reclamation happen without holding the queue lock.
             mem::replace(&mut state.recv_waiters, WaitList::new())
         };
-        wake_all(std::iter::from_fn(|| waiters.notify_one()));
+        while let Some(waker) = waiters.notify_one() {
+            waker.wake();
+        }
     }
 
     pub fn clone_receiver(&self) {
@@ -240,9 +240,10 @@ impl<T> Shared<T> {
                 mem::replace(&mut state.send_waiters, WaitList::new()),
             )
         };
-        // Release blocked senders before destroying buffered values. Local ownership still drops
-        // the values if a wake callback unwinds.
-        wake_all(std::iter::from_fn(|| waiters.take_waiting_waker()));
+        // Notify blocked senders before destroying buffered values, whose destructors may panic.
+        while let Some(waker) = waiters.take_waiting_waker() {
+            waker.wake();
+        }
         drop(discarded);
     }
 
@@ -337,7 +338,7 @@ impl<T> Permit<'_, T> {
                 return Err(SendError::new(value));
             }
             let waker = state.push(value);
-            // The queued value now owns this capacity, including if waking a receiver panics.
+            // The queued value now owns this capacity.
             mem::forget(self);
             waker
         };
@@ -454,7 +455,6 @@ impl<T> Recv<'_, T> {
             .take()
             .map(|id| remove_waiter(&mut state.recv_waiters, id));
         drop(state);
-        // Deliver the notification before running waker destructors, which may panic.
         let result = outcome.map(|(value, waker)| {
             if let Some(waker) = waker {
                 waker.wake();

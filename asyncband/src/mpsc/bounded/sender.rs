@@ -209,7 +209,7 @@ impl<T> Permit<'_, T> {
             return Err(SendError::new(value));
         }
         state.queue.push_back(value);
-        // The queued message now owns capacity, even if the wake callback panics.
+        // The queued message now owns capacity.
         mem::forget(self);
         let wake = state.recv_waker.take();
         drop(state);
