@@ -128,6 +128,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
 use crate::internal::wake_all;
@@ -171,13 +172,16 @@ struct State {
 }
 
 impl State {
-    /// Completes the phase once every participant has arrived.
-    fn advance_if_ready(&mut self) {
-        if self.closed || self.unarrived != 0 {
-            return;
-        }
-        self.phase = self.phase.wrapping_add(1);
-        self.unarrived = self.registered;
+    /// Advances a completed phase and returns its waiters for waking outside the lock.
+    fn advance_if_ready(&mut self) -> impl Iterator<Item = Waker> + 'static {
+        let wakers = if self.closed || self.unarrived != 0 {
+            None
+        } else {
+            self.phase = self.phase.wrapping_add(1);
+            self.unarrived = self.registered;
+            Some(self.waiters.take_all())
+        };
+        wakers.into_iter().flatten()
     }
 
     fn completion(&self, observed: u64) -> Poll<Result<u64, Closed>> {
@@ -388,8 +392,7 @@ impl Drop for PhaserParticipants {
         state.registered -= self.remaining;
         state.unarrived -= self.remaining;
         self.remaining = 0;
-        state.advance_if_ready();
-        let wakers = state.waiters.take_all();
+        let wakers = state.advance_if_ready();
         drop(state);
         wake_all(wakers);
     }
@@ -439,8 +442,7 @@ impl PhaserParticipant {
             state.unarrived -= 1;
         }
         self.pending = Some(phase);
-        state.advance_if_ready();
-        let wakers = state.waiters.take_all();
+        let wakers = state.advance_if_ready();
         drop(state);
         wake_all(wakers);
         Ok(phase)
@@ -488,8 +490,7 @@ impl PhaserParticipant {
         } else {
             Ok(state.phase)
         };
-        state.advance_if_ready();
-        let wakers = state.waiters.take_all();
+        let wakers = state.advance_if_ready();
         drop(state);
         wake_all(wakers);
         result

@@ -344,6 +344,53 @@ fn advancing_a_phase_wakes_every_registered_waiter_once() {
 }
 
 #[test]
+fn partial_arrivals_and_withdrawals_preserve_pending_waits() {
+    let phaser = Phaser::new();
+    let observed = phaser.phase();
+    let mut participants = phaser.register(4).unwrap();
+    let mut first = participants.next().unwrap();
+    let withdrawing = participants.next().unwrap();
+    let mut last = participants.next().unwrap();
+    let (waker, counter) = WakeCounter::new();
+    let mut wait = Box::pin(phaser.wait(observed));
+    assert!(poll_with(wait.as_mut(), &waker).is_pending());
+
+    first.arrive().unwrap();
+    first.arrive().unwrap();
+    withdrawing.deregister().unwrap();
+    drop(participants);
+    let early_wakes = counter.count();
+
+    last.arrive().unwrap();
+    assert_eq!(early_wakes, 0);
+    assert_eq!(counter.count(), 1);
+    assert_eq!(poll_once(wait.as_mut()), Poll::Ready(Ok(phaser.phase())));
+}
+
+#[test]
+fn cancelling_after_partial_arrival_preserves_other_waiters() {
+    let phaser = Phaser::new();
+    let observed = phaser.phase();
+    let mut first = phaser.register_one().unwrap();
+    let mut second = phaser.register_one().unwrap();
+    let mut cancelled = Box::pin(phaser.wait(observed));
+    assert!(poll_once(cancelled.as_mut()).is_pending());
+
+    first.arrive().unwrap();
+    let (waker, counter) = WakeCounter::new();
+    let mut remaining = Box::pin(phaser.wait(observed));
+    assert!(poll_with(remaining.as_mut(), &waker).is_pending());
+    drop(cancelled);
+
+    second.arrive().unwrap();
+    assert_eq!(counter.count(), 1);
+    assert_eq!(
+        poll_once(remaining.as_mut()),
+        Poll::Ready(Ok(phaser.phase()))
+    );
+}
+
+#[test]
 fn repolling_updates_the_task_that_will_be_notified() {
     let phaser = Phaser::new();
     let participant = phaser.register_one().unwrap();
