@@ -30,7 +30,8 @@ use crate::internal::arena::SlotId;
 /// An exclusive handle to one waker slot in a [`WakerSet`].
 ///
 /// This token deliberately does not implement `Clone` or `Copy`. Its owner must not pass it back
-/// to the set after the registration has been detached by [`WakerSet::take_all`].
+/// to the set after the registration has been detached by [`WakerSet::drain`] or
+/// [`WakerSet::take_all`].
 #[derive(Debug)]
 pub struct WakerToken(SlotId);
 
@@ -53,6 +54,15 @@ impl WakerSet {
         Self {
             wakers: Arena::with_capacity(capacity),
         }
+    }
+
+    /// Drains registered wakers while retaining slot capacity for reuse.
+    ///
+    /// The caller must invalidate outstanding tokens and collect the wakers under the set's lock,
+    /// then wake or drop them after releasing it.
+    #[inline]
+    pub fn drain(&mut self) -> impl Iterator<Item = Waker> + '_ {
+        self.wakers.drain()
     }
 
     /// Takes all registered wakers together with the set's backing allocation.
