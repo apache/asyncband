@@ -19,9 +19,9 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::wake_all;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -60,7 +60,7 @@ impl CountdownState {
             waiters.take_all()
         };
 
-        wake_all(wakers);
+        wakers.for_each(Waker::wake);
     }
 
     /// Polls for zero, registering the current waker if the countdown is still active.

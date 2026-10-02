@@ -70,11 +70,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 pub use self::error::RecvError;
 pub use self::error::SendError;
 use crate::internal::mutex::Mutex;
-use crate::internal::wake_all;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -155,7 +155,7 @@ impl<T> Drop for Sender<T> {
             }
             state.waiters.take_all()
         };
-        wake_all(wakers);
+        wakers.for_each(Waker::wake);
     }
 }
 
@@ -182,7 +182,7 @@ impl<T> Sender<T> {
         drop(state);
 
         // Waker callbacks and the replaced value's destructor may reenter this channel.
-        wake_all(wakers);
+        wakers.for_each(Waker::wake);
         drop(replaced);
         Ok(())
     }
@@ -205,7 +205,7 @@ impl<T> Sender<T> {
         state.version = version;
         let wakers = state.waiters.take_all();
         drop(state);
-        wake_all(wakers);
+        wakers.for_each(Waker::wake);
         replaced
     }
 

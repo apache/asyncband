@@ -131,7 +131,6 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::wake_all;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -251,7 +250,7 @@ impl Phaser {
             state.closed = true;
             state.waiters.take_all()
         };
-        wake_all(wakers);
+        wakers.for_each(Waker::wake);
     }
 
     /// Returns an instantaneous count of registered participants, including those already arrived.
@@ -394,7 +393,7 @@ impl Drop for PhaserParticipants {
         self.remaining = 0;
         let wakers = state.advance_if_ready();
         drop(state);
-        wake_all(wakers);
+        wakers.for_each(Waker::wake);
     }
 }
 
@@ -444,7 +443,7 @@ impl PhaserParticipant {
         self.pending = Some(phase);
         let wakers = state.advance_if_ready();
         drop(state);
-        wake_all(wakers);
+        wakers.for_each(Waker::wake);
         Ok(phase)
     }
 
@@ -492,7 +491,7 @@ impl PhaserParticipant {
         };
         let wakers = state.advance_if_ready();
         drop(state);
-        wake_all(wakers);
+        wakers.for_each(Waker::wake);
         result
     }
 }

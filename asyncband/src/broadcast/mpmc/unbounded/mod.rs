@@ -62,6 +62,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use super::common;
 use super::common::Backlog;
@@ -70,7 +71,6 @@ use super::error::RecvError;
 use super::error::TryRecvError;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
-use crate::internal::wake_all;
 use crate::internal::wakerset::WakerToken;
 
 #[cfg(test)]
@@ -183,7 +183,7 @@ impl<T> UnboundedSender<T> {
 
         // Notify all waiting receivers. An unsent message is dropped here too, once the lock is
         // released.
-        wake_all(wakers);
+        wakers.for_each(Waker::wake);
         drop(unretained);
     }
 

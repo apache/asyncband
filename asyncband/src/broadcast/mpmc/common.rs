@@ -31,13 +31,13 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use super::error::RecvError;
 use super::error::TryRecvError;
 use crate::internal::arena::Arena;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
-use crate::internal::wake_all;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -436,7 +436,7 @@ pub fn disconnect<T>(inner: &Mutex<Inner<T>>) {
         let mut inner = inner.lock();
         inner.waiters.take_all()
     };
-    wake_all(wakers);
+    wakers.for_each(Waker::wake);
 }
 
 /// Releases a cancelled receive's waker registration, dropping the waker unlocked.

@@ -52,9 +52,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::wake_all;
 use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
@@ -194,7 +194,7 @@ impl Barrier {
                     wakers.push(waker);
                 }
                 drop(state);
-                wake_all(wakers);
+                wakers.by_ref().for_each(Waker::wake);
                 return BarrierWaitResult(true);
             }
 

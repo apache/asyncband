@@ -108,6 +108,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use super::common;
 use super::common::Backlog;
@@ -119,7 +120,6 @@ use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
 use crate::internal::semaphore::Acquire;
 use crate::internal::semaphore::Semaphore;
-use crate::internal::wake_all;
 use crate::internal::wakerset::WakerToken;
 
 #[cfg(test)]
@@ -427,7 +427,7 @@ impl<T> BoundedSender<T> {
         }
         let wakers = inner.waiters.take_all();
         drop(inner);
-        wake_all(wakers);
+        wakers.for_each(Waker::wake);
         drop(discarded);
         Ok(())
     }

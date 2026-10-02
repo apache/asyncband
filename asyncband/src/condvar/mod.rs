@@ -68,7 +68,6 @@ use std::task::Waker;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
-use crate::internal::wake_all;
 use crate::internal::waker_batch::WakerBatch;
 use crate::mutex;
 use crate::mutex::MutexGuard;
@@ -171,7 +170,7 @@ impl Condvar {
             }
         }
 
-        wake_all(wakers);
+        wakers.by_ref().for_each(Waker::wake);
     }
 
     /// Waits for a notification, atomically releasing and then reacquiring the mutex.

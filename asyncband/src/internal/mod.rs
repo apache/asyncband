@@ -33,16 +33,6 @@ pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> 
     }
 }
 
-/// Wakes every waker.
-#[inline]
-// A no-feature or blocking-only build has no primitive that fans notifications out.
-#[allow(dead_code)]
-pub(crate) fn wake_all(wakers: impl Iterator<Item = Waker>) {
-    for waker in wakers {
-        waker.wake();
-    }
-}
-
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",

@@ -56,9 +56,9 @@ use std::sync::OnceLock;
 use std::sync::Weak;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::wake_all;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -135,7 +135,7 @@ impl<T> Completer<T> {
         // `complete` consumes the only completer. Disarm its destructor before invoking arbitrary
         // wake callbacks; the completed state no longer needs abandonment handling.
         self.shared = Weak::new();
-        wake_all(wakers);
+        wakers.for_each(Waker::wake);
         Ok(())
     }
 }
@@ -151,7 +151,7 @@ impl<T> Drop for Completer<T> {
             assert!(shared.result.set(None).is_ok());
             wakers
         };
-        wake_all(wakers);
+        wakers.for_each(Waker::wake);
     }
 }
 

@@ -37,7 +37,6 @@ use crate::internal::mutex::Mutex;
 use crate::internal::register_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
-use crate::internal::wake_all;
 use crate::internal::waker_batch::WakerBatch;
 
 /// The internal semaphore that provides low-level async primitives.
@@ -173,7 +172,7 @@ impl Semaphore {
             }
         }
         drop(waiters);
-        wake_all(wakers);
+        wakers.by_ref().for_each(Waker::wake);
     }
 
     fn insert_permits_with_lock<'a>(
@@ -212,7 +211,7 @@ impl Semaphore {
             }
 
             drop(waiters);
-            wake_all(&mut batch);
+            batch.by_ref().for_each(Waker::wake);
             if rem == 0 {
                 return;
             }
