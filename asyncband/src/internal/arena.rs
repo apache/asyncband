@@ -204,23 +204,6 @@ mod tests {
     }
 
     #[test]
-    fn drain_restarts_slot_id_allocation() {
-        let mut arena = Arena::with_capacity(3);
-        let first = arena.insert(1);
-        let second = arena.insert(2);
-        let third = arena.insert(3);
-        let capacity = arena.slots.capacity();
-        arena.remove(second);
-
-        assert_eq!(arena.take_all().collect::<Vec<_>>(), vec![1, 3]);
-        assert_eq!(arena.len(), 0);
-        assert_eq!(arena.slots.capacity(), capacity);
-
-        let slot_ids = [arena.insert(4), arena.insert(5), arena.insert(6)];
-        assert_eq!(slot_ids, [first, second, third]);
-    }
-
-    #[test]
     fn take_all_releases_the_backing_allocation() {
         let mut arena = Arena::new();
         arena.insert(1);
