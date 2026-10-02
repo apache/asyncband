@@ -22,11 +22,8 @@ use std::task::Waker;
 
 /// An owning FIFO of wakers that stores the first [`Self::STACK_SIZE`] entries without allocating.
 ///
-/// The batch is filled through [`WakerBatch::push`] or [`Extend`] and consumed as its own
-/// iterator. Entries are written only as they are pushed, so constructing an empty or small batch
-/// touches nothing beyond the two indices. Once every inline entry has been yielded the batch
-/// reuses that storage, so a caller that alternates between filling and draining, as the
-/// semaphore does, keeps running on the stack.
+/// Only pushed entries are initialized. Consuming all inline entries makes their storage
+/// available for the semaphore's next notification batch.
 pub struct WakerBatch {
     /// The initialized entries are exactly `start..end`.
     inline: [MaybeUninit<Waker>; Self::STACK_SIZE],
@@ -71,14 +68,6 @@ impl WakerBatch {
             self.end += 1;
         } else {
             self.spilled.push_back(waker);
-        }
-    }
-}
-
-impl Extend<Waker> for WakerBatch {
-    fn extend<I: IntoIterator<Item = Waker>>(&mut self, iter: I) {
-        for waker in iter {
-            self.push(waker);
         }
     }
 }
@@ -153,8 +142,10 @@ mod tests {
         }))
     }
 
-    fn wakers(log: &Arc<Log>, count: usize) -> impl Iterator<Item = Waker> + '_ {
-        (0..count).map(move |id| waker(log, id))
+    fn push_wakers(batch: &mut WakerBatch, log: &Arc<Log>, count: usize) {
+        for id in 0..count {
+            batch.push(waker(log, id));
+        }
     }
 
     fn alive(log: &Arc<Log>) -> usize {
@@ -170,7 +161,7 @@ mod tests {
         let log = log();
         let count = STACK_SIZE + 8;
         let mut batch = WakerBatch::new();
-        batch.extend(wakers(&log, count));
+        push_wakers(&mut batch, &log, count);
         assert!(batch.will_spill());
 
         for waker in &mut batch {
@@ -188,7 +179,7 @@ mod tests {
         let count = STACK_SIZE + 8;
         for consumed in [0, 5, STACK_SIZE, STACK_SIZE + 3, count] {
             let mut batch = WakerBatch::new();
-            batch.extend(wakers(&log, count));
+            push_wakers(&mut batch, &log, count);
             for _ in 0..consumed {
                 drop(batch.next().unwrap());
             }
@@ -204,7 +195,7 @@ mod tests {
         let log = log();
         let mut batch = WakerBatch::new();
         for _ in 0..3 {
-            batch.extend(wakers(&log, STACK_SIZE));
+            push_wakers(&mut batch, &log, STACK_SIZE);
             assert!(batch.will_spill());
             assert_eq!(batch.by_ref().count(), STACK_SIZE);
             assert!(!batch.will_spill());
@@ -216,7 +207,7 @@ mod tests {
     fn keeps_push_order_while_spilled() {
         let log = log();
         let mut batch = WakerBatch::new();
-        batch.extend(wakers(&log, STACK_SIZE + 1));
+        push_wakers(&mut batch, &log, STACK_SIZE + 1);
         // Free inline room; the spilled entry must still come out before anything pushed now.
         for _ in 0..4 {
             batch.next().unwrap().wake();

@@ -124,15 +124,9 @@ pub(crate) mod waitlist;
     feature = "barrier",
     feature = "broadcast",
     feature = "event",
-    feature = "completion",
-    feature = "latch",
     feature = "mutex",
-    feature = "once",
-    feature = "phaser",
     feature = "rwlock",
     feature = "semaphore",
-    feature = "waitgroup",
-    feature = "watch",
 ))]
 // Only the semaphore refills a batch and asks whether it will spill, so other feature subsets
 // leave that method unused.
