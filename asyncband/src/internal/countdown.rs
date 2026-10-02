@@ -57,7 +57,7 @@ impl CountdownState {
     pub fn wake_all(&self) {
         let wakers = {
             let mut waiters = self.waiters.lock();
-            waiters.take_all()
+            waiters.take_all_and_release()
         };
 
         wakers.for_each(Waker::wake);

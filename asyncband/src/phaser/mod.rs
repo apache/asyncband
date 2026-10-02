@@ -131,6 +131,7 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
+use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -172,15 +173,13 @@ struct State {
 
 impl State {
     /// Advances a completed phase and returns its waiters for waking outside the lock.
-    fn advance_if_ready(&mut self) -> impl Iterator<Item = Waker> + 'static {
-        let wakers = if self.closed || self.unarrived != 0 {
-            None
-        } else {
-            self.phase = self.phase.wrapping_add(1);
-            self.unarrived = self.registered;
-            Some(self.waiters.take_all())
-        };
-        wakers.into_iter().flatten()
+    fn advance_if_ready(&mut self) -> WakerBatch {
+        if self.closed || self.unarrived != 0 {
+            return WakerBatch::new();
+        }
+        self.phase = self.phase.wrapping_add(1);
+        self.unarrived = self.registered;
+        self.waiters.take_all()
     }
 
     fn completion(&self, observed: u64) -> Poll<Result<u64, Closed>> {
@@ -248,7 +247,7 @@ impl Phaser {
                 return;
             }
             state.closed = true;
-            state.waiters.take_all()
+            state.waiters.take_all_and_release()
         };
         wakers.for_each(Waker::wake);
     }
@@ -391,9 +390,9 @@ impl Drop for PhaserParticipants {
         state.registered -= self.remaining;
         state.unarrived -= self.remaining;
         self.remaining = 0;
-        let wakers = state.advance_if_ready();
+        let mut wakers = state.advance_if_ready();
         drop(state);
-        wakers.for_each(Waker::wake);
+        wakers.by_ref().for_each(Waker::wake);
     }
 }
 
@@ -441,9 +440,9 @@ impl PhaserParticipant {
             state.unarrived -= 1;
         }
         self.pending = Some(phase);
-        let wakers = state.advance_if_ready();
+        let mut wakers = state.advance_if_ready();
         drop(state);
-        wakers.for_each(Waker::wake);
+        wakers.by_ref().for_each(Waker::wake);
         Ok(phase)
     }
 
@@ -489,9 +488,9 @@ impl PhaserParticipant {
         } else {
             Ok(state.phase)
         };
-        let wakers = state.advance_if_ready();
+        let mut wakers = state.advance_if_ready();
         drop(state);
-        wakers.for_each(Waker::wake);
+        wakers.by_ref().for_each(Waker::wake);
         result
     }
 }

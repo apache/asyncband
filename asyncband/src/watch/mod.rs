@@ -153,7 +153,7 @@ impl<T> Drop for Sender<T> {
             if state.senders != 0 {
                 return;
             }
-            state.waiters.take_all()
+            state.waiters.take_all_and_release()
         };
         wakers.for_each(Waker::wake);
     }
@@ -178,11 +178,11 @@ impl<T> Sender<T> {
             .expect("watch channel version counter overflowed");
         let replaced = mem::replace(&mut state.value, value);
         state.version = version;
-        let wakers = state.waiters.take_all();
+        let mut wakers = state.waiters.take_all();
         drop(state);
 
         // Waker callbacks and the replaced value's destructor may reenter this channel.
-        wakers.for_each(Waker::wake);
+        wakers.by_ref().for_each(Waker::wake);
         drop(replaced);
         Ok(())
     }
@@ -203,9 +203,9 @@ impl<T> Sender<T> {
             .expect("watch channel version counter overflowed");
         let replaced = mem::replace(&mut state.value, value);
         state.version = version;
-        let wakers = state.waiters.take_all();
+        let mut wakers = state.waiters.take_all();
         drop(state);
-        wakers.for_each(Waker::wake);
+        wakers.by_ref().for_each(Waker::wake);
         replaced
     }
 

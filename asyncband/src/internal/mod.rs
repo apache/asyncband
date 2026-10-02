@@ -113,10 +113,16 @@ pub(crate) mod waitlist;
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
+    feature = "completion",
     feature = "event",
+    feature = "latch",
     feature = "mutex",
+    feature = "once",
+    feature = "phaser",
     feature = "rwlock",
     feature = "semaphore",
+    feature = "waitgroup",
+    feature = "watch",
 ))]
 // Only the semaphore refills a batch and asks whether it will spill, so other feature subsets
 // leave that method unused.

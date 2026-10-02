@@ -127,7 +127,7 @@ impl<T> Completer<T> {
         };
         let wakers = {
             let mut waiters = shared.waiters.lock();
-            let wakers = waiters.take_all();
+            let wakers = waiters.take_all_and_release();
             // The single completer publishes only after every waiter token has been invalidated.
             assert!(shared.result.set(Some(value)).is_ok());
             wakers
@@ -147,7 +147,7 @@ impl<T> Drop for Completer<T> {
         };
         let wakers = {
             let mut waiters = shared.waiters.lock();
-            let wakers = waiters.take_all();
+            let wakers = waiters.take_all_and_release();
             assert!(shared.result.set(None).is_ok());
             wakers
         };

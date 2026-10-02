@@ -178,12 +178,12 @@ impl<T> UnboundedSender<T> {
         // observe an empty buffer and park after this message became visible.
         let mut inner = self.shared.inner.lock();
         let unretained = inner.log.publish(msg);
-        let wakers = inner.waiters.take_all();
+        let mut wakers = inner.waiters.take_all();
         drop(inner);
 
         // Notify all waiting receivers. An unsent message is dropped here too, once the lock is
         // released.
-        wakers.for_each(Waker::wake);
+        wakers.by_ref().for_each(Waker::wake);
         drop(unretained);
     }
 

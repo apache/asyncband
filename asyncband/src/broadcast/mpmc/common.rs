@@ -434,7 +434,7 @@ impl<T> Inner<T> {
 pub fn disconnect<T>(inner: &Mutex<Inner<T>>) {
     let wakers = {
         let mut inner = inner.lock();
-        inner.waiters.take_all()
+        inner.waiters.take_all_and_release()
     };
     wakers.for_each(Waker::wake);
 }

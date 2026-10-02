@@ -24,6 +24,7 @@ use std::task::Waker;
 ///
 /// Only pushed entries are initialized. Consuming all inline entries makes their storage
 /// available for the semaphore's next notification batch.
+/// Iterate by reference to avoid moving the inline storage into iterator adapters.
 pub struct WakerBatch {
     /// The initialized entries are exactly `start..end`.
     inline: [MaybeUninit<Waker>; Self::STACK_SIZE],
@@ -41,8 +42,8 @@ pub struct WakerBatch {
 impl WakerBatch {
     /// Wakers kept on the stack before the batch spills to the heap.
     ///
-    /// This is also the most wakers the semaphore collects per lock acquisition, so a drain that
-    /// wakes a typical waiter set never allocates; larger sets pay one allocation for the overflow.
+    /// This is also the most wakers the semaphore collects per lock acquisition. Larger batches
+    /// allocate overflow storage.
     pub const STACK_SIZE: usize = 32;
 
     pub const fn new() -> Self {
@@ -62,6 +63,7 @@ impl WakerBatch {
         self.end == Self::STACK_SIZE || !self.spilled.is_empty()
     }
 
+    #[inline]
     pub fn push(&mut self, waker: Waker) {
         if self.end < Self::STACK_SIZE && self.spilled.is_empty() {
             self.inline[self.end].write(waker);
@@ -72,9 +74,21 @@ impl WakerBatch {
     }
 }
 
+impl FromIterator<Waker> for WakerBatch {
+    #[inline]
+    fn from_iter<T: IntoIterator<Item = Waker>>(iter: T) -> Self {
+        let mut batch = Self::new();
+        for waker in iter {
+            batch.push(waker);
+        }
+        batch
+    }
+}
+
 impl Iterator for WakerBatch {
     type Item = Waker;
 
+    #[inline]
     fn next(&mut self) -> Option<Waker> {
         if self.start < self.end {
             let index = self.start;
@@ -91,6 +105,7 @@ impl Iterator for WakerBatch {
 }
 
 impl Drop for WakerBatch {
+    #[inline]
     fn drop(&mut self) {
         let initialized = ptr::slice_from_raw_parts_mut(
             self.inline[self.start..self.end]
@@ -160,8 +175,7 @@ mod tests {
     fn yields_in_push_order_across_the_spill() {
         let log = log();
         let count = STACK_SIZE + 8;
-        let mut batch = WakerBatch::new();
-        push_wakers(&mut batch, &log, count);
+        let mut batch: WakerBatch = (0..count).map(|id| waker(&log, id)).collect();
         assert!(batch.will_spill());
 
         for waker in &mut batch {

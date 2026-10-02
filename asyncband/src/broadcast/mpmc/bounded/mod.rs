@@ -425,9 +425,9 @@ impl<T> BoundedSender<T> {
         } else {
             inner.log.publish_retained(into_msg(payload));
         }
-        let wakers = inner.waiters.take_all();
+        let mut wakers = inner.waiters.take_all();
         drop(inner);
-        wakers.for_each(Waker::wake);
+        wakers.by_ref().for_each(Waker::wake);
         drop(discarded);
         Ok(())
     }

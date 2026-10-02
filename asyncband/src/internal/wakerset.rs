@@ -26,12 +26,13 @@ use std::task::Waker;
 
 use crate::internal::arena::Arena;
 use crate::internal::arena::SlotId;
+use crate::internal::waker_batch::WakerBatch;
 
 /// An exclusive handle to one waker slot in a [`WakerSet`].
 ///
 /// This token deliberately does not implement `Clone` or `Copy`. Its owner must not pass it back
-/// to the set after the registration has been detached by [`WakerSet::drain`] or
-/// [`WakerSet::take_all`].
+/// to the set after the registration has been detached by [`WakerSet::take_all`] or
+/// [`WakerSet::take_all_and_release`].
 #[derive(Debug)]
 pub struct WakerToken(SlotId);
 
@@ -56,22 +57,25 @@ impl WakerSet {
         }
     }
 
-    /// Drains registered wakers while retaining slot capacity for reuse.
+    /// Collects registered wakers into an owned batch, retaining slot capacity for reuse.
     ///
-    /// The caller must invalidate outstanding tokens and collect the wakers under the set's lock,
-    /// then wake or drop them after releasing it.
+    /// Collection moves each waker under the set's lock. The caller must invalidate outstanding
+    /// tokens and wake or drop the batch after releasing the lock.
     #[inline]
-    pub fn drain(&mut self) -> impl Iterator<Item = Waker> + '_ {
-        self.wakers.drain()
+    pub fn take_all(&mut self) -> WakerBatch {
+        if self.wakers.is_empty() {
+            return WakerBatch::new();
+        }
+        self.wakers.take_all()
     }
 
-    /// Takes all registered wakers together with the set's backing allocation.
+    /// Transfers registered wakers and the backing allocation when capacity is no longer needed.
     ///
-    /// The caller must invalidate every outstanding token and consume or drop the iterator after
-    /// releasing the lock that protects this set.
+    /// No wakers are moved individually under the lock. The caller must invalidate outstanding
+    /// tokens and consume or drop the iterator after unlocking, which also frees the allocation.
     #[inline]
-    pub fn take_all(&mut self) -> impl Iterator<Item = Waker> + 'static {
-        self.wakers.take_all()
+    pub fn take_all_and_release(&mut self) -> impl Iterator<Item = Waker> + 'static {
+        mem::replace(&mut self.wakers, Arena::new()).into_values()
     }
 
     /// Registers or updates a waker.
