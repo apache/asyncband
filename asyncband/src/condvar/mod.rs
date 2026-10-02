@@ -161,18 +161,14 @@ impl Condvar {
         {
             let mut waiters = self.waiters.lock();
 
-            while waiters
-                .unlink_first_waiter(|node| {
-                    let WaitState::Waiting(waker) =
-                        mem::replace(&mut node.state, WaitState::NotifiedAll)
-                    else {
-                        unreachable!("only waiting tasks remain linked")
-                    };
-                    wakers.push(waker);
-                    true
-                })
-                .is_some()
-            {}
+            while let Some((_, node)) = waiters.unlink_first_waiter(|_| true) {
+                let WaitState::Waiting(waker) =
+                    mem::replace(&mut node.state, WaitState::NotifiedAll)
+                else {
+                    unreachable!("only waiting tasks remain linked")
+                };
+                wakers.push(waker);
+            }
         }
 
         wake_all(wakers);
