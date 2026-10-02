@@ -55,7 +55,6 @@ use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
 use crate::internal::wake_all;
-use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -189,10 +188,9 @@ impl Barrier {
             if state.arrived == self.n {
                 state.arrived = 0;
                 state.generation += 1;
-                let mut wakers = WakerBatch::new();
-                state.waiters.drain_into(&mut wakers);
+                let wakers = state.waiters.take_all();
                 drop(state);
-                wake_all(&mut wakers);
+                wake_all(wakers);
                 return BarrierWaitResult(true);
             }
 

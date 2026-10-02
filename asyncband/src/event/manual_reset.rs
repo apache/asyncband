@@ -117,8 +117,7 @@ impl ManualResetEvent {
                 }
             }
         }
-
-        wake_all(&mut wakers);
+        wake_all(wakers);
     }
 
     /// Clears the set state.

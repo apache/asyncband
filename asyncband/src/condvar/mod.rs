@@ -175,7 +175,7 @@ impl Condvar {
             {}
         }
 
-        wake_all(&mut wakers);
+        wake_all(wakers);
     }
 
     /// Waits for a notification, atomically releasing and then reacquiring the mutex.

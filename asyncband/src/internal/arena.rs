@@ -166,21 +166,6 @@ impl<T> Arena<T> {
         value
     }
 
-    /// Drains every occupied value in slot order while retaining the allocation for reuse.
-    ///
-    /// After a non-empty drain, every previously issued slot ID becomes invalid, including IDs for
-    /// slots that were already vacant. Consumers that retain IDs across this operation must supply
-    /// their own epoch check.
-    #[inline]
-    pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
-        self.vacant_head = None;
-        self.len = 0;
-        self.slots.drain(..).filter_map(|slot| match slot {
-            Slot::Occupied(value) => Some(value),
-            Slot::Vacant { .. } => None,
-        })
-    }
-
     /// Takes every occupied value and the backing allocation in slot order.
     #[inline]
     pub fn take_all(&mut self) -> impl Iterator<Item = T> + use<T> {
@@ -227,7 +212,7 @@ mod tests {
         let capacity = arena.slots.capacity();
         arena.remove(second);
 
-        assert_eq!(arena.drain().collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(arena.take_all().collect::<Vec<_>>(), vec![1, 3]);
         assert_eq!(arena.len(), 0);
         assert_eq!(arena.slots.capacity(), capacity);
 

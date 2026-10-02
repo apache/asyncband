@@ -173,7 +173,7 @@ impl Semaphore {
             }
         }
         drop(waiters);
-        wake_all(&mut wakers);
+        wake_all(wakers);
     }
 
     fn insert_permits_with_lock<'a>(

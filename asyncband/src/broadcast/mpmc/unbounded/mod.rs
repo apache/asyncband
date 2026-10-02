@@ -71,7 +71,6 @@ use super::error::TryRecvError;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
 use crate::internal::wake_all;
-use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerToken;
 
 #[cfg(test)]
@@ -177,17 +176,14 @@ impl<T> UnboundedSender<T> {
 
         // Publishing and draining the wait set share one critical section, so a receiver can never
         // observe an empty buffer and park after this message became visible.
-        let mut wakers = WakerBatch::new();
-        let unretained = {
-            let mut inner = self.shared.inner.lock();
-            let unretained = inner.log.publish(msg);
-            inner.waiters.drain_into(&mut wakers);
-            unretained
-        };
+        let mut inner = self.shared.inner.lock();
+        let unretained = inner.log.publish(msg);
+        let wakers = inner.waiters.take_all();
+        drop(inner);
 
         // Notify all waiting receivers. An unsent message is dropped here too, once the lock is
         // released.
-        wake_all(&mut wakers);
+        wake_all(wakers);
         drop(unretained);
     }
 

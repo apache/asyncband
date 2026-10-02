@@ -120,7 +120,6 @@ use crate::internal::mutex::Mutex;
 use crate::internal::semaphore::Acquire;
 use crate::internal::semaphore::Semaphore;
 use crate::internal::wake_all;
-use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerToken;
 
 #[cfg(test)]
@@ -212,9 +211,9 @@ impl<T> Shared<T> {
         // backlog, which would otherwise leave nearly `capacity` permits behind.
         //
         // Capping cannot lose a wake-up, by the same argument that lets this read the count at all:
-        // a producer this load observes is one the release covers, and one it misses incremented
-        // after the load, which it does before taking the channel lock to recheck — so its recheck
-        // runs after the reclaim and finds the capacity itself.
+        // a producer this load observes is the one the release covers, and one it misses
+        // incremented after the load, which it does before taking the channel lock to recheck — so
+        // its recheck runs after the reclaim and finds the capacity itself.
         let waiting = self.waiting_senders();
         if freed > 0 && waiting > 0 {
             self.tx_permits.release_if_nonempty(freed.min(waiting));
@@ -429,7 +428,7 @@ impl<T> BoundedSender<T> {
         self.publish(msg, |msg| msg)
     }
 
-    /// The publish step both send paths share.
+    /// The publishing step both send paths share.
     ///
     /// `into_msg` is called only once this decides the message will actually be retained, which is
     /// what lets `try_send` defer its allocation past the capacity check while `try_publish` hands
@@ -439,26 +438,21 @@ impl<T> BoundedSender<T> {
     /// observe an empty buffer and park after this message became visible.
     fn publish<P>(&self, payload: P, into_msg: impl FnOnce(P) -> Arc<T>) -> Result<(), P> {
         let mut discarded = None;
-        let mut wakers = WakerBatch::new();
-        {
-            let mut inner = self.shared.inner.lock();
-
-            if !inner.log.has_receivers() {
-                // Nothing can read this message. The payload leaves the critical section with us
-                // and is dropped below, so `T::drop` never runs under the lock.
-                inner.log.publish_discarded();
-                discarded = Some(payload);
-            } else if inner.log.retained() == self.shared.capacity {
-                // Nothing was published, so there is no wait set to drain.
-                return Err(payload);
-            } else {
-                inner.log.publish_retained(into_msg(payload));
-            }
-
-            inner.waiters.drain_into(&mut wakers);
+        let mut inner = self.shared.inner.lock();
+        if !inner.log.has_receivers() {
+            // Nothing can read this message. The payload leaves the critical section with us
+            // and is dropped below, so `T::drop` never runs under the lock.
+            inner.log.publish_discarded();
+            discarded = Some(payload);
+        } else if inner.log.retained() == self.shared.capacity {
+            // Nothing was published, so there is no wait set to drain.
+            return Err(payload);
+        } else {
+            inner.log.publish_retained(into_msg(payload));
         }
-
-        wake_all(&mut wakers);
+        let wakers = inner.waiters.take_all();
+        drop(inner);
+        wake_all(wakers);
         drop(discarded);
         Ok(())
     }

@@ -26,13 +26,11 @@ use std::task::Waker;
 
 use crate::internal::arena::Arena;
 use crate::internal::arena::SlotId;
-use crate::internal::waker_batch::WakerBatch;
 
 /// An exclusive handle to one waker slot in a [`WakerSet`].
 ///
 /// This token deliberately does not implement `Clone` or `Copy`. Its owner must not pass it back
-/// to the set after the registration has been detached by [`WakerSet::drain_into`] or
-/// [`WakerSet::take_all`].
+/// to the set after the registration has been detached by [`WakerSet::take_all`].
 #[derive(Debug)]
 pub struct WakerToken(SlotId);
 
@@ -55,17 +53,6 @@ impl WakerSet {
         Self {
             wakers: Arena::with_capacity(capacity),
         }
-    }
-
-    /// Drains all registered wakers into `batch` while retaining slot capacity.
-    ///
-    /// The batch is filled in place because its inline storage is too large to move for free:
-    /// returning it by value costs every publish about 6ns even when nothing is registered. The
-    /// caller must invalidate every outstanding token and consume or drop the batch after
-    /// releasing the lock that protects this set.
-    #[inline]
-    pub fn drain_into(&mut self, batch: &mut WakerBatch) {
-        batch.extend(self.wakers.drain());
     }
 
     /// Takes all registered wakers together with the set's backing allocation.
