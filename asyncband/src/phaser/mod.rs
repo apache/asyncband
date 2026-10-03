@@ -503,7 +503,7 @@ impl Drop for PhaserParticipant {
     }
 }
 
-#[must_use = "futures do nothing unless you .await or poll them"]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 struct PhaserWait<'a> {
     phaser: &'a Phaser,
     observed: u64,
