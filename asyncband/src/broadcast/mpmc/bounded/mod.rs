@@ -108,6 +108,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use super::common;
 use super::common::Backlog;
@@ -119,8 +120,6 @@ use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
 use crate::internal::semaphore::Acquire;
 use crate::internal::semaphore::Semaphore;
-use crate::internal::wake_all;
-use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerToken;
 
 #[cfg(test)]
@@ -181,64 +180,39 @@ struct Shared<T> {
     /// and parks again if another producer took the space first. The semaphore starts empty and
     /// only ever grows when a reclaim finds someone waiting, so an idle channel accumulates none.
     tx_permits: Semaphore,
-    /// How many producers are somewhere inside the waiting path of [`BoundedSender::send`].
+    /// Number of producers in the waiting path of [`BoundedSender::send`].
     ///
-    /// An upper bound on the number of parked producers, and the only thing either release path
-    /// consults. It answers both questions a reclaim has — whether to wake anyone, and how many
-    /// permits are worth handing out — without taking the semaphore's lock. Reclaiming is far more
-    /// frequent than blocking — under fan-out every message is reclaimed, while a channel with
-    /// headroom never blocks at all — so paying an atomic load there instead of a lock acquisition
-    /// is what keeps an uncontended receive off the semaphore entirely.
+    /// This upper bound lets receives skip the semaphore lock when no producer is waiting.
     blocked_senders: AtomicUsize,
 }
 
 impl<T> Shared<T> {
-    /// Hands `freed` released slots back to producers parked in `send`.
+    /// Notifies blocked producers after a receive or subscription removal frees capacity.
     ///
-    /// Capacity is `retained()`, which is `buffer.len()`. The buffer grows only in
-    /// `Backlog::publish_retained` and shrinks only in `Backlog::reclaim_vacated`, which is
-    /// reachable from exactly two places: a receive that vacates the last cursor at the backlog
-    /// head, and removing a subscription. Those are the only callers of this method, so no path
-    /// can free capacity without waking a producer. Subscribing cannot: a new cursor starts at the
-    /// tail and never lowers `retained()`.
-    ///
-    /// Callers must invoke this with the channel unlocked, and — on the receive path — before
-    /// touching the payload, since `common::take_msg` runs user code that may panic.
+    /// Call with the channel unlocked, before payload cloning or destruction can panic.
     fn release_reclaimed(&self, freed: usize) {
-        // Release no more permits than there are producers to wake. A permit the semaphore cannot
-        // hand to a waiter is kept as slack, and the next producer to block has to burn it off one
-        // futile publish attempt — a channel lock apiece — at a time before it can park. Freeing a
-        // large prefix at once is not exotic: dropping a lagging subscription reclaims the whole
-        // backlog, which would otherwise leave nearly `capacity` permits behind.
-        //
-        // Capping cannot lose a wake-up, by the same argument that lets this read the count at all:
-        // a producer this load observes is one the release covers, and one it misses incremented
-        // after the load, which it does before taking the channel lock to recheck — so its recheck
-        // runs after the reclaim and finds the capacity itself.
+        // Cap permits at the number of blocked producers. Surplus permits make later sends retry
+        // a full channel instead of parking, especially after dropping a lagging subscription.
         let waiting = self.waiting_senders();
         if freed > 0 && waiting > 0 {
             self.tx_permits.release_if_nonempty(freed.min(waiting));
         }
     }
 
-    /// Wakes every parked producer, however many slots came back.
+    /// Wakes every blocked producer when the last subscription leaves.
     ///
-    /// The last subscription leaving is not a reclaim of some number of slots — it removes the
-    /// limit itself, because a channel with no receivers discards instead of retaining. Releasing
-    /// only as many permits as that final reclaim freed would strand every producer beyond that
-    /// count, so this is the one release that must be unbounded.
+    /// Sends now discard payloads without consuming capacity, so every producer can proceed.
     fn release_all(&self) {
         if self.waiting_senders() > 0 {
             self.tx_permits.notify_all();
         }
     }
 
-    /// How many producers might be waiting, answered without touching the semaphore's lock.
+    /// Returns an upper bound on parked producers without locking the semaphore.
     ///
-    /// This cannot miss a wake-up. A producer increments the count before it ever takes the
-    /// channel lock to recheck capacity, and every caller here loads it after releasing that same
-    /// lock, so the mutex orders the two: either this load observes the producer, or the
-    /// producer's recheck runs after the change and finds the capacity itself.
+    /// Producers increment before rechecking capacity under the channel lock; reclaim paths load
+    /// after releasing it. A producer is either covered by this count or rechecks capacity after
+    /// the reclaim, so skipping or capping notifications cannot strand it.
     fn waiting_senders(&self) -> usize {
         self.blocked_senders.load(Ordering::Acquire)
     }
@@ -429,36 +403,26 @@ impl<T> BoundedSender<T> {
         self.publish(msg, |msg| msg)
     }
 
-    /// The publish step both send paths share.
+    /// Publishes a message for both send paths.
     ///
-    /// `into_msg` is called only once this decides the message will actually be retained, which is
-    /// what lets `try_send` defer its allocation past the capacity check while `try_publish` hands
-    /// over an `Arc` it allocated with the channel unlocked.
-    ///
-    /// Publishing and draining the wait set share one critical section, so a receiver can never
-    /// observe an empty buffer and park after this message became visible.
+    /// Calls `into_msg` only when retaining the payload, so `try_send` can defer its allocation
+    /// until capacity is available while `try_publish` passes through its existing `Arc`.
     fn publish<P>(&self, payload: P, into_msg: impl FnOnce(P) -> Arc<T>) -> Result<(), P> {
         let mut discarded = None;
-        let mut wakers = WakerBatch::new();
-        {
-            let mut inner = self.shared.inner.lock();
-
-            if !inner.log.has_receivers() {
-                // Nothing can read this message. The payload leaves the critical section with us
-                // and is dropped below, so `T::drop` never runs under the lock.
-                inner.log.publish_discarded();
-                discarded = Some(payload);
-            } else if inner.log.retained() == self.shared.capacity {
-                // Nothing was published, so there is no wait set to drain.
-                return Err(payload);
-            } else {
-                inner.log.publish_retained(into_msg(payload));
-            }
-
-            inner.waiters.drain_into(&mut wakers);
+        let mut inner = self.shared.inner.lock();
+        if !inner.log.has_receivers() {
+            // Drop the discarded payload after unlocking: its destructor may reenter the channel.
+            inner.log.publish_discarded();
+            discarded = Some(payload);
+        } else if inner.log.retained() == self.shared.capacity {
+            // Leave waiters registered because no message was published.
+            return Err(payload);
+        } else {
+            inner.log.publish_retained(into_msg(payload));
         }
-
-        wake_all(&mut wakers);
+        let mut wakers = inner.waiters.take_all();
+        drop(inner);
+        wakers.by_ref().for_each(Waker::wake);
         drop(discarded);
         Ok(())
     }

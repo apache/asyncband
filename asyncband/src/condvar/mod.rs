@@ -68,7 +68,6 @@ use std::task::Waker;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
-use crate::internal::wake_all;
 use crate::internal::waker_batch::WakerBatch;
 use crate::mutex;
 use crate::mutex::MutexGuard;
@@ -161,21 +160,17 @@ impl Condvar {
         {
             let mut waiters = self.waiters.lock();
 
-            while waiters
-                .unlink_first_waiter(|node| {
-                    let WaitState::Waiting(waker) =
-                        mem::replace(&mut node.state, WaitState::NotifiedAll)
-                    else {
-                        unreachable!("only waiting tasks remain linked")
-                    };
-                    wakers.push(waker);
-                    true
-                })
-                .is_some()
-            {}
+            while let Some((_, node)) = waiters.unlink_first_waiter(|_| true) {
+                let WaitState::Waiting(waker) =
+                    mem::replace(&mut node.state, WaitState::NotifiedAll)
+                else {
+                    unreachable!("only waiting tasks remain linked")
+                };
+                wakers.push(waker);
+            }
         }
 
-        wake_all(&mut wakers);
+        wakers.by_ref().for_each(Waker::wake);
     }
 
     /// Waits for a notification, atomically releasing and then reacquiring the mutex.

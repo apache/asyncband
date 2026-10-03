@@ -27,7 +27,6 @@ use crate::internal::mutex::Mutex;
 use crate::internal::register_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
-use crate::internal::wake_all;
 use crate::internal::waker_batch::WakerBatch;
 
 /// A reusable signal that releases all waiters and remains set until explicitly reset.
@@ -117,8 +116,7 @@ impl ManualResetEvent {
                 }
             }
         }
-
-        wake_all(&mut wakers);
+        wakers.by_ref().for_each(Waker::wake);
     }
 
     /// Clears the set state.

@@ -50,6 +50,7 @@
 
 use std::fmt;
 use std::future::Future;
+use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -58,7 +59,6 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::wake_all;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -125,17 +125,14 @@ impl<T> Completer<T> {
         let Some(shared) = self.shared.upgrade() else {
             return Err(value);
         };
-        let wakers = {
-            let mut waiters = shared.waiters.lock();
-            let wakers = waiters.take_all();
-            // The single completer publishes only after every waiter token has been invalidated.
-            assert!(shared.result.set(Some(value)).is_ok());
-            wakers
-        };
-        // `complete` consumes the only completer. Disarm its destructor before invoking arbitrary
-        // wake callbacks; the completed state no longer needs abandonment handling.
+        let mut waiters = shared.waiters.lock();
+        // Detach registrations before publishing completion to lock-free observers.
+        let wakers = mem::take(&mut *waiters);
+        assert!(shared.result.set(Some(value)).is_ok());
+        drop(waiters);
+        // Disarm abandonment handling before invoking wake callbacks.
         self.shared = Weak::new();
-        wake_all(wakers);
+        wakers.wake_all();
         Ok(())
     }
 }
@@ -145,13 +142,11 @@ impl<T> Drop for Completer<T> {
         let Some(shared) = self.shared.upgrade() else {
             return;
         };
-        let wakers = {
-            let mut waiters = shared.waiters.lock();
-            let wakers = waiters.take_all();
-            assert!(shared.result.set(None).is_ok());
-            wakers
-        };
-        wake_all(wakers);
+        let mut waiters = shared.waiters.lock();
+        let wakers = mem::take(&mut *waiters);
+        assert!(shared.result.set(None).is_ok());
+        drop(waiters);
+        wakers.wake_all();
     }
 }
 

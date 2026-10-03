@@ -60,6 +60,12 @@ pub struct Arena<T> {
     len: usize,
 }
 
+impl<T> Default for Arena<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug)]
 enum Slot<T> {
     Occupied(T),
@@ -166,32 +172,31 @@ impl<T> Arena<T> {
         value
     }
 
-    /// Drains every occupied value in slot order while retaining the allocation for reuse.
+    /// Collects occupied values in slot order, retaining the allocation for reuse.
     ///
-    /// After a non-empty drain, every previously issued slot ID becomes invalid, including IDs for
-    /// slots that were already vacant. Consumers that retain IDs across this operation must supply
-    /// their own epoch check.
+    /// All previous slot IDs become invalid and may be reused after collection.
     #[inline]
-    pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
+    pub fn take_all<C: FromIterator<T>>(&mut self) -> C {
         self.vacant_head = None;
         self.len = 0;
-        self.slots.drain(..).filter_map(|slot| match slot {
-            Slot::Occupied(value) => Some(value),
-            Slot::Vacant { .. } => None,
-        })
-    }
-
-    /// Takes every occupied value and the backing allocation in slot order.
-    #[inline]
-    pub fn take_all(&mut self) -> impl Iterator<Item = T> + use<T> {
-        self.vacant_head = None;
-        self.len = 0;
-        mem::take(&mut self.slots)
-            .into_iter()
+        self.slots
+            .drain(..)
             .filter_map(|slot| match slot {
                 Slot::Occupied(value) => Some(value),
                 Slot::Vacant { .. } => None,
             })
+            .collect()
+    }
+
+    /// Consumes the arena, yielding occupied values in slot order.
+    ///
+    /// The returned iterator owns the backing allocation and releases it when dropped.
+    #[inline]
+    pub fn into_iter(self) -> impl Iterator<Item = T> {
+        self.slots.into_iter().filter_map(|slot| match slot {
+            Slot::Occupied(value) => Some(value),
+            Slot::Vacant { .. } => None,
+        })
     }
 }
 
@@ -219,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_restarts_slot_id_allocation() {
+    fn take_all_retains_capacity_and_restarts_slot_ids() {
         let mut arena = Arena::with_capacity(3);
         let first = arena.insert(1);
         let second = arena.insert(2);
@@ -227,24 +232,23 @@ mod tests {
         let capacity = arena.slots.capacity();
         arena.remove(second);
 
-        assert_eq!(arena.drain().collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(arena.take_all::<Vec<_>>(), vec![1, 3]);
         assert_eq!(arena.len(), 0);
         assert_eq!(arena.slots.capacity(), capacity);
-
-        let slot_ids = [arena.insert(4), arena.insert(5), arena.insert(6)];
-        assert_eq!(slot_ids, [first, second, third]);
+        assert_eq!(
+            [arena.insert(4), arena.insert(5), arena.insert(6)],
+            [first, second, third]
+        );
     }
 
     #[test]
-    fn take_all_releases_the_backing_allocation() {
+    fn into_iter_skips_vacant_slots() {
         let mut arena = Arena::new();
         arena.insert(1);
         let removed = arena.insert(2);
         arena.insert(3);
         arena.remove(removed);
 
-        let values = arena.take_all();
-        assert_eq!(arena.slots.capacity(), 0);
-        assert_eq!(values.collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(arena.into_iter().collect::<Vec<_>>(), vec![1, 3]);
     }
 }

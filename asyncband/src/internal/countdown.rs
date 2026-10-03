@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::mem;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::wake_all;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -53,14 +53,10 @@ impl CountdownState {
             .map(|_| ())
     }
 
-    /// Drains the waiter set under its lock, then wakes every waiter after releasing the lock.
+    /// Detaches the waiter set under its lock, then wakes every waiter after releasing the lock.
     pub fn wake_all(&self) {
-        let wakers = {
-            let mut waiters = self.waiters.lock();
-            waiters.take_all()
-        };
-
-        wake_all(wakers);
+        let wakers = mem::take(&mut *self.waiters.lock());
+        wakers.wake_all();
     }
 
     /// Polls for zero, registering the current waker if the countdown is still active.
@@ -74,7 +70,7 @@ impl CountdownState {
 
         let mut waiters = self.waiters.lock();
         if self.state() == 0 {
-            // A concurrent zero transition will drain after this lock is released.
+            // A concurrent zero transition detaches the registrations under this same lock.
             *token = None;
             return Poll::Ready(());
         }

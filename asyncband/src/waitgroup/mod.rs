@@ -59,6 +59,7 @@
 use std::fmt;
 use std::future::Future;
 use std::future::IntoFuture;
+use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -67,7 +68,6 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::wake_all;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -102,11 +102,8 @@ impl State {
             return;
         }
 
-        let wakers = {
-            let mut waiters = self.waiters.lock();
-            waiters.take_all()
-        };
-        wake_all(wakers);
+        let wakers = mem::take(&mut *self.waiters.lock());
+        wakers.wake_all();
     }
 
     fn poll_wait(&self, token: &mut Option<WakerToken>, cx: &mut Context<'_>) -> Poll<()> {

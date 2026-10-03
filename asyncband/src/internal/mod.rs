@@ -33,16 +33,6 @@ pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> 
     }
 }
 
-/// Wakes every waker.
-#[inline]
-// A no-feature or blocking-only build has no primitive that fans notifications out.
-#[allow(dead_code)]
-pub(crate) fn wake_all(wakers: impl Iterator<Item = Waker>) {
-    for waker in wakers {
-        waker.wake();
-    }
-}
-
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
@@ -123,8 +113,8 @@ pub(crate) mod waitlist;
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
-    feature = "event",
     feature = "completion",
+    feature = "event",
     feature = "latch",
     feature = "mutex",
     feature = "once",
@@ -134,9 +124,6 @@ pub(crate) mod waitlist;
     feature = "waitgroup",
     feature = "watch",
 ))]
-// Only the semaphore refills a batch and asks whether it will spill, so other feature subsets
-// leave that method unused.
-#[allow(dead_code)]
 pub(crate) mod waker_batch;
 
 #[cfg(any(
@@ -149,7 +136,6 @@ pub(crate) mod waker_batch;
     feature = "waitgroup",
     feature = "watch",
 ))]
-// Reusable waker sets and terminal primitives use different lifecycle policies, so some feature
-// subsets leave one constructor or detach operation unused.
+// Some feature subsets use only one constructor or one of the two notification paths.
 #[allow(dead_code)]
 pub(crate) mod wakerset;

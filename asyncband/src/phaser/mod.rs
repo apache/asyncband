@@ -124,13 +124,14 @@
 use std::fmt;
 use std::future::Future;
 use std::iter::FusedIterator;
+use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::wake_all;
 use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
@@ -172,14 +173,14 @@ struct State {
 }
 
 impl State {
-    /// Completes the phase once every participant has arrived, moving its waiters into `wakers`.
-    fn advance_if_ready(&mut self, wakers: &mut WakerBatch) {
+    /// Advances a completed phase and returns its waiters for waking outside the lock.
+    fn advance_if_ready(&mut self) -> WakerBatch {
         if self.closed || self.unarrived != 0 {
-            return;
+            return WakerBatch::new();
         }
         self.phase = self.phase.wrapping_add(1);
         self.unarrived = self.registered;
-        self.waiters.drain_into(wakers);
+        self.waiters.take_all()
     }
 
     fn completion(&self, observed: u64) -> Poll<Result<u64, Closed>> {
@@ -247,9 +248,9 @@ impl Phaser {
                 return;
             }
             state.closed = true;
-            state.waiters.take_all()
+            mem::take(&mut state.waiters)
         };
-        wake_all(wakers);
+        wakers.wake_all();
     }
 
     /// Returns an instantaneous count of registered participants, including those already arrived.
@@ -385,16 +386,14 @@ impl Drop for PhaserParticipants {
         if self.remaining == 0 {
             return;
         }
-        let mut wakers = WakerBatch::new();
-        {
-            let mut state = self.phaser.state.lock();
-            // Unyielded participants have never arrived and prevent their phase from advancing.
-            state.registered -= self.remaining;
-            state.unarrived -= self.remaining;
-            self.remaining = 0;
-            state.advance_if_ready(&mut wakers);
-        }
-        wake_all(&mut wakers);
+        let mut state = self.phaser.state.lock();
+        // Unyielded participants have never arrived and prevent their phase from advancing.
+        state.registered -= self.remaining;
+        state.unarrived -= self.remaining;
+        self.remaining = 0;
+        let mut wakers = state.advance_if_ready();
+        drop(state);
+        wakers.by_ref().for_each(Waker::wake);
     }
 }
 
@@ -433,21 +432,18 @@ impl PhaserParticipant {
     /// Repeated calls within one phase count only once. After advancement, an explicit new call
     /// arrives in the new phase and replaces any previous pending observation.
     pub fn arrive(&mut self) -> Result<u64, Closed> {
-        let mut wakers = WakerBatch::new();
-        let phase = {
-            let mut state = self.phaser.state.lock();
-            if state.closed {
-                return Err(Closed(()));
-            }
-            let phase = state.phase;
-            if self.pending != Some(phase) {
-                state.unarrived -= 1;
-            }
-            self.pending = Some(phase);
-            state.advance_if_ready(&mut wakers);
-            phase
-        };
-        wake_all(&mut wakers);
+        let mut state = self.phaser.state.lock();
+        if state.closed {
+            return Err(Closed(()));
+        }
+        let phase = state.phase;
+        if self.pending != Some(phase) {
+            state.unarrived -= 1;
+        }
+        self.pending = Some(phase);
+        let mut wakers = state.advance_if_ready();
+        drop(state);
+        wakers.by_ref().for_each(Waker::wake);
         Ok(phase)
     }
 
@@ -482,23 +478,20 @@ impl PhaserParticipant {
     }
 
     fn do_deregister(&mut self) -> Result<u64, Closed> {
-        let mut wakers = WakerBatch::new();
-        let result = {
-            let mut state = self.phaser.state.lock();
-            self.registered = false;
-            state.registered -= 1;
-            if self.pending != Some(state.phase) {
-                state.unarrived -= 1;
-            }
-            let result = if state.closed {
-                Err(Closed(()))
-            } else {
-                Ok(state.phase)
-            };
-            state.advance_if_ready(&mut wakers);
-            result
+        let mut state = self.phaser.state.lock();
+        self.registered = false;
+        state.registered -= 1;
+        if self.pending != Some(state.phase) {
+            state.unarrived -= 1;
+        }
+        let result = if state.closed {
+            Err(Closed(()))
+        } else {
+            Ok(state.phase)
         };
-        wake_all(&mut wakers);
+        let mut wakers = state.advance_if_ready();
+        drop(state);
+        wakers.by_ref().for_each(Waker::wake);
         result
     }
 }

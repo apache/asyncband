@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Cancellable storage for task wakers whose lifecycle is owned by the caller.
+//! Cancellable task wakers protected by the owning primitive's state lock.
 //!
-//! A `WakerSet` is protected by the state lock of its owning primitive. The owner must clear a
-//! token instead of unregistering it after an operation that detached the set. This lets each
-//! primitive use its existing terminal state or generation to recognize stale registrations.
+//! The primitive uses its generation or terminal state to recognize detached registrations;
+//! their tokens must be cleared rather than passed back to the set. Returned wakers must be woken
+//! or dropped after releasing the lock.
 
 use std::mem;
 use std::task::Waker;
@@ -30,14 +30,12 @@ use crate::internal::waker_batch::WakerBatch;
 
 /// An exclusive handle to one waker slot in a [`WakerSet`].
 ///
-/// This token deliberately does not implement `Clone` or `Copy`. Its owner must not pass it back
-/// to the set after the registration has been detached by [`WakerSet::drain_into`] or
-/// [`WakerSet::take_all`].
+/// Removing the registration, calling [`WakerSet::take_all`], or replacing the set invalidates it.
 #[derive(Debug)]
 pub struct WakerToken(SlotId);
 
 /// Cancellable waker storage without an implicit lifecycle or generation.
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct WakerSet {
     wakers: Arena<Waker>,
 }
@@ -57,38 +55,36 @@ impl WakerSet {
         }
     }
 
-    /// Drains all registered wakers into `batch` while retaining slot capacity.
+    /// Collects registered wakers into an owned batch, retaining slot capacity for reuse.
     ///
-    /// The batch is filled in place because its inline storage is too large to move for free:
-    /// returning it by value costs every publish about 6ns even when nothing is registered. The
-    /// caller must invalidate every outstanding token and consume or drop the batch after
-    /// releasing the lock that protects this set.
+    /// Moves each waker into the batch; up to [`WakerBatch::STACK_SIZE`] fit without allocating.
     #[inline]
-    pub fn drain_into(&mut self, batch: &mut WakerBatch) {
-        batch.extend(self.wakers.drain());
+    pub fn take_all(&mut self) -> WakerBatch {
+        if self.wakers.is_empty() {
+            return WakerBatch::new();
+        }
+        self.wakers.take_all()
     }
 
-    /// Takes all registered wakers together with the set's backing allocation.
+    /// Consumes the set, waking every registered waker and releasing its allocation.
     ///
-    /// The caller must invalidate every outstanding token and consume or drop the iterator after
-    /// releasing the lock that protects this set.
+    /// Call after releasing the owning primitive's state lock.
     #[inline]
-    pub fn take_all(&mut self) -> impl Iterator<Item = Waker> + 'static {
-        self.wakers.take_all()
+    pub fn wake_all(self) {
+        self.wakers.into_iter().for_each(Waker::wake);
     }
 
     /// Registers or updates a waker.
     ///
-    /// If an existing waker is replaced, it is returned so the caller can drop it after releasing
-    /// the lock that protects this set.
+    /// Returns the previous waker only if it was replaced.
     #[inline]
     #[must_use = "drop the returned waker after releasing the waker set's state lock"]
     pub fn register(&mut self, token: &mut Option<WakerToken>, waker: &Waker) -> Option<Waker> {
-        if let Some(current) = token.as_ref().map(|token| {
-            self.wakers
+        if let Some(token) = token {
+            let current = self
+                .wakers
                 .get_mut(token.0)
-                .expect("waker token must refer to an occupied slot")
-        }) {
+                .expect("waker token must refer to an occupied slot");
             if current.will_wake(waker) {
                 return None;
             }
@@ -99,10 +95,7 @@ impl WakerSet {
         None
     }
 
-    /// Removes the waker identified by `token`.
-    ///
-    /// The owner must clear stale tokens without calling this method after detaching the set. The
-    /// returned waker must be dropped after releasing the lock that protects this set.
+    /// Removes and returns the waker identified by `token`, clearing the token.
     #[inline]
     #[must_use = "drop the returned waker after releasing the waker set's state lock"]
     pub fn unregister(&mut self, token: &mut Option<WakerToken>) -> Option<Waker> {

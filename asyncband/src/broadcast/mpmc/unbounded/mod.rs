@@ -62,6 +62,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use super::common;
 use super::common::Backlog;
@@ -70,8 +71,6 @@ use super::error::RecvError;
 use super::error::TryRecvError;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
-use crate::internal::wake_all;
-use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerToken;
 
 #[cfg(test)]
@@ -175,19 +174,13 @@ impl<T> UnboundedSender<T> {
     pub fn send(&self, msg: T) {
         let msg = Arc::new(msg);
 
-        // Publishing and draining the wait set share one critical section, so a receiver can never
-        // observe an empty buffer and park after this message became visible.
-        let mut wakers = WakerBatch::new();
-        let unretained = {
-            let mut inner = self.shared.inner.lock();
-            let unretained = inner.log.publish(msg);
-            inner.waiters.drain_into(&mut wakers);
-            unretained
-        };
+        let mut inner = self.shared.inner.lock();
+        let unretained = inner.log.publish(msg);
+        let mut wakers = inner.waiters.take_all();
+        drop(inner);
 
-        // Notify all waiting receivers. An unsent message is dropped here too, once the lock is
-        // released.
-        wake_all(&mut wakers);
+        // Wake callbacks and payload destruction may reenter the channel.
+        wakers.by_ref().for_each(Waker::wake);
         drop(unretained);
     }
 
