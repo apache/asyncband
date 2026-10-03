@@ -29,7 +29,7 @@ use super::queue::Shared;
 /// The queue stores at most `capacity` values. Sending waits for a receiver to free capacity when
 /// the queue is full.
 ///
-/// Operations briefly acquire internal mutexes. No lock is held across an await point, while
+/// Operations briefly acquire an internal mutex. No lock is held across an await point, while
 /// waking tasks, or while dropping messages. The `try_*` methods do not wait for capacity or
 /// messages, but may wait to acquire a mutex.
 ///
