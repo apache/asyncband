@@ -37,8 +37,8 @@ pub use self::sender::Permit;
 /// Creates a bounded mpsc channel with room for `buffer` queued messages.
 ///
 /// [`BoundedSender::send`] waits for capacity when the buffer is full. Receiving a message releases
-/// one slot for a waiting sender. Capacity is granted in the order that pending sends and
-/// reservations enter the wait queue; new senders cannot take an already granted slot.
+/// one slot for a waiting sender. Capacity is granted in the order that pending `send` and
+/// `reserve` operations enter the wait queue; new senders cannot take an already granted slot.
 ///
 /// Message storage is preallocated for `buffer` values. Queued messages and outstanding
 /// reservations together occupy at most `buffer` capacity units.

@@ -182,7 +182,7 @@ fn bounded_try_recv_does_not_report_empty_after_completed_sends() {
 
         let mut received = 0;
         while received < PRODUCERS * MESSAGES_PER_PRODUCER {
-            // Once more sends have completed than messages received, Empty cannot be correct.
+            // Once more messages have been sent than received, `Empty` cannot be correct.
             let has_completed_send = completed.load(Ordering::Acquire) > received;
             match rx.try_recv() {
                 Ok((producer, sequence)) => {

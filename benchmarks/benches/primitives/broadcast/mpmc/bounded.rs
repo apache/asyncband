@@ -64,9 +64,9 @@ fn try_send_and_drain_fanout(bencher: Bencher, receiver_count: usize) {
 fn full_channel_sender_handoff_cycle(bencher: Bencher, sender_count: usize) {
     let mut context = bench_context();
 
-    // Register every producer on a full channel, complete one send after reclaiming a slot,
-    // cancel the remaining sends, and restore the original full backlog. Registration and
-    // cancellation are timed as part of this cycle.
+    // Register every producer on a full channel, complete one `send` future after reclaiming a
+    // slot, cancel the remaining futures, and restore the original full backlog. Registration
+    // and cancellation are timed as part of this cycle.
     bencher
         .with_inputs(|| {
             let (tx, rx) = mpmc::bounded(1);
@@ -81,7 +81,7 @@ fn full_channel_sender_handoff_cycle(bencher: Bencher, sender_count: usize) {
                 poll_pending(send.as_mut(), &mut context);
             }
 
-            // Poll queued sends until one republishes into the freed slot.
+            // Poll pending `send` futures until one publishes into the freed slot.
             black_box(rx.try_recv().unwrap());
             for send in &mut sends {
                 if send.as_mut().poll(&mut context).is_ready() {

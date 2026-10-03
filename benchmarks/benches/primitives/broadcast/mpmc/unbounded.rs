@@ -56,7 +56,7 @@ const RECLAIM_FANOUTS: &[Fanout] = &[
     Fanout { peak: 256, live: 1 },
 ];
 
-// With the payload shared, each receive clones it and the second one reclaims the slot.
+// Two receivers read the shared payload; the second reclaims the slot.
 #[divan::bench]
 fn send_and_try_recv_shared(bencher: Bencher) {
     let (sender, mut first) = mpmc::unbounded();
@@ -68,8 +68,8 @@ fn send_and_try_recv_shared(bencher: Bencher) {
     });
 }
 
-// The `usize` benchmarks above hide what a receive costs for a payload that owns memory: a clone
-// there is an allocation, not a register move.
+// The `usize` benchmarks above hide the cost of receiving a payload that owns memory: cloning it
+// requires an allocation rather than a register move.
 fn payload() -> String {
     "x".repeat(64)
 }

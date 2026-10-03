@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Storage, cursors, and the receive step shared by the bounded and unbounded MPMC broadcast
+//! Storage, cursors, and receiving logic shared by the bounded and unbounded MPMC broadcast
 //! channels.
 //!
 //! Both channels retain the same committed backlog and reclaim it the same way; they differ only
@@ -43,7 +43,7 @@ use crate::internal::wakerset::WakerToken;
 /// Retained capacity below which an elastic backlog is never shrunk back.
 pub const MIN_RETAINED_CAPACITY: usize = 64;
 
-/// A received message together with the retained prefix that the receive released.
+/// A received message together with any buffer prefix reclaimed while advancing the cursor.
 ///
 /// The two travel together because the caller has to act on both with the channel unlocked, and a
 /// bounded channel has to hand the released capacity back before it touches the payload.
@@ -52,7 +52,7 @@ pub type Received<T> = (Arc<T>, Reclaimed<T>);
 /// Messages removed from the shared buffer and waiting to be dropped after it is unlocked.
 ///
 /// Keeping the first message out of the `Vec` avoids a heap allocation on the common path where
-/// one receive reclaims exactly one message.
+/// advancing a receiver's cursor reclaims exactly one message.
 pub struct Reclaimed<T> {
     first: Option<Arc<T>>,
     rest: Vec<Arc<T>>,
@@ -114,7 +114,7 @@ struct Slot<T> {
 pub struct Backlog<T> {
     /// Messages whose versions are in the range `[head, tail)`, each with its cursor count.
     ///
-    /// Each message is held behind an `Arc` so the receive path can move the payload out of the
+    /// Each message is held behind an `Arc` so a receiver can move the payload out of the
     /// critical section. Cloning the `Arc` under the lock keeps `T::clone` — and, for reclaimed
     /// messages, `T::drop` — outside it, which matters because both are arbitrary user code that
     /// may call back into this channel.
@@ -300,7 +300,7 @@ impl<T> Backlog<T> {
         } else {
             Reclaimed::empty()
         };
-        // A reclaim triggered by this receive always begins with this receiver's own message: the
+        // Reclaiming after advancing the cursor always begins with this receiver's own message: the
         // reclaim path runs only for a cursor leaving `head`, so the first slot drained is `msg`.
         // `take_msg` relies on this to recognize that it owns the payload.
         debug_assert!(
@@ -319,12 +319,12 @@ impl<T> Backlog<T> {
     /// subscription for the slowest cursor, so advancing the head costs the messages released
     /// instead of the receivers subscribed.
     ///
-    /// A `receive` releases exactly one message: its cursor is counted at the next version before
-    /// it leaves `head`, so the zero-count prefix ends there. Only removing a lagging subscription
-    /// can release more.
+    /// A call to `receive` releases exactly one message: its cursor is counted at the next version
+    /// before it leaves `head`, so the zero-count prefix ends there. Only removing a lagging
+    /// subscription can release more.
     ///
-    /// `buffer` shrinks here and grows only in [`Backlog::publish`], so this is the one place
-    /// `retained()` can fall. A bounded channel therefore accounts for released capacity at
+    /// `buffer` shrinks here and grows only in [`Backlog::publish_retained`], so this is the one
+    /// place `retained()` can fall. A bounded channel therefore accounts for released capacity at
     /// exactly the two call sites that reach this: [`Backlog::receive`] and
     /// [`Backlog::remove_receiver`].
     fn reclaim_vacated(&mut self) -> Reclaimed<T> {
@@ -333,9 +333,9 @@ impl<T> Backlog<T> {
         // Move reclaimed messages out so their Drop impls run after the channel is unlocked. Keep
         // the first one separate so the usual one-message reclaim does not allocate, and skip
         // building a `Drain` that would yield nothing: even an empty one costs a few nanoseconds
-        // on every receive. A bulk reclaim counts the zero-count prefix up front so it moves out
-        // in one drain instead of growing a vector geometrically, which measured 15% slower for a
-        // 32-message backlog.
+        // whenever a message is received. A bulk reclaim counts the zero-count prefix up front so
+        // it moves out in one drain instead of growing a vector geometrically, which
+        // measured 15% slower for a 32-message backlog.
         let first = self.buffer.pop_front().map(|slot| slot.msg);
         let extra = self
             .buffer
@@ -406,7 +406,7 @@ impl<T> Backlog<T> {
 /// Buffer, receiver cursors, and parked receivers, all under one lock.
 ///
 /// Checking the backlog and registering a waker share this lock with publishing and detaching
-/// registrations, so a send cannot slip between an empty check and registration.
+/// registrations, so a message cannot be published between an empty check and registration.
 pub struct Inner<T> {
     pub log: Backlog<T>,
     pub waiters: WakerSet,
@@ -433,7 +433,7 @@ pub fn disconnect<T>(inner: &Mutex<Inner<T>>) {
     wakers.wake_all();
 }
 
-/// Removes the waker registration for a cancelled `receive`, dropping the waker unlocked.
+/// Removes a cancelled `recv` future's waker registration, dropping the waker after unlocking.
 pub fn unregister<T>(
     inner: &Mutex<Inner<T>>,
     senders: &AtomicUsize,
@@ -452,7 +452,7 @@ pub fn unregister<T>(
     drop(waker);
 }
 
-/// Receives without waiting, yielding the message and the prefix the receive released.
+/// Receives without waiting, returning the message and any buffer prefix reclaimed along with it.
 ///
 /// The caller owns what happens next: a bounded channel hands the released count back to blocked
 /// producers before it touches the payload.
@@ -472,7 +472,7 @@ pub fn try_receive<T>(
     }
 }
 
-/// The one poll step behind `recv` on both channels.
+/// Polls the shared receiving logic for both channels' `recv` futures.
 ///
 /// Publication and disconnection detach all registrations, so their ready paths clear the token
 /// without unregistering it.
@@ -505,13 +505,14 @@ pub fn poll_receive<T>(
 
 /// Drops the reclaimed backlog, then yields the received message, both with the channel unlocked.
 ///
-/// A non-empty backlog means this receive drained `msg` from the buffer, so once the backlog is
-/// dropped this receive holds the only reference and the payload can be moved out instead of
-/// cloned. A channel with a single receiver therefore never clones a payload.
+/// A non-empty backlog means receiving this message removed `msg` from the buffer. Once the
+/// reclaimed backlog is dropped, the caller may hold the only remaining reference and can then
+/// move the payload out instead of cloning it. A channel with a single receiver never clones a
+/// payload.
 ///
 /// Ownership is decided from that bookkeeping rather than by probing the reference count. An
-/// [`Arc::try_unwrap`] on every receive would fail under fan-out, and its failed compare-exchange
-/// writes to a cache line that every receiver draining the message shares.
+/// [`Arc::try_unwrap`] call for every received message would fail under fan-out, and its failed
+/// compare-exchange writes to a cache line that every receiver draining the message shares.
 ///
 /// This runs `T::clone` and `T::drop`, either of which may panic, so a bounded channel must
 /// already have released the reclaimed capacity before calling it.
@@ -534,8 +535,8 @@ mod tests {
 
     use super::Backlog;
 
-    /// Drives every cursor-count mutation point — subscribe, publish, receive, and drop — and
-    /// checks the accounting after each step.
+    /// Drives every cursor-count mutation point — subscribing, publishing, receiving, and dropping
+    /// — and checks the accounting after each step.
     #[test]
     fn cursor_accounting_holds_across_subscribe_receive_and_drop() {
         let mut log = Backlog::<u64>::elastic();
@@ -575,8 +576,8 @@ mod tests {
         assert_eq!(log.remove_receiver(b).len(), 3);
         log.assert_cursor_accounting();
 
-        // A `receive` that catches up to the tail releases exactly one message and moves the cursor
-        // back to `at_tail`.
+        // A call to `receive` that catches up to the tail releases exactly one message and moves
+        // the cursor back to `at_tail`.
         assert!(log.publish(Arc::new(4)).is_none());
         let (msg, reclaimed) = log.receive(a).unwrap();
         assert_eq!(*msg, 4);

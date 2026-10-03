@@ -80,10 +80,11 @@ impl<T> BoundedSender<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `send` loses its place waiting for capacity and drops `value`; a call
-    /// that has returned `Pending` has not sent the message. Use [`try_send`](Self::try_send) when
-    /// the caller must retain ownership if capacity is unavailable, or [`reserve`](Self::reserve)
-    /// to wait for capacity before constructing the message.
+    /// Dropping a pending `send` future loses its place waiting for capacity and drops `value`;
+    /// a future that has returned `Pending` has not sent the message. Use
+    /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is
+    /// unavailable, or [`reserve`](Self::reserve) to wait for capacity before constructing the
+    /// message.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
         let value = match self.try_send(value) {
             Ok(()) => return Ok(()),
@@ -108,8 +109,8 @@ impl<T> BoundedSender<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending reservation loses its place in the wait queue. If capacity has already
-    /// been granted, it is released to the next waiter or made available to a new sender.
+    /// Dropping a pending `reserve` future loses its place in the wait queue. If capacity has
+    /// already been granted, it is released to the next waiter or made available to a new sender.
     ///
     /// # Examples
     ///

@@ -52,13 +52,13 @@ impl<T> State<T> {
             .is_none_or(|capacity| self.values.len() < capacity)
     }
 
-    /// Queues a value and selects the receiver to wake.
+    /// Queues a value and selects a waiting receiver's waker.
     fn push(&mut self, value: T) -> Option<Waker> {
         self.values.push_back(value);
         self.recv_waiters.notify_one()
     }
 
-    /// Takes the next value and selects the sender to wake.
+    /// Takes the next value and selects a waiting sender's waker.
     fn pop(&mut self) -> Result<(T, Option<Waker>), TryRecvError> {
         if let Some(value) = self.values.pop_front() {
             // Unbounded queues never block senders, so their sender queue is always empty.
@@ -71,10 +71,11 @@ impl<T> State<T> {
     }
 }
 
-/// A pending receive or bounded send.
+/// Notification state for an operation waiting to send or receive a value.
 ///
-/// Notification makes a waiter runnable; it does not reserve a value or slot. The detached node
-/// remains owned by its future until it retries or is dropped.
+/// Notification wakes the waiting task; it does not reserve a value or queue slot.
+/// The future retains its waiter ID so it can reclaim the detached node when polled again or
+/// dropped. Disconnection clears the waiter storage instead.
 enum Waiter {
     Waiting(Waker),
     Notified,
@@ -95,9 +96,9 @@ impl WaitList<Waiter> {
         self.remove_unlinked_waiter(id)
     }
 
-    /// Queues a blocked operation or refreshes the waker of a queued one.
+    /// Registers a pending operation's waker or refreshes an existing registration.
     ///
-    /// A notified operation that still found no value or slot queues again at the back.
+    /// If the future finds no value or slot after notification, its waiter rejoins the queue.
     #[must_use = "drop the replaced waker after releasing the queue lock"]
     fn register(&mut self, id: &mut Option<WaiterId>, current: &Waker) -> Option<Waker> {
         if let Some(queued) = *id {
@@ -231,8 +232,6 @@ impl<T> Shared<T> {
 struct Send<'a, T> {
     shared: &'a Shared<T>,
     waiter: Option<WaiterId>,
-    // `Drop` passes an unconsumed notification on before this value is destroyed, because its
-    // destructor may depend on another blocked sender making progress.
     value: Option<T>,
 }
 
@@ -276,23 +275,13 @@ impl<T> Drop for Send<'_, T> {
         let Some(id) = self.waiter.take() else {
             return;
         };
-        let (retired, waker) = {
+        let retired = {
             let mut state = self.shared.state.lock();
             if state.receivers == 0 {
                 return;
             }
-            let retired = state.send_waiters.remove_waiter(id);
-            // Hand an unconsumed notification to the next sender while the slot is still free.
-            let waker = if matches!(retired, Waiter::Notified) && state.has_capacity() {
-                state.send_waiters.notify_one()
-            } else {
-                None
-            };
-            (retired, waker)
+            state.send_waiters.remove_waiter(id)
         };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
         drop(retired);
     }
 }

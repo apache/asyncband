@@ -78,9 +78,7 @@ use crate::internal::semaphore;
 ///
 /// See the [module level documentation](self) for more.
 pub struct Mutex<T: ?Sized> {
-    /// Semaphore used to control access to protected data, ensuring mutual exclusion
     s: semaphore::Semaphore,
-    /// Container storing the protected data, allowing interior mutability
     c: UnsafeCell<T>,
 }
 
@@ -516,6 +514,8 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
 
         let guard = ManuallyDrop::new(orig);
 
+        // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
+        // so the `Arc` can be moved out to transfer lock ownership to the new guard.
         let lock = unsafe { std::ptr::read(&guard.lock) };
 
         OwnedMappedMutexGuard {
@@ -561,7 +561,8 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
                 let d = NonNull::from(d);
                 let guard = ManuallyDrop::new(orig);
 
-                // SAFETY: We safely extract the Arc from the ManuallyDrop guard
+                // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
+                // so the `Arc` can be moved out to transfer lock ownership to the new guard.
                 let lock = unsafe { std::ptr::read(&guard.lock) };
 
                 Ok(OwnedMappedMutexGuard {
@@ -618,9 +619,7 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
 /// ```
 #[must_use = "dropping the guard releases the mutex immediately"]
 pub struct MappedMutexGuard<'a, T: ?Sized> {
-    /// Non-null pointer to the mapped data
     d: NonNull<T>,
-    /// Reference to the original mutex's semaphore, used for releasing the lock
     s: &'a semaphore::Semaphore,
     // Mutable access requires invariance over T.
     variance: PhantomData<&'a mut T>,
@@ -722,7 +721,6 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
         F: FnOnce(&mut T) -> &mut U,
         U: ?Sized,
     {
-        // Use DerefMut to safely get mutable reference, avoiding explicit unsafe block
         let d = NonNull::from(f(&mut *orig));
         let orig = ManuallyDrop::new(orig);
         MappedMutexGuard {
@@ -775,7 +773,6 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
         F: FnOnce(&mut T) -> Option<&mut U>,
         U: ?Sized,
     {
-        // Use DerefMut to safely get mutable reference, avoiding explicit unsafe block
         match f(&mut *orig) {
             Some(d) => {
                 let d = NonNull::from(d);
@@ -820,11 +817,7 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
 /// ```
 #[must_use = "dropping the guard releases the mutex immediately"]
 pub struct OwnedMappedMutexGuard<T: ?Sized, U: ?Sized> {
-    // This Arc acts as an ownership certificate, ensuring the Mutex remains valid
-    // and the lock is not released
     lock: Arc<Mutex<T>>,
-    // This NonNull pointer precisely points to the subfield U, telling us which
-    // memory location we can operate on, with compile-time guarantee of non-null
     d: NonNull<U>,
     // Mutable access requires invariance over U.
     variance: PhantomData<*mut U>,
@@ -844,7 +837,6 @@ unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Send + Sync> Sync for OwnedMapp
 
 impl<T: ?Sized, U: ?Sized> Drop for OwnedMappedMutexGuard<T, U> {
     fn drop(&mut self) {
-        // Release the lock by calling release on the semaphore
         self.lock.s.release(1);
     }
 }
@@ -923,11 +915,11 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
         F: FnOnce(&mut U) -> &mut V,
         V: ?Sized,
     {
-        // Use DerefMut to maintain consistency with other map implementations
         let d = NonNull::from(f(&mut *orig));
         let orig = ManuallyDrop::new(orig);
 
-        // SAFETY: We safely extract the Arc from the ManuallyDrop guard
+        // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
+        // so the `Arc` can be moved out to transfer lock ownership to the new guard.
         let lock = unsafe { std::ptr::read(&orig.lock) };
 
         OwnedMappedMutexGuard {
@@ -990,13 +982,13 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
         F: FnOnce(&mut U) -> Option<&mut V>,
         V: ?Sized,
     {
-        // Use DerefMut to maintain consistency with other filter_map implementations
         match f(&mut *orig) {
             Some(d) => {
                 let d = NonNull::from(d);
                 let orig = ManuallyDrop::new(orig);
 
-                // SAFETY: We safely extract the Arc from the ManuallyDrop guard
+                // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
+                // so the `Arc` can be moved out to transfer lock ownership to the new guard.
                 let lock = unsafe { std::ptr::read(&orig.lock) };
 
                 Ok(OwnedMappedMutexGuard {

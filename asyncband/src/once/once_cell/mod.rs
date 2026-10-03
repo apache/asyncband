@@ -31,7 +31,7 @@ use crate::internal::value_cell::ValueCell;
 use crate::semaphore::Semaphore;
 use crate::semaphore::SemaphorePermit;
 
-/// A thread-safe cell whose value is asynchronously initialized at most once.
+/// A thread-safe cell that stores one value from an initializer supplied at access time.
 ///
 /// Callers provide an initializer when accessing an empty cell. An initializer that returns an
 /// error, panics, or is cancelled leaves the cell empty so a later caller can retry. Use
@@ -297,7 +297,7 @@ impl<T> OnceCell<T> {
 
     /// Initializes the contents of the cell to `value`.
     ///
-    /// May wait if another thread is currently attempting to initialize the cell. The cell is
+    /// May wait if another task is currently attempting to initialize the cell. The cell is
     /// guaranteed to contain a value when `set` returns, though not necessarily the one provided.
     ///
     /// Returns `Ok(())` if the cell was uninitialized and `Err(value)` if the cell was already
@@ -380,8 +380,7 @@ impl<T> OnceCell<T> {
         self.value.take()
     }
 
-    fn set_value(&self, value: T, permit: SemaphorePermit<'_>) -> &T {
-        let _permit = permit;
+    fn set_value(&self, value: T, _permit: SemaphorePermit<'_>) -> &T {
         // SAFETY: Holding the only semaphore permit serializes initialization.
         unsafe { self.value.set(value) }
     }

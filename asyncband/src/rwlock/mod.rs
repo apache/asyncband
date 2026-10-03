@@ -76,9 +76,7 @@ pub struct RwLock<T: ?Sized> {
     ///
     /// This is ensured to be non-zero.
     max_readers: usize,
-    /// Semaphore to coordinate read and write access to T
     s: Semaphore,
-    /// The inner data.
     c: UnsafeCell<T>,
 }
 
@@ -119,7 +117,7 @@ impl<T> RwLock<T> {
     /// let rwlock = RwLock::new(5);
     /// ```
     pub const fn new(t: T) -> RwLock<T> {
-        // large enough while not touch the edge
+        // Effectively unlimited, while keeping permit arithmetic far from usize::MAX.
         RwLock::with_max_readers(t, NonZeroUsize::new(usize::MAX >> 1).unwrap())
     }
 

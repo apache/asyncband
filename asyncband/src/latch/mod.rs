@@ -202,17 +202,7 @@ impl Latch {
     /// # }
     /// ```
     pub async fn wait_owned(self: Arc<Self>) {
-        let fut = OwnedLatchWait {
-            token: None,
-            latch: self,
-        };
-        fut.await
-    }
-}
-
-impl Latch {
-    fn intern_poll(&self, token: &mut Option<WakerToken>, cx: &mut Context<'_>) -> Poll<()> {
-        self.state.poll_wait(token, cx)
+        self.wait().await
     }
 }
 
@@ -227,32 +217,11 @@ impl Future for LatchWait<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self { token, latch } = self.get_mut();
-        latch.intern_poll(token, cx)
+        latch.state.poll_wait(token, cx)
     }
 }
 
 impl Drop for LatchWait<'_> {
-    fn drop(&mut self) {
-        self.latch.state.unregister(&mut self.token);
-    }
-}
-
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-struct OwnedLatchWait {
-    token: Option<WakerToken>,
-    latch: Arc<Latch>,
-}
-
-impl Future for OwnedLatchWait {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self { token, latch } = self.get_mut();
-        latch.intern_poll(token, cx)
-    }
-}
-
-impl Drop for OwnedLatchWait {
     fn drop(&mut self) {
         self.latch.state.unregister(&mut self.token);
     }

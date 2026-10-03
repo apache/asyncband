@@ -28,8 +28,8 @@ use super::queue::Shared;
 /// Creates a bounded multi-producer, multi-consumer queue.
 ///
 /// Queued values, held permits, and capacity granted to waiting senders occupy at most `capacity`
-/// slots. Pending sends and reservations receive capacity in wait-queue order. Sending waits for
-/// a receiver to free capacity when none is available.
+/// slots. Pending `send` and `reserve` operations receive capacity in wait-queue order. Sending
+/// waits for a receiver to free capacity when none is available.
 ///
 /// The `try_*` methods do not wait for capacity or messages, but may briefly block on an internal
 /// mutex.
@@ -84,9 +84,9 @@ impl<T> BoundedSender<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `send` releases its waiting resources before dropping `value`, without
-    /// sending it or retaining capacity. Use [`reserve`](Self::reserve) to wait for capacity before
-    /// constructing a value.
+    /// Dropping a pending `send` future releases its waiting resources before dropping `value`,
+    /// without sending it or retaining capacity. Use [`reserve`](Self::reserve) to wait for
+    /// capacity before constructing a value.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
         self.shared.send(value).await
     }
@@ -100,7 +100,7 @@ impl<T> BoundedSender<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending reservation releases its place in the wait queue. If it was already
+    /// Dropping a pending `reserve` future releases its place in the wait queue. If it was already
     /// granted capacity, that capacity passes to the next waiter or becomes available again.
     ///
     /// # Examples
@@ -176,8 +176,8 @@ impl<T> BoundedReceiver<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `recv` does not consume a value or prevent other receivers from receiving
-    /// it.
+    /// Dropping a pending `recv` future does not consume a value or prevent other receivers from
+    /// receiving it.
     pub async fn recv(&self) -> Result<T, RecvError> {
         self.shared.recv().await
     }

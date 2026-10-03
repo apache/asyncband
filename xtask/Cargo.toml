@@ -31,10 +31,7 @@ cargo_metadata = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-ureq = { workspace = true, default-features = false, features = [
-  "json",
-  "rustls",
-] }
+ureq = { workspace = true, features = ["json", "rustls"] }
 which = { workspace = true }
 
 [lints]

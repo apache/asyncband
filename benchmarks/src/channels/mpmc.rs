@@ -73,8 +73,8 @@ pub const TOPOLOGIES: &[Topology] = &[
     },
 ];
 
-// The caller only coordinates the batch. All measured sends and receives run in spawned tasks,
-// including on the current-thread runtime; no data is received by Runtime::block_on itself.
+// The caller only coordinates the batch. Spawned tasks send and receive all measured messages,
+// including on the current-thread runtime; `Runtime::block_on` itself receives no data.
 pub struct TaskBatch {
     start: Arc<tokio::sync::Barrier>,
     workers: JoinSet<(usize, usize)>,

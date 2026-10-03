@@ -85,8 +85,8 @@ impl<T: ?Sized> RwLock<T> {
 /// alive without borrowing it and releases the lock when dropped.
 #[must_use = "dropping the guard releases its write access immediately"]
 pub struct OwnedRwLockWriteGuard<T: ?Sized> {
-    pub(super) permits_acquired: usize,
-    pub(super) lock: Arc<RwLock<T>>,
+    permits_acquired: usize,
+    lock: Arc<RwLock<T>>,
 }
 
 unsafe impl<T: ?Sized + Send + Sync> Send for OwnedRwLockWriteGuard<T> {}

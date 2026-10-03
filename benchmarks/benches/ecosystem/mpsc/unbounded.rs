@@ -126,7 +126,7 @@ fn repeated_bursts<C: UnboundedMpsc<T>, T, F: Fn() -> T>(
         }
     };
     // Measure recurring bursts after the initial allocation, including a deliberately retained
-    // backlog where requested. Do not require an extra empty receive to trigger reclamation.
+    // backlog where requested. Do not require an extra `try_recv` call to trigger reclamation.
     run();
     bencher.counter(ItemsCount::new(messages)).bench_local(run);
 }
@@ -228,7 +228,7 @@ fn scheduled_bursts_inline<C: UnboundedMpsc<[u8; 1024]>>(
             for _ in 0..BATCH_MESSAGES / burst_messages {
                 let first = {
                     // Exclude Tokio's cooperative-budget Pending from the initial empty probe.
-                    // Retain the same receive future so its channel registration drives the
+                    // Retain the same `recv_async` future so its channel registration drives the
                     // wake.
                     let mut receive =
                         pin!(tokio::task::unconstrained(C::recv_async(&mut receiver)));

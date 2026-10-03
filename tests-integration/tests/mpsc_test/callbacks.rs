@@ -211,7 +211,7 @@ fn unbounded_disconnect_drops_partial_and_queued_batches_outside_lock() {
             let drops = drops.clone();
             Arc::new(move || {
                 // This exercises both a live receiver and disconnection. The marker has no
-                // callback, so destroying an unsuccessful send cannot recursively send again.
+                // callback, so dropping a rejected value cannot recursively send again.
                 let _ = tx.send(Value(None));
                 drops.fetch_add(1, Ordering::Relaxed);
             })

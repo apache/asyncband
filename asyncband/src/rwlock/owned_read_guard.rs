@@ -162,7 +162,8 @@ impl<T: ?Sized> OwnedRwLockReadGuard<T> {
         let d = std::ptr::NonNull::from(f(unsafe { &*orig.lock.c.get() }));
         let orig = std::mem::ManuallyDrop::new(orig);
 
-        // Safely extract the Arc from the guard
+        // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
+        // so the `Arc` can be moved out to transfer lock ownership to the new guard.
         let lock = unsafe { std::ptr::read(&orig.lock) };
 
         OwnedMappedRwLockReadGuard::new(d, lock)
@@ -216,7 +217,8 @@ impl<T: ?Sized> OwnedRwLockReadGuard<T> {
                 let d = std::ptr::NonNull::from(d);
                 let orig = std::mem::ManuallyDrop::new(orig);
 
-                // Safely extract the Arc from the guard
+                // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
+                // so the `Arc` can be moved out to transfer lock ownership to the new guard.
                 let lock = unsafe { std::ptr::read(&orig.lock) };
 
                 Ok(OwnedMappedRwLockReadGuard::new(d, lock))

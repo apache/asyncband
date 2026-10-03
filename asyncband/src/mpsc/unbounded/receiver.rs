@@ -34,7 +34,7 @@ use crate::mpsc::TryRecvError;
 /// The receiving endpoint of an unbounded mpsc channel.
 ///
 /// Instances are created by the [`unbounded`](crate::mpsc::unbounded) function. Dropping the
-/// receiver discards queued values and makes subsequent sends fail.
+/// receiver discards queued values and makes subsequent attempts to send fail.
 pub struct UnboundedReceiver<T> {
     shared: Arc<Mutex<State<T>>>,
     // Only accessed through `get_mut`; the mutex preserves Sync for Send-only payloads.
@@ -120,9 +120,9 @@ impl<T> UnboundedReceiver<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `recv` does not remove a message from the channel. A later receive
-    /// operation can still observe the next queued value, so `recv` may safely be raced with other
-    /// futures in a selection construct.
+    /// Dropping a pending `recv` future does not remove a message from the channel. A subsequent
+    /// `recv` future can still observe the next queued value, so these futures may safely be raced
+    /// with other futures in a selection construct.
     ///
     /// # Examples
     ///

@@ -31,7 +31,7 @@ mod sender;
 pub use self::receiver::UnboundedReceiver;
 pub use self::sender::UnboundedSender;
 
-/// Creates an unbounded mpsc channel whose send operation never waits for capacity.
+/// Creates an unbounded mpsc channel. Sending never waits for capacity.
 ///
 /// Pending messages can grow with producer demand and are limited only by successful memory
 /// allocation. Use a [`bounded`](crate::mpsc::bounded) channel or external admission control when
@@ -59,7 +59,7 @@ pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
 }
 
 // Queue contents, endpoint liveness, and wake registration share one lock. Only the receiver
-// accesses its current batch; refilling that batch preserves the order of concurrent sends.
+// accesses its current batch; refilling that batch preserves the order of concurrent `send` calls.
 struct State<T> {
     buffer: Buffer<T>,
     senders: usize,

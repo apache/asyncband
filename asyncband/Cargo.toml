@@ -70,9 +70,7 @@ waitgroup = []
 watch = []
 
 [dependencies]
-hashbrown = { workspace = true, default-features = false, features = [
-  "inline-more",
-], optional = true }
+hashbrown = { workspace = true, features = ["inline-more"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

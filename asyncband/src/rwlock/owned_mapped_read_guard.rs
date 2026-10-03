@@ -62,11 +62,7 @@ use crate::rwlock::RwLock;
 /// ```
 #[must_use = "dropping the guard releases its read access immediately"]
 pub struct OwnedMappedRwLockReadGuard<T: ?Sized, U: ?Sized> {
-    // This Arc acts as an ownership certificate, ensuring the RwLock remains valid
-    // and the lock is not released
     lock: Arc<RwLock<T>>,
-    // This NonNull pointer precisely points to the subfield U, telling us which
-    // memory location we can operate on
     d: NonNull<U>,
     variance: PhantomData<fn() -> U>,
 }

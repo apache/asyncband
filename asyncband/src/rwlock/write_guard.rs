@@ -77,8 +77,8 @@ impl<T: ?Sized> RwLock<T> {
 /// [`RwLock::write`] and [`RwLock::try_write`] create this guard. Dropping it releases the lock.
 #[must_use = "dropping the guard releases its write access immediately"]
 pub struct RwLockWriteGuard<'a, T: ?Sized> {
-    pub(super) permits_acquired: usize,
-    pub(super) lock: &'a RwLock<T>,
+    permits_acquired: usize,
+    lock: &'a RwLock<T>,
 }
 
 unsafe impl<T: ?Sized + Send + Sync> Send for RwLockWriteGuard<'_, T> {}
