@@ -56,7 +56,7 @@ async fn bounded_values_are_delivered_exactly_once_to_eight_consumers() {
                 let start = start.clone();
                 tokio::spawn(async move {
                     start.wait().await;
-                    let mut values = Vec::new();
+                    let mut values = vec![];
                     while let Ok(value) = receiver.recv().await {
                         values.push(value);
                     }
@@ -86,7 +86,7 @@ async fn unbounded_values_are_delivered_exactly_once_to_eight_consumers() {
             let start = start.clone();
             tokio::spawn(async move {
                 start.wait().await;
-                let mut values = Vec::new();
+                let mut values = vec![];
                 while let Ok(value) = receiver.recv().await {
                     values.push(value);
                 }

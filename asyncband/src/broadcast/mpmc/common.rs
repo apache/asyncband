@@ -343,7 +343,7 @@ impl<T> Backlog<T> {
             .take_while(|slot| slot.cursors == 0)
             .count();
         let rest = if extra == 0 {
-            Vec::new()
+            vec![]
         } else {
             self.buffer.drain(..extra).map(|slot| slot.msg).collect()
         };

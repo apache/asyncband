@@ -108,7 +108,6 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
 use super::common;
 use super::common::Backlog;
@@ -422,7 +421,7 @@ impl<T> BoundedSender<T> {
         }
         let mut wakers = inner.waiters.take_all();
         drop(inner);
-        wakers.by_ref().for_each(Waker::wake);
+        wakers.wake_all();
         drop(discarded);
         Ok(())
     }

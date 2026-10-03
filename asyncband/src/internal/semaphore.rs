@@ -172,7 +172,7 @@ impl Semaphore {
             }
         }
         drop(waiters);
-        wakers.by_ref().for_each(Waker::wake);
+        wakers.wake_all();
     }
 
     fn insert_permits_with_lock<'a>(
@@ -211,7 +211,7 @@ impl Semaphore {
             }
 
             drop(waiters);
-            batch.by_ref().for_each(Waker::wake);
+            batch.wake_all();
             if rem == 0 {
                 return;
             }

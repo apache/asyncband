@@ -42,7 +42,7 @@ where
         .map(|_| {
             let receiver = receiver.clone();
             tokio::spawn(async move {
-                let mut values = Vec::new();
+                let mut values = vec![];
                 while let Ok(value) = receiver.recv().await {
                     values.push(value);
                 }

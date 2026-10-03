@@ -284,7 +284,7 @@ fn unbounded_collects_from_multiple_producers() {
         }
         drop(tx);
 
-        let mut received = Vec::new();
+        let mut received = vec![];
         while let Ok(i) = rx.recv().await {
             received.push(i);
         }

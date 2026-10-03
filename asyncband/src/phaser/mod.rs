@@ -44,7 +44,7 @@
 //! let phaser = Phaser::new();
 //! let mut coordinator = phaser.register_one()?;
 //! let participants = phaser.register(documents.len())?;
-//! let mut tasks = Vec::new();
+//! let mut tasks = vec![];
 //!
 //! for (document, mut participant) in documents.into_iter().zip(participants) {
 //!     let dictionary = dictionary.clone();
@@ -71,7 +71,7 @@
 //! }
 //! coordinator.wait().await?;
 //!
-//! let mut encoded_documents = Vec::new();
+//! let mut encoded_documents = vec![];
 //! for task in tasks {
 //!     encoded_documents.push(task.await.unwrap()?);
 //! }
@@ -129,7 +129,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
 use crate::internal::waker_batch::WakerBatch;
@@ -393,7 +392,7 @@ impl Drop for PhaserParticipants {
         self.remaining = 0;
         let mut wakers = state.advance_if_ready();
         drop(state);
-        wakers.by_ref().for_each(Waker::wake);
+        wakers.wake_all();
     }
 }
 
@@ -443,7 +442,7 @@ impl PhaserParticipant {
         self.pending = Some(phase);
         let mut wakers = state.advance_if_ready();
         drop(state);
-        wakers.by_ref().for_each(Waker::wake);
+        wakers.wake_all();
         Ok(phase)
     }
 
@@ -491,7 +490,7 @@ impl PhaserParticipant {
         };
         let mut wakers = state.advance_if_ready();
         drop(state);
-        wakers.by_ref().for_each(Waker::wake);
+        wakers.wake_all();
         result
     }
 }

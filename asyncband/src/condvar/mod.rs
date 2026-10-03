@@ -170,7 +170,7 @@ impl Condvar {
             }
         }
 
-        wakers.by_ref().for_each(Waker::wake);
+        wakers.wake_all();
     }
 
     /// Waits for a notification, atomically releasing and then reacquiring the mutex.

@@ -155,7 +155,7 @@ fn concurrent_cancellation_preserves_capacity_and_message_order() {
     let (tx, mut rx) = mpsc::bounded(3);
     let mut out_of_order = 0;
     std::thread::scope(|scope| {
-        let mut workers = Vec::new();
+        let mut workers = vec![];
         for producer in 0..PRODUCERS {
             let tx = tx.clone();
             workers.push(scope.spawn(move || {

@@ -116,7 +116,7 @@ impl ManualResetEvent {
                 }
             }
         }
-        wakers.by_ref().for_each(Waker::wake);
+        wakers.wake_all();
     }
 
     /// Clears the set state.
