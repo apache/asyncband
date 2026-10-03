@@ -22,9 +22,6 @@ publish = false
 edition.workspace = true
 rust-version.workspace = true
 
-[package.metadata.release]
-release = false
-
 [dependencies]
 asyncband = { workspace = true, features = [
   "completion",
