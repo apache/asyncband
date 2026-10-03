@@ -24,6 +24,7 @@ rust-version.workspace = true
 
 [dependencies]
 asyncband = { workspace = true, features = [
+  "cancellation",
   "completion",
   "event",
   "lazy-cell",
@@ -42,6 +43,10 @@ tokio = { workspace = true, features = [
 
 [lints]
 workspace = true
+
+[[example]]
+name = "cancel_lookups"
+path = "src/cancel_lookups.rs"
 
 [[example]]
 name = "coalesced_worker"

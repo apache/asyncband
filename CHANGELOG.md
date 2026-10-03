@@ -25,6 +25,7 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
+* Add opt-in cooperative cancellation with a `CancellationSource` that explicitly requests cancellation and cloneable, read-only `CancellationToken` observers; borrowed and owned waits observe a persistent signal without tracking task completion, and dropping the source does not request cancellation.
 * Add bounded MPMC `reserve` and `try_reserve` methods returning a borrowed `Permit`, so callers can wait for capacity before constructing a value; sends and reservations receive capacity in wait-queue order, and unused permits release it.
 
 ### Notable changes

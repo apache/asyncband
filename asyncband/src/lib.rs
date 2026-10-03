@@ -66,6 +66,7 @@
 //! |                      | [`Latch`](latch::Latch)                       | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                              |
 //! |                      | [`Phaser`](phaser::Phaser)                    | `phaser`       | Coordinate repeated phases with a dynamic participant set.                                                      |
 //! |                      | [`WaitGroup`](waitgroup::WaitGroup)           | `waitgroup`    | Dynamically register participants and wait until all have completed.                                            |
+//! |                      | [`cancellation`]                              | `cancellation` | Request cooperative cancellation without tracking task completion.                                              |
 //! |                      | [`Shutdown`](shutdown::Shutdown)              | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                              |
 //! | Work coalescing      | [`Once`](once::Once)                          | `once`         | Complete one asynchronous initialization; cancelled or panicked attempts may be retried.                        |
 //! |                      | [`OnceCell`](once::OnceCell)                  | `once-cell`    | Store one value from an access-time initializer; failed, cancelled, or panicked attempts may be retried.        |
@@ -131,6 +132,8 @@ pub mod barrier;
 pub mod blocking;
 #[cfg(feature = "broadcast")]
 pub mod broadcast;
+#[cfg(feature = "cancellation")]
+pub mod cancellation;
 #[cfg(feature = "completion")]
 pub mod completion;
 #[cfg(feature = "condvar")]
