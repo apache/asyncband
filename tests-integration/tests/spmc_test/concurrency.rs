@@ -16,14 +16,45 @@
 // under the License.
 
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Duration;
 
 use asyncband::spmc;
+use tests_integration::WakeCounter;
+use tests_integration::poll_with;
 use tokio::sync::Barrier;
 use tokio::task::JoinHandle;
 
 const CONSUMERS: usize = 8;
 const TOTAL: usize = 2_048;
+
+#[test]
+fn freeing_capacity_during_sender_registration_cannot_lose_the_notification() {
+    let (mut sender, receiver) = spmc::bounded(1);
+    for value in 0..32 {
+        sender.try_send(value).unwrap();
+        let start = std::sync::Barrier::new(2);
+        let (waker, wakes) = WakeCounter::new();
+        let mut pending = Box::pin(sender.send(value + 1));
+        let first_poll = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                start.wait();
+                assert_eq!(receiver.try_recv(), Ok(value));
+            });
+            start.wait();
+            poll_with(pending.as_mut(), &waker)
+        });
+
+        if first_poll.is_pending() {
+            assert_eq!(wakes.count(), 1);
+            assert_eq!(poll_with(pending.as_mut(), &waker), Poll::Ready(Ok(())));
+        } else {
+            assert_eq!(first_poll, Poll::Ready(Ok(())));
+        }
+        drop(pending);
+        assert_eq!(receiver.try_recv(), Ok(value + 1));
+    }
+}
 
 async fn assert_delivered_exactly_once(
     producer: JoinHandle<()>,

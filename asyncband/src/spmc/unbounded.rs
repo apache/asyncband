@@ -21,8 +21,9 @@ use std::sync::Arc;
 use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
-use super::TrySendError;
+use super::queue::Producer;
 use super::queue::Shared;
+use super::queue::channel;
 
 /// Creates an unbounded single-producer, multi-consumer queue.
 ///
@@ -32,13 +33,8 @@ use super::queue::Shared;
 /// waking tasks, or while dropping messages. Sending and trying to receive may wait to acquire
 /// a mutex, but never wait for capacity or new messages.
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
-    let shared = Arc::new(Shared::unbounded());
-    (
-        UnboundedSender {
-            shared: shared.clone(),
-        },
-        UnboundedReceiver { shared },
-    )
+    let (producer, shared) = channel(0);
+    (UnboundedSender { producer }, UnboundedReceiver { shared })
 }
 
 /// Sends values to the associated [`UnboundedReceiver`] handles.
@@ -46,7 +42,7 @@ pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
 /// Instances are created by [`unbounded`] and cannot be cloned. Sending requires exclusive access
 /// to this endpoint.
 pub struct UnboundedSender<T> {
-    shared: Arc<Shared<T>>,
+    producer: Producer<T>,
 }
 
 impl<T> fmt::Debug for UnboundedSender<T> {
@@ -55,26 +51,16 @@ impl<T> fmt::Debug for UnboundedSender<T> {
     }
 }
 
-impl<T> Drop for UnboundedSender<T> {
-    fn drop(&mut self) {
-        self.shared.drop_sender();
-    }
-}
-
 impl<T> UnboundedSender<T> {
     /// Sends a value without waiting for capacity.
     ///
     /// If all receivers have been dropped, the value is returned in [`SendError`].
     pub fn send(&mut self, value: T) -> Result<(), SendError<T>> {
-        match self.shared.try_send(value) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Disconnected(value)) => Err(SendError::new(value)),
-            Err(TrySendError::Full(_)) => unreachable!("unbounded queue cannot be full"),
-        }
+        self.producer.send_unbounded(value)
     }
 }
 
-/// Receives values from the associated [`UnboundedSender`] handles.
+/// Receives values from the associated [`UnboundedSender`].
 ///
 /// Cloned receivers compete for values, and every accepted value is returned by exactly one
 /// receiver while a receiver remains. Dropping the final receiver releases buffered values.
