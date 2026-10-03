@@ -63,7 +63,7 @@ enum SubCommand {
     Miri(CommandMiri),
     #[clap(about = "Verify API compatibility for a planned release.")]
     Semver(CommandSemver),
-    #[clap(about = "Run unit tests.")]
+    #[clap(about = "Run workspace tests.")]
     Test(CommandTest),
 }
 
