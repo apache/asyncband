@@ -60,12 +60,6 @@ pub struct Arena<T> {
     len: usize,
 }
 
-impl<T> Default for Arena<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[derive(Debug)]
 enum Slot<T> {
     Occupied(T),
