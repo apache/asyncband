@@ -514,6 +514,8 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
 
         let guard = ManuallyDrop::new(orig);
 
+        // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
+        // so the `Arc` can be moved out to transfer lock ownership to the new guard.
         let lock = unsafe { std::ptr::read(&guard.lock) };
 
         OwnedMappedMutexGuard {
@@ -559,7 +561,8 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
                 let d = NonNull::from(d);
                 let guard = ManuallyDrop::new(orig);
 
-                // SAFETY: We safely extract the Arc from the ManuallyDrop guard
+                // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
+                // so the `Arc` can be moved out to transfer lock ownership to the new guard.
                 let lock = unsafe { std::ptr::read(&guard.lock) };
 
                 Ok(OwnedMappedMutexGuard {
@@ -915,7 +918,8 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
         let d = NonNull::from(f(&mut *orig));
         let orig = ManuallyDrop::new(orig);
 
-        // SAFETY: We safely extract the Arc from the ManuallyDrop guard
+        // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
+        // so the `Arc` can be moved out to transfer lock ownership to the new guard.
         let lock = unsafe { std::ptr::read(&orig.lock) };
 
         OwnedMappedMutexGuard {
@@ -983,7 +987,8 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
                 let d = NonNull::from(d);
                 let orig = ManuallyDrop::new(orig);
 
-                // SAFETY: We safely extract the Arc from the ManuallyDrop guard
+                // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
+                // so the `Arc` can be moved out to transfer lock ownership to the new guard.
                 let lock = unsafe { std::ptr::read(&orig.lock) };
 
                 Ok(OwnedMappedMutexGuard {
