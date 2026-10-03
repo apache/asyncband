@@ -124,6 +124,8 @@ pub(crate) mod waitlist;
     feature = "waitgroup",
     feature = "watch",
 ))]
+// Terminal-only primitives wake WakerSet directly, leaving WakerBatch::wake_all unused.
+#[allow(dead_code)]
 pub(crate) mod waker_batch;
 
 #[cfg(any(

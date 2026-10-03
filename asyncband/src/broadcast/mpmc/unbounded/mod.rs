@@ -62,7 +62,6 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
 use super::common;
 use super::common::Backlog;
@@ -180,7 +179,7 @@ impl<T> UnboundedSender<T> {
         drop(inner);
 
         // Wake callbacks and payload destruction may reenter the channel.
-        wakers.by_ref().for_each(Waker::wake);
+        wakers.wake_all();
         drop(unretained);
     }
 

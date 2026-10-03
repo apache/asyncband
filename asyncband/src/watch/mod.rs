@@ -70,7 +70,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
 pub use self::error::RecvError;
 pub use self::error::SendError;
@@ -181,7 +180,7 @@ impl<T> Sender<T> {
         drop(state);
 
         // Waker callbacks and the replaced value's destructor may reenter this channel.
-        wakers.by_ref().for_each(Waker::wake);
+        wakers.wake_all();
         drop(replaced);
         Ok(())
     }
@@ -204,7 +203,7 @@ impl<T> Sender<T> {
         state.version = version;
         let mut wakers = state.waiters.take_all();
         drop(state);
-        wakers.by_ref().for_each(Waker::wake);
+        wakers.wake_all();
         replaced
     }
 
