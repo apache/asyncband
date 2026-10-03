@@ -406,10 +406,8 @@ impl<T> Backlog<T> {
 
 /// Buffer, receiver cursors, and parked receivers, all under one lock.
 ///
-/// The wait set lives beside the backlog so that publishing a message and draining the waiters
-/// happen in one critical section. That is what makes the park path race-free: a receiver that
-/// finds no message and then registers still holds this lock, so a concurrent send cannot slip
-/// between the two steps and skip the wake-up.
+/// Checking the backlog and registering a waker share this lock with publishing and detaching
+/// registrations, so a send cannot slip between an empty check and registration.
 pub struct Inner<T> {
     pub log: Backlog<T>,
     pub waiters: WakerSet,
@@ -432,14 +430,11 @@ impl<T> Inner<T> {
 ///
 /// Both families call this from the last sender's `Drop`.
 pub fn disconnect<T>(inner: &Mutex<Inner<T>>) {
-    let wakers = {
-        let mut inner = inner.lock();
-        mem::take(&mut inner.waiters).into_iter()
-    };
-    wakers.for_each(Waker::wake);
+    let wakers = mem::take(&mut inner.lock().waiters);
+    wakers.into_iter().for_each(Waker::wake);
 }
 
-/// Releases a cancelled `receive`'s waker registration, dropping the waker unlocked.
+/// Removes the waker registration for a cancelled `receive`, dropping the waker unlocked.
 pub fn unregister<T>(
     inner: &Mutex<Inner<T>>,
     senders: &AtomicUsize,
@@ -480,9 +475,8 @@ pub fn try_receive<T>(
 
 /// The one poll step behind `recv` on both channels.
 ///
-/// Checking the backlog and registering a waker under the same lock prevents a publication from
-/// landing between those steps. Publication and disconnection detach all registrations, so their
-/// ready paths clear the token without unregistering it.
+/// Publication and disconnection detach all registrations, so their ready paths clear the token
+/// without unregistering it.
 pub fn poll_receive<T>(
     inner: &Mutex<Inner<T>>,
     senders: &AtomicUsize,

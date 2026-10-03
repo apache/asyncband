@@ -20,14 +20,14 @@ use std::mem::MaybeUninit;
 use std::ptr;
 use std::task::Waker;
 
-/// An owning FIFO of wakers that stores the first [`Self::STACK_SIZE`] entries without allocating.
+/// An owning FIFO of wakers that stores the first [`Self::INLINE_CAPACITY`] entries without
+/// allocating.
 ///
-/// Only pushed entries are initialized. Consuming all inline entries makes their storage
-/// available for the semaphore's next notification batch.
-/// Iterate by reference to avoid moving the inline storage into iterator adapters.
+/// Only pushed entries are initialized. Iterate by reference to avoid moving the inline storage
+/// into iterator adapters and to reuse the batch, as the semaphore does between notifications.
 pub struct WakerBatch {
     /// The initialized entries are exactly `start..end`.
-    inline: [MaybeUninit<Waker>; Self::STACK_SIZE],
+    inline: [MaybeUninit<Waker>; Self::INLINE_CAPACITY],
     /// The next inline entry to yield.
     start: usize,
     /// The next inline slot to push into.
@@ -40,15 +40,14 @@ pub struct WakerBatch {
 }
 
 impl WakerBatch {
-    /// Wakers kept on the stack before the batch spills to the heap.
+    /// Number of wakers stored inline before using overflow storage.
     ///
-    /// This is also the most wakers the semaphore collects per lock acquisition. Larger batches
-    /// allocate overflow storage.
-    pub const STACK_SIZE: usize = 32;
+    /// The semaphore's permit-release loop uses this as its batch limit before unlocking.
+    pub const INLINE_CAPACITY: usize = 32;
 
     pub const fn new() -> Self {
         Self {
-            inline: [const { MaybeUninit::uninit() }; Self::STACK_SIZE],
+            inline: [const { MaybeUninit::uninit() }; Self::INLINE_CAPACITY],
             start: 0,
             end: 0,
             spilled: VecDeque::new(),
@@ -59,17 +58,18 @@ impl WakerBatch {
     ///
     /// The semaphore stops filling a batch here so it can release its lock and wake what it has
     /// before collecting more.
+    #[inline]
     pub fn will_spill(&self) -> bool {
-        self.end == Self::STACK_SIZE || !self.spilled.is_empty()
+        self.end == Self::INLINE_CAPACITY || !self.spilled.is_empty()
     }
 
     #[inline]
     pub fn push(&mut self, waker: Waker) {
-        if self.end < Self::STACK_SIZE && self.spilled.is_empty() {
+        if self.will_spill() {
+            self.spilled.push_back(waker);
+        } else {
             self.inline[self.end].write(waker);
             self.end += 1;
-        } else {
-            self.spilled.push_back(waker);
         }
     }
 }
@@ -127,7 +127,7 @@ mod tests {
 
     use super::WakerBatch;
 
-    const STACK_SIZE: usize = WakerBatch::STACK_SIZE;
+    const INLINE_CAPACITY: usize = WakerBatch::INLINE_CAPACITY;
 
     /// The ids of the wakers woken so far, in order.
     ///
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn yields_in_push_order_across_the_spill() {
         let log = log();
-        let count = STACK_SIZE + 8;
+        let count = INLINE_CAPACITY + 8;
         let mut batch: WakerBatch = (0..count).map(|id| waker(&log, id)).collect();
         assert!(batch.will_spill());
 
@@ -190,8 +190,8 @@ mod tests {
     #[test]
     fn drops_unconsumed_entries_exactly_once() {
         let log = log();
-        let count = STACK_SIZE + 8;
-        for consumed in [0, 5, STACK_SIZE, STACK_SIZE + 3, count] {
+        let count = INLINE_CAPACITY + 8;
+        for consumed in [0, 5, INLINE_CAPACITY, INLINE_CAPACITY + 3, count] {
             let mut batch = WakerBatch::new();
             push_wakers(&mut batch, &log, count);
             for _ in 0..consumed {
@@ -209,9 +209,9 @@ mod tests {
         let log = log();
         let mut batch = WakerBatch::new();
         for _ in 0..3 {
-            push_wakers(&mut batch, &log, STACK_SIZE);
+            push_wakers(&mut batch, &log, INLINE_CAPACITY);
             assert!(batch.will_spill());
-            assert_eq!(batch.by_ref().count(), STACK_SIZE);
+            assert_eq!(batch.by_ref().count(), INLINE_CAPACITY);
             assert!(!batch.will_spill());
             assert_eq!(alive(&log), 0);
         }
@@ -221,7 +221,7 @@ mod tests {
     fn keeps_push_order_while_spilled() {
         let log = log();
         let mut batch = WakerBatch::new();
-        push_wakers(&mut batch, &log, STACK_SIZE + 1);
+        push_wakers(&mut batch, &log, INLINE_CAPACITY + 1);
         // Free inline room; the spilled entry must still come out before anything pushed now.
         for _ in 0..4 {
             batch.next().unwrap().wake();
@@ -233,7 +233,7 @@ mod tests {
             waker.wake();
         }
 
-        let mut expected = (0..STACK_SIZE + 1).collect::<Vec<_>>();
+        let mut expected = (0..INLINE_CAPACITY + 1).collect::<Vec<_>>();
         expected.push(999);
         assert_eq!(woken(&log), expected);
         assert_eq!(alive(&log), 0);

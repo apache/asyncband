@@ -54,13 +54,10 @@ impl CountdownState {
             .map(|_| ())
     }
 
-    /// Drains the waiter set under its lock, then wakes every waiter after releasing the lock.
+    /// Detaches the waiter set under its lock, then wakes every waiter after releasing the lock.
     pub fn wake_all(&self) {
-        let wakers = {
-            let mut waiters = self.waiters.lock();
-            mem::take(&mut *waiters).into_iter()
-        };
-        wakers.for_each(Waker::wake);
+        let wakers = mem::take(&mut *self.waiters.lock());
+        wakers.into_iter().for_each(Waker::wake);
     }
 
     /// Polls for zero, registering the current waker if the countdown is still active.
@@ -74,7 +71,7 @@ impl CountdownState {
 
         let mut waiters = self.waiters.lock();
         if self.state() == 0 {
-            // A concurrent zero transition will drain after this lock is released.
+            // A concurrent zero transition detaches the registrations under this same lock.
             *token = None;
             return Poll::Ready(());
         }

@@ -248,9 +248,9 @@ impl Phaser {
                 return;
             }
             state.closed = true;
-            mem::take(&mut state.waiters).into_iter()
+            mem::take(&mut state.waiters)
         };
-        wakers.for_each(Waker::wake);
+        wakers.into_iter().for_each(Waker::wake);
     }
 
     /// Returns an instantaneous count of registered participants, including those already arrived.

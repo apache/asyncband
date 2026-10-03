@@ -126,17 +126,14 @@ impl<T> Completer<T> {
         let Some(shared) = self.shared.upgrade() else {
             return Err(value);
         };
-        let wakers = {
-            let mut waiters = shared.waiters.lock();
-            let wakers = mem::take(&mut *waiters).into_iter();
-            // The single completer publishes only after every waiter token has been invalidated.
-            assert!(shared.result.set(Some(value)).is_ok());
-            wakers
-        };
-        // `complete` consumes the only completer. Disarm its destructor before invoking arbitrary
-        // wake callbacks; the completed state no longer needs abandonment handling.
+        let mut waiters = shared.waiters.lock();
+        // Detach registrations before publishing completion to lock-free observers.
+        let wakers = mem::take(&mut *waiters);
+        assert!(shared.result.set(Some(value)).is_ok());
+        drop(waiters);
+        // Disarm abandonment handling before invoking wake callbacks.
         self.shared = Weak::new();
-        wakers.for_each(Waker::wake);
+        wakers.into_iter().for_each(Waker::wake);
         Ok(())
     }
 }
@@ -146,13 +143,11 @@ impl<T> Drop for Completer<T> {
         let Some(shared) = self.shared.upgrade() else {
             return;
         };
-        let wakers = {
-            let mut waiters = shared.waiters.lock();
-            let wakers = mem::take(&mut *waiters).into_iter();
-            assert!(shared.result.set(None).is_ok());
-            wakers
-        };
-        wakers.for_each(Waker::wake);
+        let mut waiters = shared.waiters.lock();
+        let wakers = mem::take(&mut *waiters);
+        assert!(shared.result.set(None).is_ok());
+        drop(waiters);
+        wakers.into_iter().for_each(Waker::wake);
     }
 }
 

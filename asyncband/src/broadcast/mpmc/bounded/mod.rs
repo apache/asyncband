@@ -403,24 +403,19 @@ impl<T> BoundedSender<T> {
         self.publish(msg, |msg| msg)
     }
 
-    /// The publishing step both send paths share.
+    /// Publishes a message for both send paths.
     ///
-    /// `into_msg` is called only once this decides the message will actually be retained, which is
-    /// what lets `try_send` defer its allocation past the capacity check while `try_publish` hands
-    /// over an `Arc` it allocated with the channel unlocked.
-    ///
-    /// Publishing and draining the wait set share one critical section, so a receiver can never
-    /// observe an empty buffer and park after this message became visible.
+    /// Calls `into_msg` only when retaining the payload, so `try_send` can defer its allocation
+    /// until capacity is available while `try_publish` passes through its existing `Arc`.
     fn publish<P>(&self, payload: P, into_msg: impl FnOnce(P) -> Arc<T>) -> Result<(), P> {
         let mut discarded = None;
         let mut inner = self.shared.inner.lock();
         if !inner.log.has_receivers() {
-            // Nothing can read this message. The payload leaves the critical section with us
-            // and is dropped below, so `T::drop` never runs under the lock.
+            // Drop the discarded payload after unlocking: its destructor may reenter the channel.
             inner.log.publish_discarded();
             discarded = Some(payload);
         } else if inner.log.retained() == self.shared.capacity {
-            // Nothing was published, so there is no wait set to drain.
+            // Leave waiters registered because no message was published.
             return Err(payload);
         } else {
             inner.log.publish_retained(into_msg(payload));

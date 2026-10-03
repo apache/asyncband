@@ -184,7 +184,7 @@ impl Barrier {
             state.arrived += 1;
 
             // The final arrival completes this generation. Advance the generation while holding
-            // the state lock, then wake the drained followers after releasing it.
+            // the state lock, then wake the detached followers after releasing it.
             if state.arrived == self.n {
                 state.arrived = 0;
                 state.generation += 1;
@@ -237,7 +237,7 @@ impl Future for BarrierWait<'_> {
 
         let mut state = barrier.state.lock();
         if *generation < state.generation {
-            // Completion advances the generation and drains its old waiters under this same lock,
+            // Completion advances the generation and detaches its old waiters under this same lock,
             // so no registration represented by this token remains in the waker set.
             *token = None;
             return Poll::Ready(());

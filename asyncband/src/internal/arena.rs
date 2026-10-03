@@ -188,7 +188,9 @@ impl<T> Arena<T> {
             .collect()
     }
 
-    /// Consumes the arena, yielding occupied values in slot order and releasing its allocation.
+    /// Consumes the arena, yielding occupied values in slot order.
+    ///
+    /// The returned iterator owns the backing allocation and releases it when dropped.
     #[inline]
     pub fn into_iter(self) -> impl Iterator<Item = T> {
         self.slots.into_iter().filter_map(|slot| match slot {

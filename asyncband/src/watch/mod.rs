@@ -146,16 +146,15 @@ impl<T> fmt::Debug for Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        // Only the final sender detaches the parked receivers; their wake callbacks run unlocked.
         let wakers = {
             let mut state = self.shared.state.lock();
             state.senders -= 1;
             if state.senders != 0 {
                 return;
             }
-            mem::take(&mut state.waiters).into_iter()
+            mem::take(&mut state.waiters)
         };
-        wakers.for_each(Waker::wake);
+        wakers.into_iter().for_each(Waker::wake);
     }
 }
 

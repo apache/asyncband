@@ -174,15 +174,12 @@ impl<T> UnboundedSender<T> {
     pub fn send(&self, msg: T) {
         let msg = Arc::new(msg);
 
-        // Publishing and draining the wait set share one critical section, so a receiver can never
-        // observe an empty buffer and park after this message became visible.
         let mut inner = self.shared.inner.lock();
         let unretained = inner.log.publish(msg);
         let mut wakers = inner.waiters.take_all();
         drop(inner);
 
-        // Notify all waiting receivers. An unsent message is dropped here too, once the lock is
-        // released.
+        // Wake callbacks and payload destruction may reenter the channel.
         wakers.by_ref().for_each(Waker::wake);
         drop(unretained);
     }

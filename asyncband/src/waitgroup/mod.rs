@@ -103,11 +103,8 @@ impl State {
             return;
         }
 
-        let wakers = {
-            let mut waiters = self.waiters.lock();
-            mem::take(&mut *waiters).into_iter()
-        };
-        wakers.for_each(Waker::wake);
+        let wakers = mem::take(&mut *self.waiters.lock());
+        wakers.into_iter().for_each(Waker::wake);
     }
 
     fn poll_wait(&self, token: &mut Option<WakerToken>, cx: &mut Context<'_>) -> Poll<()> {
