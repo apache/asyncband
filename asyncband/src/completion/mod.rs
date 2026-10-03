@@ -50,6 +50,7 @@
 
 use std::fmt;
 use std::future::Future;
+use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -127,7 +128,7 @@ impl<T> Completer<T> {
         };
         let wakers = {
             let mut waiters = shared.waiters.lock();
-            let wakers = waiters.take_all_and_release();
+            let wakers = mem::take(&mut *waiters).into_iter();
             // The single completer publishes only after every waiter token has been invalidated.
             assert!(shared.result.set(Some(value)).is_ok());
             wakers
@@ -147,7 +148,7 @@ impl<T> Drop for Completer<T> {
         };
         let wakers = {
             let mut waiters = shared.waiters.lock();
-            let wakers = waiters.take_all_and_release();
+            let wakers = mem::take(&mut *waiters).into_iter();
             assert!(shared.result.set(None).is_ok());
             wakers
         };

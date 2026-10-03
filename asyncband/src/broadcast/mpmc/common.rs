@@ -320,7 +320,7 @@ impl<T> Backlog<T> {
     /// subscription for the slowest cursor, so advancing the head costs the messages released
     /// instead of the receivers subscribed.
     ///
-    /// A receive releases exactly one message: its cursor is counted at the next version before
+    /// A `receive` releases exactly one message: its cursor is counted at the next version before
     /// it leaves `head`, so the zero-count prefix ends there. Only removing a lagging subscription
     /// can release more.
     ///
@@ -434,12 +434,12 @@ impl<T> Inner<T> {
 pub fn disconnect<T>(inner: &Mutex<Inner<T>>) {
     let wakers = {
         let mut inner = inner.lock();
-        inner.waiters.take_all_and_release()
+        mem::take(&mut inner.waiters).into_iter()
     };
     wakers.for_each(Waker::wake);
 }
 
-/// Releases a cancelled receive's waker registration, dropping the waker unlocked.
+/// Releases a cancelled `receive`'s waker registration, dropping the waker unlocked.
 pub fn unregister<T>(
     inner: &Mutex<Inner<T>>,
     senders: &AtomicUsize,
@@ -582,7 +582,7 @@ mod tests {
         assert_eq!(log.remove_receiver(b).len(), 3);
         log.assert_cursor_accounting();
 
-        // A receive that catches up to the tail releases exactly one message and moves the cursor
+        // A `receive` that catches up to the tail releases exactly one message and moves the cursor
         // back to `at_tail`.
         assert!(log.publish(Arc::new(4)).is_none());
         let (msg, reclaimed) = log.receive(a).unwrap();

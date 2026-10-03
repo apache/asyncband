@@ -32,12 +32,12 @@ use crate::internal::waker_batch::WakerBatch;
 ///
 /// This token deliberately does not implement `Clone` or `Copy`. Its owner must not pass it back
 /// to the set after the registration has been detached by [`WakerSet::take_all`] or
-/// [`WakerSet::take_all_and_release`].
+/// [`WakerSet::into_iter`].
 #[derive(Debug)]
 pub struct WakerToken(SlotId);
 
 /// Cancellable waker storage without an implicit lifecycle or generation.
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct WakerSet {
     wakers: Arena<Waker>,
 }
@@ -74,8 +74,8 @@ impl WakerSet {
     /// No wakers are moved individually under the lock. The caller must invalidate outstanding
     /// tokens and consume or drop the iterator after unlocking, which also frees the allocation.
     #[inline]
-    pub fn take_all_and_release(&mut self) -> impl Iterator<Item = Waker> + 'static {
-        mem::replace(&mut self.wakers, Arena::new()).into_values()
+    pub fn into_iter(self) -> impl Iterator<Item = Waker> + 'static {
+        self.wakers.into_iter()
     }
 
     /// Registers or updates a waker.

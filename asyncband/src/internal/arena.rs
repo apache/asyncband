@@ -60,6 +60,12 @@ pub struct Arena<T> {
     len: usize,
 }
 
+impl<T> Default for Arena<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug)]
 enum Slot<T> {
     Occupied(T),
@@ -184,7 +190,7 @@ impl<T> Arena<T> {
 
     /// Consumes the arena, yielding occupied values in slot order and releasing its allocation.
     #[inline]
-    pub fn into_values(self) -> impl Iterator<Item = T> {
+    pub fn into_iter(self) -> impl Iterator<Item = T> {
         self.slots.into_iter().filter_map(|slot| match slot {
             Slot::Occupied(value) => Some(value),
             Slot::Vacant { .. } => None,
@@ -234,13 +240,13 @@ mod tests {
     }
 
     #[test]
-    fn into_values_skips_vacant_slots() {
+    fn into_iter_skips_vacant_slots() {
         let mut arena = Arena::new();
         arena.insert(1);
         let removed = arena.insert(2);
         arena.insert(3);
         arena.remove(removed);
 
-        assert_eq!(arena.into_values().collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(arena.into_iter().collect::<Vec<_>>(), vec![1, 3]);
     }
 }

@@ -59,6 +59,7 @@
 use std::fmt;
 use std::future::Future;
 use std::future::IntoFuture;
+use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -104,7 +105,7 @@ impl State {
 
         let wakers = {
             let mut waiters = self.waiters.lock();
-            waiters.take_all_and_release()
+            mem::take(&mut *waiters).into_iter()
         };
         wakers.for_each(Waker::wake);
     }

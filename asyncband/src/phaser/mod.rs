@@ -124,6 +124,7 @@
 use std::fmt;
 use std::future::Future;
 use std::iter::FusedIterator;
+use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -247,7 +248,7 @@ impl Phaser {
                 return;
             }
             state.closed = true;
-            state.waiters.take_all_and_release()
+            mem::take(&mut state.waiters).into_iter()
         };
         wakers.for_each(Waker::wake);
     }

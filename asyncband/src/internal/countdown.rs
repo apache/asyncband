@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::mem;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -57,9 +58,8 @@ impl CountdownState {
     pub fn wake_all(&self) {
         let wakers = {
             let mut waiters = self.waiters.lock();
-            waiters.take_all_and_release()
+            mem::take(&mut *waiters).into_iter()
         };
-
         wakers.for_each(Waker::wake);
     }
 

@@ -153,7 +153,7 @@ impl<T> Drop for Sender<T> {
             if state.senders != 0 {
                 return;
             }
-            state.waiters.take_all_and_release()
+            mem::take(&mut state.waiters).into_iter()
         };
         wakers.for_each(Waker::wake);
     }
