@@ -380,8 +380,7 @@ impl<T> OnceCell<T> {
         self.value.take()
     }
 
-    fn set_value(&self, value: T, permit: SemaphorePermit<'_>) -> &T {
-        let _permit = permit;
+    fn set_value(&self, value: T, _permit: SemaphorePermit<'_>) -> &T {
         // SAFETY: Holding the only semaphore permit serializes initialization.
         unsafe { self.value.set(value) }
     }
