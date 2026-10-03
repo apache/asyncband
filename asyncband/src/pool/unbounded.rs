@@ -570,13 +570,13 @@ impl<T, M: ManageObject<Object = T>> Object<T, M> {
 /// If the check fails, `detach()` should be called to permanently remove the object
 /// from the pool. If dropped without calling either method (due to being cancelled),
 /// the behavior depends on the pool's [`RecycleCancelledStrategy`] configuration.
-struct UnreadyObject<'a, T, M: ManageObject<Object = T>> {
-    state: Option<ObjectState<T>>,
+struct UnreadyObject<'a, M: ManageObject> {
+    state: Option<ObjectState<M::Object>>,
     // The enclosing `get` call keeps the pool alive through cancellation cleanup.
-    pool: &'a Arc<Pool<T, M>>,
+    pool: &'a Arc<Pool<M::Object, M>>,
 }
 
-impl<T, M: ManageObject<Object = T>> Drop for UnreadyObject<'_, T, M> {
+impl<M: ManageObject> Drop for UnreadyObject<'_, M> {
     fn drop(&mut self) {
         if let Some(mut state) = self.state.take() {
             match self.pool.config.recycle_cancelled_strategy {
@@ -591,8 +591,8 @@ impl<T, M: ManageObject<Object = T>> Drop for UnreadyObject<'_, T, M> {
     }
 }
 
-impl<T, M: ManageObject<Object = T>> UnreadyObject<'_, T, M> {
-    fn ready(mut self) -> Object<T, M> {
+impl<M: ManageObject> UnreadyObject<'_, M> {
+    fn ready(mut self) -> Object<M::Object, M> {
         // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
         let state = Some(self.state.take().unwrap());
         let pool = Arc::downgrade(self.pool);
@@ -605,7 +605,7 @@ impl<T, M: ManageObject<Object = T>> UnreadyObject<'_, T, M> {
         }
     }
 
-    fn state(&mut self) -> &mut ObjectState<T> {
+    fn state(&mut self) -> &mut ObjectState<M::Object> {
         // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
         self.state.as_mut().unwrap()
     }
