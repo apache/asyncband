@@ -52,7 +52,7 @@ impl Drop for Reentrant {
     }
 }
 
-/// A payload that panics while a shared receive clones it.
+/// A payload that panics when a receiver clones it.
 #[derive(Debug)]
 struct PanicOnClone {
     value: u64,
@@ -342,8 +342,8 @@ fn dropping_the_last_receiver_wakes_every_blocked_sender() {
     tx.try_send(0).unwrap();
     tx.try_send(1).unwrap();
 
-    // More blocked producers than the drop will reclaim slots. Once no receiver remains every
-    // send succeeds unconditionally, so waking only `reclaimed` of them would strand the rest.
+    // More blocked producers than the drop will reclaim slots. Once no receiver remains, sending
+    // succeeds unconditionally, so waking only `reclaimed` of them would strand the rest.
     let trackers = (0..BLOCKED)
         .map(|_| Arc::new(WakeCounter::default()))
         .collect::<Vec<_>>();
@@ -415,8 +415,8 @@ fn cancelled_send_publishes_nothing() {
     assert!(poll_once(send.as_mut()).is_pending());
     drop(send);
 
-    // The cancelled value never entered the committed order, so the next receive sees only what
-    // was already published, and the one after it is a fresh send.
+    // The cancelled value never entered the committed order. The receiver sees the previously
+    // published value followed by a newly sent value.
     assert_eq!(rx.try_recv(), Ok(0));
     tx.try_send(2).unwrap();
     assert_eq!(rx.try_recv(), Ok(2));
@@ -571,8 +571,8 @@ fn large_reclaim_notifies_every_blocked_sender() {
     for tracker in trackers {
         assert_eq!(tracker.count(), 1);
     }
-    // Every send fits without another receive. All must have been notified, not merely made
-    // ready for a poll that an executor would otherwise have no reason to perform.
+    // Every pending value fits without receiving another message. All waiting tasks must have
+    // been notified, not merely made ready for a poll the executor has no reason to perform.
     for send in &mut sends {
         assert!(poll_once(send.as_mut()).is_ready());
     }
@@ -601,14 +601,14 @@ fn bounded_panicking_clone_leaves_the_channel_consistent() {
     })
     .unwrap();
 
-    // Two receivers share the payload, so this receive has to clone it.
+    // Two receivers share the payload, so `try_recv` has to clone it.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rx1.try_recv().map(|msg| msg.value)
     }));
     assert!(result.is_err());
 
-    // The failed receive still consumed the message for `rx1`, and left the channel usable for
-    // both receivers.
+    // The panicking `try_recv` call still consumed the message for `rx1`, and left the channel
+    // usable for both receivers.
     assert_eq!(rx1.try_recv().unwrap().value, 2);
     assert_eq!(rx2.try_recv().unwrap().value, 1);
     assert_eq!(rx2.try_recv().unwrap().value, 2);
@@ -659,7 +659,7 @@ fn bounded_message_destructors_run_outside_the_channel_lock() {
             .unwrap();
         }
 
-        // Reclaim through a receive, and then through receiver drops.
+        // Exercise reclamation while receiving messages and dropping receivers.
         assert_eq!(rx1.try_recv().unwrap().value, 0);
         drop(rx2);
         assert_eq!(rx1.try_recv().unwrap().value, 1);

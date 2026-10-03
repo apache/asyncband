@@ -295,7 +295,7 @@ fn poll_then_drop_receiver_during_send() {
     let sender_thread = spawn_named("sender", move || sender.send(message));
     drop(receiver);
 
-    // Whether send or receiver drop wins, exactly one side owns and drops the message.
+    // Whether sending or dropping the receiver wins, exactly one side owns and drops the message.
     drop(sender_thread.join().unwrap());
     assert_eq!(message_drop_count.load(Ordering::Relaxed), 1);
 }

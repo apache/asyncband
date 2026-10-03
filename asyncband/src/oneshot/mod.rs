@@ -84,7 +84,7 @@
 //! Dropping either the receiver or its future disconnects the channel and discards any unread
 //! message.
 //!
-//! To keep a pending receive alive when another branch wins, call [`Receiver::into_future`]
+//! To keep a pending operation alive when another branch wins, call [`Receiver::into_future`]
 //! before selecting and borrow the resulting future as `&mut Recv`.
 
 mod receiver;

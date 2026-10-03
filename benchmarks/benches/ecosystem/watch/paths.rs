@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Both adapters return an owned usize. Tokio's recv combines changed and borrow_and_update.
+// Both adapters return an owned `usize`. The Tokio adapter's `recv` combines `changed` and
+// `borrow_and_update`.
 
 use std::pin::pin;
 

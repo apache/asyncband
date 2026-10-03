@@ -95,8 +95,8 @@ impl<T> Sender<T> {
                 if receiver_owns_allocation {
                     waker.wake();
                 } else {
-                    // The send remains successful because this sender owned the waker before the
-                    // receiver cancelled.
+                    // Sending still succeeds because this sender owned the waker before the
+                    // receiving future was cancelled.
                     //
                     // SAFETY: Receiver cancellation transferred message and allocation cleanup to
                     // this sender. The original pointer provenance may therefore be reclaimed as a
@@ -137,7 +137,7 @@ impl<T> Sender<T> {
         let channel = unsafe { self.channel_ptr.as_ref() };
 
         // ORDERING: Relaxed is sufficient for the method's contract: if this returns true, a
-        // future call to send is guaranteed to return an error.
+        // future call to `send` is guaranteed to return an error.
         //
         // Once true has been observed, it will remain true. However, if false is observed, the
         // receiver might just have been dropped without this thread observing it yet.

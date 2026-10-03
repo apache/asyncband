@@ -47,7 +47,7 @@ use super::drop_message_and_deallocate_channel;
 /// Awaiting converts this receiver into a [`Recv`] future. Dropping either the receiver or its
 /// future disconnects the channel and discards any unread message.
 ///
-/// To keep a pending receive alive when another branch wins, call [`Receiver::into_future`]
+/// To keep a pending operation alive when another branch wins, call [`Receiver::into_future`]
 /// before selecting and borrow the resulting future as `&mut Recv`. The receiver itself does not
 /// implement [`Future`].
 pub struct Receiver<T> {
@@ -62,8 +62,8 @@ impl<T> fmt::Debug for Receiver<T> {
 
 unsafe impl<T: Send> Send for Receiver<T> {}
 
-// Receiver must not be `Sync`: receive operations taking `&self` assume that no other receive
-// operation runs concurrently.
+// Receiver must not be `Sync`: `try_recv` takes `&self` but assumes exclusive access to the
+// message.
 
 impl<T> Unpin for Receiver<T> {}
 
@@ -86,7 +86,7 @@ impl<T> Receiver<T> {
     /// This occurs when the associated [`Sender`] is dropped without sending a message, or after
     /// the message is received.
     ///
-    /// If `true` is returned, all future receive operations are guaranteed to return an error.
+    /// If `true` is returned, any subsequent attempt to receive the message will return an error.
     pub fn is_disconnected(&self) -> bool {
         // SAFETY: The existence of `self` guarantees that the receiver is still alive. If the
         // sender was dropped, it observed the live receiver and left allocation cleanup to it, so
@@ -102,8 +102,8 @@ impl<T> Receiver<T> {
 
     /// Returns true if there is a message in the channel, ready to be received.
     ///
-    /// If `true` is returned, the next call to receive the message is guaranteed to return
-    /// the message immediately.
+    /// If `true` is returned, the next attempt to receive the message is guaranteed to complete
+    /// immediately.
     pub fn has_message(&self) -> bool {
         // SAFETY: The existence of `self` guarantees that the receiver is still alive. If the
         // sender was dropped, it observed the live receiver and left allocation cleanup to it, so
@@ -112,7 +112,7 @@ impl<T> Receiver<T> {
 
         // ORDERING: This method only observes the atomic state. MESSAGE is terminal for the sender,
         // and receiver operations cannot run concurrently, so atomic coherence preserves this
-        // observation for the next receive. Accessing the message synchronizes separately.
+        // observation until the message is received. Accessing the message synchronizes separately.
         matches!(channel.state.load(Ordering::Relaxed), MESSAGE)
     }
 
@@ -123,9 +123,9 @@ impl<T> Receiver<T> {
     /// * `Err(TryRecvError::Disconnected)` if the [`Sender`] was dropped before sending anything or
     ///   if the message has already been extracted by a previous `try_recv` call.
     ///
-    /// If a message is returned, the channel is disconnected and any subsequent receive operation
-    /// using this receiver will return an error: [`TryRecvError::Disconnected`] for `try_recv`,
-    /// or [`RecvError::Disconnected`] for [`recv`](Receiver::into_future).
+    /// If a message is returned, the channel is disconnected and any subsequent attempt to receive
+    /// a message will return an error: [`TryRecvError::Disconnected`] for `try_recv`, or
+    /// [`RecvError::Disconnected`] when awaiting the receiver.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         // SAFETY: The channel will not be freed while this method is still running.
         let channel = unsafe { self.channel_ptr.as_ref() };
@@ -203,8 +203,8 @@ impl<T> Drop for Receiver<T> {
 /// Created by [`Receiver::into_future`], this future owns the receiving endpoint. Dropping it
 /// disconnects the channel and discards any unread message.
 ///
-/// Select on `&mut Recv` to keep a pending receive alive when another branch wins. A completed
-/// `Recv` must not be polled again.
+/// Select on `&mut Recv` to keep the pending future alive when another branch wins. A completed
+/// `Recv` future must not be polled again.
 pub struct Recv<T> {
     channel_ptr: NonNull<Channel<T>>,
 }

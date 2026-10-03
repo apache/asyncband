@@ -111,8 +111,8 @@ impl<T> UnboundedReceiver<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `recv` does not consume a value. Any selected value notification is
-    /// passed to another waiting receiver, so cancellation does not prevent it from receiving.
+    /// Dropping a pending `recv` future does not consume a value. Any unconsumed notification is
+    /// passed to another waiting task, so cancellation does not prevent it from receiving.
     pub async fn recv(&self) -> Result<T, RecvError> {
         self.shared.recv().await
     }

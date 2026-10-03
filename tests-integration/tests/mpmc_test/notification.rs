@@ -71,7 +71,7 @@ fn receiver_notifications<S, R: Receiver<usize>>(
                 assert_eq!(receiver.try_recv(), Ok(1));
                 drop(first);
                 assert_eq!(second_wakes.count(), 0);
-                // Cancellation must leave the next send able to notify this waiter.
+                // Sending another value must still notify this waiter after cancellation.
                 send(&sender, 2);
                 2
             }

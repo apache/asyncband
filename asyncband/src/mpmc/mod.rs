@@ -20,7 +20,7 @@
 //! Receivers compete for values: each value accepted by a sender is delivered to exactly one
 //! receiver while a receiver remains. Clone a receiver to distribute work across multiple
 //! asynchronous tasks. Dropping the final receiver releases any buffered values and makes later
-//! sends return their value in an error.
+//! attempts to send return their value in an error.
 
 mod bounded;
 mod error;

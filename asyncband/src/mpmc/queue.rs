@@ -81,13 +81,13 @@ impl<T> State<T> {
         None
     }
 
-    /// Queues a value and selects the receiver to wake.
+    /// Queues a value and selects a waiting receiver's waker.
     fn push(&mut self, value: T) -> Option<Waker> {
         self.values.push_back(value);
         self.recv_waiters.notify_one()
     }
 
-    /// Takes the next value and grants its capacity to the oldest waiting sender.
+    /// Takes the next value and grants its capacity to the first waiting operation.
     fn pop(&mut self) -> Result<(T, Option<Waker>), TryRecvError> {
         if let Some(value) = self.values.pop_front() {
             Ok((value, self.release()))
@@ -105,7 +105,7 @@ enum RecvWaiter {
     Notified,
 }
 
-/// A grant transfers capacity to a detached sender waiter until it claims or cancels it.
+/// A grant assigns capacity to a detached waiter node until its future claims or releases it.
 enum SendWaiter {
     Waiting(Waker),
     Granted,
@@ -126,9 +126,9 @@ impl WaitList<RecvWaiter> {
         Some(waker)
     }
 
-    /// Queues a blocked operation or refreshes the waker of a queued one.
+    /// Registers a pending operation's waker or refreshes an existing registration.
     ///
-    /// A notified receive that still found no value queues again at the back.
+    /// If the future finds no value after notification, its waiter rejoins the queue.
     #[must_use = "drop the replaced waker after releasing the queue lock"]
     fn register(&mut self, id: &mut Option<WaiterId>, current: &Waker) -> Option<Waker> {
         if let Some(queued) = *id {
@@ -149,7 +149,7 @@ impl WaitList<RecvWaiter> {
 }
 
 impl WaitList<SendWaiter> {
-    /// Queues a blocked sender or refreshes its waker without losing its place.
+    /// Registers an operation waiting for capacity or refreshes its waker without losing its place.
     #[must_use = "drop the replaced waker after releasing the queue lock"]
     fn register_waiter(&mut self, id: &mut Option<WaiterId>, current: &Waker) -> Option<Waker> {
         if let Some(queued) = *id {

@@ -18,17 +18,18 @@
 //! Multi-producer, multi-consumer broadcast channels.
 //!
 //! Both channels are lossless: every value a channel accepts stays readable by every subscription
-//! that was active when it was accepted, so a receive never reports lag. They differ in what a
+//! that was active when it was accepted, so receiving never reports lag. They differ in what a
 //! producer does when the slowest subscription stops reclaiming. [`bounded`] retains at most the
 //! capacity it was built with and makes producers wait for that subscription. [`unbounded`] never
 //! waits to send and lets the retained backlog grow instead.
 //!
 //! # Delivery and processing
 //!
-//! A receive advances its subscription before returning the value. The channel tracks unread
-//! messages, not application work: retaining a received value or processing it asynchronously
-//! does not hold backlog capacity. There is no acknowledgement or processing-completion barrier.
-//! If cloning a received value panics, that subscription has still advanced past the value.
+//! Receiving a value advances the subscription before returning that value. The channel tracks
+//! unread messages, not application work: retaining a received value or processing it
+//! asynchronously does not hold backlog capacity. There is no acknowledgement or
+//! processing-completion barrier. If cloning a received value panics, that subscription has still
+//! advanced past the value.
 //!
 //! Sending with no subscriptions discards the value and succeeds. A later subscription starts
 //! with future publications; it does not replay discarded or previously retained values.

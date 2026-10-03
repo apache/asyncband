@@ -23,8 +23,8 @@
 //! receiver while receivers remain. Values leave the queue in FIFO order, but consumer completion
 //! order and an equal distribution of work are not guaranteed.
 //!
-//! The sender cannot be cloned, and every send operation requires `&mut self`, including for the
-//! lifetime of a bounded send future. It can move between tasks, but shared references cannot send.
+//! The sender cannot be cloned, and sending requires `&mut self`, including for the lifetime of a
+//! bounded `send` future. The sender can move between tasks, but shared references cannot send.
 //! Dropping the sender lets receivers drain buffered messages before observing disconnection.
 //! Dropping the last receiver releases buffered messages and makes sending return the unsent value.
 //!
@@ -75,7 +75,7 @@
 //! }
 //! ```
 //!
-//! A bounded send future retains the exclusive borrow until completion or cancellation:
+//! A bounded `send` future retains the exclusive borrow until completion or cancellation:
 //!
 //! ```compile_fail,E0499
 //! let (mut sender, _receiver) = asyncband::spmc::bounded(1);

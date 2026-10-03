@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! On a current-thread executor, unbounded sends can finish before consumers run.
+//! On a current-thread executor, sending to an unbounded queue can finish before consumers run.
 
 mod bounded;
 mod unbounded;

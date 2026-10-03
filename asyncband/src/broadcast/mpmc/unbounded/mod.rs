@@ -17,7 +17,7 @@
 
 //! An unbounded fan-out channel with multiple senders and receivers.
 //!
-//! A send publishes one value to every receiver that exists at that moment. Receivers advance
+//! Sending publishes one value to every receiver that exists at that moment. Receivers advance
 //! independently, and a receiver created later starts with the next value rather than replaying
 //! earlier values.
 //!
@@ -268,9 +268,9 @@ impl<T: Clone> UnboundedReceiver<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `recv` leaves this receiver's cursor unchanged. Its next call can still
-    /// return the same next value, so `recv` can be raced with other futures in a selection
-    /// construct.
+    /// Dropping a pending `recv` future leaves this receiver's cursor unchanged. A subsequent
+    /// `recv` future can still return the same next value, so these futures may safely be raced
+    /// with other futures in a selection construct.
     ///
     /// # Examples
     ///
@@ -389,7 +389,7 @@ struct Recv<'a, T> {
 
 impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
-        // Ready paths clear the token, so only a cancelled pending receive takes this lock.
+        // Ready paths clear the token, so only dropping a pending `Recv` future takes this lock.
         if self.token.is_none() {
             return;
         }

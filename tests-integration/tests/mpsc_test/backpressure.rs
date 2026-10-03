@@ -66,7 +66,7 @@ fn cancelling_a_sender_preserves_capacity_and_notifies_the_next_waiter() {
             assert_eq!(second_wakes.count(), 0);
         }
         drop(first);
-        // Even a granted send must not publish its value until it is polled to completion.
+        // Even after capacity is granted, the `send` future must be polled to publish its value.
         if cancel_after_notification {
             assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Empty));
         }

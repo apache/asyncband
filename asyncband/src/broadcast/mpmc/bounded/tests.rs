@@ -63,7 +63,7 @@ fn buffer_is_preallocated_and_never_shrinks() {
 fn a_large_reclaim_leaves_no_permit_slack() {
     // Dropping a lagging subscription frees the whole backlog in one step, far more slots than the
     // single parked producer can use. Permits beyond that producer would sit in the semaphore, and
-    // the next send to block would burn each one on a publish attempt that cannot succeed.
+    // the next producer to wait would burn each one on a publication attempt that cannot succeed.
     let capacity = 64;
     let (tx, mut fast) = bounded(capacity);
     let lagging = tx.subscribe();

@@ -18,14 +18,14 @@
 use std::any::type_name;
 use std::fmt;
 
-/// A send or capacity reservation failed because the receiver has been dropped.
+/// An attempt to send a message or reserve capacity failed because the receiver has been dropped.
 ///
 /// Returned by [`UnboundedSender::send`], [`BoundedSender::send`], [`Permit::send`], and
 /// [`reserve`].
 ///
-/// A failed send retains the unsent message. A failed reservation carries `()` because no
-/// message has been provided yet. Access the value with [`as_inner`](Self::as_inner) or
-/// [`into_inner`](Self::into_inner).
+/// If sending fails, the error retains the unsent message. If reserving capacity fails, the error
+/// carries `()` because no message has been provided yet. Access the value with
+/// [`as_inner`](Self::as_inner) or [`into_inner`](Self::into_inner).
 ///
 /// [`UnboundedSender::send`]: crate::mpsc::UnboundedSender::send
 /// [`BoundedSender::send`]: crate::mpsc::BoundedSender::send
@@ -68,8 +68,9 @@ impl<T> std::error::Error for SendError<T> {}
 /// An attempt to send or reserve capacity failed.
 ///
 /// Returned by [`try_send`](crate::mpsc::BoundedSender::try_send) and
-/// [`try_reserve`](crate::mpsc::BoundedSender::try_reserve). A failed send retains the unsent
-/// message; a failed reservation carries `()` because no message has been provided yet.
+/// [`try_reserve`](crate::mpsc::BoundedSender::try_reserve). If sending fails, the error retains
+/// the unsent message; if reserving capacity fails, it carries `()` because no message has been
+/// provided yet.
 #[derive(Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
     /// No capacity is available for sending or reserving a message.
@@ -115,7 +116,7 @@ impl<T> fmt::Debug for TrySendError<T> {
 
 impl<T> std::error::Error for TrySendError<T> {}
 
-/// A receive operation cannot produce another value.
+/// An attempt to receive a value failed because the channel is disconnected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecvError {
     /// All senders have been dropped, and no buffered messages remain.
@@ -130,7 +131,7 @@ impl fmt::Display for RecvError {
 
 impl std::error::Error for RecvError {}
 
-/// A non-blocking receive did not produce a value.
+/// A non-blocking attempt to receive a value failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TryRecvError {
     /// No message is currently available, but at least one sender remains.

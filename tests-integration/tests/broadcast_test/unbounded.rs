@@ -52,7 +52,7 @@ impl Drop for Reentrant {
     }
 }
 
-/// A payload that panics while a shared receive clones it.
+/// A payload that panics when a receiver clones it.
 #[derive(Debug)]
 struct PanicOnClone {
     value: u64,
@@ -263,14 +263,14 @@ fn panicking_clone_leaves_the_channel_consistent() {
         panic: false,
     });
 
-    // Two receivers share the payload, so this receive has to clone it.
+    // Two receivers share the payload, so `try_recv` has to clone it.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rx1.try_recv().map(|msg| msg.value)
     }));
     assert!(result.is_err());
 
-    // The failed receive still consumed the message for `rx1`, and left the channel usable for
-    // both receivers.
+    // The panicking `try_recv` call still consumed the message for `rx1`, and left the channel
+    // usable for both receivers.
     assert_eq!(rx1.try_recv().unwrap().value, 2);
     assert_eq!(rx2.try_recv().unwrap().value, 1);
     assert_eq!(rx2.try_recv().unwrap().value, 2);
@@ -291,7 +291,7 @@ fn message_destructors_run_outside_the_channel_lock() {
             });
         }
 
-        // Reclaim through a receive, and then through a receiver drop.
+        // Exercise reclamation while receiving messages and dropping receivers.
         assert_eq!(rx1.try_recv().unwrap().value, 0);
         drop(rx2);
         assert_eq!(rx1.try_recv().unwrap().value, 1);

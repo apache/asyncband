@@ -102,7 +102,7 @@ impl<T> fmt::Debug for TrySendError<T> {
 
 impl<T> std::error::Error for TrySendError<T> {}
 
-/// Error returned by a receive operation.
+/// Error returned when receiving a value fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecvError {
     /// The sender has been dropped, and no buffered values remain.
@@ -117,7 +117,7 @@ impl fmt::Display for RecvError {
 
 impl std::error::Error for RecvError {}
 
-/// Error returned by a non-blocking receive operation.
+/// Error returned by a non-blocking attempt to receive a value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TryRecvError {
     /// No value is currently available, but the sender remains.

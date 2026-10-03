@@ -32,7 +32,7 @@ use crate::mpsc::TryRecvError;
 /// The receiving endpoint of a bounded mpsc channel.
 ///
 /// Instances are created by the [`bounded`](crate::mpsc::bounded) function. Dropping the receiver
-/// discards queued values and disconnects pending sends and reservations.
+/// discards queued values and causes pending `send` and `reserve` operations to fail.
 pub struct BoundedReceiver<T> {
     shared: Arc<Mutex<State<T>>>,
 }
@@ -108,9 +108,9 @@ impl<T> BoundedReceiver<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `recv` does not remove a message from the channel. A later `recv` call
-    /// can still observe the next queued value, so `recv` may safely be raced with other futures
-    /// in a selection construct.
+    /// Dropping a pending `recv` future does not remove a message from the channel. A subsequent
+    /// `recv` future can still observe the next queued value, so these futures may safely be raced
+    /// with other futures in a selection construct.
     ///
     /// # Examples
     ///
