@@ -231,8 +231,6 @@ impl<T> Shared<T> {
 struct Send<'a, T> {
     shared: &'a Shared<T>,
     waiter: Option<WaiterId>,
-    // `Drop` passes an unconsumed notification on before this value is destroyed, because its
-    // destructor may depend on another blocked sender making progress.
     value: Option<T>,
 }
 
@@ -276,23 +274,13 @@ impl<T> Drop for Send<'_, T> {
         let Some(id) = self.waiter.take() else {
             return;
         };
-        let (retired, waker) = {
+        let retired = {
             let mut state = self.shared.state.lock();
             if state.receivers == 0 {
                 return;
             }
-            let retired = state.send_waiters.remove_waiter(id);
-            // Hand an unconsumed notification to the next sender while the slot is still free.
-            let waker = if matches!(retired, Waiter::Notified) && state.has_capacity() {
-                state.send_waiters.notify_one()
-            } else {
-                None
-            };
-            (retired, waker)
+            state.send_waiters.remove_waiter(id)
         };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
         drop(retired);
     }
 }
