@@ -178,45 +178,53 @@ fn cancelling_waiter_drops_its_waker_outside_the_waiter_lock() {
 #[test]
 fn cancelling_notified_waiter_passes_notify_one_to_next_waiter() {
     test_runtime().block_on(async {
-        let mutex = Mutex::new(());
-        let condvar = Condvar::new();
+        for reacquire in [false, true] {
+            let mutex = Mutex::new(());
+            let condvar = Condvar::new();
 
-        let mut first = Box::pin(condvar.wait(mutex.lock().await));
-        assert!(poll_once(first.as_mut()).is_pending());
+            let mut first = Box::pin(condvar.wait(mutex.lock().await));
+            assert!(poll_once(first.as_mut()).is_pending());
 
-        let mut second = Box::pin(condvar.wait(mutex.lock().await));
-        assert!(poll_once(second.as_mut()).is_pending());
+            let mut second = Box::pin(condvar.wait(mutex.lock().await));
+            assert!(poll_once(second.as_mut()).is_pending());
 
-        let held = mutex.lock().await;
-        condvar.notify_one();
+            let held = mutex.lock().await;
+            condvar.notify_one();
 
-        // The first waiter consumes the notification, then blocks while reacquiring the mutex.
-        assert!(poll_once(first.as_mut()).is_pending());
-        drop(first);
-        drop(held);
+            // Cancel either before the selected waiter is polled again or while it reacquires
+            // the mutex. Both paths must pass the notification to the next waiter.
+            if reacquire {
+                assert!(poll_once(first.as_mut()).is_pending());
+            }
+            drop(first);
+            drop(held);
 
-        // Cancelling the selected waiter passes the notification to an existing waiter.
-        drop(expect_ready(poll_once(second.as_mut())));
+            drop(expect_ready(poll_once(second.as_mut())));
+        }
     });
 }
 
 #[test]
 fn cancelling_only_notified_waiter_does_not_buffer_notify_one() {
     test_runtime().block_on(async {
-        let mutex = Mutex::new(());
-        let condvar = Condvar::new();
+        for reacquire in [false, true] {
+            let mutex = Mutex::new(());
+            let condvar = Condvar::new();
 
-        let mut first = Box::pin(condvar.wait(mutex.lock().await));
-        assert!(poll_once(first.as_mut()).is_pending());
+            let mut first = Box::pin(condvar.wait(mutex.lock().await));
+            assert!(poll_once(first.as_mut()).is_pending());
 
-        let held = mutex.lock().await;
-        condvar.notify_one();
-        assert!(poll_once(first.as_mut()).is_pending());
-        drop(first);
-        drop(held);
+            let held = mutex.lock().await;
+            condvar.notify_one();
+            if reacquire {
+                assert!(poll_once(first.as_mut()).is_pending());
+            }
+            drop(first);
+            drop(held);
 
-        let mut late = Box::pin(condvar.wait(mutex.lock().await));
-        assert!(poll_once(late.as_mut()).is_pending());
+            let mut late = Box::pin(condvar.wait(mutex.lock().await));
+            assert!(poll_once(late.as_mut()).is_pending());
+        }
     });
 }
 
