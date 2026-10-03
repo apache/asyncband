@@ -22,12 +22,14 @@ use super::RecvError;
 use super::SendError;
 use super::TryRecvError;
 use super::TrySendError;
+use super::queue::Producer;
 use super::queue::Shared;
+use super::queue::channel;
 
 /// Creates a bounded single-producer, multi-consumer queue.
 ///
-/// The queue stores at most `capacity` values. Sending waits for a receiver to free capacity when
-/// the queue is full.
+/// The queue stores at most `capacity` values in preallocated storage. Sending waits for a
+/// receiver to free capacity when the queue is full.
 ///
 /// Operations briefly acquire an internal mutex. No lock is held across an await point, while
 /// waking tasks, or while dropping messages. The `try_*` methods do not wait for capacity or
@@ -35,15 +37,14 @@ use super::queue::Shared;
 ///
 /// # Panics
 ///
-/// Panics if `capacity` is zero.
+/// Panics if `capacity` is zero or the preallocated message storage exceeds the allocation size
+/// limit.
 #[track_caller]
 pub fn bounded<T>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     assert!(capacity > 0, "spmc bounded queue requires capacity > 0");
-    let shared = Arc::new(Shared::bounded(capacity));
+    let (producer, shared) = channel(capacity);
     (
-        BoundedSender {
-            shared: shared.clone(),
-        },
+        BoundedSender { producer, capacity },
         BoundedReceiver { shared },
     )
 }
@@ -53,18 +54,14 @@ pub fn bounded<T>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
 /// Instances are created by [`bounded`] and cannot be cloned. Sending requires exclusive access to
 /// this endpoint.
 pub struct BoundedSender<T> {
-    shared: Arc<Shared<T>>,
+    producer: Producer<T>,
+    // Only the producer can increase the queue length, so consumers need no capacity counter.
+    capacity: usize,
 }
 
 impl<T> fmt::Debug for BoundedSender<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BoundedSender").finish_non_exhaustive()
-    }
-}
-
-impl<T> Drop for BoundedSender<T> {
-    fn drop(&mut self) {
-        self.shared.drop_sender();
     }
 }
 
@@ -75,13 +72,12 @@ impl<T> BoundedSender<T> {
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `send` future removes its waiter and drops `value`. A future that has
-    /// returned `Pending` has not sent the value. Cancellation releases the exclusive sender borrow
-    /// and allows the next operation to use any available capacity. Use
+    /// Dropping a pending `send` future drops `value` without enqueueing it and releases the
+    /// exclusive sender borrow. Any available capacity remains usable by the next operation. Use
     /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is
     /// unavailable.
     pub async fn send(&mut self, value: T) -> Result<(), SendError<T>> {
-        self.shared.send(value).await
+        self.producer.send(value, self.capacity).await
     }
 
     /// Attempts to send a value without waiting for capacity.
@@ -89,11 +85,11 @@ impl<T> BoundedSender<T> {
     /// Returns [`TrySendError::Full`] when the queue has reached its exact capacity and
     /// [`TrySendError::Disconnected`] when all receivers have been dropped.
     pub fn try_send(&mut self, value: T) -> Result<(), TrySendError<T>> {
-        self.shared.try_send(value)
+        self.producer.try_send(value, self.capacity)
     }
 }
 
-/// Receives values from the associated [`BoundedSender`] handles.
+/// Receives values from the associated [`BoundedSender`].
 ///
 /// Cloned receivers compete for values, and every accepted value is returned by exactly one
 /// receiver while a receiver remains. Dropping the final receiver releases buffered values.

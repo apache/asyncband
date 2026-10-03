@@ -15,30 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Hand-polled operation costs. The waker exercises reference counting without task scheduling.
+mod bounded;
+mod unbounded;
 
-mod barrier;
-mod blocking;
-mod broadcast;
-mod completion;
-mod condvar;
-mod event;
-mod latch;
-mod mpmc;
-mod mpsc;
-mod mutex;
-mod once;
-mod once_map;
-mod oneshot;
-mod phaser;
-mod pool;
-mod rwlock;
-mod semaphore;
-mod shutdown;
-mod singleflight;
-mod spmc;
-mod waitgroup;
-
-fn main() {
-    divan::main();
-}
+// Fixed sample sizes keep one-time warm-up work from changing Divan's iteration granularity.
+const FAST_SAMPLE_SIZE: u32 = 256;

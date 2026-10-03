@@ -31,6 +31,10 @@ All notable changes to this project will be documented in this file.
 
 * Executor waker operations, including cloning, waking, and dropping, are expected not to panic; recovery from panicking waker callbacks is no longer supported.
 
+### Improvements
+
+* Reduce SPMC waiting and cancellation overhead. Bounded SPMC queues now preallocate storage for the requested capacity when created instead of growing it during sending.
+
 ## v0.7.3 (2026-09-29)
 
 ### New features

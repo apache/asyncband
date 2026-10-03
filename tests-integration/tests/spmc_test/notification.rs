@@ -197,6 +197,48 @@ fn bounded_capacity_and_pending_send_progress() {
 }
 
 #[test]
+fn freeing_multiple_slots_wakes_only_the_latest_sender_task_once() {
+    let (mut sender, receiver) = spmc::bounded(2);
+    let competing = receiver.clone();
+    sender.try_send(0).unwrap();
+    sender.try_send(1).unwrap();
+    let (first, first_wakes) = WakeCounter::new();
+    let (latest, latest_wakes) = WakeCounter::new();
+    let mut pending = Box::pin(sender.send(2));
+    assert!(poll_with(pending.as_mut(), &first).is_pending());
+    assert!(poll_with(pending.as_mut(), &first).is_pending());
+    assert!(poll_with(pending.as_mut(), &latest).is_pending());
+
+    assert_eq!(receiver.try_recv(), Ok(0));
+    assert_eq!(competing.try_recv(), Ok(1));
+    assert_eq!(first_wakes.count(), 0);
+    assert_eq!(latest_wakes.count(), 1);
+    expect_ready(poll_with(pending.as_mut(), &latest)).unwrap();
+    drop(pending);
+    assert_eq!(receiver.try_recv(), Ok(2));
+    assert_eq!(latest_wakes.count(), 1);
+}
+
+#[test]
+fn cancelling_a_pending_send_allows_a_new_task_to_wait_for_capacity() {
+    let (mut sender, receiver) = spmc::bounded(1);
+    sender.try_send(0).unwrap();
+    let (cancelled, cancelled_wakes) = WakeCounter::new();
+    let mut first = Box::pin(sender.send(1));
+    assert!(poll_with(first.as_mut(), &cancelled).is_pending());
+    drop(first);
+
+    let (current, current_wakes) = WakeCounter::new();
+    let mut second = Box::pin(sender.send(2));
+    assert!(poll_with(second.as_mut(), &current).is_pending());
+    assert_eq!(receiver.try_recv(), Ok(0));
+    assert_eq!(cancelled_wakes.count(), 0);
+    assert_eq!(current_wakes.count(), 1);
+    expect_ready(poll_with(second.as_mut(), &current)).unwrap();
+    assert_eq!(receiver.try_recv(), Ok(2));
+}
+
+#[test]
 fn cancelling_an_unnotified_send_preserves_the_buffered_value() {
     let (mut sender, receiver) = spmc::bounded(1);
     let drops = Arc::new(AtomicUsize::new(0));
