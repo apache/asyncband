@@ -145,7 +145,7 @@ async fn run_groups(fail_one_worker: bool) -> Result<(), Box<dyn Error + Send + 
             .map(|_| AtomicU64::new(0))
             .collect::<Vec<_>>(),
     );
-    let mut tasks = Vec::new();
+    let mut tasks = vec![];
     for group in 0..GROUPS {
         let ready = Phaser::new();
         let resume = Phaser::new();

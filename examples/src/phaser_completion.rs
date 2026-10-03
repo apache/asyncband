@@ -95,7 +95,7 @@ async fn publish_until_target() -> Result<(), Closed> {
     let mut coordinator = Member::register(&ready, &resume)?;
     let values = Arc::new((0..3).map(|_| AtomicU64::new(0)).collect::<Vec<_>>());
     let published = Arc::new(AtomicU64::new(0));
-    let mut tasks = Vec::new();
+    let mut tasks = vec![];
     // Register everyone before polling any worker; the coordinator also keeps both phases open.
     for id in 0..3 {
         tasks.push(tokio::spawn(compute(

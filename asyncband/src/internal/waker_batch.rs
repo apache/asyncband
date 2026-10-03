@@ -42,7 +42,7 @@ impl WakerBatch {
         Self {
             inline: [const { MaybeUninit::uninit() }; Self::STACK_SIZE],
             inline_len: 0,
-            spilled: Vec::new(),
+            spilled: vec![],
         }
     }
 

@@ -45,7 +45,7 @@ async fn cache_worker_with_notify() {
     let entries = Mutex::new(VecDeque::new());
     let changed = Notify::new();
     let worker = async {
-        let mut flushed = Vec::new();
+        let mut flushed = vec![];
         while flushed.len() < 3 {
             let entry = entries.lock().unwrap().pop_front();
             if let Some(entry) = entry {
@@ -77,7 +77,7 @@ async fn cache_worker_with_event() {
     let entries = Mutex::new(VecDeque::new());
     let changed = AutoResetEvent::new();
     let worker = async {
-        let mut flushed = Vec::new();
+        let mut flushed = vec![];
         while flushed.len() < 3 {
             let entry = entries.lock().unwrap().pop_front();
             if let Some(entry) = entry {

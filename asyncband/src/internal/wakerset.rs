@@ -35,9 +35,15 @@ use crate::internal::waker_batch::WakerBatch;
 pub struct WakerToken(SlotId);
 
 /// Cancellable waker storage without an implicit lifecycle or generation.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct WakerSet {
     wakers: Arena<Waker>,
+}
+
+impl Default for WakerSet {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WakerSet {

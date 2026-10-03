@@ -40,7 +40,7 @@ async fn main() -> Result<(), Closed> {
 async fn start_gate() -> Result<(), Closed> {
     let phaser = Phaser::new();
     let setup = phaser.register_one()?;
-    let mut tasks = Vec::new();
+    let mut tasks = vec![];
     for mut participant in phaser.register(3)? {
         tasks.push(tokio::spawn(async move {
             participant.wait().await?;

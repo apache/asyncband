@@ -44,7 +44,7 @@
 //! let phaser = Phaser::new();
 //! let mut coordinator = phaser.register_one()?;
 //! let participants = phaser.register(documents.len())?;
-//! let mut tasks = Vec::new();
+//! let mut tasks = vec![];
 //!
 //! for (document, mut participant) in documents.into_iter().zip(participants) {
 //!     let dictionary = dictionary.clone();
@@ -71,7 +71,7 @@
 //! }
 //! coordinator.wait().await?;
 //!
-//! let mut encoded_documents = Vec::new();
+//! let mut encoded_documents = vec![];
 //! for task in tasks {
 //!     encoded_documents.push(task.await.unwrap()?);
 //! }
