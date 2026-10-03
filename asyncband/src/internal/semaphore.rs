@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn release_distributes_permits_across_multiple_batches() {
-        const WAITER_COUNT: usize = WakerBatch::INLINE_CAPACITY * 2 + 1;
+        const WAITER_COUNT: usize = WakerBatch::STACK_SIZE * 2 + 1;
 
         let semaphore = Semaphore::new(0);
         let counters = (0..WAITER_COUNT)

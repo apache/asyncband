@@ -136,7 +136,6 @@ pub(crate) mod waker_batch;
     feature = "waitgroup",
     feature = "watch",
 ))]
-// Reusable waker sets and terminal primitives use different lifecycle policies, so some feature
-// subsets leave one constructor or detach operation unused.
+// Some feature subsets use only one constructor or one of the two notification paths.
 #[allow(dead_code)]
 pub(crate) mod wakerset;

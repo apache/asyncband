@@ -20,7 +20,6 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
 use crate::internal::wakerset::WakerSet;
@@ -57,7 +56,7 @@ impl CountdownState {
     /// Detaches the waiter set under its lock, then wakes every waiter after releasing the lock.
     pub fn wake_all(&self) {
         let wakers = mem::take(&mut *self.waiters.lock());
-        wakers.into_iter().for_each(Waker::wake);
+        wakers.wake_all();
     }
 
     /// Polls for zero, registering the current waker if the countdown is still active.

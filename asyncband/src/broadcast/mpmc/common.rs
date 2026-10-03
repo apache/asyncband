@@ -31,7 +31,6 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
 use super::error::RecvError;
 use super::error::TryRecvError;
@@ -431,7 +430,7 @@ impl<T> Inner<T> {
 /// Both families call this from the last sender's `Drop`.
 pub fn disconnect<T>(inner: &Mutex<Inner<T>>) {
     let wakers = mem::take(&mut inner.lock().waiters);
-    wakers.into_iter().for_each(Waker::wake);
+    wakers.wake_all();
 }
 
 /// Removes the waker registration for a cancelled `receive`, dropping the waker unlocked.

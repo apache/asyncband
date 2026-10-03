@@ -66,7 +66,6 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
 use crate::internal::wakerset::WakerSet;
@@ -104,7 +103,7 @@ impl State {
         }
 
         let wakers = mem::take(&mut *self.waiters.lock());
-        wakers.into_iter().for_each(Waker::wake);
+        wakers.wake_all();
     }
 
     fn poll_wait(&self, token: &mut Option<WakerToken>, cx: &mut Context<'_>) -> Poll<()> {

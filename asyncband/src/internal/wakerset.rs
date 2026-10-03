@@ -57,8 +57,7 @@ impl WakerSet {
 
     /// Collects registered wakers into an owned batch, retaining slot capacity for reuse.
     ///
-    /// Moves each waker into the batch; up to [`WakerBatch::INLINE_CAPACITY`] fit without
-    /// allocating.
+    /// Moves each waker into the batch; up to [`WakerBatch::STACK_SIZE`] fit without allocating.
     #[inline]
     pub fn take_all(&mut self) -> WakerBatch {
         if self.wakers.is_empty() {
@@ -67,13 +66,12 @@ impl WakerSet {
         self.wakers.take_all()
     }
 
-    /// Consumes the set, transferring its backing allocation to an iterator.
+    /// Consumes the set, waking every registered waker and releasing its allocation.
     ///
-    /// This avoids collecting a separate batch when capacity is no longer needed. The iterator
-    /// releases the allocation when dropped.
+    /// Call after releasing the owning primitive's state lock.
     #[inline]
-    pub fn into_iter(self) -> impl Iterator<Item = Waker> {
-        self.wakers.into_iter()
+    pub fn wake_all(self) {
+        self.wakers.into_iter().for_each(Waker::wake);
     }
 
     /// Registers or updates a waker.
