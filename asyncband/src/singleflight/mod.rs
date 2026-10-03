@@ -74,17 +74,18 @@ where
     fn get_or_insert(&self, key: K) -> Arc<Entry<K, V>> {
         let hash = self.hasher.hash_one(&key);
         let mut entries = self.entries.lock();
-        entries
-            .entry(hash, |entry| entry.key.eq(&key), |entry| entry.hash)
-            .or_insert_with(|| {
-                Arc::new(Entry {
-                    hash,
-                    key,
-                    cell: OnceCell::new(),
-                })
-            })
-            .into_mut()
-            .clone()
+        // Drop duplicate keys after unlocking: their destructors may reenter the group.
+        if let Some(entry) = entries.find(hash, |entry| entry.key.eq(&key)) {
+            return entry.clone();
+        }
+
+        let entry = Arc::new(Entry {
+            hash,
+            key,
+            cell: OnceCell::new(),
+        });
+        entries.insert_unique(hash, entry.clone(), |entry| entry.hash);
+        entry
     }
 
     fn remove<Q>(&self, key: &Q)

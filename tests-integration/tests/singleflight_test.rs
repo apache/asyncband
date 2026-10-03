@@ -15,10 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::borrow::Borrow;
+use std::cell::Cell;
+use std::hash::Hash;
+use std::hash::Hasher;
+use std::pin::pin;
+use std::rc::Rc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::task::Poll;
 
 use asyncband::singleflight::Group;
+use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
 
 #[tokio::test]
@@ -163,4 +171,85 @@ async fn concurrent_try_work_is_coalesced() {
         assert_eq!(waiter.await, Ok("val"));
     }
     assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn duplicate_key_destructor_can_forget_another_key() {
+    struct Key {
+        value: usize,
+        on_drop: Option<Box<dyn FnOnce()>>,
+    }
+
+    impl Borrow<usize> for Key {
+        fn borrow(&self) -> &usize {
+            &self.value
+        }
+    }
+
+    impl PartialEq for Key {
+        fn eq(&self, other: &Self) -> bool {
+            self.value == other.value
+        }
+    }
+
+    impl Eq for Key {}
+
+    impl Hash for Key {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.value.hash(state);
+        }
+    }
+
+    impl Drop for Key {
+        fn drop(&mut self) {
+            if let Some(on_drop) = self.on_drop.take() {
+                on_drop();
+            }
+        }
+    }
+
+    assert_completes_without_deadlock(|| {
+        for fallible in [false, true] {
+            let group = Rc::new(Group::new());
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let mut leader = pin!(group.work(
+                Key {
+                    value: 7,
+                    on_drop: None,
+                },
+                async || {
+                    release_rx.await.unwrap();
+                    "leader"
+                }
+            ));
+            assert!(poll_once(leader.as_mut()).is_pending());
+
+            let key_dropped = Rc::new(Cell::new(false));
+            let dropped = key_dropped.clone();
+            let weak = Rc::downgrade(&group);
+            let key = Key {
+                value: 7,
+                on_drop: Some(Box::new(move || {
+                    weak.upgrade().unwrap().forget(&42_usize);
+                    dropped.set(true);
+                })),
+            };
+            let mut duplicate = pin!(async {
+                if fallible {
+                    group
+                        .try_work(key, async || Ok::<_, ()>("duplicate"))
+                        .await
+                        .unwrap()
+                } else {
+                    group.work(key, async || "duplicate").await
+                }
+            });
+            assert!(poll_once(duplicate.as_mut()).is_pending());
+            assert!(key_dropped.get());
+
+            release_tx.send(()).unwrap();
+            assert_eq!(poll_once(leader.as_mut()), Poll::Ready("leader"));
+            assert_eq!(poll_once(duplicate.as_mut()), Poll::Ready("leader"));
+        }
+    });
 }
