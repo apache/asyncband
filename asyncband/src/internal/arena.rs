@@ -135,13 +135,6 @@ impl<T> Arena<T> {
         self.len == 0
     }
 
-    pub fn values(&self) -> impl Iterator<Item = &T> {
-        self.slots.iter().filter_map(|slot| match slot {
-            Slot::Occupied(value) => Some(value),
-            Slot::Vacant { .. } => None,
-        })
-    }
-
     /// Removes the value stored at `id`.
     ///
     /// # Panics
