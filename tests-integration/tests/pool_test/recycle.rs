@@ -114,6 +114,28 @@ macro_rules! recycle_contract {
         }
 
         #[test]
+        fn recycled_object_can_outlive_the_pool() {
+            for detach in [false, true] {
+                let manager = Manager::default();
+                let pool = pool(1, manager.clone(), None);
+                drop(ready(pool.get()).unwrap());
+                let object = ready(pool.get()).unwrap();
+                assert_eq!(object.status().recycle_count(), 1);
+
+                let weak_pool = Arc::downgrade(&pool);
+                drop(pool);
+                assert!(weak_pool.upgrade().is_none());
+                assert_eq!(*object, 0);
+                if detach {
+                    assert_eq!(object.detach(), 0);
+                } else {
+                    drop(object);
+                }
+                assert!(manager.detached().is_empty());
+            }
+        }
+
+        #[test]
         fn cancelling_one_validation_leaves_other_idle_objects_available() {
             let manager = Manager::default();
             let pool = pool(

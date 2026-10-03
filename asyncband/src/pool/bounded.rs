@@ -293,8 +293,7 @@ impl<M: ManageObject> Pool<M> {
                 Some(object) => {
                     let mut unready_object = UnreadyObject {
                         state: Some(object),
-                        pool: Arc::downgrade(self),
-                        recycle_cancelled_strategy: self.config.recycle_cancelled_strategy,
+                        pool: self,
                     };
 
                     let state = unready_object.state();
@@ -556,34 +555,32 @@ impl<M: ManageObject> Object<M> {
 /// If the check fails, `detach()` should be called to permanently remove the object
 /// from the pool. If dropped without calling either method (due to being cancelled),
 /// the behavior depends on the pool's [`RecycleCancelledStrategy`] configuration.
-struct UnreadyObject<M: ManageObject> {
+struct UnreadyObject<'a, M: ManageObject> {
     state: Option<ObjectState<M::Object>>,
-    pool: Weak<Pool<M>>,
-    recycle_cancelled_strategy: RecycleCancelledStrategy,
+    // The enclosing `get` call keeps the pool alive through cancellation cleanup.
+    pool: &'a Arc<Pool<M>>,
 }
 
-impl<M: ManageObject> Drop for UnreadyObject<M> {
+impl<M: ManageObject> Drop for UnreadyObject<'_, M> {
     fn drop(&mut self) {
         if let Some(mut state) = self.state.take() {
-            if let Some(pool) = self.pool.upgrade() {
-                match self.recycle_cancelled_strategy {
-                    RecycleCancelledStrategy::Detach => {
-                        pool.detach_object(&mut state.o);
-                    }
-                    RecycleCancelledStrategy::ReturnToPool => {
-                        pool.restore_idle(state);
-                    }
+            match self.pool.config.recycle_cancelled_strategy {
+                RecycleCancelledStrategy::Detach => {
+                    self.pool.detach_object(&mut state.o);
+                }
+                RecycleCancelledStrategy::ReturnToPool => {
+                    self.pool.restore_idle(state);
                 }
             }
         }
     }
 }
 
-impl<M: ManageObject> UnreadyObject<M> {
+impl<M: ManageObject> UnreadyObject<'_, M> {
     fn ready(mut self, permit: OwnedSemaphorePermit) -> Object<M> {
         // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
         let state = Some(self.state.take().unwrap());
-        let pool = self.pool.clone();
+        let pool = Arc::downgrade(self.pool);
         Object {
             state,
             permit,
@@ -593,9 +590,7 @@ impl<M: ManageObject> UnreadyObject<M> {
 
     fn detach(&mut self) {
         if let Some(mut state) = self.state.take() {
-            if let Some(pool) = self.pool.upgrade() {
-                pool.detach_object(&mut state.o);
-            }
+            self.pool.detach_object(&mut state.o);
         }
     }
 
