@@ -167,7 +167,6 @@ pub fn bounded<T: Clone>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<
 }
 
 struct Shared<T> {
-    /// Buffer, receiver cursors, and parked receivers, all under a single lock.
     inner: Mutex<Inner<T>>,
     /// Number of active senders.
     senders: AtomicUsize,

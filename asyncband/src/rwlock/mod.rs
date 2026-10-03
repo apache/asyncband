@@ -76,9 +76,7 @@ pub struct RwLock<T: ?Sized> {
     ///
     /// This is ensured to be non-zero.
     max_readers: usize,
-    /// Semaphore to coordinate read and write access to T
     s: Semaphore,
-    /// The inner data.
     c: UnsafeCell<T>,
 }
 

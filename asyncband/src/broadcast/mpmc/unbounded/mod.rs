@@ -103,7 +103,6 @@ pub fn unbounded<T: Clone>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
 }
 
 struct Shared<T> {
-    /// Buffer, receiver cursors, and parked receivers, all under a single lock.
     inner: Mutex<Inner<T>>,
     /// Number of active senders.
     senders: AtomicUsize,
