@@ -244,13 +244,10 @@ impl<T> fmt::Debug for BoundedSender<T> {
 
 impl<T> Drop for BoundedSender<T> {
     fn drop(&mut self) {
-        match self.shared.senders.fetch_sub(1, Ordering::AcqRel) {
-            // Only parked receivers need waking. A parked producer borrows a live sender for the
-            // duration of its `send`, so the last sender cannot be dropping while one exists.
-            1 => common::disconnect(&self.shared.inner),
-            _ => {
-                // there are still other senders left, do nothing
-            }
+        // Only parked receivers need waking. A parked producer borrows a live sender for the
+        // duration of its `send`, so the last sender cannot be dropping while one exists.
+        if self.shared.senders.fetch_sub(1, Ordering::AcqRel) == 1 {
+            common::disconnect(&self.shared.inner);
         }
     }
 }

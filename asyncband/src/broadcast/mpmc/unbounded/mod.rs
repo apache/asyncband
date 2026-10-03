@@ -136,11 +136,8 @@ impl<T> fmt::Debug for UnboundedSender<T> {
 
 impl<T> Drop for UnboundedSender<T> {
     fn drop(&mut self) {
-        match self.shared.senders.fetch_sub(1, Ordering::AcqRel) {
-            1 => common::disconnect(&self.shared.inner),
-            _ => {
-                // there are still other senders left, do nothing
-            }
+        if self.shared.senders.fetch_sub(1, Ordering::AcqRel) == 1 {
+            common::disconnect(&self.shared.inner);
         }
     }
 }
