@@ -571,7 +571,7 @@ impl<T, M: ManageObject<Object = T>> Object<T, M> {
 /// If the check fails, `detach()` should be called to permanently remove the object
 /// from the pool. If dropped without calling either method (due to being cancelled),
 /// the behavior depends on the pool's [`RecycleCancelledStrategy`] configuration.
-struct UnreadyObject<T, M: ManageObject<Object = T> = NeverManageObject<T>> {
+struct UnreadyObject<T, M: ManageObject<Object = T>> {
     state: Option<ObjectState<T>>,
     pool: Weak<Pool<T, M>>,
     recycle_cancelled_strategy: RecycleCancelledStrategy,
