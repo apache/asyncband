@@ -323,8 +323,8 @@ impl<T> Backlog<T> {
     /// it leaves `head`, so the zero-count prefix ends there. Only removing a lagging subscription
     /// can release more.
     ///
-    /// `buffer` shrinks here and grows only in [`Backlog::publish`], so this is the one place
-    /// `retained()` can fall. A bounded channel therefore accounts for released capacity at
+    /// `buffer` shrinks here and grows only in [`Backlog::publish_retained`], so this is the one
+    /// place `retained()` can fall. A bounded channel therefore accounts for released capacity at
     /// exactly the two call sites that reach this: [`Backlog::receive`] and
     /// [`Backlog::remove_receiver`].
     fn reclaim_vacated(&mut self) -> Reclaimed<T> {
