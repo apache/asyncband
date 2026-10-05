@@ -1,13 +1,31 @@
-// This file contains code derived from Tokio 1.42.0's RwLock implementation.
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+// Portions of the guard API originated from Tokio 1.42.0's RwLock implementation.
 // Copyright (c) Tokio Contributors
-// The derived code remains licensed under the MIT License.
-// The incorporated code has been modified for use in Apache Asyncband.
+// The Tokio-derived portions remain licensed under the MIT License.
+// Asyncband replaced guard-local destruction and manual ownership transfers with movable RAII
+// access tokens. Projection moves the token, and downgrade establishes a read token before waking
+// waiters. The public documentation and examples describe Asyncband's access and projection model.
 // Upstream source:
 // https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock/owned_write_guard_mapped.rs
 
 use std::fmt;
 use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ptr::NonNull;
@@ -15,58 +33,16 @@ use std::sync::Arc;
 
 use crate::rwlock::OwnedMappedRwLockReadGuard;
 use crate::rwlock::RwLock;
+use crate::rwlock::access::WriteAccess;
 
-/// An owned write guard projected to one component of the protected value.
+/// Exclusive access to a projection of a locked value kept alive by an `Arc`.
 ///
-/// [`OwnedRwLockWriteGuard::map`](crate::rwlock::OwnedRwLockWriteGuard::map) and
-/// [`OwnedRwLockWriteGuard::filter_map`](crate::rwlock::OwnedRwLockWriteGuard::filter_map) create
-/// this guard. It keeps the lock alive and its write access active while exposing only the
-/// projected component.
-///
-/// # Examples
-///
-/// ```
-/// # #[tokio::main]
-/// # async fn main() {
-/// use std::sync::Arc;
-///
-/// use asyncband::rwlock::OwnedRwLockWriteGuard;
-/// use asyncband::rwlock::RwLock;
-///
-/// #[derive(Debug)]
-/// struct User {
-///     id: u32,
-///     profile: UserProfile,
-/// }
-///
-/// #[derive(Debug)]
-/// struct UserProfile {
-///     email: String,
-///     name: String,
-/// }
-///
-/// let user = User {
-///     id: 1,
-///     profile: UserProfile {
-///         email: "user@example.com".to_owned(),
-///         name: "Alice".to_owned(),
-///     },
-/// };
-///
-/// let rwlock = Arc::new(RwLock::new(user));
-/// let mut guard = rwlock.write_owned().await;
-/// let mut profile_guard = OwnedRwLockWriteGuard::map(guard, |user| &mut user.profile);
-///
-/// // Now we can only access and modify the user's profile
-/// profile_guard.email = "newemail@example.com".to_owned();
-/// assert_eq!(profile_guard.email, "newemail@example.com");
-/// # }
-/// ```
+/// Use [`OwnedRwLockWriteGuard::map`](crate::rwlock::OwnedRwLockWriteGuard::map) to select a
+/// component. Dropping the guard releases its access.
 #[must_use = "dropping the guard releases its write access immediately"]
 pub struct OwnedMappedRwLockWriteGuard<T: ?Sized, U: ?Sized> {
     d: NonNull<U>,
-    lock: Arc<RwLock<T>>,
-    permits_acquired: usize,
+    access: WriteAccess<Arc<RwLock<T>>>,
     // Mutable access requires invariance over U.
     variance: PhantomData<*mut U>,
 }
@@ -82,18 +58,12 @@ unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Sync> Sync for OwnedMappedRwLoc
 unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Send> Send for OwnedMappedRwLockWriteGuard<T, U> {}
 
 impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockWriteGuard<T, U> {
-    pub(crate) fn new(d: NonNull<U>, lock: Arc<RwLock<T>>, permits_acquired: usize) -> Self {
+    pub(crate) fn new(d: NonNull<U>, access: WriteAccess<Arc<RwLock<T>>>) -> Self {
         Self {
             d,
-            lock,
-            permits_acquired,
+            access,
             variance: PhantomData,
         }
-    }
-}
-impl<T: ?Sized, U: ?Sized> Drop for OwnedMappedRwLockWriteGuard<T, U> {
-    fn drop(&mut self) {
-        self.lock.s.release(self.permits_acquired);
     }
 }
 
@@ -125,54 +95,11 @@ impl<T: ?Sized, U: ?Sized> DerefMut for OwnedMappedRwLockWriteGuard<T, U> {
 }
 
 impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockWriteGuard<T, U> {
-    /// Projects this guard to a deeper mutable component.
+    /// Selects a component while retaining the same lock access.
     ///
-    /// The returned guard keeps the same write access active. Call this as
-    /// `OwnedMappedRwLockWriteGuard::map(...)` so a method named `map` on `U` remains accessible.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// use std::sync::Arc;
-    ///
-    /// use asyncband::rwlock::OwnedMappedRwLockWriteGuard;
-    /// use asyncband::rwlock::OwnedRwLockWriteGuard;
-    /// use asyncband::rwlock::RwLock;
-    ///
-    /// #[derive(Debug)]
-    /// struct User {
-    ///     id: u32,
-    ///     profile: UserProfile,
-    /// }
-    ///
-    /// #[derive(Debug)]
-    /// struct UserProfile {
-    ///     email: String,
-    ///     name: String,
-    /// }
-    ///
-    /// let user = User {
-    ///     id: 1,
-    ///     profile: UserProfile {
-    ///         email: "user@example.com".to_owned(),
-    ///         name: "Alice".to_owned(),
-    ///     },
-    /// };
-    ///
-    /// let rwlock = Arc::new(RwLock::new(user));
-    /// let mut guard = rwlock.write_owned().await;
-    /// // First map to the profile field
-    /// let mut profile_guard = OwnedRwLockWriteGuard::map(guard, |user| &mut user.profile);
-    /// // Then map to the email field specifically
-    /// let mut email_guard =
-    ///     OwnedMappedRwLockWriteGuard::map(profile_guard, |profile| &mut profile.email);
-    ///
-    /// *email_guard = "newemail@example.com".to_owned();
-    /// assert_eq!(&*email_guard, "newemail@example.com");
-    /// # }
-    /// ```
+    /// The closure runs while the original guard is held. If it panics, that guard is released.
+    /// Call this as `OwnedMappedRwLockWriteGuard::map(guard, f)` to avoid shadowing methods
+    /// of the value.
     pub fn map<V, F>(mut orig: Self, f: F) -> OwnedMappedRwLockWriteGuard<T, V>
     where
         F: FnOnce(&mut U) -> &mut V,
@@ -182,82 +109,14 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockWriteGuard<T, U> {
         // when the original OwnedMappedRwLockWriteGuard was constructed. The guard guarantees
         // exclusive access to the data through the rwlock, so dereferencing is safe.
         let d = NonNull::from(f(unsafe { orig.d.as_mut() }));
-        let orig = ManuallyDrop::new(orig);
-
-        let permits_acquired = orig.permits_acquired;
-        // SAFETY: The original guard is wrapped in `ManuallyDrop` and will not be dropped.
-        // This allows us to safely move the `Arc` out of it and transfer ownership to the new
-        // guard.
-        let lock = unsafe { std::ptr::read(&orig.lock) };
-
-        OwnedMappedRwLockWriteGuard::new(d, lock, permits_acquired)
+        OwnedMappedRwLockWriteGuard::new(d, orig.access)
     }
 
-    /// Attempts to project this guard to a deeper mutable component.
+    /// Selects a component, or returns the still-held original guard when the closure returns
+    /// `None`.
     ///
-    /// The original guard is returned when `f` returns `None`. Call this as
-    /// `OwnedMappedRwLockWriteGuard::filter_map(...)` so a method with the same name on `U` remains
-    /// accessible.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// use std::sync::Arc;
-    ///
-    /// use asyncband::rwlock::OwnedMappedRwLockWriteGuard;
-    /// use asyncband::rwlock::OwnedRwLockWriteGuard;
-    /// use asyncband::rwlock::RwLock;
-    ///
-    /// #[derive(Debug)]
-    /// struct AppState {
-    ///     user_count: u64,
-    ///     metrics: Option<Metrics>,
-    /// }
-    ///
-    /// #[derive(Debug)]
-    /// struct Metrics {
-    ///     requests_per_second: f64,
-    ///     error_rate: f64,
-    /// }
-    ///
-    /// let state = AppState {
-    ///     user_count: 100,
-    ///     metrics: Some(Metrics {
-    ///         requests_per_second: 150.5,
-    ///         error_rate: 0.01,
-    ///     }),
-    /// };
-    ///
-    /// let rwlock = Arc::new(RwLock::new(state));
-    /// let guard = rwlock.write_owned().await;
-    ///
-    /// // First, map to the `metrics` field, which is an Option.
-    /// // This gives us an OwnedMappedRwLockWriteGuard<AppState, Option<Metrics>>
-    /// let metrics_opt_guard = OwnedRwLockWriteGuard::map(guard, |state| &mut state.metrics);
-    ///
-    /// // Now, on the mapped guard, try to map into the Option.
-    /// // This is the correct usage of OwnedMappedRwLockWriteGuard::filter_map.
-    /// let metrics_result =
-    ///     OwnedMappedRwLockWriteGuard::filter_map(metrics_opt_guard, |metrics_opt| {
-    ///         metrics_opt.as_mut()
-    ///     });
-    ///
-    /// match metrics_result {
-    ///     Ok(mut metrics_guard) => {
-    ///         // Update metrics across tasks
-    ///         metrics_guard.requests_per_second = 200.0;
-    ///         metrics_guard.error_rate = 0.005;
-    ///         assert_eq!(metrics_guard.requests_per_second, 200.0);
-    ///     }
-    ///     Err(_original_guard) => {
-    ///         // Metrics not available, original guard is returned
-    ///         println!("Metrics not enabled");
-    ///     }
-    /// }
-    /// # }
-    /// ```
+    /// A panic in the closure releases the guard. Call this as
+    /// `OwnedMappedRwLockWriteGuard::filter_map(guard, f)`.
     pub fn filter_map<V, F>(mut orig: Self, f: F) -> Result<OwnedMappedRwLockWriteGuard<T, V>, Self>
     where
         F: FnOnce(&mut U) -> Option<&mut V>,
@@ -269,76 +128,17 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockWriteGuard<T, U> {
         match f(unsafe { orig.d.as_mut() }) {
             Some(d) => {
                 let d = NonNull::from(d);
-                let orig = ManuallyDrop::new(orig);
-
-                let permits_acquired = orig.permits_acquired;
-                // SAFETY: The original guard is wrapped in `ManuallyDrop` and will not be dropped.
-                // This allows us to safely move the `Arc` out of it and transfer ownership to the
-                // new guard.
-                let lock = unsafe { std::ptr::read(&orig.lock) };
-
-                Ok(OwnedMappedRwLockWriteGuard::new(d, lock, permits_acquired))
+                Ok(OwnedMappedRwLockWriteGuard::new(d, orig.access))
             }
             None => Err(orig),
         }
     }
 
-    /// Atomically downgrades the write lock to a read lock while preserving the mapping.
+    /// Retains shared access to the same projection while releasing exclusive access.
     ///
-    /// This method changes the lock from exclusive mode to shared mode atomically,
-    /// preventing other writers from acquiring the lock in between.
-    ///
-    /// The returned `OwnedMappedRwLockReadGuard` preserves the original mapping and
-    /// has a `'static` lifetime.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// use std::sync::Arc;
-    ///
-    /// use asyncband::rwlock::OwnedRwLockWriteGuard;
-    /// use asyncband::rwlock::RwLock;
-    ///
-    /// #[derive(Debug)]
-    /// struct Database {
-    ///     connection_count: u32,
-    ///     status: String,
-    /// }
-    ///
-    /// let db = Arc::new(RwLock::new(Database {
-    ///     connection_count: 0,
-    ///     status: "idle".to_owned(),
-    /// }));
-    ///
-    /// let write_guard = db.clone().write_owned().await;
-    /// let mut count_write_guard =
-    ///     OwnedRwLockWriteGuard::map(write_guard, |db| &mut db.connection_count);
-    /// *count_write_guard = 5;
-    ///
-    /// let count_read_guard = count_write_guard.downgrade();
-    /// assert_eq!(*count_read_guard, 5);
-    ///
-    /// assert!(db.clone().try_write_owned().is_none());
-    ///
-    /// drop(count_read_guard);
-    /// assert!(db.clone().try_write_owned().is_some());
-    /// # }
-    /// ```
+    /// There is no unlocked interval in which another writer can modify the value. Queued
+    /// requests retain their order, so a waiting writer can prevent later readers from joining.
     pub fn downgrade(self) -> OwnedMappedRwLockReadGuard<T, U> {
-        // Prevent the original write guard from running its Drop implementation,
-        // which would release all permits. This must be done BEFORE any operation
-        // that might panic to ensure panic safety.
-        let guard = ManuallyDrop::new(self);
-
-        // Release max_readers - 1 permits to convert the write lock to a read lock.
-        guard.lock.s.release(guard.permits_acquired - 1);
-
-        // SAFETY: The `guard` is wrapped in `ManuallyDrop`, so its destructor will not be run.
-        // We can safely move the `Arc` out of the guard, as the guard is not used after this.
-        // This is a standard way to transfer ownership from a `ManuallyDrop` wrapper.
-        let lock = unsafe { std::ptr::read(&guard.lock) };
-        OwnedMappedRwLockReadGuard::new(guard.d, lock)
+        OwnedMappedRwLockReadGuard::new(self.d, self.access.downgrade())
     }
 }
