@@ -37,6 +37,43 @@ project:
     min_hours: 72
     vote_recipients:
       to: dev@asyncband.apache.org
+    start_vote_subject: "[VOTE] Release Apache {{PROJECT_NAME}} {{VERSION}}"
+    start_vote_template: |
+      Hello everyone,
+
+      I would like to call a vote on releasing Apache Asyncband (Incubating)
+      {{VERSION}}, staged on ATR as revision {{REVISION}}.
+
+      The release candidate is based on commit:
+      {{COMMIT}}
+
+      Source artifacts and ATR checks:
+      {{REVIEW_URL}}
+
+      File manifest with checksums:
+      {{MANIFEST_URL}}
+
+      Changelog:
+      https://github.com/apache/asyncband/blob/{{COMMIT}}/CHANGELOG.md
+
+      KEYS:
+      {{KEYS_FILE}}
+
+      The source archive is built by a GitHub Actions workflow and signed
+      with the project's automated release signing key:
+      023A 42E7 299A 010F EE7A E021 393A FB9D 52BB 37B8
+
+      Please vote:
+
+      [ ] +1 Approve the release
+      [ ] +0 No opinion
+      [ ] -1 Do not approve the release, with a reason
+
+      You can vote on ATR at the candidate page above, or by replying to
+      this email. The vote is open for at least {{DURATION}} hours.
+
+      Best regards,
+      {{YOUR_FULL_NAME}} ({{YOUR_ASF_ID}})
     announce_recipients:
       to: dev@asyncband.apache.org
     download_path_suffix: "{{VERSION}}"
