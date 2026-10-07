@@ -38,7 +38,10 @@ project:
     min_hours: 72
     vote_recipients:
       to: dev@asyncband.apache.org
-    start_vote_subject: "[VOTE] Release Apache {{PROJECT_NAME}} {{VERSION}}"
+    # Vote email templates. See https://releases.apache.org/docs/project-configuration#vote.
+    # ATR lists the variables each template accepts next to the field in the project settings,
+    # and in https://github.com/apache/tooling-trusted-releases/blob/main/atr/construct.py.
+    start_vote_subject: "[VOTE] Release Apache Asyncband (Incubating) {{VERSION}}"
     start_vote_template: |
       Hello everyone,
 
@@ -79,7 +82,8 @@ project:
       to: dev@asyncband.apache.org
       cc:
         - announce@apache.org
-    announce_release_subject: "[ANNOUNCE] Apache {{PROJECT_NAME}} {{VERSION}} released"
+    # Announcement email templates. See https://releases.apache.org/docs/project-configuration#finish.
+    announce_release_subject: "[ANNOUNCE] Apache Asyncband (Incubating) {{VERSION}} released"
     announce_release_template: |
       The Apache Asyncband (Incubating) project team is pleased to announce
       the release of Apache Asyncband (Incubating) {{VERSION}}.
