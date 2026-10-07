@@ -23,6 +23,7 @@ project:
     committee: asyncband
     name: Apache Asyncband
     homepage: https://asyncband.apache.org
+    download_page: https://asyncband.apache.org/downloads/
     repositories:
       - https://github.com/apache/asyncband.git
     programming_languages:
@@ -76,6 +77,41 @@ project:
       {{YOUR_FULL_NAME}} ({{YOUR_ASF_ID}})
     announce_recipients:
       to: dev@asyncband.apache.org
+      cc:
+        - announce@apache.org
+    announce_release_subject: "[ANNOUNCE] Apache {{PROJECT_NAME}} {{VERSION}} released"
+    announce_release_template: |
+      The Apache Asyncband (Incubating) project team is pleased to announce
+      the release of Apache Asyncband (Incubating) {{VERSION}}.
+
+      Apache Asyncband provides composable, runtime-agnostic concurrency
+      building blocks for async Rust.
+
+      The release is available from the download page:
+
+      {{DOWNLOAD_PAGE}}
+
+      The source release, signatures, and checksums are also available at:
+
+      {{DOWNLOAD_URL}}
+
+      The changes in this release are listed in the changelog:
+
+      https://github.com/apache/asyncband/blob/v{{VERSION}}/CHANGELOG.md
+
+      DISCLAIMER: Apache Asyncband (Incubating) is an effort undergoing
+      incubation at The Apache Software Foundation (ASF), sponsored by the
+      Apache Incubator. Incubation is required of all newly accepted projects
+      until a further review indicates that the infrastructure,
+      communications, and decision making process have stabilized in a
+      manner consistent with other successful ASF projects. While incubation
+      status is not necessarily a reflection of the completeness or stability
+      of the code, it does indicate that the project has yet to be fully
+      endorsed by the ASF.
+
+      On behalf of the Apache Asyncband (Incubating) project team,
+
+      {{YOUR_FULL_NAME}} ({{YOUR_ASF_ID}})
     download_path_suffix: "{{VERSION}}"
   features:
     atr_sync: true
