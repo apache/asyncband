@@ -83,12 +83,16 @@ impl<T: ?Sized + fmt::Display> fmt::Display for RwLockWriteGuard<'_, T> {
 impl<T: ?Sized> Deref for RwLockWriteGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
+        // SAFETY: `access` holds the write permit on the lock, so this guard is the only path to
+        // the cell while it lives.
         unsafe { &*self.access.owner().c.get() }
     }
 }
 
 impl<T: ?Sized> DerefMut for RwLockWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: `access` holds the write permit on the lock, so this guard is the only path to
+        // the cell while it lives.
         unsafe { &mut *self.access.owner().c.get() }
     }
 }
@@ -99,12 +103,12 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
     /// The closure runs while the original guard is held. If it panics, that guard is released.
     /// Call this as `RwLockWriteGuard::map(guard, f)` to avoid shadowing methods of the
     /// value.
-    pub fn map<U, F>(orig: Self, f: F) -> MappedRwLockWriteGuard<'a, U>
+    pub fn map<U, F>(mut orig: Self, f: F) -> MappedRwLockWriteGuard<'a, U>
     where
         F: FnOnce(&mut T) -> &mut U,
         U: ?Sized,
     {
-        let d = NonNull::from(f(unsafe { &mut *orig.access.owner().c.get() }));
+        let d = NonNull::from(f(&mut *orig));
         MappedRwLockWriteGuard::new(d, orig.access.into_semaphore())
     }
 
@@ -113,12 +117,12 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
     ///
     /// A panic in the closure releases the guard. Call this as
     /// `RwLockWriteGuard::filter_map(guard, f)`.
-    pub fn filter_map<U, F>(orig: Self, f: F) -> Result<MappedRwLockWriteGuard<'a, U>, Self>
+    pub fn filter_map<U, F>(mut orig: Self, f: F) -> Result<MappedRwLockWriteGuard<'a, U>, Self>
     where
         F: FnOnce(&mut T) -> Option<&mut U>,
         U: ?Sized,
     {
-        match f(unsafe { &mut *orig.access.owner().c.get() }) {
+        match f(&mut *orig) {
             Some(d) => {
                 let d = NonNull::from(d);
                 Ok(MappedRwLockWriteGuard::new(d, orig.access.into_semaphore()))

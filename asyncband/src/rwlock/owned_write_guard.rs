@@ -88,12 +88,16 @@ impl<T: ?Sized + fmt::Display> fmt::Display for OwnedRwLockWriteGuard<T> {
 impl<T: ?Sized> Deref for OwnedRwLockWriteGuard<T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
+        // SAFETY: `access` holds the write permit on the lock, so this guard is the only path to
+        // the cell while it lives.
         unsafe { &*self.access.owner().c.get() }
     }
 }
 
 impl<T: ?Sized> DerefMut for OwnedRwLockWriteGuard<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: `access` holds the write permit on the lock, so this guard is the only path to
+        // the cell while it lives.
         unsafe { &mut *self.access.owner().c.get() }
     }
 }
@@ -104,14 +108,12 @@ impl<T: ?Sized> OwnedRwLockWriteGuard<T> {
     /// The closure runs while the original guard is held. If it panics, that guard is released.
     /// Call this as `OwnedRwLockWriteGuard::map(guard, f)` to avoid shadowing methods of the
     /// value.
-    pub fn map<U, F>(orig: Self, f: F) -> OwnedMappedRwLockWriteGuard<T, U>
+    pub fn map<U, F>(mut orig: Self, f: F) -> OwnedMappedRwLockWriteGuard<T, U>
     where
         F: FnOnce(&mut T) -> &mut U,
         U: ?Sized,
     {
-        // SAFETY: We have exclusive write access to the data through the rwlock.
-        // The data pointer is valid for the lifetime of the guard.
-        let d = NonNull::from(f(unsafe { &mut *orig.access.owner().c.get() }));
+        let d = NonNull::from(f(&mut *orig));
         OwnedMappedRwLockWriteGuard::new(d, orig.access)
     }
 
@@ -120,14 +122,12 @@ impl<T: ?Sized> OwnedRwLockWriteGuard<T> {
     ///
     /// A panic in the closure releases the guard. Call this as
     /// `OwnedRwLockWriteGuard::filter_map(guard, f)`.
-    pub fn filter_map<U, F>(orig: Self, f: F) -> Result<OwnedMappedRwLockWriteGuard<T, U>, Self>
+    pub fn filter_map<U, F>(mut orig: Self, f: F) -> Result<OwnedMappedRwLockWriteGuard<T, U>, Self>
     where
         F: FnOnce(&mut T) -> Option<&mut U>,
         U: ?Sized,
     {
-        // SAFETY: We have exclusive write access to the data through the rwlock.
-        // The data pointer is valid for the lifetime of the guard.
-        let d = match f(unsafe { &mut *orig.access.owner().c.get() }) {
+        let d = match f(&mut *orig) {
             Some(d) => NonNull::from(d),
             None => return Err(orig),
         };

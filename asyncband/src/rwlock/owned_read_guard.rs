@@ -81,6 +81,8 @@ impl<T: ?Sized + fmt::Display> fmt::Display for OwnedRwLockReadGuard<T> {
 impl<T: ?Sized> Deref for OwnedRwLockReadGuard<T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
+        // SAFETY: `access` holds a read permit on the lock, so no writer can reach the cell
+        // while this guard lives.
         unsafe { &*self.access.owner().c.get() }
     }
 }
@@ -96,9 +98,7 @@ impl<T: ?Sized> OwnedRwLockReadGuard<T> {
         F: FnOnce(&T) -> &U,
         U: ?Sized,
     {
-        // SAFETY: The guard keeps the lock alive and holds shared access, so the pointer to the
-        // value is valid and dereferencing it is safe.
-        let d = std::ptr::NonNull::from(f(unsafe { &*orig.access.owner().c.get() }));
+        let d = std::ptr::NonNull::from(f(&*orig));
         OwnedMappedRwLockReadGuard::new(d, orig.access)
     }
 
@@ -112,9 +112,7 @@ impl<T: ?Sized> OwnedRwLockReadGuard<T> {
         F: FnOnce(&T) -> Option<&U>,
         U: ?Sized,
     {
-        // SAFETY: The guard keeps the lock alive and holds shared access, so the pointer to the
-        // value is valid and dereferencing it is safe.
-        match f(unsafe { &*orig.access.owner().c.get() }) {
+        match f(&*orig) {
             Some(d) => {
                 let d = std::ptr::NonNull::from(d);
                 Ok(OwnedMappedRwLockReadGuard::new(d, orig.access))

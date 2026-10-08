@@ -103,10 +103,7 @@ impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
         F: FnOnce(&mut T) -> &mut U,
         U: ?Sized,
     {
-        // SAFETY: orig.d is a valid NonNull<T> pointer that was created from a valid reference
-        // when the original MappedRwLockWriteGuard was constructed. The guard guarantees exclusive
-        // access to the data through the rwlock, so dereferencing is safe.
-        let d = NonNull::from(f(unsafe { orig.d.as_mut() }));
+        let d = NonNull::from(f(&mut *orig));
         MappedRwLockWriteGuard::new(d, orig.access)
     }
 
@@ -120,10 +117,7 @@ impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
         F: FnOnce(&mut T) -> Option<&mut U>,
         U: ?Sized,
     {
-        // SAFETY: orig.d is a valid NonNull<T> pointer that was created from a valid reference
-        // when the original MappedRwLockWriteGuard was constructed. The guard guarantees exclusive
-        // access to the data through the rwlock, so dereferencing is safe.
-        match f(unsafe { orig.d.as_mut() }) {
+        match f(&mut *orig) {
             Some(d) => {
                 let d = NonNull::from(d);
                 Ok(MappedRwLockWriteGuard::new(d, orig.access))

@@ -85,6 +85,8 @@ impl<T: ?Sized + fmt::Display> fmt::Display for RwLockReadGuard<'_, T> {
 impl<T: ?Sized> Deref for RwLockReadGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
+        // SAFETY: `access` holds a read permit on the lock, so no writer can reach the cell
+        // while this guard lives.
         unsafe { &*self.access.owner().c.get() }
     }
 }

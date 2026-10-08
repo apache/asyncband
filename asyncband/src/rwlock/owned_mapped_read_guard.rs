@@ -95,10 +95,7 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockReadGuard<T, U> {
         F: FnOnce(&U) -> &V,
         V: ?Sized,
     {
-        // SAFETY: orig.d is a valid NonNull<U> pointer that was created from a valid reference
-        // when the original OwnedMappedRwLockReadGuard was constructed. The guard guarantees shared
-        // access to the data through the rwlock, so dereferencing is safe.
-        let d = NonNull::from(f(unsafe { orig.d.as_ref() }));
+        let d = NonNull::from(f(&*orig));
         OwnedMappedRwLockReadGuard::new(d, orig.access)
     }
 
@@ -112,10 +109,7 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockReadGuard<T, U> {
         F: FnOnce(&U) -> Option<&V>,
         V: ?Sized,
     {
-        // SAFETY: orig.d is a valid NonNull<U> pointer that was created from a valid reference
-        // when the original OwnedMappedRwLockReadGuard was constructed. The guard guarantees shared
-        // access to the data through the rwlock, so dereferencing is safe.
-        match f(unsafe { orig.d.as_ref() }) {
+        match f(&*orig) {
             Some(d) => {
                 let d = NonNull::from(d);
                 Ok(OwnedMappedRwLockReadGuard::new(d, orig.access))
