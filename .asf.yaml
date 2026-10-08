@@ -66,7 +66,7 @@ project:
       The source archive is built by a GitHub Actions workflow and signed
       with the project's automated release signing key:
       023A 42E7 299A 010F EE7A E021 393A FB9D 52BB 37B8
-
+      {{FIRST_ROUND_THREAD}}
       Please vote:
 
       [ ] +1 Approve the release
