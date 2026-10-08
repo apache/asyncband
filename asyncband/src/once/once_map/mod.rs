@@ -172,24 +172,6 @@ where
         // Key and value destructors must not run while the table is locked.
         drop(removed);
     }
-
-    fn insert(&mut self, key: K, value: V) {
-        let hash = self.hasher.hash_one(&key);
-        let entry = Arc::new(Entry {
-            hash,
-            key,
-            cell: OnceCell::from_value(value),
-        });
-
-        let mut entries = self.entries.lock();
-        let replaced = entries
-            .find_entry(hash, |stored| stored.key.eq(&entry.key))
-            .ok()
-            .map(|occupied| occupied.remove().0);
-        entries.insert_unique(hash, entry, |entry| entry.hash);
-        drop(entries);
-        drop(replaced);
-    }
 }
 
 impl<K, V, S> FromIterator<(K, V)> for OnceMap<K, V, S>
@@ -200,14 +182,22 @@ where
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let iter = iter.into_iter();
-        let mut map = Self {
-            entries: Mutex::new(HashTable::with_capacity(iter.size_hint().0)),
-            hasher: S::default(),
-        };
+        let hasher = S::default();
+        let mut entries = HashTable::<Arc<Entry<K, V>>>::with_capacity(iter.size_hint().0);
         for (key, value) in iter {
-            map.insert(key, value);
+            let hash = hasher.hash_one(&key);
+            entries
+                .entry(hash, |entry| entry.key.eq(&key), |entry| entry.hash)
+                .insert(Arc::new(Entry {
+                    hash,
+                    key,
+                    cell: OnceCell::from_value(value),
+                }));
         }
-        map
+        Self {
+            entries: Mutex::new(entries),
+            hasher,
+        }
     }
 }
 
