@@ -23,6 +23,7 @@ project:
     committee: asyncband
     name: Apache Asyncband
     homepage: https://asyncband.apache.org
+    download_page: https://asyncband.apache.org/downloads/
     repositories:
       - https://github.com/apache/asyncband.git
     programming_languages:
@@ -37,8 +38,84 @@ project:
     min_hours: 72
     vote_recipients:
       to: dev@asyncband.apache.org
+    # Vote email templates. See https://releases.apache.org/docs/project-configuration#vote.
+    # ATR lists the variables each template accepts next to the field in the project settings,
+    # and in https://github.com/apache/tooling-trusted-releases/blob/13289acf/atr/construct.py.
+    start_vote_subject: "[VOTE] Release Apache Asyncband (Incubating) {{VERSION}}"
+    start_vote_template: |
+      Hello everyone,
+
+      I would like to call a vote on releasing Apache Asyncband (Incubating)
+      {{VERSION}}, staged on ATR as revision {{REVISION}}.
+
+      The release candidate is based on commit:
+      {{COMMIT}}
+
+      Source artifacts and ATR checks:
+      {{REVIEW_URL}}
+
+      File manifest with checksums:
+      {{MANIFEST_URL}}
+
+      Changelog:
+      https://github.com/apache/asyncband/blob/{{COMMIT}}/CHANGELOG.md
+
+      KEYS:
+      {{KEYS_FILE}}
+
+      The source archive is built by a GitHub Actions workflow and signed
+      with the project's automated release signing key:
+      023A 42E7 299A 010F EE7A E021 393A FB9D 52BB 37B8
+      {{FIRST_ROUND_THREAD}}
+      Please vote:
+
+      [ ] +1 Approve the release
+      [ ] +0 No opinion
+      [ ] -1 Do not approve the release, with a reason
+
+      You can vote on ATR at the candidate page above, or by replying to
+      this email. The vote is open for at least {{DURATION}} hours.
+
+      Best regards,
+      {{YOUR_FULL_NAME}} ({{YOUR_ASF_ID}})
     announce_recipients:
       to: dev@asyncband.apache.org
+      cc:
+        - announce@apache.org
+    # Announcement email templates. See https://releases.apache.org/docs/project-configuration#finish.
+    announce_release_subject: "[ANNOUNCE] Apache Asyncband (Incubating) {{VERSION}} released"
+    announce_release_template: |
+      The Apache Asyncband (Incubating) project team is pleased to announce
+      the release of Apache Asyncband (Incubating) {{VERSION}}.
+
+      Apache Asyncband provides composable, runtime-agnostic concurrency
+      building blocks for async Rust.
+
+      The release is available from the download page:
+
+      {{DOWNLOAD_PAGE}}
+
+      The source release, signatures, and checksums are also available at:
+
+      {{DOWNLOAD_URL}}
+
+      The changes in this release are listed in the changelog:
+
+      https://github.com/apache/asyncband/blob/v{{VERSION}}/CHANGELOG.md
+
+      DISCLAIMER: Apache Asyncband (Incubating) is an effort undergoing
+      incubation at The Apache Software Foundation (ASF), sponsored by the
+      Apache Incubator. Incubation is required of all newly accepted projects
+      until a further review indicates that the infrastructure,
+      communications, and decision making process have stabilized in a
+      manner consistent with other successful ASF projects. While incubation
+      status is not necessarily a reflection of the completeness or stability
+      of the code, it does indicate that the project has yet to be fully
+      endorsed by the ASF.
+
+      On behalf of the Apache Asyncband (Incubating) project team,
+
+      {{YOUR_FULL_NAME}} ({{YOUR_ASF_ID}})
     download_path_suffix: "{{VERSION}}"
   features:
     atr_sync: true
