@@ -40,7 +40,7 @@ project:
       to: dev@asyncband.apache.org
     # Vote email templates. See https://releases.apache.org/docs/project-configuration#vote.
     # ATR lists the variables each template accepts next to the field in the project settings,
-    # and in https://github.com/apache/tooling-trusted-releases/blob/main/atr/construct.py.
+    # and in https://github.com/apache/tooling-trusted-releases/blob/13289acf/atr/construct.py.
     start_vote_subject: "[VOTE] Release Apache Asyncband (Incubating) {{VERSION}}"
     start_vote_template: |
       Hello everyone,
