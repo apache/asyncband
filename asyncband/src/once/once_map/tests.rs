@@ -89,13 +89,12 @@ fn cancelled_compute_removes_empty_entry() {
 fn pending_computation_does_not_block_another_key() {
     let map = OnceMap::new();
     {
-        let mut pending = std::pin::pin!(
-            map.compute("pending", async || { std::future::pending::<i32>().await })
-        );
+        let mut pending =
+            pin!(map.compute("pending", async || std::future::pending::<i32>().await));
         assert!(poll_once(pending.as_mut()).is_pending());
 
-        let mut ready = std::pin::pin!(map.compute("ready", async || 1));
-        assert_eq!(poll_once(ready.as_mut()), std::task::Poll::Ready(1));
+        let mut ready = pin!(map.compute("ready", async || 1));
+        assert_eq!(poll_once(ready.as_mut()), Poll::Ready(1));
     }
 
     assert_eq!(map.len(), 1);
@@ -106,21 +105,20 @@ fn failed_compute_preserves_entry_for_waiter_retry() {
     let map = OnceMap::new();
     let released = Cell::new(false);
 
-    let first = map.try_compute("key", async || {
+    let mut first = pin!(map.try_compute("key", async || {
         poll_fn(|_| {
-            released
-                .get()
-                .then_some(())
-                .map_or(Poll::Pending, Poll::Ready)
+            if released.get() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
         })
         .await;
         Err::<i32, &str>("fail")
-    });
-    let mut first = pin!(first);
+    }));
     assert!(poll_once(first.as_mut()).is_pending());
 
-    let retry = map.try_compute("key", async || Ok::<i32, &str>(1));
-    let mut retry = pin!(retry);
+    let mut retry = pin!(map.try_compute("key", async || Ok::<i32, &str>(1)));
     assert!(poll_once(retry.as_mut()).is_pending());
 
     released.set(true);
