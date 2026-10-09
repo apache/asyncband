@@ -421,6 +421,7 @@ async fn aborted_task_releases_its_owned_mapped_rwlock_guard() {
     });
     assert!(rwlock.try_read().is_none());
 
+    tokio::task::yield_now().await;
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     assert_eq!(*rwlock.try_read().unwrap(), [10, 2]);
