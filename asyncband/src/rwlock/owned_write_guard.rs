@@ -38,7 +38,12 @@ use crate::rwlock::access::WriteAccess;
 impl<T: ?Sized> RwLock<T> {
     /// Waits for exclusive access and returns a guard retaining this `Arc`.
     ///
-    /// Ordering and cancellation follow [`Self::write`].
+    /// Ordering follows [`Self::write`].
+    ///
+    /// # Cancel safety
+    ///
+    /// Pending lock requests complete in order. Cancelling this future loses its place among them
+    /// and releases any reserved permits.
     pub async fn write_owned(self: Arc<Self>) -> OwnedRwLockWriteGuard<T> {
         self.s.acquire(self.max_readers).await;
         let permits_acquired = self.max_readers;

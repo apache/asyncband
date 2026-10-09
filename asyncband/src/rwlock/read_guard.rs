@@ -35,9 +35,13 @@ use crate::rwlock::access::ReadAccess;
 impl<T: ?Sized> RwLock<T> {
     /// Waits for a reader slot and returns a guard borrowing this lock.
     ///
-    /// An earlier queued writer must finish first. Cancelling this future releases its queue
-    /// position and any reserved permits. See [queue ordering](crate::rwlock) before acquiring
-    /// recursively.
+    /// An earlier queued writer must finish first. See [queue ordering](crate::rwlock) before
+    /// acquiring recursively.
+    ///
+    /// # Cancel safety
+    ///
+    /// Pending lock requests complete in order. Cancelling this future loses its place among them
+    /// and releases any reserved permits.
     pub async fn read(&self) -> RwLockReadGuard<'_, T> {
         self.s.acquire(1).await;
         RwLockReadGuard {

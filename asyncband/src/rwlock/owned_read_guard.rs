@@ -35,8 +35,13 @@ use crate::rwlock::access::ReadAccess;
 impl<T: ?Sized> RwLock<T> {
     /// Waits for a reader slot and returns a guard retaining this `Arc`.
     ///
-    /// Ordering and cancellation follow [`Self::read`]. The guard keeps the lock alive without
-    /// borrowing the caller's `Arc`.
+    /// Ordering follows [`Self::read`]. The guard keeps the lock alive without borrowing the
+    /// caller's `Arc`.
+    ///
+    /// # Cancel safety
+    ///
+    /// Pending lock requests complete in order. Cancelling this future loses its place among them
+    /// and releases any reserved permits.
     pub async fn read_owned(self: Arc<Self>) -> OwnedRwLockReadGuard<T> {
         self.s.acquire(1).await;
         OwnedRwLockReadGuard {

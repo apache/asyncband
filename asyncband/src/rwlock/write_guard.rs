@@ -37,7 +37,10 @@ use crate::rwlock::access::WriteAccess;
 impl<T: ?Sized> RwLock<T> {
     /// Waits for exclusive access and returns a guard borrowing this lock.
     ///
-    /// Cancelling this future releases its queue position and any reserved permits.
+    /// # Cancel safety
+    ///
+    /// Pending lock requests complete in order. Cancelling this future loses its place among them
+    /// and releases any reserved permits.
     pub async fn write(&self) -> RwLockWriteGuard<'_, T> {
         self.s.acquire(self.max_readers).await;
         RwLockWriteGuard {
