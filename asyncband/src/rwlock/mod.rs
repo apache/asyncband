@@ -18,9 +18,8 @@
 // Portions of the RwLock API originated from Tokio 1.42.0.
 // Copyright (c) Tokio Contributors
 // The Tokio-derived portions remain licensed under the MIT License.
-// Asyncband retains semaphore-based fair scheduling and has substantially rewritten the guard
-// lifecycle around RAII access tokens, separating permit ownership from data projection. Borrowed
-// and owned guards move tokens on projection and downgrade without manual destruction suppression.
+// Asyncband retains semaphore-based fair scheduling and rewrote the guard lifecycle around
+// private access tokens; see LICENSE.
 // Upstream source:
 // https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock.rs
 

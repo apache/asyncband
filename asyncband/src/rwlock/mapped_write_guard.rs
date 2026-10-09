@@ -18,9 +18,7 @@
 // Portions of the guard API originated from Tokio 1.42.0's RwLock implementation.
 // Copyright (c) Tokio Contributors
 // The Tokio-derived portions remain licensed under the MIT License.
-// Asyncband replaced guard-local destruction and manual ownership transfers with movable RAII
-// access tokens. Projection moves the token, and downgrade establishes a read token before waking
-// waiters. The public documentation and examples describe Asyncband's access and projection model.
+// Asyncband rewrote the guard lifecycle around private access tokens; see LICENSE.
 // Upstream source:
 // https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/rwlock/write_guard_mapped.rs
 
