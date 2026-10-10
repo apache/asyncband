@@ -19,13 +19,19 @@ use std::future::Future;
 use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
+use std::task::RawWaker;
+use std::task::RawWakerVTable;
 use std::task::Wake;
 use std::task::Waker;
+use std::thread;
 
+use asyncband::blocking::FutureExt;
 use asyncband::event::ManualResetEvent;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
@@ -124,7 +130,7 @@ impl Wake for ReentrantWaker {
 
 impl Drop for ReentrantWaker {
     fn drop(&mut self) {
-        self.0.is_set();
+        self.0.reset();
     }
 }
 
@@ -176,7 +182,7 @@ fn wakers_are_woken_and_dropped_outside_the_internal_lock() {
             );
         }
 
-        // Cancelling a pending wait drops the registered waker, which re-enters `is_set`. The
+        // Cancelling a pending wait drops the registered waker, which re-enters `reset`. The
         // registration holds the last reference, so the drop runs here.
         drop(replaced);
     });
@@ -334,4 +340,145 @@ fn cancelling_an_owned_waiter_releases_its_waker_and_event_handle() {
 
     event.set();
     assert_eq!(tracker.count(), 0);
+}
+
+// Unlike Wake's Arc clone, this exercises the callback used to clone a raw executor waker.
+fn waker_on_clone(callback: impl Fn() + Send + Sync + 'static) -> Waker {
+    struct Hook(Box<dyn Fn() + Send + Sync>);
+
+    unsafe fn clone(data: *const ()) -> RawWaker {
+        // SAFETY: Every raw waker owns an Arc<Hook>; the source remains alive during clone.
+        let hook = unsafe { &*data.cast::<Hook>() };
+        (hook.0)();
+        // SAFETY: The source waker keeps the allocation alive, and the returned waker owns
+        // exactly the additional strong reference created here.
+        unsafe { Arc::increment_strong_count(data.cast::<Hook>()) };
+        RawWaker::new(data, &VTABLE)
+    }
+
+    unsafe fn drop_ref(data: *const ()) {
+        // SAFETY: A consuming wake or drop releases exactly its own raw Arc reference.
+        drop(unsafe { Arc::from_raw(data.cast::<Hook>()) });
+    }
+
+    unsafe fn wake_by_ref(_: *const ()) {}
+
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, drop_ref, wake_by_ref, drop_ref);
+    let data = Arc::into_raw(Arc::new(Hook(Box::new(callback)))).cast();
+    // SAFETY: VTABLE maintains the Arc ownership rules, and Hook is Send + Sync.
+    unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) }
+}
+
+#[test]
+fn registration_rechecks_a_set_during_waker_preparation() {
+    assert_completes_without_deadlock(|| {
+        for reset in [false, true] {
+            let event = Arc::new(ManualResetEvent::new());
+            let on_clone = event.clone();
+            let waker = waker_on_clone(move || {
+                on_clone.set();
+                if reset {
+                    on_clone.reset();
+                }
+            });
+            let mut wait = Box::pin(event.wait());
+            let result = wait.as_mut().poll(&mut Context::from_waker(&waker));
+            if reset {
+                // This wait was not registered during the pulse. It belongs to the new period.
+                assert!(result.is_pending());
+                event.set();
+                assert!(poll_once(wait.as_mut()).is_ready());
+            } else {
+                // A false fast probe cannot cause registration after an unretracted set.
+                assert!(result.is_ready());
+            }
+        }
+    });
+}
+
+#[test]
+fn waker_replacement_rechecks_commitment_after_set_and_reset() {
+    assert_completes_without_deadlock(|| {
+        let event = Arc::new(ManualResetEvent::new());
+        let mut wait = Box::pin(event.wait());
+        assert!(poll_once(wait.as_mut()).is_pending());
+
+        let on_clone = event.clone();
+        let replacement = waker_on_clone(move || {
+            on_clone.set();
+            on_clone.reset();
+        });
+        assert!(
+            wait.as_mut()
+                .poll(&mut Context::from_waker(&replacement))
+                .is_ready()
+        );
+        assert!(!event.is_set());
+
+        let mut next = Box::pin(event.wait());
+        assert!(poll_once(next.as_mut()).is_pending());
+        event.set();
+        assert!(poll_once(next.as_mut()).is_ready());
+    });
+}
+
+#[test]
+fn ready_and_unchanged_pending_waits_do_not_clone_wakers() {
+    let clones = Arc::new(AtomicUsize::new(0));
+    let on_clone = clones.clone();
+    let waker = waker_on_clone(move || {
+        on_clone.fetch_add(1, Ordering::Relaxed);
+    });
+    let mut context = Context::from_waker(&waker);
+    let event = ManualResetEvent::with_state(true);
+    assert!(pin!(event.wait()).as_mut().poll(&mut context).is_ready());
+    assert_eq!(clones.load(Ordering::Relaxed), 0);
+
+    event.reset();
+    let mut wait = pin!(event.wait());
+    assert!(wait.as_mut().poll(&mut context).is_pending());
+    assert!(wait.as_mut().poll(&mut context).is_pending());
+    assert_eq!(clones.load(Ordering::Relaxed), 1);
+    event.set();
+    assert!(wait.as_mut().poll(&mut context).is_ready());
+    assert_eq!(clones.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn concurrent_sets_and_waits_publish_state_across_reset_cycles() {
+    assert_completes_without_deadlock(|| {
+        let event = ManualResetEvent::new();
+        let round = Barrier::new(2);
+        let value = AtomicUsize::new(0);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                for expected in 1..=300 {
+                    round.wait();
+                    value.store(expected, Ordering::Relaxed);
+                    event.set();
+                    round.wait();
+                }
+            });
+            for expected in 1..=300 {
+                // The opening barrier precedes publication; only the event publishes value.
+                round.wait();
+                match expected % 3 {
+                    0 => event.wait().block_on(),
+                    1 => {
+                        while !event.try_wait() {
+                            thread::yield_now();
+                        }
+                    }
+                    _ => {
+                        while !event.is_set() {
+                            thread::yield_now();
+                        }
+                    }
+                }
+                assert_eq!(value.load(Ordering::Relaxed), expected);
+                round.wait();
+                event.reset();
+            }
+        });
+    });
 }
