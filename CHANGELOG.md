@@ -33,7 +33,7 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
-* Release `Semaphore` permits without taking the waiter lock while permits remain available, which speeds up dropping `RwLock` read guards, releasing multi-permit `Semaphore` permits, and returning objects to a bounded pool that is not at capacity. `Mutex` releases are unchanged.
+* Add a lock-free fast path for releasing `Semaphore` permits while permits remain available, which speeds up dropping `RwLock` read guards, releasing multi-permit `Semaphore` permits, and returning objects to a bounded pool that is not at capacity. `Mutex` releases are unchanged.
 
 ### Notable changes
 
