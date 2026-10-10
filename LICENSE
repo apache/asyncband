@@ -262,16 +262,11 @@ The exact Tokio 1.42.0 revision is:
 
   https://github.com/tokio-rs/tokio/tree/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync
 
-Asyncband retains semaphore-based fair scheduling and substantially rewrote
-RwLock's guard lifecycle. The private asyncband/src/rwlock/access.rs
-implementation owns acquired permits in RAII tokens that release them through
-Asyncband's usize-based semaphore on drop. Guards carry no destructor of their
-own and project data by moving their token. Downgrading establishes a read
-token before releasing the other permits. The public documentation and
-examples were rewritten around access, projection, and owned lifetimes. The
-standard ASF source headers cover these substantial modifications contributed
-to Apache Asyncband; the incorporated Tokio-derived portions remain under the
-MIT License below.
+Asyncband substantially rewrote RwLock's guard lifecycle and documentation.
+Private RAII access tokens release permits through Asyncband's semaphore.
+The standard ASF source headers cover these substantial modifications
+contributed to Apache Asyncband; the incorporated Tokio-derived portions
+remain under the MIT License below.
 
 Acquisition has no semaphore-close error, nonblocking methods return Option,
 and max_readers is any NonZeroUsize instead of Tokio's restricted range. Mapped
