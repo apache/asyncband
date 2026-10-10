@@ -20,7 +20,7 @@
 //! and acquisitions. A plain store would end it, and Miri would report a data race here.
 //!
 //! The race shows only on schedules where the final acquire reads the latest balance rather than
-//! a stale one, so the test runs under several seeds.
+//! a stale one, so the test repeats the scenario to cover several schedules in one run.
 
 use std::cell::UnsafeCell;
 use std::sync::Arc;
@@ -44,6 +44,13 @@ fn wait_for(step: &AtomicUsize, value: usize) {
 
 #[test]
 fn acquire_synchronizes_with_every_earlier_release() {
+    // A plain store shows the race in about one round in four; 16 rounds catch it under one seed.
+    for _ in 0..16 {
+        run_once();
+    }
+}
+
+fn run_once() {
     let semaphore = Arc::new(Semaphore::new(1));
     let data = Arc::new(Data(UnsafeCell::new(0)));
     let step = Arc::new(AtomicUsize::new(0));
