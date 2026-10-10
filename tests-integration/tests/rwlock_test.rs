@@ -286,3 +286,144 @@ async fn queued_writer_precedes_a_later_reader() {
     let reader_guard = assert_ready!(poll_once(later_reader.as_mut()));
     assert_eq!(*reader_guard, 100);
 }
+
+#[test]
+fn downgrade_preserves_queue_order_at_reader_limits() {
+    for limit in [1, 3, usize::MAX] {
+        let lock = RwLock::with_max_readers(0, NonZeroUsize::new(limit).unwrap());
+        let writer = lock.try_write().unwrap();
+        let mut next_writer = Box::pin(lock.write());
+        let mut reader = Box::pin(lock.read());
+        assert_pending!(poll_once(next_writer.as_mut()));
+        assert_pending!(poll_once(reader.as_mut()));
+
+        let held_reader = writer.downgrade();
+        assert_pending!(poll_once(next_writer.as_mut()));
+        assert_pending!(poll_once(reader.as_mut()));
+        assert!(lock.try_read().is_none());
+        drop(held_reader);
+
+        let next_writer = assert_ready!(poll_once(next_writer.as_mut()));
+        assert_pending!(poll_once(reader.as_mut()));
+        drop(next_writer);
+        drop(assert_ready!(poll_once(reader.as_mut())));
+        assert!(lock.try_write().is_some());
+    }
+}
+
+#[test]
+fn cancelling_granted_owned_requests_releases_access_and_ownership() {
+    let lock = Arc::new(RwLock::new(0));
+    let writer = lock.try_write().unwrap();
+    let mut reader = Box::pin(lock.clone().read_owned());
+    assert_pending!(poll_once(reader.as_mut()));
+    drop(writer);
+    // The semaphore has granted the permit, but the future has not built a guard yet.
+    drop(reader);
+    assert_eq!(Arc::strong_count(&lock), 1);
+
+    let reader = lock.try_read().unwrap();
+    let mut writer = Box::pin(lock.clone().write_owned());
+    assert_pending!(poll_once(writer.as_mut()));
+    drop(reader);
+    drop(writer);
+    assert_eq!(Arc::strong_count(&lock), 1);
+    assert!(lock.try_write().is_some());
+}
+
+#[test]
+fn get_mut_and_into_inner_use_exclusive_access() {
+    let mut rwlock = RwLock::new(100);
+
+    *rwlock.get_mut() = 200;
+
+    assert_eq!(*rwlock.get_mut(), 200);
+    assert_eq!(rwlock.into_inner(), 200);
+}
+
+#[test]
+fn rejected_rwlock_projection_returns_the_guard() {
+    let rwlock = RwLock::new(vec![1, 2]);
+
+    let guard = rwlock.try_write().unwrap();
+    // No third value exists, so the guard comes back and the push needs no second acquisition.
+    let mut guard = RwLockWriteGuard::filter_map(guard, |values| values.get_mut(2)).unwrap_err();
+    assert!(rwlock.try_read().is_none());
+    guard.push(3);
+    drop(guard);
+
+    assert_eq!(*rwlock.try_read().unwrap(), [1, 2, 3]);
+}
+
+#[test]
+fn cancelled_mapped_reader_admits_a_queued_writer() {
+    let rwlock = RwLock::new(vec![1, 2]);
+
+    let mut reader = Box::pin(async {
+        let _mapped = RwLockReadGuard::map(rwlock.read().await, |values| &values[0]);
+        std::future::pending::<()>().await;
+    });
+    assert_pending!(poll_once(reader.as_mut()));
+    let mut writer = Box::pin(rwlock.write());
+    assert_pending!(poll_once(writer.as_mut()));
+
+    drop(reader);
+    let write_guard = assert_ready!(poll_once(writer.as_mut()));
+    assert_eq!(*write_guard, [1, 2]);
+}
+
+#[test]
+fn cancelled_mapped_writer_admits_a_queued_reader() {
+    let rwlock = RwLock::new(vec![1, 2]);
+
+    let mut writer = Box::pin(async {
+        let mut mapped = RwLockWriteGuard::map(rwlock.write().await, |values| &mut values[0]);
+        *mapped = 10;
+        std::future::pending::<()>().await;
+    });
+    assert_pending!(poll_once(writer.as_mut()));
+    let mut reader = Box::pin(rwlock.read());
+    assert_pending!(poll_once(reader.as_mut()));
+
+    drop(writer);
+    let read_guard = assert_ready!(poll_once(reader.as_mut()));
+    assert_eq!(*read_guard, [10, 2]);
+}
+
+#[tokio::test]
+async fn panicking_rwlock_projection_releases_access() {
+    let rwlock = Arc::new(RwLock::new(vec![1, 2]));
+
+    let task = tokio::spawn({
+        let rwlock = rwlock.clone();
+        async move {
+            let mapped = OwnedRwLockReadGuard::map(rwlock.read_owned().await, Vec::as_slice);
+            // No third value exists, so this projection panics.
+            drop(OwnedMappedRwLockReadGuard::map(mapped, |values| &values[2]));
+        }
+    });
+    assert!(task.await.unwrap_err().is_panic());
+
+    assert!(rwlock.try_write().is_some());
+    assert_eq!(Arc::strong_count(&rwlock), 1);
+}
+
+#[tokio::test]
+async fn aborted_task_releases_its_owned_mapped_rwlock_guard() {
+    let rwlock = Arc::new(RwLock::new(vec![1, 2]));
+
+    let write_guard = rwlock.clone().write_owned().await;
+    let mut mapped = OwnedRwLockWriteGuard::map(write_guard, |values| &mut values[0]);
+    *mapped = 10;
+    let task = tokio::spawn(async move {
+        let _mapped = mapped;
+        std::future::pending::<()>().await;
+    });
+    assert!(rwlock.try_read().is_none());
+
+    tokio::task::yield_now().await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(*rwlock.try_read().unwrap(), [10, 2]);
+    assert_eq!(Arc::strong_count(&rwlock), 1);
+}
