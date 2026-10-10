@@ -141,6 +141,10 @@ impl CommandMiri {
             "tests-integration",
             &["--test", "phaser_test"],
         ));
+        run_command(make_miri_cmd(
+            "tests-integration",
+            &["--test", "semaphore_ordering_test"],
+        ));
     }
 }
 
