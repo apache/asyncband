@@ -70,7 +70,6 @@ pub struct RwLockReadGuard<'a, T: ?Sized> {
 }
 
 unsafe impl<T: ?Sized + Sync> Send for RwLockReadGuard<'_, T> {}
-unsafe impl<T: ?Sized + Send + Sync> Sync for RwLockReadGuard<'_, T> {}
 
 impl<T: ?Sized + fmt::Debug> fmt::Debug for RwLockReadGuard<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

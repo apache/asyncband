@@ -70,8 +70,8 @@ impl<'a, T: ?Sized> ReadAccess<&'a RwLock<T>> {
     /// Drops the value type so that mapped guards need not name it.
     pub fn into_semaphore(self) -> ReadAccess<&'a Semaphore> {
         let lock = self.owner;
-        // The token holds only a reference and no other resource, so
-        // skipping its drop leaks nothing.
+        // The new token takes over releasing the permit; forgetting this one avoids releasing it
+        // during the transfer. Its borrowed owner needs no cleanup.
         std::mem::forget(self);
         ReadAccess::new(&lock.s)
     }
@@ -117,8 +117,8 @@ impl<'a, T: ?Sized> WriteAccess<&'a RwLock<T>> {
     pub fn into_semaphore(self) -> WriteAccess<&'a Semaphore> {
         let lock = self.owner;
         let permits_acquired = self.permits_acquired;
-        // The token holds only a reference and no other resource, so
-        // skipping its drop leaks nothing.
+        // The new token takes over releasing the permits; forgetting this one avoids releasing them
+        // during the transfer. Its borrowed owner needs no cleanup.
         std::mem::forget(self);
         WriteAccess::new(&lock.s, permits_acquired)
     }

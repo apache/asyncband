@@ -66,9 +66,6 @@ pub struct RwLockWriteGuard<'a, T: ?Sized> {
     access: WriteAccess<&'a RwLock<T>>,
 }
 
-unsafe impl<T: ?Sized + Send + Sync> Send for RwLockWriteGuard<'_, T> {}
-unsafe impl<T: ?Sized + Send + Sync> Sync for RwLockWriteGuard<'_, T> {}
-
 impl<T: ?Sized + fmt::Debug> fmt::Debug for RwLockWriteGuard<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
