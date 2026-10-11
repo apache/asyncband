@@ -26,7 +26,7 @@
 //! ```
 //! use std::time::Duration;
 //!
-//! use asyncband::blocking::FutureExt as _;
+//! use asyncband::blocking::FutureExt;
 //!
 //! assert_eq!(async { 42 }.block_on(), 42);
 //! assert_eq!(async { 42 }.wait_timeout(Duration::ZERO), Some(42));
@@ -67,7 +67,7 @@ use std::time::Duration;
 /// ```
 /// use std::time::Duration;
 ///
-/// use asyncband::blocking::FutureExt as _;
+/// use asyncband::blocking::FutureExt;
 ///
 /// assert_eq!(async { 42 }.block_on(), 42);
 /// assert_eq!(async { 42 }.wait_timeout(Duration::ZERO), Some(42));

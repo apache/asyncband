@@ -30,10 +30,8 @@ pub use benchmarks::channels::BOUNDED_CAPACITY;
 use divan::black_box;
 use tokio::runtime::Builder;
 use tokio::runtime::Runtime;
-use tokio::sync::Barrier as TokioBarrier;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle as TokioJoinHandle;
 
 use crate::mpsc::adapters::BoundedMpsc;
 use crate::mpsc::adapters::UnboundedMpsc;
@@ -264,9 +262,9 @@ enum Receiver<C: ConcurrentMpsc> {
 pub struct RepeatedTasks<C: ConcurrentMpsc> {
     runtime: Runtime,
     receiver: Receiver<C>,
-    start: Arc<TokioBarrier>,
+    start: Arc<tokio::sync::Barrier>,
     stop: Arc<AtomicBool>,
-    workers: Vec<TokioJoinHandle<()>>,
+    workers: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl<C: ConcurrentMpsc> RepeatedTasks<C> {
@@ -293,7 +291,7 @@ impl<C: ConcurrentMpsc> RepeatedTasks<C> {
                 .unwrap()
         };
         let (sender, mut receiver) = C::channel();
-        let start = Arc::new(TokioBarrier::new(producer_count + 1));
+        let start = Arc::new(tokio::sync::Barrier::new(producer_count + 1));
         let stop = Arc::new(AtomicBool::new(false));
         let messages_per_producer = BATCH_MESSAGES / producer_count;
         let mut workers: Vec<_> = (0..producer_count)

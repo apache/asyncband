@@ -31,9 +31,9 @@ Use the shared [license-audit skill](.agents/skills/license-audit/SKILL.md) for 
 
 Declare restricted visibility at the module boundary and use `pub` for items in that module's API.
 
-Use imports for referenced symbols. Keep a short module qualifier or use an explicit alias when a bare name would obscure its origin or conflict with another symbol, such as `io::Error`.
+Use imports for referenced symbols and preserve their original names. Keep module or crate qualification when it clarifies the source or distinguishes same-named symbols, such as `io::Error`, `pool::bounded`, or `tokio::sync::Barrier`. Avoid `use ... as ...` unless there is a compelling reason; aliases make symbols harder to discover.
 
-Start ordinary intra-crate imports at `crate`; avoid explicit `super::...` imports and qualified paths. Reserve `use super::*` for test modules.
+Start ordinary intra-crate imports at `crate`; avoid explicit `super::...` paths. Reserve `use super::*` for test modules.
 
 Keep `pub use self::...` when re-exporting a module's own children as its public API.
 

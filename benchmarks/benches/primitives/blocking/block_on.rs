@@ -21,7 +21,7 @@ use std::task::Poll;
 use std::task::Waker;
 use std::thread;
 
-use asyncband::blocking::FutureExt as _;
+use asyncband::blocking::FutureExt;
 use divan::Bencher;
 use divan::black_box;
 

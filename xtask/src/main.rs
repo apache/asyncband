@@ -16,7 +16,7 @@
 // under the License.
 
 use std::path::Path;
-use std::process::Command as StdCommand;
+use std::process;
 use std::process::ExitStatus;
 use std::time::Duration;
 
@@ -285,10 +285,10 @@ impl SemverReleaseType {
     }
 }
 
-fn find_command(cmd: &str) -> StdCommand {
+fn find_command(cmd: &str) -> process::Command {
     match which::which(cmd) {
         Ok(exe) => {
-            let mut cmd = StdCommand::new(exe);
+            let mut cmd = process::Command::new(exe);
             cmd.current_dir(env!("CARGO_WORKSPACE_DIR"));
             cmd
         }
@@ -306,12 +306,12 @@ fn ensure_installed(bin: &str, crate_name: &str) {
     }
 }
 
-fn run_command(cmd: StdCommand) {
+fn run_command(cmd: process::Command) {
     let status = command_status(cmd);
     assert!(status.success(), "command failed: {status}");
 }
 
-fn command_status(mut cmd: StdCommand) -> ExitStatus {
+fn command_status(mut cmd: process::Command) -> ExitStatus {
     println!("{cmd:?}");
     cmd.status().expect("failed to execute process")
 }
@@ -380,7 +380,7 @@ fn classify_release_type(baseline: &Version, release: &Version) -> SemverRelease
     }
 }
 
-fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> StdCommand {
+fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.args([
         "bench",
@@ -398,7 +398,7 @@ fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> StdComm
     cmd
 }
 
-fn make_build_cmd(locked: bool) -> StdCommand {
+fn make_build_cmd(locked: bool) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.args([
         "build",
@@ -415,7 +415,7 @@ fn make_build_cmd(locked: bool) -> StdCommand {
     cmd
 }
 
-fn make_test_cmd(no_capture: bool, features: &[String]) -> StdCommand {
+fn make_test_cmd(no_capture: bool, features: &[String]) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.args(["test", "--workspace", "--no-default-features"]);
     for feature in features {
@@ -427,7 +427,7 @@ fn make_test_cmd(no_capture: bool, features: &[String]) -> StdCommand {
     cmd
 }
 
-fn make_check_cmd(features: &[String]) -> StdCommand {
+fn make_check_cmd(features: &[String]) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.env("RUSTFLAGS", "-Dwarnings");
     cmd.args([
@@ -444,14 +444,14 @@ fn make_check_cmd(features: &[String]) -> StdCommand {
     cmd
 }
 
-fn make_miri_cmd(package: &str, target: &[&str]) -> StdCommand {
+fn make_miri_cmd(package: &str, target: &[&str]) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.args(["+nightly", "miri", "test", "--package", package]);
     cmd.args(target);
     cmd
 }
 
-fn make_format_cmd(fix: bool) -> StdCommand {
+fn make_format_cmd(fix: bool) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.args(["+nightly", "fmt", "--all"]);
     if !fix {
@@ -460,7 +460,7 @@ fn make_format_cmd(fix: bool) -> StdCommand {
     cmd
 }
 
-fn make_clippy_cmd(fix: bool) -> StdCommand {
+fn make_clippy_cmd(fix: bool) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.args([
         "+nightly",
@@ -478,7 +478,7 @@ fn make_clippy_cmd(fix: bool) -> StdCommand {
     cmd
 }
 
-fn make_doc_cmd() -> StdCommand {
+fn make_doc_cmd() -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.env("RUSTDOCFLAGS", "-D warnings --cfg docsrs");
     cmd.args([
@@ -494,7 +494,7 @@ fn make_doc_cmd() -> StdCommand {
 fn make_semver_check_cmd(
     baseline_version: &Version,
     release_type: SemverReleaseType,
-) -> StdCommand {
+) -> process::Command {
     ensure_installed("cargo-semver-checks", "cargo-semver-checks");
     let mut cmd = find_command("cargo");
     cmd.args([
@@ -511,7 +511,7 @@ fn make_semver_check_cmd(
     cmd
 }
 
-fn make_hawkeye_cmd(fix: bool) -> StdCommand {
+fn make_hawkeye_cmd(fix: bool) -> process::Command {
     ensure_installed("hawkeye", "hawkeye");
     let mut cmd = find_command("hawkeye");
     if fix {
@@ -522,12 +522,12 @@ fn make_hawkeye_cmd(fix: bool) -> StdCommand {
     cmd
 }
 
-fn make_typos_cmd() -> StdCommand {
+fn make_typos_cmd() -> process::Command {
     ensure_installed("typos", "typos-cli");
     find_command("typos")
 }
 
-fn make_taplo_cmd(fix: bool) -> StdCommand {
+fn make_taplo_cmd(fix: bool) -> process::Command {
     ensure_installed("taplo", "taplo-cli");
     let mut cmd = find_command("taplo");
     if fix {

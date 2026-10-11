@@ -19,7 +19,6 @@ use std::future::Future;
 use std::future::IntoFuture;
 use std::pin::pin;
 
-use asyncband::waitgroup as asyncband_waitgroup;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -42,9 +41,9 @@ trait WaitGroup {
 }
 
 impl WaitGroup for Asyncband {
-    type Group = asyncband_waitgroup::WaitGroup;
-    type Worker = asyncband_waitgroup::WaitGroup;
-    type Wait = asyncband_waitgroup::Wait;
+    type Group = asyncband::waitgroup::WaitGroup;
+    type Worker = asyncband::waitgroup::WaitGroup;
+    type Wait = asyncband::waitgroup::Wait;
 
     fn new() -> Self::Group {
         Self::Group::new()

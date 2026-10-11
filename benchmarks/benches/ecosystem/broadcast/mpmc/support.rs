@@ -24,7 +24,6 @@ use std::thread::JoinHandle;
 
 use divan::black_box;
 use tokio::runtime::Runtime;
-use tokio::sync::Barrier as TokioBarrier;
 use tokio::task::JoinSet;
 
 use crate::broadcast::mpmc::adapters::BoundedBroadcastMpmc;
@@ -253,7 +252,7 @@ impl BoundedConcurrent {
 }
 
 pub struct BoundedTasks {
-    start: Arc<TokioBarrier>,
+    start: Arc<tokio::sync::Barrier>,
     tasks: JoinSet<()>,
 }
 
@@ -266,7 +265,7 @@ impl BoundedTasks {
         } = shape;
         assert_eq!(BATCH_MESSAGES % producers, 0);
         let (sender, receivers) = C::channel(capacity, receivers);
-        let start = Arc::new(TokioBarrier::new(producers + receivers.len() + 1));
+        let start = Arc::new(tokio::sync::Barrier::new(producers + receivers.len() + 1));
         let mut tasks = JoinSet::new();
 
         for mut receiver in receivers {

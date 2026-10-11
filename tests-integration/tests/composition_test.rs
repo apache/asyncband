@@ -20,7 +20,7 @@ use std::thread;
 use std::time::Duration;
 
 use asyncband::barrier::Barrier;
-use asyncband::blocking::FutureExt as _;
+use asyncband::blocking::FutureExt;
 use asyncband::mutex::Mutex;
 use asyncband::oneshot;
 

@@ -17,9 +17,6 @@
 
 use std::future::Future;
 
-use asyncband::watch as asyncband_watch;
-use tokio::sync::watch as tokio_watch;
-
 pub struct Asyncband;
 pub struct Tokio;
 
@@ -35,11 +32,11 @@ pub trait Watch: Send + Sync + 'static {
 }
 
 impl Watch for Asyncband {
-    type Sender = asyncband_watch::Sender<usize>;
-    type Receiver = asyncband_watch::Receiver<usize>;
+    type Sender = asyncband::watch::Sender<usize>;
+    type Receiver = asyncband::watch::Receiver<usize>;
 
     fn channel(receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
-        let (sender, first) = asyncband_watch::channel(0);
+        let (sender, first) = asyncband::watch::channel(0);
         let mut receivers = Vec::with_capacity(receiver_count);
         receivers.push(first);
         receivers.extend((1..receiver_count).map(|_| sender.subscribe()));
@@ -64,11 +61,11 @@ impl Watch for Asyncband {
 }
 
 impl Watch for Tokio {
-    type Sender = tokio_watch::Sender<usize>;
-    type Receiver = tokio_watch::Receiver<usize>;
+    type Sender = tokio::sync::watch::Sender<usize>;
+    type Receiver = tokio::sync::watch::Receiver<usize>;
 
     fn channel(receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
-        let (sender, first) = tokio_watch::channel(0);
+        let (sender, first) = tokio::sync::watch::channel(0);
         let mut receivers = Vec::with_capacity(receiver_count);
         receivers.push(first);
         receivers.extend((1..receiver_count).map(|_| sender.subscribe()));

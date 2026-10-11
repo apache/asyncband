@@ -19,13 +19,11 @@ use std::future::Future;
 use std::marker::PhantomData;
 
 use asyncband::blocking::FutureExt;
-use asyncband::mpsc as asyncband_mpsc;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_ready;
 use divan::Bencher;
 use divan::black_box;
 use divan::counter::ItemsCount;
-use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::mpsc::adapters::Asyncband;
 use crate::mpsc::adapters::BoundedMpsc;
@@ -44,7 +42,7 @@ trait Reservable: BoundedMpsc {
 }
 
 impl Reservable for Asyncband {
-    type Permit<'a> = asyncband_mpsc::Permit<'a, usize>;
+    type Permit<'a> = asyncband::mpsc::Permit<'a, usize>;
     fn try_reserve(sender: &Self::Sender) -> Self::Permit<'_> {
         sender.try_reserve().unwrap()
     }
@@ -57,7 +55,7 @@ impl Reservable for Asyncband {
 }
 
 impl Reservable for Tokio {
-    type Permit<'a> = tokio_mpsc::Permit<'a, usize>;
+    type Permit<'a> = tokio::sync::mpsc::Permit<'a, usize>;
     fn try_reserve(sender: &Self::Sender) -> Self::Permit<'_> {
         sender.try_reserve().unwrap()
     }

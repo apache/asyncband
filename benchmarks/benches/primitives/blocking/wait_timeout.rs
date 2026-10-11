@@ -17,7 +17,7 @@
 
 use std::time::Duration;
 
-use asyncband::blocking::FutureExt as _;
+use asyncband::blocking::FutureExt;
 use divan::Bencher;
 use divan::black_box;
 

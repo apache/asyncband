@@ -22,10 +22,9 @@ use std::future::Ready;
 use std::marker::PhantomPinned;
 use std::panic::RefUnwindSafe;
 use std::panic::UnwindSafe;
-use std::sync::MutexGuard as StdMutexGuard;
 
 use asyncband::barrier::Barrier;
-use asyncband::broadcast::mpmc as broadcast_mpmc;
+use asyncband::broadcast;
 use asyncband::completion;
 use asyncband::condvar::Condvar;
 use asyncband::event::AutoResetEvent;
@@ -44,10 +43,9 @@ use asyncband::phaser::Closed;
 use asyncband::phaser::Phaser;
 use asyncband::phaser::PhaserParticipant;
 use asyncband::phaser::PhaserParticipants;
+use asyncband::pool;
 use asyncband::pool::ManageObject;
 use asyncband::pool::ObjectStatus;
-use asyncband::pool::bounded as bounded_pool;
-use asyncband::pool::unbounded as unbounded_pool;
 use asyncband::rwlock::MappedRwLockReadGuard;
 use asyncband::rwlock::MappedRwLockWriteGuard;
 use asyncband::rwlock::OwnedMappedRwLockWriteGuard;
@@ -112,24 +110,24 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<OwnedRwLockReadGuard<i64>>();
     assert_send_and_sync::<RwLockReadGuard<'_, i64>>();
     assert_send_and_sync::<RwLockWriteGuard<'_, i64>>();
-    assert_send_and_sync::<broadcast_mpmc::UnboundedSender<i64>>();
-    assert_send_and_sync::<broadcast_mpmc::UnboundedReceiver<i64>>();
-    assert_send_and_sync::<broadcast_mpmc::BoundedSender<i64>>();
-    assert_send_and_sync::<broadcast_mpmc::BoundedReceiver<i64>>();
-    assert_send_and_sync::<broadcast_mpmc::RecvError>();
-    assert_send_and_sync::<broadcast_mpmc::TryRecvError>();
-    assert_send_and_sync::<broadcast_mpmc::TrySendError<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::UnboundedSender<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::UnboundedReceiver<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::BoundedSender<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::RecvError>();
+    assert_send_and_sync::<broadcast::mpmc::TryRecvError>();
+    assert_send_and_sync::<broadcast::mpmc::TrySendError<i64>>();
     assert_send_and_sync::<oneshot::SendError<i64>>();
     assert_send_and_sync::<oneshot::Sender<i64>>();
     assert_send_and_sync::<Closed>();
     assert_send_and_sync::<Phaser>();
     assert_send_and_sync::<PhaserParticipant>();
     assert_send_and_sync::<PhaserParticipants>();
-    assert_send_and_sync::<bounded_pool::Pool<PoolManager>>();
-    assert_send_and_sync::<bounded_pool::Object<PoolManager>>();
-    assert_send_and_sync::<unbounded_pool::Pool<i64>>();
-    assert_send_and_sync::<unbounded_pool::Object<i64>>();
-    assert_send_and_sync::<unbounded_pool::Pool<Cell<u8>>>();
+    assert_send_and_sync::<pool::bounded::Pool<PoolManager>>();
+    assert_send_and_sync::<pool::bounded::Object<PoolManager>>();
+    assert_send_and_sync::<pool::unbounded::Pool<i64>>();
+    assert_send_and_sync::<pool::unbounded::Object<i64>>();
+    assert_send_and_sync::<pool::unbounded::Pool<Cell<u8>>>();
     assert_send_and_sync::<mpsc::SendError<i64>>();
     assert_send_and_sync::<mpsc::UnboundedSender<i64>>();
     assert_send_and_sync::<mpsc::UnboundedReceiver<i64>>();
@@ -155,13 +153,13 @@ fn movable_public_types_are_send() {
     fn assert_send<T: Send>() {}
     fn assert_send_value<T: Send>(_: T) {}
 
-    assert_send::<RwLockReadGuard<'_, StdMutexGuard<'static, ()>>>();
-    assert_send::<MappedRwLockReadGuard<'_, StdMutexGuard<'static, ()>>>();
+    assert_send::<RwLockReadGuard<'_, std::sync::MutexGuard<'static, ()>>>();
+    assert_send::<MappedRwLockReadGuard<'_, std::sync::MutexGuard<'static, ()>>>();
     assert_send::<MappedRwLockWriteGuard<'_, Cell<u8>>>();
     assert_send::<OwnedMappedRwLockWriteGuard<(), Cell<u8>>>();
     assert_send::<oneshot::Receiver<i64>>();
     assert_send::<oneshot::Recv<i64>>();
-    assert_send::<unbounded_pool::Object<Cell<u8>>>();
+    assert_send::<pool::unbounded::Object<Cell<u8>>>();
 
     let (_tx, mut rx) = watch::channel(0);
     assert_send_value(rx.changed());
@@ -207,13 +205,13 @@ fn public_types_are_unpin() {
     assert_unpin::<RwLock<i64>>();
     assert_unpin::<RwLockReadGuard<'_, i64>>();
     assert_unpin::<RwLockWriteGuard<'_, i64>>();
-    assert_unpin::<broadcast_mpmc::UnboundedSender<i64>>();
-    assert_unpin::<broadcast_mpmc::UnboundedReceiver<i64>>();
-    assert_unpin::<broadcast_mpmc::BoundedSender<i64>>();
-    assert_unpin::<broadcast_mpmc::BoundedReceiver<i64>>();
-    assert_unpin::<broadcast_mpmc::RecvError>();
-    assert_unpin::<broadcast_mpmc::TryRecvError>();
-    assert_unpin::<broadcast_mpmc::TrySendError<i64>>();
+    assert_unpin::<broadcast::mpmc::UnboundedSender<i64>>();
+    assert_unpin::<broadcast::mpmc::UnboundedReceiver<i64>>();
+    assert_unpin::<broadcast::mpmc::BoundedSender<i64>>();
+    assert_unpin::<broadcast::mpmc::BoundedReceiver<i64>>();
+    assert_unpin::<broadcast::mpmc::RecvError>();
+    assert_unpin::<broadcast::mpmc::TryRecvError>();
+    assert_unpin::<broadcast::mpmc::TrySendError<i64>>();
     assert_unpin::<oneshot::Sender<i64>>();
     assert_unpin::<oneshot::SendError<i64>>();
     assert_unpin::<oneshot::Receiver<i64>>();
@@ -222,10 +220,10 @@ fn public_types_are_unpin() {
     assert_unpin::<Phaser>();
     assert_unpin::<PhaserParticipant>();
     assert_unpin::<PhaserParticipants>();
-    assert_unpin::<bounded_pool::Pool<PoolManager>>();
-    assert_unpin::<bounded_pool::Object<PoolManager>>();
-    assert_unpin::<unbounded_pool::Pool<i64>>();
-    assert_unpin::<unbounded_pool::Object<i64>>();
+    assert_unpin::<pool::bounded::Pool<PoolManager>>();
+    assert_unpin::<pool::bounded::Object<PoolManager>>();
+    assert_unpin::<pool::unbounded::Pool<i64>>();
+    assert_unpin::<pool::unbounded::Object<i64>>();
     assert_unpin::<mpsc::SendError<i64>>();
     assert_unpin::<mpsc::UnboundedSender<i64>>();
     assert_unpin::<mpsc::UnboundedReceiver<i64>>();
@@ -281,6 +279,6 @@ fn unbounded_manual_manager_traits_do_not_depend_on_the_object() {
     fn assert_copy<T: Copy>() {}
     fn assert_debug<T: fmt::Debug>() {}
 
-    assert_copy::<unbounded_pool::NeverManageObject<String>>();
-    assert_debug::<unbounded_pool::NeverManageObject<String>>();
+    assert_copy::<pool::unbounded::NeverManageObject<String>>();
+    assert_debug::<pool::unbounded::NeverManageObject<String>>();
 }
