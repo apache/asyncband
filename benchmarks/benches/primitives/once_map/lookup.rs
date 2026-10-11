@@ -20,13 +20,13 @@ use benchmarks::support::poll_ready;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::CONTENDED_SAMPLE_SIZE;
-use super::support::HOT_ENTRY_COUNTS;
-use super::support::READY_ENTRY_COUNTS;
-use super::support::THREAD_COUNTS;
-use super::support::distributed_absent_key;
-use super::support::distributed_ready_key;
-use super::support::ready_map;
+use crate::once_map::support::CONTENDED_SAMPLE_SIZE;
+use crate::once_map::support::HOT_ENTRY_COUNTS;
+use crate::once_map::support::READY_ENTRY_COUNTS;
+use crate::once_map::support::THREAD_COUNTS;
+use crate::once_map::support::distributed_absent_key;
+use crate::once_map::support::distributed_ready_key;
+use crate::once_map::support::ready_map;
 
 #[divan::bench(threads = THREAD_COUNTS, sample_size = CONTENDED_SAMPLE_SIZE)]
 fn get_hit_same_key(bencher: Bencher) {

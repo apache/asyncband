@@ -15,12 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::future::pending;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use asyncband::once::Once;
 use tests_integration::poll_once;
+use tokio::sync::Barrier;
 
 #[tokio::test]
 async fn call_once_runs_only_one_initializer() {
@@ -51,7 +53,7 @@ async fn concurrent_callers_run_one_initializer() {
 
     let once = Arc::new(Once::new());
     let counter = Arc::new(AtomicUsize::new(0));
-    let start = Arc::new(tokio::sync::Barrier::new(TASKS + 1));
+    let start = Arc::new(Barrier::new(TASKS + 1));
     let mut tasks = Vec::with_capacity(TASKS);
 
     for _ in 0..TASKS {
@@ -79,7 +81,7 @@ async fn concurrent_callers_run_one_initializer() {
 #[tokio::test]
 async fn cancelled_initializer_can_be_retried() {
     let once = Once::new();
-    let mut first = Box::pin(once.call_once(async || std::future::pending::<()>().await));
+    let mut first = Box::pin(once.call_once(async || pending::<()>().await));
 
     assert!(poll_once(first.as_mut()).is_pending());
     drop(first);

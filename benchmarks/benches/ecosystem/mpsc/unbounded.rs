@@ -26,19 +26,21 @@ use benchmarks::support::bench_context;
 use divan::Bencher;
 use divan::black_box;
 use divan::counter::ItemsCount;
+use tokio::runtime::Builder;
+use tokio::sync::Notify;
 
-use super::adapters::AsyncChannel;
-use super::adapters::Asyncband;
-use super::adapters::Flume;
-use super::adapters::Tokio;
-use super::adapters::UnboundedMpsc;
-use super::support::BATCH_MESSAGES;
-use super::support::PRODUCER_COUNTS;
-use super::support::RepeatedBatch;
-use super::support::RepeatedTasks;
-use super::support::TASK_SHAPES;
-use super::support::TaskShape;
-use super::support::Unbounded;
+use crate::mpsc::adapters::AsyncChannel;
+use crate::mpsc::adapters::Asyncband;
+use crate::mpsc::adapters::Flume;
+use crate::mpsc::adapters::Tokio;
+use crate::mpsc::adapters::UnboundedMpsc;
+use crate::mpsc::support::BATCH_MESSAGES;
+use crate::mpsc::support::PRODUCER_COUNTS;
+use crate::mpsc::support::RepeatedBatch;
+use crate::mpsc::support::RepeatedTasks;
+use crate::mpsc::support::TASK_SHAPES;
+use crate::mpsc::support::TaskShape;
+use crate::mpsc::support::Unbounded;
 
 #[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
 fn ready_send_receive<C: UnboundedMpsc>(bencher: Bencher) {
@@ -185,14 +187,12 @@ fn scheduled_bursts_inline<C: UnboundedMpsc<[u8; 1024]>>(
 ) {
     assert_eq!(BATCH_MESSAGES % burst_messages, 0);
     assert_eq!(burst_messages % producers, 0);
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let runtime = Builder::new_multi_thread()
         .worker_threads(4)
         .build()
         .unwrap();
     let (sender, mut receiver) = C::channel();
-    let start: Vec<_> = (0..producers)
-        .map(|_| Arc::new(tokio::sync::Notify::new()))
-        .collect();
+    let start: Vec<_> = (0..producers).map(|_| Arc::new(Notify::new())).collect();
     let stop = Arc::new(AtomicBool::new(false));
     let workers: Vec<_> = start
         .iter()

@@ -446,8 +446,6 @@ mod tests {
     use std::panic;
     use std::panic::AssertUnwindSafe;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
     use std::task::Wake;
 
     use super::*;

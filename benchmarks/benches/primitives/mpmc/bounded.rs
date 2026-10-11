@@ -25,7 +25,7 @@ use benchmarks::support::poll_ready;
 use divan::Bencher;
 use divan::black_box;
 
-use super::FAST_SAMPLE_SIZE;
+use crate::mpmc::FAST_SAMPLE_SIZE;
 
 #[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
 fn try_send_then_try_recv(bencher: Bencher) {

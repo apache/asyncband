@@ -18,11 +18,11 @@
 use std::fmt;
 use std::sync::Arc;
 
-use super::RecvError;
-use super::SendError;
-use super::TryRecvError;
-use super::TrySendError;
-use super::queue::Shared;
+use crate::mpmc::RecvError;
+use crate::mpmc::SendError;
+use crate::mpmc::TryRecvError;
+use crate::mpmc::TrySendError;
+use crate::mpmc::queue::Shared;
 
 /// Creates an unbounded multi-producer, multi-consumer queue.
 ///

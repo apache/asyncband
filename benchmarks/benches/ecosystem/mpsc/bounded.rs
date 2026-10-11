@@ -20,20 +20,20 @@ use divan::Bencher;
 use divan::black_box;
 use divan::counter::ItemsCount;
 
-use super::adapters::AsyncChannel;
-use super::adapters::Asyncband;
-use super::adapters::BoundedMpsc;
-use super::adapters::Flume;
-use super::adapters::Tokio;
-use super::support::BATCH_MESSAGES;
-use super::support::BOUNDED_CAPACITY;
-use super::support::Bounded;
-use super::support::PARALLEL_TASK_SHAPES;
-use super::support::PRODUCER_COUNTS;
-use super::support::RepeatedBatch;
-use super::support::RepeatedTasks;
-use super::support::TASK_SHAPES;
-use super::support::TaskShape;
+use crate::mpsc::adapters::AsyncChannel;
+use crate::mpsc::adapters::Asyncband;
+use crate::mpsc::adapters::BoundedMpsc;
+use crate::mpsc::adapters::Flume;
+use crate::mpsc::adapters::Tokio;
+use crate::mpsc::support::BATCH_MESSAGES;
+use crate::mpsc::support::BOUNDED_CAPACITY;
+use crate::mpsc::support::Bounded;
+use crate::mpsc::support::PARALLEL_TASK_SHAPES;
+use crate::mpsc::support::PRODUCER_COUNTS;
+use crate::mpsc::support::RepeatedBatch;
+use crate::mpsc::support::RepeatedTasks;
+use crate::mpsc::support::TASK_SHAPES;
+use crate::mpsc::support::TaskShape;
 
 // Fixed sample sizes keep cold-start costs from skewing Divan's iteration count.
 #[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume], sample_size = 512)]

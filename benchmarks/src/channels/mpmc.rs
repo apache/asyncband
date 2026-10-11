@@ -25,10 +25,10 @@ use divan::black_box;
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 
-use super::BATCH_MESSAGES;
-use super::adapters::BoundedMpmc;
-use super::adapters::Channel;
-use super::adapters::UnboundedMpmc;
+use crate::channels::BATCH_MESSAGES;
+use crate::channels::adapters::BoundedMpmc;
+use crate::channels::adapters::Channel;
+use crate::channels::adapters::UnboundedMpmc;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Topology {

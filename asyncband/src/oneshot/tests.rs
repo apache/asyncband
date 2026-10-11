@@ -26,17 +26,11 @@ use std::future::Future;
 use std::future::IntoFuture;
 use std::mem;
 use std::pin::Pin;
-use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::task::Context;
-use std::task::Poll;
 use std::time::Duration;
 
-use crate::oneshot;
-use crate::oneshot::Channel;
-use crate::oneshot::MESSAGE;
-use crate::oneshot::RECEIVING;
-use crate::oneshot::drop_message_and_deallocate_channel;
+use super::*;
 use crate::oneshot::tests::support::DropProbe;
 use crate::oneshot::tests::support::WakerProbe;
 use crate::oneshot::tests::support::spawn_named;
@@ -45,7 +39,7 @@ use crate::oneshot::tests::support::spawn_named;
 
 #[test]
 fn poll_returns_while_sender_owns_waker() {
-    let (sender, receiver) = oneshot::channel();
+    let (sender, receiver) = channel();
     let channel_ptr = sender.channel_ptr();
     mem::forget(sender);
     let mut receiver = receiver.into_future();
@@ -109,7 +103,7 @@ fn poll_returns_while_sender_owns_waker() {
 
 #[test]
 fn drop_transfers_cleanup_while_sender_owns_waker() {
-    let (sender, receiver) = oneshot::channel();
+    let (sender, receiver) = channel();
     let channel_ptr = sender.channel_ptr();
     mem::forget(sender);
     let mut receiver = receiver.into_future();
@@ -177,6 +171,7 @@ mod support {
     use std::sync::atomic::Ordering;
     use std::task::Wake;
     use std::task::Waker;
+    use std::thread;
 
     pub(super) struct DropProbe<T> {
         drop_count: Arc<AtomicUsize>,
@@ -234,12 +229,12 @@ mod support {
         }
     }
 
-    pub(super) fn spawn_named<F, T>(name: &str, f: F) -> std::thread::JoinHandle<T>
+    pub(super) fn spawn_named<F, T>(name: &str, f: F) -> thread::JoinHandle<T>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        std::thread::Builder::new()
+        thread::Builder::new()
             .name(name.to_owned())
             .spawn(f)
             .unwrap()

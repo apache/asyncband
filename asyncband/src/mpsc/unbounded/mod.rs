@@ -21,8 +21,8 @@
 use std::sync::Arc;
 use std::task::Waker;
 
-use self::buffer::Buffer;
 use crate::internal::mutex::Mutex;
+use crate::mpsc::unbounded::buffer::Buffer;
 
 mod buffer;
 mod receiver;

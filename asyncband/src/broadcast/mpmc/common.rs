@@ -32,8 +32,8 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use super::error::RecvError;
-use super::error::TryRecvError;
+use crate::broadcast::mpmc::error::RecvError;
+use crate::broadcast::mpmc::error::TryRecvError;
 use crate::internal::arena::Arena;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
@@ -531,9 +531,7 @@ pub fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Reclaimed<T>) -> T {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use super::Backlog;
+    use super::*;
 
     /// Drives every cursor-count mutation point — subscribing, publishing, receiving, and dropping
     /// — and checks the accounting after each step.

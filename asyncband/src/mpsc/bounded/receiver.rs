@@ -22,12 +22,12 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-use super::State;
 use crate::internal::mutex::Mutex;
 use crate::internal::register_waker;
 use crate::internal::waitlist::WaitList;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
+use crate::mpsc::bounded::State;
 
 /// The receiving endpoint of a bounded mpsc channel.
 ///

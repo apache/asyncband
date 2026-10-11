@@ -15,8 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::array;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::atomic::AtomicUsize;
@@ -33,6 +36,7 @@ use tests_integration::WakeCounter;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
 use tests_integration::test_runtime;
+use tokio::sync::oneshot;
 use tokio_test::assert_ok;
 
 #[test]
@@ -54,7 +58,7 @@ fn publication_racing_with_close_drops_every_payload_once() {
 
     for _ in 0..if cfg!(miri) { 8 } else { 128 } {
         let (tx, rx) = mpsc::bounded(3);
-        let drops = Arc::new(std::array::from_fn(|_| AtomicUsize::new(0)));
+        let drops = Arc::new(array::from_fn(|_| AtomicUsize::new(0)));
         let start = Barrier::new(4);
         thread::scope(|scope| {
             for byte in 0..3 {
@@ -297,12 +301,12 @@ fn unbounded_collects_from_multiple_producers() {
 #[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn bounded_backpressure_progresses_on_an_executor() {
     let (tx, mut rx) = mpsc::bounded(1);
-    let (blocked_tx, blocked_rx) = tokio::sync::oneshot::channel();
+    let (blocked_tx, blocked_rx) = oneshot::channel();
 
     tx.send(1).await.unwrap();
     let sender = tokio::spawn(async move {
-        let mut send = std::pin::pin!(tx.send(2));
-        let first_poll = std::future::poll_fn(|cx| Poll::Ready(send.as_mut().poll(cx))).await;
+        let mut send = pin!(tx.send(2));
+        let first_poll = poll_fn(|cx| Poll::Ready(send.as_mut().poll(cx))).await;
         assert!(first_poll.is_pending());
         blocked_tx.send(()).unwrap();
         send.await.unwrap();

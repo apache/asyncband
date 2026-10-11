@@ -26,8 +26,8 @@ use divan::black_box;
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 
-use super::adapters::BoundedBroadcastMpmc;
-use super::adapters::BroadcastMpmc;
+use crate::broadcast::mpmc::adapters::BoundedBroadcastMpmc;
+use crate::broadcast::mpmc::adapters::BroadcastMpmc;
 
 pub const BATCH_MESSAGES: usize = 4096;
 pub const PRODUCER_COUNTS: &[usize] = &[1, 2, 4, 8];

@@ -22,16 +22,16 @@ use divan::Bencher;
 use divan::black_box;
 use divan::counter::ItemsCount;
 
-use super::adapters::AsyncBroadcast;
-use super::adapters::Asyncband;
-use super::adapters::BroadcastMpmc;
-use super::adapters::Tokio;
-use super::support::BATCH_MESSAGES;
-use super::support::ConcurrentSend;
-use super::support::Fanout;
-use super::support::PRODUCER_COUNTS;
-use super::support::RECEIVER_COUNTS;
-use super::support::ROUND_TRIP_CAPACITY;
+use crate::broadcast::mpmc::adapters::AsyncBroadcast;
+use crate::broadcast::mpmc::adapters::Asyncband;
+use crate::broadcast::mpmc::adapters::BroadcastMpmc;
+use crate::broadcast::mpmc::adapters::Tokio;
+use crate::broadcast::mpmc::support::BATCH_MESSAGES;
+use crate::broadcast::mpmc::support::ConcurrentSend;
+use crate::broadcast::mpmc::support::Fanout;
+use crate::broadcast::mpmc::support::PRODUCER_COUNTS;
+use crate::broadcast::mpmc::support::RECEIVER_COUNTS;
+use crate::broadcast::mpmc::support::ROUND_TRIP_CAPACITY;
 
 #[divan::bench(types = [Asyncband, Tokio, AsyncBroadcast])]
 fn try_send_receive<C: BroadcastMpmc>(bencher: Bencher) {

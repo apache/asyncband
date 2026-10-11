@@ -17,21 +17,23 @@
 
 // Tokio broadcast overwrites at capacity, so it cannot participate in lossless backpressure cases.
 
+use benchmarks::channels::runtime;
 use benchmarks::support::bench_context;
 use divan::Bencher;
 use divan::black_box;
 use divan::counter::ItemsCount;
+use tokio::runtime::Builder;
 
-use super::adapters::AsyncBroadcast;
-use super::adapters::Asyncband;
-use super::adapters::BoundedBroadcastMpmc;
-use super::support::BACKPRESSURE_SHAPE;
-use super::support::BATCH_MESSAGES;
-use super::support::BOUNDED_SHAPES;
-use super::support::BoundedConcurrent;
-use super::support::BoundedShape;
-use super::support::BoundedTasks;
-use super::support::ROUND_TRIP_CAPACITY;
+use crate::broadcast::mpmc::adapters::AsyncBroadcast;
+use crate::broadcast::mpmc::adapters::Asyncband;
+use crate::broadcast::mpmc::adapters::BoundedBroadcastMpmc;
+use crate::broadcast::mpmc::support::BACKPRESSURE_SHAPE;
+use crate::broadcast::mpmc::support::BATCH_MESSAGES;
+use crate::broadcast::mpmc::support::BOUNDED_SHAPES;
+use crate::broadcast::mpmc::support::BoundedConcurrent;
+use crate::broadcast::mpmc::support::BoundedShape;
+use crate::broadcast::mpmc::support::BoundedTasks;
+use crate::broadcast::mpmc::support::ROUND_TRIP_CAPACITY;
 
 // Send-then-receive pairing keeps at most one message retained, so these never reach capacity.
 #[divan::bench(types = [Asyncband, AsyncBroadcast], sample_size = 512)]
@@ -79,7 +81,7 @@ fn thread_batch<C: BoundedBroadcastMpmc>(bencher: Bencher, shape: BoundedShape) 
     counter = ItemsCount::new(BATCH_MESSAGES),
 )]
 fn task_batch<C: BoundedBroadcastMpmc>(bencher: Bencher, shape: BoundedShape) {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let runtime = Builder::new_multi_thread()
         .worker_threads(4)
         .build()
         .unwrap();
@@ -91,7 +93,7 @@ fn task_batch<C: BoundedBroadcastMpmc>(bencher: Bencher, shape: BoundedShape) {
 #[divan::bench(types = [Asyncband, AsyncBroadcast], sample_count = 10, sample_size = 1,
     counter = ItemsCount::new(BATCH_MESSAGES))]
 fn capacity_one_task_handoff<C: BoundedBroadcastMpmc>(bencher: Bencher) {
-    let runtime = benchmarks::channels::runtime(4);
+    let runtime = runtime(4);
     bencher
         .with_inputs(|| BoundedTasks::new::<C>(&runtime, BACKPRESSURE_SHAPE))
         .bench_local_refs(|tasks| tasks.run(&runtime));

@@ -38,7 +38,9 @@
 //! ```
 //! # #[tokio::main]
 //! # async fn main() {
-//! let (shutdown, guard) = asyncband::shutdown::new();
+//! use asyncband::shutdown;
+//!
+//! let (shutdown, guard) = shutdown::new();
 //! let mut tasks = vec![];
 //!
 //! for _ in 0..3 {
@@ -101,7 +103,11 @@ pub fn new() -> (Shutdown, ShutdownGuard) {
 /// ```
 /// # #[tokio::main]
 /// # async fn main() {
-/// let (shutdown, guard) = asyncband::shutdown::new();
+/// use std::future::pending;
+///
+/// use asyncband::shutdown;
+///
+/// let (shutdown, guard) = shutdown::new();
 /// let worker = tokio::spawn(async move {
 ///     guard.shutdown_requested().await;
 /// });
@@ -110,7 +116,7 @@ pub fn new() -> (Shutdown, ShutdownGuard) {
 ///
 /// tokio::select! {
 ///     _ = shutdown => {}
-///     _ = std::future::pending::<()>() => {}
+///     _ = pending::<()>() => {}
 /// }
 ///
 /// worker.await.unwrap();

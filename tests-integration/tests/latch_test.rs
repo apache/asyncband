@@ -21,6 +21,7 @@ use std::task::Waker;
 
 use asyncband::latch::Latch;
 use tests_integration::WakeCounter;
+use tokio::sync::Barrier;
 
 #[test]
 fn countdown_operations_saturate_at_zero() {
@@ -97,7 +98,7 @@ async fn concurrent_arrivals_complete_the_latch() {
     const TASKS: usize = 32;
 
     let latch = Arc::new(Latch::new(TASKS as u32));
-    let start = Arc::new(tokio::sync::Barrier::new(TASKS + 1));
+    let start = Arc::new(Barrier::new(TASKS + 1));
     let mut tasks = Vec::with_capacity(TASKS);
 
     for _ in 0..TASKS {

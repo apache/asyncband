@@ -25,9 +25,9 @@ use divan::Bencher;
 use divan::black_box;
 use divan::counter::ItemsCount;
 
-use super::support::BATCH_SAMPLE_SIZE;
-use super::support::BATCH_SIZES;
-use super::support::BenchGroup;
+use crate::singleflight::support::BATCH_SAMPLE_SIZE;
+use crate::singleflight::support::BATCH_SIZES;
+use crate::singleflight::support::BenchGroup;
 
 // Measures the complete successful fan-in: one leader is suspended, every duplicate joins it, and
 // all callers receive the cloned result after the leader completes.

@@ -23,13 +23,13 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-use super::State;
-use super::buffer::Buffer;
-use super::buffer::pop_batch;
 use crate::internal::mutex::Mutex;
 use crate::internal::register_waker;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
+use crate::mpsc::unbounded::State;
+use crate::mpsc::unbounded::buffer::Buffer;
+use crate::mpsc::unbounded::buffer::pop_batch;
 
 /// The receiving endpoint of an unbounded mpsc channel.
 ///

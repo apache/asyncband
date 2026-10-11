@@ -16,13 +16,14 @@
 // under the License.
 
 use std::cell::Cell;
+use std::future::pending;
 use std::future::poll_fn;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
 use std::task::Poll;
 
-use super::Group;
+use super::*;
 use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
@@ -54,7 +55,7 @@ fn cancelled_work_removes_empty_entry() {
     let group = Group::<&str, &str>::new();
 
     {
-        let mut work = pin!(group.work("key", || async { std::future::pending::<&str>().await }));
+        let mut work = pin!(group.work("key", || async { pending::<&str>().await }));
         assert!(poll_once(work.as_mut()).is_pending());
         assert_eq!(entry_count(&group), 1);
     }

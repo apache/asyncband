@@ -16,6 +16,7 @@
 // under the License.
 
 use std::any::type_name;
+use std::error::Error;
 use std::fmt;
 
 /// An attempt to send a message or reserve capacity failed because the receiver has been dropped.
@@ -63,7 +64,7 @@ impl<T> fmt::Debug for SendError<T> {
     }
 }
 
-impl<T> std::error::Error for SendError<T> {}
+impl<T> Error for SendError<T> {}
 
 /// An attempt to send or reserve capacity failed.
 ///
@@ -114,7 +115,7 @@ impl<T> fmt::Debug for TrySendError<T> {
     }
 }
 
-impl<T> std::error::Error for TrySendError<T> {}
+impl<T> Error for TrySendError<T> {}
 
 /// An attempt to receive a value failed because the channel is disconnected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,7 +130,7 @@ impl fmt::Display for RecvError {
     }
 }
 
-impl std::error::Error for RecvError {}
+impl Error for RecvError {}
 
 /// A non-blocking attempt to receive a value failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,4 +150,4 @@ impl fmt::Display for TryRecvError {
     }
 }
 
-impl std::error::Error for TryRecvError {}
+impl Error for TryRecvError {}

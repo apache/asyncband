@@ -23,6 +23,7 @@
 // https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/src/errors.rs
 
 use std::any::type_name;
+use std::error::Error;
 use std::fmt;
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
@@ -275,7 +276,7 @@ impl<T> fmt::Debug for SendError<T> {
     }
 }
 
-impl<T> std::error::Error for SendError<T> {}
+impl<T> Error for SendError<T> {}
 
 #[cfg(test)]
 impl<T> Sender<T> {

@@ -25,14 +25,14 @@ use divan::Bencher;
 use divan::black_box;
 use divan::counter::ItemsCount;
 
-use super::adapters::Asyncband;
-use super::adapters::BoundedMpsc;
-use super::adapters::Tokio;
-use super::support::BATCH_MESSAGES;
-use super::support::ConcurrentMpsc;
-use super::support::RepeatedTasks;
-use super::support::TASK_SHAPES;
-use super::support::TaskShape;
+use crate::mpsc::adapters::Asyncband;
+use crate::mpsc::adapters::BoundedMpsc;
+use crate::mpsc::adapters::Tokio;
+use crate::mpsc::support::BATCH_MESSAGES;
+use crate::mpsc::support::ConcurrentMpsc;
+use crate::mpsc::support::RepeatedTasks;
+use crate::mpsc::support::TASK_SHAPES;
+use crate::mpsc::support::TaskShape;
 
 trait Reservable: BoundedMpsc {
     type Permit<'a>: Send;

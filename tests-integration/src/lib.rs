@@ -16,16 +16,22 @@
 // under the License.
 
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
+use std::panic::resume_unwind;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
+use std::thread;
+use std::time::Duration;
 
 use tokio::runtime::Runtime;
 
@@ -115,20 +121,20 @@ pub fn waker_on_drop(callback: impl FnOnce() + Send + 'static) -> Waker {
 }
 
 pub fn assert_completes_without_deadlock(test: impl FnOnce() + Send + 'static) {
-    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-    let worker = std::thread::spawn(move || {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let result = catch_unwind(AssertUnwindSafe(test));
         finished_tx.send(result).unwrap();
     });
     #[cfg(not(miri))]
     let result = finished_rx
-        .recv_timeout(std::time::Duration::from_secs(10))
+        .recv_timeout(Duration::from_secs(10))
         .expect("test did not finish");
     // Miri detects deadlock itself; its interpretation time must not determine test success.
     #[cfg(miri)]
     let result = finished_rx.recv().expect("test did not finish");
     worker.join().unwrap();
     if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
+        resume_unwind(payload);
     }
 }

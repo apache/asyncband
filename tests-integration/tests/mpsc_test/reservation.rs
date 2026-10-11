@@ -17,6 +17,7 @@
 
 use std::cell::Cell;
 use std::mem;
+use std::thread;
 
 use asyncband::mpsc;
 use asyncband::mpsc::TryRecvError;
@@ -139,7 +140,7 @@ fn receiver_drop_does_not_wait_for_held_or_forgotten_permits() {
 fn a_permit_can_publish_send_only_payloads_from_another_thread() {
     let (tx, mut rx) = mpsc::bounded(1);
     let permit = tx.try_reserve().unwrap();
-    std::thread::scope(|scope| {
+    thread::scope(|scope| {
         scope
             .spawn(move || permit.send(Cell::new(42)).unwrap())
             .join()
@@ -154,7 +155,7 @@ fn concurrent_cancellation_preserves_capacity_and_message_order() {
     const MESSAGES: usize = if cfg!(miri) { 8 } else { 256 };
     let (tx, mut rx) = mpsc::bounded(3);
     let mut out_of_order = 0;
-    std::thread::scope(|scope| {
+    thread::scope(|scope| {
         let mut workers = vec![];
         for producer in 0..PRODUCERS {
             let tx = tx.clone();
@@ -164,7 +165,7 @@ fn concurrent_cancellation_preserves_capacity_and_message_order() {
                         let permit = loop {
                             match tx.try_reserve() {
                                 Ok(permit) => break permit,
-                                Err(TrySendError::Full(())) => std::thread::yield_now(),
+                                Err(TrySendError::Full(())) => thread::yield_now(),
                                 Err(TrySendError::Disconnected(())) => panic!("receiver is alive"),
                             }
                         };
@@ -186,7 +187,7 @@ fn concurrent_cancellation_preserves_capacity_and_message_order() {
                     next[producer] += 1;
                     count += 1;
                 }
-                Err(TryRecvError::Empty) => std::thread::yield_now(),
+                Err(TryRecvError::Empty) => thread::yield_now(),
                 Err(TryRecvError::Disconnected) => panic!("senders are alive"),
             }
         }

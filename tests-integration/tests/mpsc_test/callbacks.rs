@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::array;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -244,7 +247,7 @@ fn bounded_disconnect_finishes_cleanup_when_a_value_destructor_panics() {
     }
 
     let (tx, rx) = mpsc::bounded(3);
-    let drops = Arc::new(std::array::from_fn(|_| AtomicUsize::new(0)));
+    let drops = Arc::new(array::from_fn(|_| AtomicUsize::new(0)));
     for id in 0..3 {
         assert!(
             tx.try_send(Value {
@@ -270,7 +273,7 @@ fn bounded_disconnect_finishes_cleanup_when_a_value_destructor_panics() {
     for (send, (waker, _)) in sends.iter_mut().zip(&notifications) {
         assert!(poll_with(send.as_mut(), waker).is_pending());
     }
-    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(rx))).is_err());
+    assert!(catch_unwind(AssertUnwindSafe(|| drop(rx))).is_err());
     for (_, wakes) in &notifications {
         assert_eq!(wakes.count(), 1);
     }

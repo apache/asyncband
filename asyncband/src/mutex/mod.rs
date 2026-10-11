@@ -69,6 +69,7 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::ptr;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -372,17 +373,19 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
     /// ```
     /// # #[tokio::main]
     /// # async fn main() {
+    /// use std::collections::HashMap;
+    ///
     /// use asyncband::mutex::Mutex;
     /// use asyncband::mutex::MutexGuard;
     ///
     /// #[derive(Debug)]
     /// struct Database {
-    ///     users: std::collections::HashMap<u32, String>,
+    ///     users: HashMap<u32, String>,
     ///     admin_user_id: Option<u32>,
     /// }
     ///
     /// let mut db = Database {
-    ///     users: std::collections::HashMap::new(),
+    ///     users: HashMap::new(),
     ///     admin_user_id: Some(1),
     /// };
     /// db.users.insert(1, "admin@example.com".to_owned());
@@ -516,7 +519,7 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
 
         // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
         // so the `Arc` can be moved out to transfer lock ownership to the new guard.
-        let lock = unsafe { std::ptr::read(&guard.lock) };
+        let lock = unsafe { ptr::read(&guard.lock) };
 
         OwnedMappedMutexGuard {
             lock,
@@ -563,7 +566,7 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
 
                 // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
                 // so the `Arc` can be moved out to transfer lock ownership to the new guard.
-                let lock = unsafe { std::ptr::read(&guard.lock) };
+                let lock = unsafe { ptr::read(&guard.lock) };
 
                 Ok(OwnedMappedMutexGuard {
                     lock,
@@ -920,7 +923,7 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
 
         // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
         // so the `Arc` can be moved out to transfer lock ownership to the new guard.
-        let lock = unsafe { std::ptr::read(&orig.lock) };
+        let lock = unsafe { ptr::read(&orig.lock) };
 
         OwnedMappedMutexGuard {
             lock,
@@ -989,7 +992,7 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
 
                 // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
                 // so the `Arc` can be moved out to transfer lock ownership to the new guard.
-                let lock = unsafe { std::ptr::read(&orig.lock) };
+                let lock = unsafe { ptr::read(&orig.lock) };
 
                 Ok(OwnedMappedMutexGuard {
                     lock,

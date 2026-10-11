@@ -15,11 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::future::pending;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use asyncband::rwlock::*;
 use tests_integration::poll_once;
+use tokio::sync::Barrier;
 use tokio_test::assert_pending;
 use tokio_test::assert_ready;
 
@@ -68,7 +70,7 @@ async fn concurrent_readers_and_writers_preserve_values() {
     const WRITERS: usize = 10;
 
     let rwlock = Arc::new(RwLock::new(0));
-    let start = Arc::new(tokio::sync::Barrier::new(READERS + WRITERS + 1));
+    let start = Arc::new(Barrier::new(READERS + WRITERS + 1));
     let mut readers = Vec::with_capacity(READERS);
     let mut writers = Vec::with_capacity(WRITERS);
 
@@ -361,7 +363,7 @@ fn cancelled_mapped_reader_admits_a_queued_writer() {
 
     let mut reader = Box::pin(async {
         let _mapped = RwLockReadGuard::map(rwlock.read().await, |values| &values[0]);
-        std::future::pending::<()>().await;
+        pending::<()>().await;
     });
     assert_pending!(poll_once(reader.as_mut()));
     let mut writer = Box::pin(rwlock.write());
@@ -379,7 +381,7 @@ fn cancelled_mapped_writer_admits_a_queued_reader() {
     let mut writer = Box::pin(async {
         let mut mapped = RwLockWriteGuard::map(rwlock.write().await, |values| &mut values[0]);
         *mapped = 10;
-        std::future::pending::<()>().await;
+        pending::<()>().await;
     });
     assert_pending!(poll_once(writer.as_mut()));
     let mut reader = Box::pin(rwlock.read());
@@ -417,7 +419,7 @@ async fn aborted_task_releases_its_owned_mapped_rwlock_guard() {
     *mapped = 10;
     let task = tokio::spawn(async move {
         let _mapped = mapped;
-        std::future::pending::<()>().await;
+        pending::<()>().await;
     });
     assert!(rwlock.try_read().is_none());
 

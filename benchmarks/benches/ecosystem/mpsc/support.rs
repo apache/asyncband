@@ -28,9 +28,13 @@ use std::thread::JoinHandle;
 pub use benchmarks::channels::BATCH_MESSAGES;
 pub use benchmarks::channels::BOUNDED_CAPACITY;
 use divan::black_box;
+use tokio::runtime::Builder;
+use tokio::runtime::Runtime;
+use tokio::sync::Notify;
+use tokio::sync::mpsc;
 
-use super::adapters::BoundedMpsc;
-use super::adapters::UnboundedMpsc;
+use crate::mpsc::adapters::BoundedMpsc;
+use crate::mpsc::adapters::UnboundedMpsc;
 pub const PRODUCER_COUNTS: &[usize] = &[1, 4];
 
 #[derive(Clone, Copy)]
@@ -248,15 +252,15 @@ impl<C: ConcurrentMpsc<Message = usize>> Drop for RepeatedBatch<C> {
 // block_on instead measures worker-to-caller thread handoffs, which is a separate workload.
 enum Receiver<C: ConcurrentMpsc> {
     Task {
-        start: Arc<tokio::sync::Notify>,
-        completed: tokio::sync::mpsc::UnboundedReceiver<usize>,
+        start: Arc<Notify>,
+        completed: mpsc::UnboundedReceiver<usize>,
     },
     External(C::Receiver),
 }
 
 // Control messages coordinate each batch without forwarding measured payloads.
 pub struct RepeatedTasks<C: ConcurrentMpsc> {
-    runtime: tokio::runtime::Runtime,
+    runtime: Runtime,
     receiver: Receiver<C>,
     start: Arc<tokio::sync::Barrier>,
     stop: Arc<AtomicBool>,
@@ -279,11 +283,9 @@ impl<C: ConcurrentMpsc> RepeatedTasks<C> {
     ) -> Self {
         assert_eq!(BATCH_MESSAGES % producer_count, 0);
         let runtime = if worker_threads == 0 {
-            tokio::runtime::Builder::new_current_thread()
-                .build()
-                .unwrap()
+            Builder::new_current_thread().build().unwrap()
         } else {
-            tokio::runtime::Builder::new_multi_thread()
+            Builder::new_multi_thread()
                 .worker_threads(worker_threads)
                 .build()
                 .unwrap()
@@ -316,8 +318,8 @@ impl<C: ConcurrentMpsc> RepeatedTasks<C> {
         let receiver = if external_receiver {
             Receiver::External(receiver)
         } else {
-            let request = Arc::new(tokio::sync::Notify::new());
-            let (completed_tx, completed) = tokio::sync::mpsc::unbounded_channel();
+            let request = Arc::new(Notify::new());
+            let (completed_tx, completed) = mpsc::unbounded_channel();
             let request_rx = request.clone();
             let start = start.clone();
             let stop = stop.clone();

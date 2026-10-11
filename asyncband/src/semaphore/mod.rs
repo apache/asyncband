@@ -51,6 +51,7 @@
 //! # }
 //! ```
 
+use std::ptr;
 use std::sync::Arc;
 
 use crate::internal::semaphore;
@@ -399,7 +400,7 @@ impl SemaphorePermit<'_> {
     #[track_caller]
     pub fn merge(&mut self, mut other: Self) {
         assert!(
-            std::ptr::eq(self.sem, other.sem),
+            ptr::eq(self.sem, other.sem),
             "merging permits from different semaphore instances"
         );
         self.permits = self

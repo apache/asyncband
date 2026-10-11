@@ -52,7 +52,7 @@
 //! assert_eq!(late.try_recv(), Err(TryRecvError::Empty));
 //! ```
 //!
-//! [`bounded`]: super::bounded
+//! [`bounded`]: crate::broadcast::mpmc::bounded
 
 use std::fmt;
 use std::future::Future;
@@ -63,11 +63,11 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use super::common;
-use super::common::Backlog;
-use super::common::Inner;
-use super::error::RecvError;
-use super::error::TryRecvError;
+use crate::broadcast::mpmc::common;
+use crate::broadcast::mpmc::common::Backlog;
+use crate::broadcast::mpmc::common::Inner;
+use crate::broadcast::mpmc::error::RecvError;
+use crate::broadcast::mpmc::error::TryRecvError;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
 use crate::internal::wakerset::WakerToken;

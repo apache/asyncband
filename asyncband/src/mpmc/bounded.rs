@@ -18,12 +18,12 @@
 use std::fmt;
 use std::sync::Arc;
 
-use super::RecvError;
-use super::SendError;
-use super::TryRecvError;
-use super::TrySendError;
-pub use super::queue::Permit;
-use super::queue::Shared;
+use crate::mpmc::RecvError;
+use crate::mpmc::SendError;
+use crate::mpmc::TryRecvError;
+use crate::mpmc::TrySendError;
+use crate::mpmc::queue::Permit;
+use crate::mpmc::queue::Shared;
 
 /// Creates a bounded multi-producer, multi-consumer queue.
 ///
@@ -108,7 +108,9 @@ impl<T> BoundedSender<T> {
     /// ```
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let (sender, receiver) = asyncband::mpmc::bounded(1);
+    /// use asyncband::mpmc;
+    ///
+    /// let (sender, receiver) = mpmc::bounded(1);
     /// let permit = sender.reserve().await.unwrap();
     /// let message = String::from("constructed after capacity became available");
     /// permit.send(message).unwrap();

@@ -21,7 +21,7 @@ use std::time::Duration;
 use asyncband::mpmc;
 use tokio::task::JoinHandle;
 
-use super::Receiver;
+use crate::Receiver;
 
 const PRODUCERS: usize = 8;
 const CONSUMERS: usize = 8;

@@ -20,6 +20,7 @@
 //! Guards hold a token instead of implementing `Drop`, so projecting or downgrading a guard moves
 //! the token into the new guard.
 
+use std::mem;
 use std::sync::Arc;
 
 use crate::internal::semaphore::Semaphore;
@@ -72,7 +73,7 @@ impl<'a, T: ?Sized> ReadAccess<&'a RwLock<T>> {
         let lock = self.owner;
         // The new token takes over releasing the permit; forgetting this one avoids releasing it
         // during the transfer. Its borrowed owner needs no cleanup.
-        std::mem::forget(self);
+        mem::forget(self);
         ReadAccess::new(&lock.s)
     }
 }
@@ -119,7 +120,7 @@ impl<'a, T: ?Sized> WriteAccess<&'a RwLock<T>> {
         let permits_acquired = self.permits_acquired;
         // The new token takes over releasing the permits; forgetting this one avoids releasing them
         // during the transfer. Its borrowed owner needs no cleanup.
-        std::mem::forget(self);
+        mem::forget(self);
         WriteAccess::new(&lock.s, permits_acquired)
     }
 }

@@ -16,6 +16,9 @@
 // under the License.
 
 use std::cell::Cell;
+use std::convert::Infallible;
+use std::fmt;
+use std::future::Ready;
 use std::marker::PhantomPinned;
 use std::panic::RefUnwindSafe;
 use std::panic::UnwindSafe;
@@ -63,7 +66,7 @@ struct PoolManager;
 
 impl ManageObject for PoolManager {
     type Object = i64;
-    type Error = std::convert::Infallible;
+    type Error = Infallible;
 
     async fn create(&self) -> Result<Self::Object, Self::Error> {
         Ok(0)
@@ -90,7 +93,7 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<completion::Completer<i64>>();
     assert_send_and_sync::<completion::Completion<i64>>();
     assert_send_and_sync::<completion::Abandoned>();
-    assert_send_and_sync::<LazyCell<u32, std::future::Ready<u32>>>();
+    assert_send_and_sync::<LazyCell<u32, Ready<u32>>>();
     assert_send_and_sync::<Once>();
     assert_send_and_sync::<OnceCell<u32>>();
     assert_send_and_sync::<OnceMap<String, u32>>();
@@ -186,7 +189,7 @@ fn public_types_are_unpin() {
     assert_unpin::<completion::Completion<i64>>();
     assert_unpin::<completion::Abandoned>();
     assert_unpin::<Latch>();
-    assert_unpin::<LazyCell<u32, std::future::Ready<u32>>>();
+    assert_unpin::<LazyCell<u32, Ready<u32>>>();
     assert_unpin::<Once>();
     assert_unpin::<OnceCell<u32>>();
     assert_unpin::<OnceMap<String, u32>>();
@@ -274,7 +277,7 @@ fn mpsc_endpoints_keep_legacy_traits_regardless_of_payload() {
 #[test]
 fn unbounded_manual_manager_traits_do_not_depend_on_the_object() {
     fn assert_copy<T: Copy>() {}
-    fn assert_debug<T: std::fmt::Debug>() {}
+    fn assert_debug<T: fmt::Debug>() {}
 
     assert_copy::<pool::unbounded::NeverManageObject<String>>();
     assert_debug::<pool::unbounded::NeverManageObject<String>>();

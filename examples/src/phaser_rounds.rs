@@ -25,6 +25,8 @@
 //! These are coordination patterns for jobs such as parallel imports. The work within a batch is
 //! represented by a yield; the examples focus on when workers can join, proceed, and leave.
 
+use std::future::ready;
+
 use asyncband::phaser::Closed;
 use asyncband::phaser::Phaser;
 use asyncband::phaser::PhaserParticipant;
@@ -125,7 +127,7 @@ async fn cancellation_retry() -> Result<(), Closed> {
         biased;
         result = participant.wait() => panic!("peer has not arrived: {result:?}"),
         // Poll the wait once, then cancel it deterministically without a timer or sleep.
-        _ = std::future::ready(()) => {}
+        _ = ready(()) => {}
     }
     assert_eq!(phaser.arrived_parties(), 1);
     peer.arrive()?;

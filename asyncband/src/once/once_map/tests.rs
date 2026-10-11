@@ -16,17 +16,16 @@
 // under the License.
 
 use std::cell::Cell;
+use std::future::pending;
 use std::future::poll_fn;
 use std::hash::BuildHasherDefault;
 use std::hash::Hasher;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
-use std::sync::Arc;
 use std::task::Poll;
 
-use super::Lookup;
-use super::OnceMap;
+use super::*;
 use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
@@ -78,7 +77,7 @@ fn cancelled_compute_removes_empty_entry() {
     let map = OnceMap::<&str, i32>::new();
 
     {
-        let mut compute = pin!(map.compute("key", async || std::future::pending::<i32>().await));
+        let mut compute = pin!(map.compute("key", async || pending::<i32>().await));
         assert!(poll_once(compute.as_mut()).is_pending());
         assert_eq!(map.len(), 1);
     }
@@ -90,13 +89,11 @@ fn cancelled_compute_removes_empty_entry() {
 fn pending_computation_does_not_block_another_key() {
     let map = OnceMap::new();
     {
-        let mut pending = std::pin::pin!(
-            map.compute("pending", async || { std::future::pending::<i32>().await })
-        );
+        let mut pending = pin!(map.compute("pending", async || { pending::<i32>().await }));
         assert!(poll_once(pending.as_mut()).is_pending());
 
-        let mut ready = std::pin::pin!(map.compute("ready", async || 1));
-        assert_eq!(poll_once(ready.as_mut()), std::task::Poll::Ready(1));
+        let mut ready = pin!(map.compute("ready", async || 1));
+        assert_eq!(poll_once(ready.as_mut()), Poll::Ready(1));
     }
 
     assert_eq!(map.len(), 1);

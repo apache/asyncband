@@ -28,6 +28,7 @@ use std::task::Poll;
 use asyncband::singleflight::Group;
 use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
+use tokio::sync::oneshot;
 
 #[tokio::test]
 async fn supports_non_clone_key() {
@@ -43,7 +44,7 @@ async fn supports_non_clone_key() {
 async fn concurrent_work_is_coalesced() {
     let group = Group::new();
     let counter = AtomicUsize::new(0);
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
 
     let leader = group.work("key", || async {
         counter.fetch_add(1, Ordering::SeqCst);
@@ -77,7 +78,7 @@ async fn concurrent_work_is_coalesced() {
 #[tokio::test]
 async fn pending_work_does_not_block_other_keys() {
     let group = Group::new();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
 
     let first = group.work("key1", || async {
         release_rx.await.unwrap();
@@ -96,8 +97,8 @@ async fn pending_work_does_not_block_other_keys() {
 async fn forget_detaches_in_flight_work() {
     let group = Group::new();
     let counter = AtomicUsize::new(0);
-    let (first_release_tx, first_release_rx) = tokio::sync::oneshot::channel();
-    let (second_release_tx, second_release_rx) = tokio::sync::oneshot::channel();
+    let (first_release_tx, first_release_rx) = oneshot::channel();
+    let (second_release_tx, second_release_rx) = oneshot::channel();
 
     let first = group.work("key".to_owned(), || async {
         counter.fetch_add(1, Ordering::SeqCst);
@@ -142,7 +143,7 @@ async fn try_work_returns_value_without_caching_it() {
 async fn concurrent_try_work_is_coalesced() {
     let group = Group::new();
     let counter = AtomicUsize::new(0);
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
 
     let leader = group.try_work("key", || async {
         counter.fetch_add(1, Ordering::SeqCst);
@@ -211,7 +212,7 @@ fn duplicate_key_destructor_can_forget_another_key() {
     assert_completes_without_deadlock(|| {
         for fallible in [false, true] {
             let group = Rc::new(Group::new());
-            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = oneshot::channel();
             let mut leader = pin!(group.work(
                 Key {
                     value: 7,

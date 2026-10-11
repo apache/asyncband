@@ -107,9 +107,8 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::task::Wake;
-    use std::task::Waker;
 
-    use super::WakerBatch;
+    use super::*;
 
     const STACK_SIZE: usize = WakerBatch::STACK_SIZE;
 

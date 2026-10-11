@@ -37,8 +37,8 @@ use crate::internal::waitlist::WaiterId;
 /// An unassigned signal can be cleared with [`reset`](Self::reset).
 ///
 /// Waiting consumes a signal without returning it on completion. Unlike a
-/// [`ManualResetEvent`](super::ManualResetEvent), this event does not release all observers of a
-/// condition. Unlike a semaphore, it does not count unused signals or return a permit guard.
+/// [`ManualResetEvent`](crate::event::ManualResetEvent), this event does not release all observers
+/// of a condition. Unlike a semaphore, it does not count unused signals or return a permit guard.
 ///
 /// # Usage
 ///

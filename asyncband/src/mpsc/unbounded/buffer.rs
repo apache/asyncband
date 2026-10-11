@@ -98,11 +98,9 @@ pub fn pop_batch<T>(batch: &mut VecDeque<T>) -> T {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::iter;
 
-    use super::Buffer;
-    use super::SEGMENT_BYTES;
-    use super::pop_batch;
+    use super::*;
 
     fn allocated_bytes<T>(buffer: &Buffer<T>, batch: &VecDeque<T>) -> usize {
         let slots = batch.capacity()
@@ -149,7 +147,7 @@ mod tests {
             for _ in 0..2 {
                 for value in 0..messages {
                     buffer.push([value as u8; SIZE]);
-                    for segment in std::iter::once(&buffer.writable).chain(&buffer.sealed) {
+                    for segment in iter::once(&buffer.writable).chain(&buffer.sealed) {
                         assert!(segment.capacity() * SIZE <= SEGMENT_BYTES);
                     }
                 }

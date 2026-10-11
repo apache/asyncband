@@ -19,11 +19,11 @@ use benchmarks::support::defer_input_drop;
 use divan::Bencher;
 use divan::black_box;
 
-use super::support::BATCH_SAMPLE_SIZE;
-use super::support::FAST_SAMPLE_SIZE;
-use super::support::NONEMPTY_ENTRY_COUNTS;
-use super::support::READY_ENTRY_COUNTS;
-use super::support::ready_map;
+use crate::once_map::support::BATCH_SAMPLE_SIZE;
+use crate::once_map::support::FAST_SAMPLE_SIZE;
+use crate::once_map::support::NONEMPTY_ENTRY_COUNTS;
+use crate::once_map::support::READY_ENTRY_COUNTS;
+use crate::once_map::support::ready_map;
 
 #[divan::bench(args = NONEMPTY_ENTRY_COUNTS, sample_size = BATCH_SAMPLE_SIZE)]
 fn remove_hit(bencher: Bencher, ready_entries: usize) {

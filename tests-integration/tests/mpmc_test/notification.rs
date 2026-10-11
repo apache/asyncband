@@ -26,7 +26,7 @@ use tests_integration::WakeCounter;
 use tests_integration::expect_ready;
 use tests_integration::poll_with;
 
-use super::Receiver;
+use crate::Receiver;
 
 #[derive(Debug)]
 enum NotifiedReceiver {
@@ -39,7 +39,7 @@ fn receiver_notifications<S, R: Receiver<usize>>(
     channel: impl Fn() -> (S, R),
     send: impl Fn(&S, usize),
 ) {
-    use NotifiedReceiver::*;
+    use crate::notification::NotifiedReceiver::*;
 
     for action in [Receive, Cancel, TakeValueThenCancel] {
         let (sender, receiver) = channel();

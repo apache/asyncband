@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::fmt;
 use std::mem;
 use std::num::NonZeroUsize;
 
@@ -41,8 +42,8 @@ impl SlotId {
     }
 }
 
-impl std::fmt::Debug for SlotId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SlotId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("SlotId").field(&self.index()).finish()
     }
 }

@@ -21,9 +21,9 @@ use tests_integration::expect_ready;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
 
-use super::support::Manager;
-use super::support::ManagerError;
-use super::support::ready;
+use crate::support::Manager;
+use crate::support::ManagerError;
+use crate::support::ready;
 
 // Both pool variants promise the same object lifecycle during recycle cancellation.
 macro_rules! recycle_contract {

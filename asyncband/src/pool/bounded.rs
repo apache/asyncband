@@ -73,6 +73,7 @@
 //! # }
 //! ```
 
+use std::fmt;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -164,12 +165,12 @@ pub struct Pool<M: ManageObject> {
     slots: Mutex<PoolState<M::Object>>,
 }
 
-impl<M> std::fmt::Debug for Pool<M>
+impl<M> fmt::Debug for Pool<M>
 where
     M: ManageObject,
-    M::Object: std::fmt::Debug,
+    M::Object: fmt::Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Pool")
             .field("slots", &self.slots)
             .field("config", &self.config)
@@ -476,12 +477,12 @@ pub struct Object<M: ManageObject> {
     pool: Weak<Pool<M>>,
 }
 
-impl<M> std::fmt::Debug for Object<M>
+impl<M> fmt::Debug for Object<M>
 where
     M: ManageObject,
-    M::Object: std::fmt::Debug,
+    M::Object: fmt::Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Object")
             .field("state", &self.state)
             .field("permit", &self.permit)

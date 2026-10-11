@@ -48,6 +48,7 @@
 //! # }
 //! ```
 
+use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::mem;
@@ -91,7 +92,7 @@ impl fmt::Display for Abandoned {
     }
 }
 
-impl std::error::Error for Abandoned {}
+impl Error for Abandoned {}
 
 /// The capability that completes a [`Completion`] with one value.
 ///

@@ -180,13 +180,15 @@
 //! For example, create and recycle behavior can be expressed directly by [`ManageObject`]:
 //!
 //! ```
+//! use std::convert::Infallible;
+//!
 //! use asyncband::pool::ManageObject;
 //! use asyncband::pool::ObjectStatus;
 //!
 //! struct Manager;
 //! impl ManageObject for Manager {
 //!     type Object = i32;
-//!     type Error = std::convert::Infallible;
+//!     type Error = Infallible;
 //!
 //!     async fn create(&self) -> Result<Self::Object, Self::Error> {
 //!         let o = 42;

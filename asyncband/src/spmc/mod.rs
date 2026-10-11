@@ -52,25 +52,33 @@
 //! Neither sender supports cloning:
 //!
 //! ```compile_fail,E0599
-//! let (sender, _receiver) = asyncband::spmc::bounded::<u8>(1);
+//! use asyncband::spmc;
+//!
+//! let (sender, _receiver) = spmc::bounded::<u8>(1);
 //! let second_producer = sender.clone();
 //! ```
 //!
 //! ```compile_fail,E0599
-//! let (sender, _receiver) = asyncband::spmc::unbounded::<u8>();
+//! use asyncband::spmc;
+//!
+//! let (sender, _receiver) = spmc::unbounded::<u8>();
 //! let second_producer = sender.clone();
 //! ```
 //!
 //! Sending through a shared reference is rejected:
 //!
 //! ```compile_fail,E0596
-//! fn send(sender: &asyncband::spmc::BoundedSender<u8>) {
+//! use asyncband::spmc::BoundedSender;
+//!
+//! fn send(sender: &BoundedSender<u8>) {
 //!     let _ = sender.try_send(1);
 //! }
 //! ```
 //!
 //! ```compile_fail,E0596
-//! fn send(sender: &asyncband::spmc::UnboundedSender<u8>) {
+//! use asyncband::spmc::UnboundedSender;
+//!
+//! fn send(sender: &UnboundedSender<u8>) {
 //!     let _ = sender.send(1);
 //! }
 //! ```
@@ -78,7 +86,9 @@
 //! A bounded `send` future retains the exclusive borrow until completion or cancellation:
 //!
 //! ```compile_fail,E0499
-//! let (mut sender, _receiver) = asyncband::spmc::bounded(1);
+//! use asyncband::spmc;
+//!
+//! let (mut sender, _receiver) = spmc::bounded(1);
 //! let pending = sender.send(1);
 //! let _ = sender.try_send(2);
 //! drop(pending);

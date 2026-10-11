@@ -24,6 +24,7 @@
 
 use std::fmt;
 use std::ops::Deref;
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 use crate::rwlock::OwnedMappedRwLockReadGuard;
@@ -101,7 +102,7 @@ impl<T: ?Sized> OwnedRwLockReadGuard<T> {
         F: FnOnce(&T) -> &U,
         U: ?Sized,
     {
-        let d = std::ptr::NonNull::from(f(&*orig));
+        let d = NonNull::from(f(&*orig));
         OwnedMappedRwLockReadGuard::new(d, orig.access)
     }
 
@@ -117,7 +118,7 @@ impl<T: ?Sized> OwnedRwLockReadGuard<T> {
     {
         match f(&*orig) {
             Some(d) => {
-                let d = std::ptr::NonNull::from(d);
+                let d = NonNull::from(d);
                 Ok(OwnedMappedRwLockReadGuard::new(d, orig.access))
             }
             None => Err(orig),

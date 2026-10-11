@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::thread;
+
 use super::*;
 
 #[test]
@@ -42,7 +44,7 @@ fn concurrent_senders_commit_every_version() {
     let workers = (0..SENDERS)
         .map(|sender_index| {
             let tx = tx.clone();
-            std::thread::spawn(move || {
+            thread::spawn(move || {
                 for offset in 0..SENDS_PER_THREAD {
                     tx.send(sender_index * SENDS_PER_THREAD + offset).unwrap();
                 }

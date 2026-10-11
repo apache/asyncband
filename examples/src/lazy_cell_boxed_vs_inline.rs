@@ -18,6 +18,7 @@
 //! Choose how to store a lazy initializer: box its future to keep the cell movable, pin the cell
 //! locally to store the future inline, or share a pinned cell across tasks.
 
+use std::pin::pin;
 use std::sync::Arc;
 
 use asyncband::once::LazyCell;
@@ -32,7 +33,7 @@ async fn main() {
     // Returning the async future directly stores it inline. The caller pins the cell before the
     // first poll, so the future stays at a stable address without a heap allocation.
     let inline = LazyCell::new(async || "inline".to_owned());
-    let mut inline = std::pin::pin!(inline);
+    let mut inline = pin!(inline);
     assert_eq!(LazyCell::force_pin(inline.as_ref()).await, "inline");
 
     LazyCell::force_pin_mut(inline.as_mut())

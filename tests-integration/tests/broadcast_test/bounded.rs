@@ -16,9 +16,12 @@
 // under the License.
 
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::task::Context;
+use std::task::Poll;
 use std::task::Waker;
 use std::thread;
 
@@ -291,7 +294,7 @@ fn parked_recv_that_reclaims_wakes_a_blocked_sender() {
     // Reclaim through the `recv` future rather than `try_recv`: it is a separate call site, and a
     // release wired into only one of them would strand this producer.
     let mut recv = Box::pin(rx.recv());
-    assert_eq!(poll_once(recv.as_mut()), std::task::Poll::Ready(Ok(0)));
+    assert_eq!(poll_once(recv.as_mut()), Poll::Ready(Ok(0)));
     drop(recv);
 
     assert_eq!(tracker.count(), 1);
@@ -535,7 +538,7 @@ fn bounded_parked_recv_wakes_when_the_last_sender_drops() {
     assert_eq!(tracker.count(), 1);
     assert_eq!(
         poll_once(recv.as_mut()),
-        std::task::Poll::Ready(Err(RecvError::Disconnected))
+        Poll::Ready(Err(RecvError::Disconnected))
     );
 }
 
@@ -602,9 +605,7 @@ fn bounded_panicking_clone_leaves_the_channel_consistent() {
     .unwrap();
 
     // Two receivers share the payload, so `try_recv` has to clone it.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rx1.try_recv().map(|msg| msg.value)
-    }));
+    let result = catch_unwind(AssertUnwindSafe(|| rx1.try_recv().map(|msg| msg.value)));
     assert!(result.is_err());
 
     // The panicking `try_recv` call still consumed the message for `rx1`, and left the channel
@@ -636,7 +637,7 @@ fn panicking_payload_destructor_still_releases_capacity() {
 
     // Dropping `rx2` reclaims all three retained messages and their destructors panic. The
     // capacity they released must already have reached the parked producer by then.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(rx2)));
+    let result = catch_unwind(AssertUnwindSafe(|| drop(rx2)));
     assert!(result.is_err());
 
     assert!(
