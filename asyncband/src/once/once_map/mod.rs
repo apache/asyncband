@@ -30,17 +30,10 @@ use crate::once::OnceCell;
 #[cfg(test)]
 mod tests;
 
-type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
-
 struct Entry<K, V> {
     hash: u64,
     key: K,
     cell: OnceCell<V>,
-}
-
-enum Lookup<K, V> {
-    Ready(V),
-    Pending(Arc<Entry<K, V>>),
 }
 
 /// A hash map that runs computation only once for each key and stores the result.
@@ -49,7 +42,7 @@ enum Lookup<K, V> {
 /// as `Arc<T>`, when entries are large or frequently shared.
 pub struct OnceMap<K, V, S = RandomState> {
     // Hashbrown allocates the table lazily, and computation always runs after releasing this lock.
-    entries: Mutex<Entries<K, V>>,
+    entries: Mutex<HashTable<Arc<Entry<K, V>>>>,
     hasher: S,
 }
 
@@ -75,62 +68,21 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    fn get_or_insert(&self, key: K) -> Lookup<K, V>
-    where
-        V: Clone,
-    {
+    fn get_or_insert(&self, key: K) -> Arc<Entry<K, V>> {
         let hash = self.hasher.hash_one(&key);
-        let entry = {
-            let mut entries = self.entries.lock();
-            if let Some(entry) = entries
-                .find(hash, |entry| entry.key.eq(&key))
-                .map(Arc::clone)
-            {
-                entry
-            } else {
-                let entry = Arc::new(Entry {
-                    hash,
-                    key,
-                    cell: OnceCell::new(),
-                });
-                entries.insert_unique(hash, Arc::clone(&entry), |entry| entry.hash);
-                entry
-            }
-        };
-
-        Self::classify(entry)
-    }
-
-    fn classify(entry: Arc<Entry<K, V>>) -> Lookup<K, V>
-    where
-        V: Clone,
-    {
-        match entry.cell.get().cloned() {
-            Some(value) => Lookup::Ready(value),
-            None => Lookup::Pending(entry),
+        let mut entries = self.entries.lock();
+        // Drop duplicate keys after unlocking: their destructors may reenter the map.
+        if let Some(entry) = entries.find(hash, |entry| entry.key.eq(&key)) {
+            return entry.clone();
         }
-    }
 
-    fn find_entry(
-        &self,
-        hash: u64,
-        matches: impl Fn(&Entry<K, V>) -> bool,
-    ) -> Option<Arc<Entry<K, V>>> {
-        self.entries
-            .lock()
-            .find(hash, |entry| matches(entry))
-            .cloned()
-    }
-
-    fn get_value<Q>(&self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-        V: Clone,
-    {
-        let hash = self.hasher.hash_one(key);
-        let entry = self.find_entry(hash, |entry| entry.key.borrow() == key)?;
-        entry.cell.get().cloned()
+        let entry = Arc::new(Entry {
+            hash,
+            key,
+            cell: OnceCell::new(),
+        });
+        entries.insert_unique(hash, entry.clone(), |entry| entry.hash);
+        entry
     }
 
     fn remove_entry<Q>(&self, key: &Q) -> Option<Arc<Entry<K, V>>>
@@ -143,9 +95,7 @@ where
         let occupied = entries
             .find_entry(hash, |entry| entry.key.borrow() == key)
             .ok()?;
-        let (entry, _) = occupied.remove();
-        drop(entries);
-        Some(entry)
+        Some(occupied.remove().0)
     }
 
     fn cleanup_abandoned_entry(&self, entry: Arc<Entry<K, V>>) {
@@ -164,31 +114,13 @@ where
                 Some(occupied.remove().0)
             } else {
                 // A waiting cleanup must observe this call's reference being released before it
-                // can inspect the count while holding the write lock.
+                // can inspect the count while holding the table lock.
                 drop(entry);
                 None
             }
         };
         // Key and value destructors must not run while the table is locked.
         drop(removed);
-    }
-
-    fn insert(&mut self, key: K, value: V) {
-        let hash = self.hasher.hash_one(&key);
-        let entry = Arc::new(Entry {
-            hash,
-            key,
-            cell: OnceCell::from_value(value),
-        });
-
-        let mut entries = self.entries.lock();
-        let replaced = entries
-            .find_entry(hash, |stored| stored.key.eq(&entry.key))
-            .ok()
-            .map(|occupied| occupied.remove().0);
-        entries.insert_unique(hash, entry, |entry| entry.hash);
-        drop(entries);
-        drop(replaced);
     }
 }
 
@@ -200,14 +132,22 @@ where
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let iter = iter.into_iter();
-        let mut map = Self {
-            entries: Mutex::new(HashTable::with_capacity(iter.size_hint().0)),
-            hasher: S::default(),
-        };
+        let hasher = S::default();
+        let mut entries = HashTable::<Arc<Entry<K, V>>>::with_capacity(iter.size_hint().0);
         for (key, value) in iter {
-            map.insert(key, value);
+            let hash = hasher.hash_one(&key);
+            entries
+                .entry(hash, |entry| entry.key.eq(&key), |entry| entry.hash)
+                .insert(Arc::new(Entry {
+                    hash,
+                    key,
+                    cell: OnceCell::from_value(value),
+                }));
         }
-        map
+        Self {
+            entries: Mutex::new(entries),
+            hasher,
+        }
     }
 }
 
@@ -307,12 +247,14 @@ where
     where
         F: AsyncFnOnce() -> V,
     {
-        let entry = match self.get_or_insert(key) {
-            Lookup::Ready(value) => return value,
-            Lookup::Pending(entry) => entry,
+        // The block ends the entry's scope before the await, so the future does not store it.
+        let guard = {
+            let entry = self.get_or_insert(key);
+            if let Some(value) = entry.cell.get() {
+                return value.clone();
+            }
+            ComputeCleanupGuard::new(self, entry)
         };
-
-        let guard = ComputeCleanupGuard::new(self, entry);
         let result = guard.entry().cell.get_or_init(func).await.clone();
         guard.dismiss();
         result
@@ -334,12 +276,14 @@ where
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        let entry = match self.get_or_insert(key) {
-            Lookup::Ready(value) => return Ok(value),
-            Lookup::Pending(entry) => entry,
+        // The block ends the entry's scope before the await, so the future does not store it.
+        let guard = {
+            let entry = self.get_or_insert(key);
+            if let Some(value) = entry.cell.get() {
+                return Ok(value.clone());
+            }
+            ComputeCleanupGuard::new(self, entry)
         };
-
-        let guard = ComputeCleanupGuard::new(self, entry);
         let result = guard.entry().cell.get_or_try_init(func).await?.clone();
         guard.dismiss();
         Ok(result)
@@ -353,7 +297,13 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.get_value(key)
+        let hash = self.hasher.hash_one(key);
+        let entry = self
+            .entries
+            .lock()
+            .find(hash, |entry| entry.key.borrow() == key)
+            .cloned();
+        entry?.cell.get().cloned()
     }
 
     /// Remove the given key from the map.

@@ -16,14 +16,19 @@
 // under the License.
 
 use std::borrow::Borrow;
+use std::cell::Cell;
 use std::hash::BuildHasherDefault;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::pin::pin;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::task::Poll;
 
 use asyncband::once::OnceMap;
+use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
 
 #[tokio::test]
@@ -320,4 +325,94 @@ async fn entries_with_a_long_common_hash_prefix_remain_accessible() {
     for key in 0..32 {
         assert_eq!(map.get(&key), Some(key));
     }
+}
+
+#[test]
+fn duplicate_key_destructor_can_discard_another_key() {
+    struct Key {
+        value: usize,
+        on_drop: Option<Box<dyn FnOnce()>>,
+    }
+
+    impl Borrow<usize> for Key {
+        fn borrow(&self) -> &usize {
+            &self.value
+        }
+    }
+
+    impl PartialEq for Key {
+        fn eq(&self, other: &Self) -> bool {
+            self.value == other.value
+        }
+    }
+
+    impl Eq for Key {}
+
+    impl Hash for Key {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.value.hash(state);
+        }
+    }
+
+    impl Drop for Key {
+        fn drop(&mut self) {
+            if let Some(on_drop) = self.on_drop.take() {
+                on_drop();
+            }
+        }
+    }
+
+    fn discarding_key(map: &Rc<OnceMap<Key, &'static str>>) -> (Key, Rc<Cell<bool>>) {
+        let dropped = Rc::new(Cell::new(false));
+        let flag = dropped.clone();
+        let weak = Rc::downgrade(map);
+        let key = Key {
+            value: 7,
+            on_drop: Some(Box::new(move || {
+                weak.upgrade().unwrap().discard(&42_usize);
+                flag.set(true);
+            })),
+        };
+        (key, dropped)
+    }
+
+    assert_completes_without_deadlock(|| {
+        for fallible in [false, true] {
+            let map = Rc::new(OnceMap::new());
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let mut leader = pin!(map.compute(
+                Key {
+                    value: 7,
+                    on_drop: None,
+                },
+                async || {
+                    release_rx.await.unwrap();
+                    "leader"
+                }
+            ));
+            assert!(poll_once(leader.as_mut()).is_pending());
+
+            let (key, key_dropped) = discarding_key(&map);
+            let mut duplicate = pin!(async {
+                if fallible {
+                    map.try_compute(key, async || Ok::<_, ()>("duplicate"))
+                        .await
+                        .unwrap()
+                } else {
+                    map.compute(key, async || "duplicate").await
+                }
+            });
+            assert!(poll_once(duplicate.as_mut()).is_pending());
+            assert!(key_dropped.get());
+
+            release_tx.send(()).unwrap();
+            assert_eq!(poll_once(leader.as_mut()), Poll::Ready("leader"));
+            assert_eq!(poll_once(duplicate.as_mut()), Poll::Ready("leader"));
+
+            let (key, key_dropped) = discarding_key(&map);
+            let mut hit = pin!(map.compute(key, async || "unused"));
+            assert_eq!(poll_once(hit.as_mut()), Poll::Ready("leader"));
+            assert!(key_dropped.get());
+        }
+    });
 }
