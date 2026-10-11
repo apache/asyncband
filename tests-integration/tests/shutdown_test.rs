@@ -16,6 +16,7 @@
 // under the License.
 
 use std::future::pending;
+use std::future::ready;
 use std::pin::pin;
 
 use asyncband::blocking::FutureExt;
@@ -122,7 +123,7 @@ fn test_disabled_select_branch_does_not_request_shutdown() {
 
         tokio::select! {
             _ = shutdown, if false => unreachable!(),
-            _ = std::future::ready(()) => {}
+            _ = ready(()) => {}
         }
 
         assert!(!watch.is_shutdown_requested());

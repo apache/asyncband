@@ -20,6 +20,7 @@
 //! cancellation.
 
 use std::future::Ready;
+use std::future::ready;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -32,7 +33,7 @@ static ONCE_ENDPOINT: OnceCell<String> = OnceCell::new();
 static LAZY_ENDPOINT: LazyCell<String, Ready<String>> = LazyCell::new(load_default_endpoint);
 
 fn load_default_endpoint() -> Ready<String> {
-    std::future::ready("https://service.example".to_owned())
+    ready("https://service.example".to_owned())
 }
 
 #[tokio::main(flavor = "current_thread")]

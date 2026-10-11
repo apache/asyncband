@@ -16,6 +16,7 @@
 // under the License.
 
 use std::future::Future;
+use std::mem;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -27,8 +28,8 @@ use asyncband::pool::bounded::Pool;
 use asyncband::pool::bounded::PoolConfig;
 use tests_integration::WakeCounter;
 
-use super::support::Manager;
-use super::support::ManagerError;
+use crate::support::Manager;
+use crate::support::ManagerError;
 
 fn ready<T>(future: impl Future<Output = Result<T, ManagerError>>) -> T {
     let wakes = Arc::new(WakeCounter::default());
@@ -81,8 +82,8 @@ fn cancel_waiter(return_before_cancel: bool) {
         drop(held);
         // Cancel a notified waiter without requiring FIFO notification order.
         if first_wakes.count() == 0 {
-            std::mem::swap(&mut first, &mut next);
-            std::mem::swap(&mut first_wakes, &mut next_wakes);
+            mem::swap(&mut first, &mut next);
+            mem::swap(&mut first_wakes, &mut next_wakes);
         }
         assert!(first_wakes.count() > 0);
         // Cancel the notified future without polling it to retrieve its permit.

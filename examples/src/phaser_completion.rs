@@ -36,6 +36,7 @@ use std::sync::atomic::Ordering;
 use asyncband::phaser::Closed;
 use asyncband::phaser::Phaser;
 use asyncband::phaser::PhaserParticipant;
+use tokio::task::yield_now;
 
 // Own this guard before constructing a task future so cancelling an unpolled task also aborts.
 struct CloseOnDrop([Phaser; 2]);
@@ -113,7 +114,7 @@ async fn publish_until_target() -> Result<(), Closed> {
             .map(|value| value.load(Ordering::Relaxed))
             .sum();
         // An async checkpoint can be awaited here while workers wait at resume.
-        tokio::task::yield_now().await;
+        yield_now().await;
         published.store(sum, Ordering::Relaxed);
         println!("coordinator: published aggregate {sum}");
         if sum >= 18 {

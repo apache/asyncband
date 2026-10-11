@@ -124,6 +124,7 @@
 //! use asyncband::pool::bounded::Object;
 //! use asyncband::pool::bounded::Pool;
 //! # use asyncband::pool::bounded::PoolConfig;
+//! use tokio::time::timeout;
 //!
 //! # struct Connection;
 //! # #[derive(Debug)]
@@ -160,7 +161,7 @@
 //!         const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 //!
 //!         // Callers can use the timer implementation of their runtime.
-//!         match tokio::time::timeout(ACQUIRE_TIMEOUT, self.pool.get()).await {
+//!         match timeout(ACQUIRE_TIMEOUT, self.pool.get()).await {
 //!             Ok(result) => result.map_err(AcquireError::Create),
 //!             Err(_) => Err(AcquireError::Timeout),
 //!         }
@@ -180,13 +181,15 @@
 //! For example, create and recycle behavior can be expressed directly by [`ManageObject`]:
 //!
 //! ```
+//! use std::convert::Infallible;
+//!
 //! use asyncband::pool::ManageObject;
 //! use asyncband::pool::ObjectStatus;
 //!
 //! struct Manager;
 //! impl ManageObject for Manager {
 //!     type Object = i32;
-//!     type Error = std::convert::Infallible;
+//!     type Error = Infallible;
 //!
 //!     async fn create(&self) -> Result<Self::Object, Self::Error> {
 //!         let o = 42;
@@ -211,8 +214,8 @@ mod state;
 pub mod bounded;
 pub mod unbounded;
 
-pub use self::common::ManageObject;
-pub use self::common::ObjectStatus;
-pub use self::common::QueueStrategy;
-pub use self::common::RecycleCancelledStrategy;
-pub use self::common::RetainResult;
+pub use crate::pool::common::ManageObject;
+pub use crate::pool::common::ObjectStatus;
+pub use crate::pool::common::QueueStrategy;
+pub use crate::pool::common::RecycleCancelledStrategy;
+pub use crate::pool::common::RetainResult;

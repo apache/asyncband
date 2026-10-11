@@ -16,6 +16,7 @@
 // under the License.
 
 use std::cell::Cell;
+use std::ptr;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::task::Poll;
@@ -45,13 +46,13 @@ fn all_observers_borrow_the_same_non_clone_value() {
     let second_value = FutureExt::block_on(second.wait()).unwrap();
     let repeated = FutureExt::block_on(first.wait()).unwrap();
     assert_eq!(first_value.0.as_str(), "ready");
-    assert!(std::ptr::eq(first_value, second_value));
-    assert!(std::ptr::eq(first_value, repeated));
+    assert!(ptr::eq(first_value, second_value));
+    assert!(ptr::eq(first_value, repeated));
 
     let late = first.clone();
     drop(first);
     let late_value = FutureExt::block_on(late.wait()).unwrap();
-    assert!(std::ptr::eq(second_value, late_value));
+    assert!(ptr::eq(second_value, late_value));
 }
 
 #[test]

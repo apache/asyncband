@@ -27,12 +27,12 @@ use divan::Bencher;
 use divan::black_box;
 use divan::counter::ItemsCount;
 
-use super::support::BATCH_SAMPLE_SIZE;
-use super::support::BATCH_SIZES;
-use super::support::BenchMap;
-use super::support::FAST_SAMPLE_SIZE;
-use super::support::READY_ENTRY_COUNTS;
-use super::support::ready_map;
+use crate::once_map::support::BATCH_SAMPLE_SIZE;
+use crate::once_map::support::BATCH_SIZES;
+use crate::once_map::support::BenchMap;
+use crate::once_map::support::FAST_SAMPLE_SIZE;
+use crate::once_map::support::READY_ENTRY_COUNTS;
+use crate::once_map::support::ready_map;
 
 const ABSENT_KEY: usize = usize::MAX;
 

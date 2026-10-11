@@ -25,12 +25,13 @@ use std::sync::atomic::Ordering;
 
 use asyncband::once::OnceMap;
 use tests_integration::poll_once;
+use tokio::sync::oneshot;
 
 #[tokio::test]
 async fn concurrent_compute_runs_once() {
     let map = OnceMap::new();
     let count = AtomicUsize::new(0);
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
 
     let first = map.compute("key", async || {
         count.fetch_add(1, Ordering::SeqCst);
@@ -195,8 +196,8 @@ async fn discard_releases_the_removed_key_and_value_after_growth() {
 #[tokio::test]
 async fn remove_while_computing_allows_a_new_generation() {
     let map = Arc::new(OnceMap::new());
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let (started_tx, started_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
 
     let map_clone = map.clone();
     let task = tokio::spawn(async move {

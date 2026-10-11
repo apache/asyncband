@@ -18,9 +18,9 @@
 use std::fmt;
 use std::sync::Arc;
 
-use super::State;
 use crate::internal::mutex::Mutex;
 use crate::mpsc::SendError;
+use crate::mpsc::unbounded::State;
 
 /// The sending endpoint of an unbounded mpsc channel.
 ///

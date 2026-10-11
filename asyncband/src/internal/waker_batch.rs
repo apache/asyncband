@@ -109,7 +109,7 @@ mod tests {
     use std::task::Wake;
     use std::task::Waker;
 
-    use super::WakerBatch;
+    use crate::internal::waker_batch::WakerBatch;
 
     const STACK_SIZE: usize = WakerBatch::STACK_SIZE;
 

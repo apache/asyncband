@@ -121,6 +121,7 @@
 //! from the same phaser to `wait`; it tests for a different phase, not a target number
 //! or numeric threshold. An observation must not be retained across a full counter cycle.
 
+use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::iter::FusedIterator;
@@ -150,7 +151,7 @@ impl fmt::Display for Closed {
     }
 }
 
-impl std::error::Error for Closed {}
+impl Error for Closed {}
 
 /// A shared handle to a reusable phase barrier with dynamic participants.
 ///

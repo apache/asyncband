@@ -99,12 +99,12 @@ use std::sync::atomic::fence;
 use std::task::Poll;
 use std::task::Waker;
 
-pub use self::receiver::Receiver;
-pub use self::receiver::Recv;
-pub use self::receiver::RecvError;
-pub use self::receiver::TryRecvError;
-pub use self::sender::SendError;
-pub use self::sender::Sender;
+pub use crate::oneshot::receiver::Receiver;
+pub use crate::oneshot::receiver::Recv;
+pub use crate::oneshot::receiver::RecvError;
+pub use crate::oneshot::receiver::TryRecvError;
+pub use crate::oneshot::sender::SendError;
+pub use crate::oneshot::sender::Sender;
 
 #[cfg(test)]
 mod tests;

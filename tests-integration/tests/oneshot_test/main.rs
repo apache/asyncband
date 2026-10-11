@@ -34,10 +34,10 @@ use asyncband::blocking::FutureExt;
 use asyncband::oneshot;
 use asyncband::oneshot::TryRecvError;
 
-use self::support::DropProbe;
-use self::support::WakerProbe;
-use self::support::spawn_named;
-use self::support::spin_until;
+use crate::support::DropProbe;
+use crate::support::WakerProbe;
+use crate::support::spawn_named;
+use crate::support::spin_until;
 
 mod support;
 

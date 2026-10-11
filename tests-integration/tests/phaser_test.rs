@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::array;
 use std::panic;
 use std::task::Poll;
+use std::thread;
 
 use asyncband::blocking::FutureExt;
 use asyncband::phaser::Phaser;
@@ -24,6 +26,8 @@ use tests_integration::WakeCounter;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
 use tests_integration::waker_on_drop;
+use tokio::sync::oneshot;
+use tokio::task::yield_now;
 
 #[test]
 fn batch_registration_joins_one_observed_phase() {
@@ -621,7 +625,7 @@ async fn participant_can_wait_from_a_spawned_task() {
 
     let first_wait = tokio::spawn(async move { first.wait().await });
 
-    tokio::task::yield_now().await;
+    yield_now().await;
     let phase = second.arrive().unwrap();
     assert_eq!(first_wait.await.unwrap().unwrap(), phaser.phase());
     assert_ne!(phase, phaser.phase());
@@ -637,7 +641,7 @@ async fn observer_waits_without_becoming_a_party() {
     let observer_phaser = phaser.clone();
     let observer = tokio::spawn(async move { observer_phaser.wait(observed).await });
 
-    tokio::task::yield_now().await;
+    yield_now().await;
     assert_eq!(phaser.registered_parties(), 2);
     first.arrive().unwrap();
     second.deregister().unwrap();
@@ -652,9 +656,9 @@ fn arrivals_publish_each_workers_writes_across_threads() {
     use std::sync::atomic::Ordering;
 
     let phaser = Phaser::new();
-    let values = std::array::from_fn::<_, 4, _>(|_| AtomicUsize::new(0));
+    let values = array::from_fn::<_, 4, _>(|_| AtomicUsize::new(0));
     let participants = phaser.register(values.len()).unwrap();
-    std::thread::scope(|scope| {
+    thread::scope(|scope| {
         for (id, mut participant) in participants.enumerate() {
             let values = &values;
             scope.spawn(move || {
@@ -683,7 +687,7 @@ async fn a_failed_task_can_close_the_group_without_reporting_phase_completion() 
     let mut worker = phaser.register_one().unwrap();
     let failing = phaser.register_one().unwrap();
     let observed = phaser.phase();
-    let (arrived, arrival) = tokio::sync::oneshot::channel();
+    let (arrived, arrival) = oneshot::channel();
     let task = tokio::spawn(async move {
         worker.arrive().unwrap();
         arrived.send(()).unwrap();

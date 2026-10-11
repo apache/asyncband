@@ -109,12 +109,12 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use super::common;
-use super::common::Backlog;
-use super::common::Inner;
-use super::error::RecvError;
-use super::error::TryRecvError;
-use super::error::TrySendError;
+use crate::broadcast::mpmc::common;
+use crate::broadcast::mpmc::common::Backlog;
+use crate::broadcast::mpmc::common::Inner;
+use crate::broadcast::mpmc::error::RecvError;
+use crate::broadcast::mpmc::error::TryRecvError;
+use crate::broadcast::mpmc::error::TrySendError;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
 use crate::internal::semaphore::Acquire;

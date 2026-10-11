@@ -21,15 +21,15 @@
 use std::sync::Arc;
 use std::task::Waker;
 
-use self::buffer::Buffer;
 use crate::internal::mutex::Mutex;
+use crate::mpsc::unbounded::buffer::Buffer;
 
 mod buffer;
 mod receiver;
 mod sender;
 
-pub use self::receiver::UnboundedReceiver;
-pub use self::sender::UnboundedSender;
+pub use crate::mpsc::unbounded::receiver::UnboundedReceiver;
+pub use crate::mpsc::unbounded::sender::UnboundedSender;
 
 /// Creates an unbounded mpsc channel. Sending never waits for capacity.
 ///

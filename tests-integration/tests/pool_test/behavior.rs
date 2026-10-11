@@ -25,7 +25,7 @@ use asyncband::pool::QueueStrategy;
 use asyncband::pool::bounded;
 use asyncband::pool::unbounded;
 
-use super::support::Manager;
+use crate::support::Manager;
 
 #[test]
 #[should_panic(expected = "bounded pool max_size must be greater than zero")]

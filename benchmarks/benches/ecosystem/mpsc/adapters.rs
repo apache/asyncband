@@ -20,7 +20,9 @@ use std::future::Future;
 use std::task::Context;
 
 use asyncband::blocking::FutureExt;
+use asyncband::mpsc as asyncband_mpsc;
 use benchmarks::support::poll_ready;
+use tokio::sync::mpsc as tokio_mpsc;
 
 pub struct Asyncband;
 pub struct Tokio;
@@ -55,11 +57,11 @@ pub trait UnboundedMpsc<T = usize>: Send + Sync + 'static {
 }
 
 impl<T: Debug + Send + 'static> BoundedMpsc<T> for Asyncband {
-    type Receiver = asyncband::mpsc::BoundedReceiver<T>;
-    type Sender = asyncband::mpsc::BoundedSender<T>;
+    type Receiver = asyncband_mpsc::BoundedReceiver<T>;
+    type Sender = asyncband_mpsc::BoundedSender<T>;
 
     fn channel(capacity: usize) -> (Self::Sender, Self::Receiver) {
-        asyncband::mpsc::bounded(capacity)
+        asyncband_mpsc::bounded(capacity)
     }
 
     fn try_send(sender: &Self::Sender, value: T) {
@@ -96,11 +98,11 @@ impl<T: Debug + Send + 'static> BoundedMpsc<T> for Asyncband {
 }
 
 impl<T: Debug + Send + 'static> BoundedMpsc<T> for Tokio {
-    type Receiver = tokio::sync::mpsc::Receiver<T>;
-    type Sender = tokio::sync::mpsc::Sender<T>;
+    type Receiver = tokio_mpsc::Receiver<T>;
+    type Sender = tokio_mpsc::Sender<T>;
 
     fn channel(capacity: usize) -> (Self::Sender, Self::Receiver) {
-        tokio::sync::mpsc::channel(capacity)
+        tokio_mpsc::channel(capacity)
     }
 
     fn try_send(sender: &Self::Sender, value: T) {
@@ -219,11 +221,11 @@ impl<T: Debug + Send + 'static> BoundedMpsc<T> for Flume {
 }
 
 impl<T: Debug + Send + 'static> UnboundedMpsc<T> for Asyncband {
-    type Receiver = asyncband::mpsc::UnboundedReceiver<T>;
-    type Sender = asyncband::mpsc::UnboundedSender<T>;
+    type Receiver = asyncband_mpsc::UnboundedReceiver<T>;
+    type Sender = asyncband_mpsc::UnboundedSender<T>;
 
     fn channel() -> (Self::Sender, Self::Receiver) {
-        asyncband::mpsc::unbounded()
+        asyncband_mpsc::unbounded()
     }
 
     fn send(sender: &Self::Sender, value: T) {
@@ -248,11 +250,11 @@ impl<T: Debug + Send + 'static> UnboundedMpsc<T> for Asyncband {
 }
 
 impl<T: Debug + Send + 'static> UnboundedMpsc<T> for Tokio {
-    type Receiver = tokio::sync::mpsc::UnboundedReceiver<T>;
-    type Sender = tokio::sync::mpsc::UnboundedSender<T>;
+    type Receiver = tokio_mpsc::UnboundedReceiver<T>;
+    type Sender = tokio_mpsc::UnboundedSender<T>;
 
     fn channel() -> (Self::Sender, Self::Receiver) {
-        tokio::sync::mpsc::unbounded_channel()
+        tokio_mpsc::unbounded_channel()
     }
 
     fn send(sender: &Self::Sender, value: T) {

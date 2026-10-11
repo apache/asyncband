@@ -16,6 +16,7 @@
 // under the License.
 
 use std::any::type_name;
+use std::error::Error;
 use std::fmt;
 
 /// An error returned when sending on a watch channel without any receivers.
@@ -52,7 +53,7 @@ impl<T> fmt::Debug for SendError<T> {
     }
 }
 
-impl<T> std::error::Error for SendError<T> {}
+impl<T> Error for SendError<T> {}
 
 /// An error returned after all senders have been dropped and no unseen value remains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,4 +68,4 @@ impl fmt::Display for RecvError {
     }
 }
 
-impl std::error::Error for RecvError {}
+impl Error for RecvError {}

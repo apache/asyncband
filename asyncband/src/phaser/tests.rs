@@ -17,7 +17,7 @@
 
 use std::task::Poll;
 
-use super::Phaser;
+use crate::phaser::Phaser;
 use crate::test_support::poll_once;
 
 #[test]

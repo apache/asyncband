@@ -24,6 +24,7 @@ use clap::Parser;
 use clap::Subcommand;
 use semver::Version;
 use serde::Deserialize;
+use ureq::Agent;
 
 const PACKAGE_NAME: &str = "asyncband";
 // cargo-semver-checks reserves exit code 100 for completed checks that found deny-level violations.
@@ -316,8 +317,8 @@ fn command_status(mut cmd: StdCommand) -> ExitStatus {
 }
 
 fn find_latest_release() -> Option<Version> {
-    let agent = ureq::Agent::from(
-        ureq::Agent::config_builder()
+    let agent = Agent::from(
+        Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(10)))
             .build(),
     );

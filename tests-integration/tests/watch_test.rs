@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -110,9 +112,7 @@ fn panicking_clone_leaves_the_update_unseen() {
     .unwrap();
     panic_next.store(true, Ordering::Relaxed);
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        FutureExt::block_on(rx.recv())
-    }));
+    let result = catch_unwind(AssertUnwindSafe(|| FutureExt::block_on(rx.recv())));
 
     assert!(result.is_err());
     assert_eq!(rx.has_changed(), Ok(true));

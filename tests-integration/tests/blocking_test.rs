@@ -16,6 +16,8 @@
 // under the License.
 
 use std::future::Future;
+use std::future::pending;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -26,7 +28,7 @@ use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 
-use asyncband::blocking::FutureExt as _;
+use asyncband::blocking::FutureExt;
 
 // Long timeouts in this test target are watchdogs for detecting a stalled test process, not
 // assertions about elapsed-time precision.
@@ -35,24 +37,18 @@ const TEST_WATCHDOG: Duration = Duration::from_secs(5);
 #[test]
 fn block_on_supports_method_and_ufcs_syntax() {
     assert_eq!(async { 42 }.block_on(), 42);
-    assert_eq!(asyncband::blocking::FutureExt::block_on(async { 7 }), 7);
+    assert_eq!(FutureExt::block_on(async { 7 }), 7);
 }
 
 #[test]
 fn wait_timeout_polls_before_checking_the_deadline() {
     assert_eq!(async { 42 }.wait_timeout(Duration::ZERO), Some(42));
-    assert_eq!(
-        std::future::pending::<()>().wait_timeout(Duration::ZERO),
-        None
-    );
+    assert_eq!(pending::<()>().wait_timeout(Duration::ZERO), None);
 }
 
 #[test]
 fn pending_future_times_out() {
-    assert_eq!(
-        std::future::pending::<()>().wait_timeout(Duration::from_millis(1)),
-        None
-    );
+    assert_eq!(pending::<()>().wait_timeout(Duration::from_millis(1)), None);
 }
 
 #[test]
@@ -72,7 +68,7 @@ fn nested_waits_use_independent_notifications() {
     let (done_tx, done_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
         let mut outer_polled = false;
-        let output = std::future::poll_fn(|outer_context| {
+        let output = poll_fn(|outer_context| {
             if outer_polled {
                 Poll::Ready(42)
             } else {
@@ -80,7 +76,7 @@ fn nested_waits_use_independent_notifications() {
                 outer_context.waker().wake_by_ref();
 
                 let mut inner_polled = false;
-                let inner_output = std::future::poll_fn(|inner_context| {
+                let inner_output = poll_fn(|inner_context| {
                     if inner_polled {
                         Poll::Ready(7)
                     } else {

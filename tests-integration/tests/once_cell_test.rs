@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::future::pending;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -22,6 +23,7 @@ use std::sync::atomic::Ordering;
 
 use asyncband::once::OnceCell;
 use tests_integration::poll_once;
+use tokio::sync::Barrier;
 
 struct DropFlag(Arc<AtomicBool>);
 
@@ -50,7 +52,7 @@ async fn concurrent_callers_publish_one_value() {
 
     let cell = Arc::new(OnceCell::new());
     let attempts = Arc::new(AtomicUsize::new(0));
-    let start = Arc::new(tokio::sync::Barrier::new(TASKS + 1));
+    let start = Arc::new(Barrier::new(TASKS + 1));
     let mut tasks = Vec::with_capacity(TASKS);
 
     for value in 0..TASKS {
@@ -79,7 +81,7 @@ async fn concurrent_callers_publish_one_value() {
 #[tokio::test]
 async fn cancelled_initialization_can_be_retried() {
     let cell = OnceCell::new();
-    let mut first = Box::pin(cell.get_or_init(async || std::future::pending::<u8>().await));
+    let mut first = Box::pin(cell.get_or_init(async || pending::<u8>().await));
 
     assert!(poll_once(first.as_mut()).is_pending());
     drop(first);

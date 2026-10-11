@@ -19,7 +19,10 @@ use std::future::Future;
 use std::task::Context;
 
 use asyncband::blocking::FutureExt;
+use asyncband::broadcast::mpmc as asyncband_mpmc;
 use benchmarks::support::poll_ready;
+use tokio::sync::broadcast as tokio_broadcast;
+use tokio::sync::broadcast::error::TryRecvError as TokioTryRecvError;
 
 pub struct Asyncband;
 pub struct Tokio;
@@ -36,11 +39,11 @@ pub trait BroadcastMpmc: Send + Sync + 'static {
 }
 
 impl BroadcastMpmc for Asyncband {
-    type Receiver = asyncband::broadcast::mpmc::UnboundedReceiver<usize>;
-    type Sender = asyncband::broadcast::mpmc::UnboundedSender<usize>;
+    type Receiver = asyncband_mpmc::UnboundedReceiver<usize>;
+    type Sender = asyncband_mpmc::UnboundedSender<usize>;
 
     fn channel(_capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
-        let (sender, receiver) = asyncband::broadcast::mpmc::unbounded();
+        let (sender, receiver) = asyncband_mpmc::unbounded();
         let mut receivers = Vec::with_capacity(receiver_count);
         receivers.push(receiver);
         for _ in 1..receiver_count {
@@ -56,8 +59,8 @@ impl BroadcastMpmc for Asyncband {
     fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
         match receiver.try_recv() {
             Ok(value) => Some(value),
-            Err(asyncband::broadcast::mpmc::TryRecvError::Empty) => None,
-            Err(asyncband::broadcast::mpmc::TryRecvError::Disconnected) => {
+            Err(asyncband_mpmc::TryRecvError::Empty) => None,
+            Err(asyncband_mpmc::TryRecvError::Disconnected) => {
                 panic!("asyncband channel closed during benchmark")
             }
         }
@@ -69,11 +72,11 @@ impl BroadcastMpmc for Asyncband {
 }
 
 impl BroadcastMpmc for Tokio {
-    type Receiver = tokio::sync::broadcast::Receiver<usize>;
-    type Sender = tokio::sync::broadcast::Sender<usize>;
+    type Receiver = tokio_broadcast::Receiver<usize>;
+    type Sender = tokio_broadcast::Sender<usize>;
 
     fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
-        let (sender, receiver) = tokio::sync::broadcast::channel(capacity);
+        let (sender, receiver) = tokio_broadcast::channel(capacity);
         let mut receivers = Vec::with_capacity(receiver_count);
         receivers.push(receiver);
         for _ in 1..receiver_count {
@@ -89,7 +92,7 @@ impl BroadcastMpmc for Tokio {
     fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
         match receiver.try_recv() {
             Ok(value) => Some(value),
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => None,
+            Err(TokioTryRecvError::Empty) => None,
             Err(error) => panic!("unexpected Tokio receive error: {error}"),
         }
     }
@@ -161,11 +164,11 @@ pub trait BoundedBroadcastMpmc: Send + Sync + 'static {
 }
 
 impl BoundedBroadcastMpmc for Asyncband {
-    type Receiver = asyncband::broadcast::mpmc::BoundedReceiver<usize>;
-    type Sender = asyncband::broadcast::mpmc::BoundedSender<usize>;
+    type Receiver = asyncband_mpmc::BoundedReceiver<usize>;
+    type Sender = asyncband_mpmc::BoundedSender<usize>;
 
     fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
-        let (sender, receiver) = asyncband::broadcast::mpmc::bounded(capacity);
+        let (sender, receiver) = asyncband_mpmc::bounded(capacity);
         let mut receivers = Vec::with_capacity(receiver_count);
         receivers.push(receiver);
         for _ in 1..receiver_count {
@@ -189,8 +192,8 @@ impl BoundedBroadcastMpmc for Asyncband {
     fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
         match receiver.try_recv() {
             Ok(value) => Some(value),
-            Err(asyncband::broadcast::mpmc::TryRecvError::Empty) => None,
-            Err(asyncband::broadcast::mpmc::TryRecvError::Disconnected) => {
+            Err(asyncband_mpmc::TryRecvError::Empty) => None,
+            Err(asyncband_mpmc::TryRecvError::Disconnected) => {
                 panic!("asyncband channel closed during benchmark")
             }
         }

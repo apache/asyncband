@@ -22,13 +22,13 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-use super::State;
-use super::Waiter;
 use crate::internal::mutex::Mutex;
 use crate::internal::register_waker;
 use crate::internal::waitlist::WaiterId;
 use crate::mpsc::SendError;
 use crate::mpsc::TrySendError;
+use crate::mpsc::bounded::State;
+use crate::mpsc::bounded::Waiter;
 
 /// The sending endpoint of a bounded mpsc channel.
 ///
@@ -117,7 +117,9 @@ impl<T> BoundedSender<T> {
     /// ```
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let (tx, mut rx) = asyncband::mpsc::bounded(1);
+    /// use asyncband::mpsc;
+    ///
+    /// let (tx, mut rx) = mpsc::bounded(1);
     /// let permit = tx.reserve().await.unwrap();
     /// let message = String::from("constructed after capacity became available");
     /// permit.send(message).unwrap();

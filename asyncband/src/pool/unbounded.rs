@@ -88,7 +88,10 @@
 //! # }
 //! ```
 
+use std::error::Error;
+use std::fmt;
 use std::future::Future;
+use std::future::ready;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
@@ -180,8 +183,8 @@ impl<T> Clone for NeverManageObject<T> {
     }
 }
 
-impl<T> std::fmt::Debug for NeverManageObject<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T> fmt::Debug for NeverManageObject<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("NeverManageObject")
     }
 }
@@ -197,26 +200,26 @@ impl<T> Default for NeverManageObject<T> {
 /// The error returned by [`NeverManageObject::create`].
 pub struct PoolIsEmpty(());
 
-impl std::fmt::Debug for PoolIsEmpty {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for PoolIsEmpty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("unbounded pool is empty")
     }
 }
 
-impl std::fmt::Display for PoolIsEmpty {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for PoolIsEmpty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("unbounded pool is empty")
     }
 }
 
-impl std::error::Error for PoolIsEmpty {}
+impl Error for PoolIsEmpty {}
 
 impl<T: Send> ManageObject for NeverManageObject<T> {
     type Object = T;
     type Error = PoolIsEmpty;
 
     fn create(&self) -> impl Future<Output = Result<Self::Object, Self::Error>> + Send {
-        std::future::ready(Err(PoolIsEmpty(())))
+        ready(Err(PoolIsEmpty(())))
     }
 
     fn is_recyclable(
@@ -224,7 +227,7 @@ impl<T: Send> ManageObject for NeverManageObject<T> {
         _: &mut Self::Object,
         _: &ObjectStatus,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        std::future::ready(Ok(()))
+        ready(Ok(()))
     }
 }
 
@@ -239,12 +242,12 @@ pub struct Pool<T, M: ManageObject<Object = T> = NeverManageObject<T>> {
     slots: Mutex<PoolState<T>>,
 }
 
-impl<T, M> std::fmt::Debug for Pool<T, M>
+impl<T, M> fmt::Debug for Pool<T, M>
 where
-    T: std::fmt::Debug,
+    T: fmt::Debug,
     M: ManageObject<Object = T>,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Pool")
             .field("slots", &self.slots)
             .field("config", &self.config)
@@ -423,6 +426,7 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// # use std::time::Duration;
     /// # use asyncband::pool::unbounded::Pool;
     /// # use asyncband::pool::unbounded::PoolConfig;
+    /// use tokio::time::sleep;
     /// let interval = Duration::from_secs(30);
     /// let max_age = Duration::from_secs(60);
     ///
@@ -430,7 +434,7 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// let weak_pool = Arc::downgrade(&pool);
     /// tokio::spawn(async move {
     ///     loop {
-    ///         tokio::time::sleep(interval).await;
+    ///         sleep(interval).await;
     ///         if let Some(pool) = weak_pool.upgrade() {
     ///             pool.retain(|_, status| status.last_used().elapsed() < max_age);
     ///         } else {
@@ -492,12 +496,12 @@ pub struct Object<T, M: ManageObject<Object = T> = NeverManageObject<T>> {
     pool: Weak<Pool<T, M>>,
 }
 
-impl<T, M> std::fmt::Debug for Object<T, M>
+impl<T, M> fmt::Debug for Object<T, M>
 where
-    T: std::fmt::Debug,
+    T: fmt::Debug,
     M: ManageObject<Object = T>,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Object")
             .field("state", &self.state)
             .finish()

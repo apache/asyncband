@@ -22,6 +22,7 @@
 // https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/src/lib.rs
 // https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/src/errors.rs
 
+use std::error::Error;
 use std::fmt;
 use std::mem::ManuallyDrop;
 use std::pin::Pin;
@@ -420,7 +421,7 @@ impl fmt::Display for TryRecvError {
     }
 }
 
-impl std::error::Error for TryRecvError {}
+impl Error for TryRecvError {}
 
 /// An error returned when awaiting the message via [`Receiver`].
 ///
@@ -440,4 +441,4 @@ impl fmt::Display for RecvError {
     }
 }
 
-impl std::error::Error for RecvError {}
+impl Error for RecvError {}

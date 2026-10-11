@@ -177,6 +177,7 @@ mod support {
     use std::sync::atomic::Ordering;
     use std::task::Wake;
     use std::task::Waker;
+    use std::thread;
 
     pub(super) struct DropProbe<T> {
         drop_count: Arc<AtomicUsize>,
@@ -234,12 +235,12 @@ mod support {
         }
     }
 
-    pub(super) fn spawn_named<F, T>(name: &str, f: F) -> std::thread::JoinHandle<T>
+    pub(super) fn spawn_named<F, T>(name: &str, f: F) -> thread::JoinHandle<T>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        std::thread::Builder::new()
+        thread::Builder::new()
             .name(name.to_owned())
             .spawn(f)
             .unwrap()

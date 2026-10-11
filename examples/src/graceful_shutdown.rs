@@ -23,7 +23,9 @@ use std::time::Duration;
 
 use asyncband::shutdown;
 use asyncband::shutdown::ShutdownGuard;
+use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
+use tokio::time::sleep;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -33,7 +35,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // A real service can give this sender to an administrative endpoint.
     let (_admin_shutdown_tx, admin_shutdown_rx) = oneshot::channel::<()>();
     let reason = tokio::select! {
-        result = tokio::signal::ctrl_c() => {
+        result = ctrl_c() => {
             result?;
             "Ctrl+C"
         }
@@ -49,7 +51,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     shutdown.request_shutdown();
     let completed = tokio::select! {
         _ = shutdown => true,
-        _ = tokio::time::sleep(Duration::from_secs(30)) => false,
+        _ = sleep(Duration::from_secs(30)) => false,
     };
 
     if !completed {
@@ -70,7 +72,7 @@ async fn run_worker(guard: ShutdownGuard) {
     loop {
         tokio::select! {
             _ = guard.shutdown_requested() => break,
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+            _ = sleep(Duration::from_secs(1)) => {
                 println!("worker completed another unit of work");
             }
         }

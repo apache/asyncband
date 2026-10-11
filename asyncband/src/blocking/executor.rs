@@ -16,7 +16,7 @@ use std::task::Waker;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::parker::Parker;
+use crate::blocking::parker::Parker;
 
 pub(super) fn block_on<F: IntoFuture>(future: F) -> F::Output {
     let mut future = pin!(future.into_future());

@@ -27,9 +27,9 @@ use benchmarks::support::poll_ready;
 use divan::Bencher;
 use divan::black_box;
 
-use super::adapters::Asyncband;
-use super::adapters::Tokio;
-use super::adapters::Watch;
+use crate::watch::adapters::Asyncband;
+use crate::watch::adapters::Tokio;
+use crate::watch::adapters::Watch;
 
 const RECEIVER_COUNTS: &[usize] = &[2, 4, 8, 32];
 

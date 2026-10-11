@@ -15,10 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::panic::catch_unwind;
+use std::pin::pin;
 use std::sync::Arc;
+use std::task::Poll;
 
 use asyncband::mutex::*;
 use tests_integration::poll_once;
+use tokio::task::yield_now;
 
 #[test]
 fn test_try_lock_never_blocks() {
@@ -71,12 +75,12 @@ async fn test_owned_guard_filter_map_failure() {
 fn test_guard_prevents_concurrent_access() {
     let mutex = Mutex::new(0);
     let guard = mutex.try_lock().unwrap();
-    let mut waiting = std::pin::pin!(mutex.lock());
+    let mut waiting = pin!(mutex.lock());
 
     assert!(poll_once(waiting.as_mut()).is_pending());
     drop(guard);
 
-    let std::task::Poll::Ready(second_guard) = poll_once(waiting.as_mut()) else {
+    let Poll::Ready(second_guard) = poll_once(waiting.as_mut()) else {
         panic!("queued lock should complete after the active guard drops");
     };
     assert_eq!(*second_guard, 0);
@@ -89,7 +93,7 @@ fn test_lock_panic_safety() {
     let mutex = Arc::new(Mutex::new(0));
     let mutex_clone = mutex.clone();
 
-    let result = std::panic::catch_unwind(AssertUnwindSafe(move || {
+    let result = catch_unwind(AssertUnwindSafe(move || {
         let _guard = mutex_clone.try_lock().unwrap();
         panic!("test panic");
     }));
@@ -175,7 +179,7 @@ async fn test_mapped_mutex_guard_send() {
         let guard = mutex_clone.lock().await;
         let mapped_guard = MutexGuard::map(guard, |data| &mut data.field1);
 
-        tokio::task::yield_now().await;
+        yield_now().await;
         *mapped_guard
     });
 

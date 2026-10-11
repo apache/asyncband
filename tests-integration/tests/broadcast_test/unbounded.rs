@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -264,9 +266,7 @@ fn panicking_clone_leaves_the_channel_consistent() {
     });
 
     // Two receivers share the payload, so `try_recv` has to clone it.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rx1.try_recv().map(|msg| msg.value)
-    }));
+    let result = catch_unwind(AssertUnwindSafe(|| rx1.try_recv().map(|msg| msg.value)));
     assert!(result.is_err());
 
     // The panicking `try_recv` call still consumed the message for `rx1`, and left the channel

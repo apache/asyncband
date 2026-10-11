@@ -116,14 +116,14 @@ mod owned_write_guard;
 mod read_guard;
 mod write_guard;
 
-pub use self::mapped_read_guard::MappedRwLockReadGuard;
-pub use self::mapped_write_guard::MappedRwLockWriteGuard;
-pub use self::owned_mapped_read_guard::OwnedMappedRwLockReadGuard;
-pub use self::owned_mapped_write_guard::OwnedMappedRwLockWriteGuard;
-pub use self::owned_read_guard::OwnedRwLockReadGuard;
-pub use self::owned_write_guard::OwnedRwLockWriteGuard;
-pub use self::read_guard::RwLockReadGuard;
-pub use self::write_guard::RwLockWriteGuard;
+pub use crate::rwlock::mapped_read_guard::MappedRwLockReadGuard;
+pub use crate::rwlock::mapped_write_guard::MappedRwLockWriteGuard;
+pub use crate::rwlock::owned_mapped_read_guard::OwnedMappedRwLockReadGuard;
+pub use crate::rwlock::owned_mapped_write_guard::OwnedMappedRwLockWriteGuard;
+pub use crate::rwlock::owned_read_guard::OwnedRwLockReadGuard;
+pub use crate::rwlock::owned_write_guard::OwnedRwLockWriteGuard;
+pub use crate::rwlock::read_guard::RwLockReadGuard;
+pub use crate::rwlock::write_guard::RwLockWriteGuard;
 
 /// A value with fair, asynchronous shared or exclusive access.
 ///

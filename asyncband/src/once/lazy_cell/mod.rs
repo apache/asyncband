@@ -19,11 +19,14 @@ use std::fmt;
 use std::future::Future;
 use std::future::Pending;
 use std::future::Ready;
+use std::future::poll_fn;
+use std::future::ready;
 use std::panic::RefUnwindSafe;
 use std::panic::UnwindSafe;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::thread;
 
 use crate::internal::value_cell::ValueCell;
 use crate::mutex::Mutex;
@@ -131,10 +134,12 @@ impl<T, Fut, F> LazyCell<T, Fut, F> {
     /// ```
     /// # #[tokio::main]
     /// # async fn main() {
+    /// use std::pin::pin;
+    ///
     /// use asyncband::once::LazyCell;
     ///
     /// let lazy = LazyCell::new(async || 92);
-    /// let lazy = std::pin::pin!(lazy);
+    /// let lazy = pin!(lazy);
     /// assert_eq!(*LazyCell::force_pin(lazy.as_ref()).await, 92);
     /// # }
     /// ```
@@ -372,7 +377,7 @@ where
         *unsafe { state.as_mut().get_unchecked_mut() } = State::Attempt(future);
     }
 
-    let value = std::future::poll_fn(|cx| {
+    let value = poll_fn(|cx| {
         let _poison = PoisonOnPanic(poisoned);
         // SAFETY: The state remains pinned while this future is polled, and the attempt is never
         // moved after it is installed.
@@ -401,7 +406,7 @@ where
 {
     fn default() -> Self {
         fn initialize<T: Default>() -> Ready<T> {
-            std::future::ready(T::default())
+            ready(T::default())
         }
 
         Self::new(initialize::<T>)
@@ -464,7 +469,7 @@ struct PoisonOnPanic<'a>(&'a AtomicBool);
 
 impl Drop for PoisonOnPanic<'_> {
     fn drop(&mut self) {
-        if std::thread::panicking() {
+        if thread::panicking() {
             self.0.store(true, Ordering::Relaxed);
         }
     }

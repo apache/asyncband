@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -82,7 +84,7 @@ fn maximum_capacity_can_be_acquired_and_returned() {
 #[test]
 fn release_overflow_preserves_permits() {
     let s = Semaphore::new(usize::MAX);
-    let result = std::panic::catch_unwind(|| s.release(1));
+    let result = catch_unwind(|| s.release(1));
 
     assert!(result.is_err());
     assert_eq!(s.available_permits(), usize::MAX);
@@ -100,7 +102,7 @@ fn merge_overflow_panics_without_losing_borrowed_permits() {
     s.release(1);
     let second = s.try_acquire(1).unwrap();
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = catch_unwind(AssertUnwindSafe(|| {
         first.merge(second);
     }));
 
@@ -117,7 +119,7 @@ fn merge_overflow_panics_without_losing_owned_permits() {
     s.release(1);
     let second = s.clone().try_acquire_owned(1).unwrap();
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = catch_unwind(AssertUnwindSafe(|| {
         first.merge(second);
     }));
 

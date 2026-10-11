@@ -17,13 +17,19 @@
 
 use std::cell::Cell;
 use std::future::Ready;
+use std::future::pending;
+use std::future::poll_fn;
+use std::future::ready;
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::task::Poll;
 
 use asyncband::once::LazyCell;
 use tokio::sync::Notify;
+use tokio::task::yield_now;
 
 struct DropPanic;
 
@@ -61,7 +67,7 @@ async fn concurrent_force_runs_initializer_once() {
         move || {
             Box::pin(async move {
                 attempts.fetch_add(1, Ordering::SeqCst);
-                tokio::task::yield_now().await;
+                yield_now().await;
                 42
             })
         }
@@ -123,7 +129,7 @@ async fn from_future_does_not_poll_until_forced() {
             42
         }
     });
-    let lazy = std::pin::pin!(lazy);
+    let lazy = pin!(lazy);
 
     assert_eq!(polls.load(Ordering::SeqCst), 0);
     assert_eq!(LazyCell::force_pin(lazy.as_ref()).await, &42);
@@ -205,7 +211,7 @@ async fn dropping_cell_drops_suspended_attempt() {
         move || {
             Box::pin(async move {
                 started.notify_one();
-                std::future::pending::<()>().await;
+                pending::<()>().await;
                 drop(held);
                 42
             })
@@ -284,9 +290,9 @@ async fn initializer_poll_panic_permanently_poisons_cell() {
 async fn completed_future_drop_panic_permanently_poisons_cell() {
     let lazy = Arc::new(LazyCell::new(|| {
         let guard = DropPanic;
-        std::future::poll_fn(move |_| {
+        poll_fn(move |_| {
             let _ = &guard;
-            std::task::Poll::Ready(42)
+            Poll::Ready(42)
         })
     }));
 
@@ -307,7 +313,7 @@ async fn completed_future_drop_panic_permanently_poisons_cell() {
 
 #[tokio::test]
 async fn initializer_creation_panic_permanently_poisons_cell() {
-    let lazy = Arc::new(LazyCell::new(|| -> std::future::Ready<u32> {
+    let lazy = Arc::new(LazyCell::new(|| -> Ready<u32> {
         panic!("initializer creation panic")
     }));
 
@@ -386,7 +392,7 @@ async fn initializer_need_not_be_sync() {
 }
 
 fn static_initializer() -> Ready<u32> {
-    std::future::ready(42)
+    ready(42)
 }
 
 static STATIC_LAZY: LazyCell<u32, Ready<u32>> = LazyCell::new(static_initializer);
@@ -402,11 +408,11 @@ async fn inline_future_supports_local_non_send_state() {
     let lazy = LazyCell::new({
         let local = Rc::clone(&local);
         async move || {
-            tokio::task::yield_now().await;
+            yield_now().await;
             *local + 1
         }
     });
-    let mut lazy = std::pin::pin!(lazy);
+    let mut lazy = pin!(lazy);
 
     assert_eq!(*LazyCell::force_pin(lazy.as_ref()).await, 42);
     assert_eq!(LazyCell::get(&lazy), Some(&42));
@@ -431,7 +437,7 @@ async fn cancellation_preserves_inline_initialization_future() {
             42
         }
     });
-    let lazy = std::pin::pin!(lazy);
+    let lazy = pin!(lazy);
 
     tokio::select! {
         biased;

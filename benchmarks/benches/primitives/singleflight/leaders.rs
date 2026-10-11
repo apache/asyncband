@@ -26,13 +26,13 @@ use divan::Bencher;
 use divan::black_box;
 use divan::counter::ItemsCount;
 
-use super::support::BATCH_SAMPLE_SIZE;
-use super::support::BATCH_SIZES;
-use super::support::BenchGroup;
-use super::support::CONTENDED_SAMPLE_SIZE;
-use super::support::FAST_SAMPLE_SIZE;
-use super::support::THREAD_COUNTS;
-use super::support::unique_thread_key;
+use crate::singleflight::support::BATCH_SAMPLE_SIZE;
+use crate::singleflight::support::BATCH_SIZES;
+use crate::singleflight::support::BenchGroup;
+use crate::singleflight::support::CONTENDED_SAMPLE_SIZE;
+use crate::singleflight::support::FAST_SAMPLE_SIZE;
+use crate::singleflight::support::THREAD_COUNTS;
+use crate::singleflight::support::unique_thread_key;
 
 // Reuse the group so table capacity survives completed calls.
 #[divan::bench(sample_size = FAST_SAMPLE_SIZE)]

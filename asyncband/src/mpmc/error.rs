@@ -16,6 +16,7 @@
 // under the License.
 
 use std::any::type_name;
+use std::error::Error;
 use std::fmt;
 
 /// An error returned when trying to send on a disconnected queue.
@@ -52,7 +53,7 @@ impl<T> fmt::Debug for SendError<T> {
     }
 }
 
-impl<T> std::error::Error for SendError<T> {}
+impl<T> Error for SendError<T> {}
 
 /// Error returned by [`BoundedSender::try_send`](crate::mpmc::BoundedSender::try_send) or
 /// [`BoundedSender::try_reserve`](crate::mpmc::BoundedSender::try_reserve).
@@ -101,7 +102,7 @@ impl<T> fmt::Debug for TrySendError<T> {
     }
 }
 
-impl<T> std::error::Error for TrySendError<T> {}
+impl<T> Error for TrySendError<T> {}
 
 /// Error returned when receiving a value fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,7 +117,7 @@ impl fmt::Display for RecvError {
     }
 }
 
-impl std::error::Error for RecvError {}
+impl Error for RecvError {}
 
 /// Error returned by a non-blocking attempt to receive a value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,4 +137,4 @@ impl fmt::Display for TryRecvError {
     }
 }
 
-impl std::error::Error for TryRecvError {}
+impl Error for TryRecvError {}

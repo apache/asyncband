@@ -16,6 +16,7 @@
 // under the License.
 
 use std::any::type_name;
+use std::error::Error;
 use std::fmt;
 
 /// Error returned by [`BoundedSender::try_send`].
@@ -65,7 +66,7 @@ impl<T> fmt::Debug for TrySendError<T> {
     }
 }
 
-impl<T> std::error::Error for TrySendError<T> {}
+impl<T> Error for TrySendError<T> {}
 
 /// Error returned by `recv`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +81,7 @@ impl fmt::Display for RecvError {
     }
 }
 
-impl std::error::Error for RecvError {}
+impl Error for RecvError {}
 
 /// Error returned by `try_recv`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,4 +101,4 @@ impl fmt::Display for TryRecvError {
     }
 }
 
-impl std::error::Error for TryRecvError {}
+impl Error for TryRecvError {}

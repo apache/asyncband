@@ -19,22 +19,23 @@ use std::sync::Arc;
 
 use divan::black_box;
 use tokio::runtime::Runtime;
+use tokio::sync::Barrier;
 use tokio::task::JoinSet;
 
-use super::BATCH_MESSAGES;
-use super::adapters::Channel;
+use crate::channels::BATCH_MESSAGES;
+use crate::channels::adapters::Channel;
 
 pub const CONSUMERS: &[usize] = &[1, 2, 4, 8];
 
 pub struct TaskBatch {
-    start: Arc<tokio::sync::Barrier>,
+    start: Arc<Barrier>,
     tasks: JoinSet<(usize, usize)>,
 }
 
 impl TaskBatch {
     pub fn new<C: Channel>(runtime: &Runtime, consumers: usize) -> Self {
         let (mut sender, receiver) = C::channel();
-        let start = Arc::new(tokio::sync::Barrier::new(consumers + 2));
+        let start = Arc::new(Barrier::new(consumers + 2));
         let mut tasks = JoinSet::new();
         let producer_start = start.clone();
         tasks.spawn_on(

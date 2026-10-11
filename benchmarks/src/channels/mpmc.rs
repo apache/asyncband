@@ -23,12 +23,13 @@ use std::thread::JoinHandle;
 
 use divan::black_box;
 use tokio::runtime::Runtime;
+use tokio::sync::Barrier as TokioBarrier;
 use tokio::task::JoinSet;
 
-use super::BATCH_MESSAGES;
-use super::adapters::BoundedMpmc;
-use super::adapters::Channel;
-use super::adapters::UnboundedMpmc;
+use crate::channels::BATCH_MESSAGES;
+use crate::channels::adapters::BoundedMpmc;
+use crate::channels::adapters::Channel;
+use crate::channels::adapters::UnboundedMpmc;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Topology {
@@ -76,7 +77,7 @@ pub const TOPOLOGIES: &[Topology] = &[
 // The caller only coordinates the batch. Spawned tasks send and receive all measured messages,
 // including on the current-thread runtime; `Runtime::block_on` itself receives no data.
 pub struct TaskBatch {
-    start: Arc<tokio::sync::Barrier>,
+    start: Arc<TokioBarrier>,
     workers: JoinSet<(usize, usize)>,
 }
 
@@ -87,7 +88,7 @@ impl TaskBatch {
     {
         assert_eq!(BATCH_MESSAGES % topology.producers, 0);
         let (sender, receiver) = C::channel();
-        let start = Arc::new(tokio::sync::Barrier::new(
+        let start = Arc::new(TokioBarrier::new(
             topology.producers + topology.consumers + 1,
         ));
         let messages_per_producer = BATCH_MESSAGES / topology.producers;

@@ -22,13 +22,13 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-use super::RecvError;
-use super::SendError;
-use super::TryRecvError;
-use super::TrySendError;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
+use crate::spmc::RecvError;
+use crate::spmc::SendError;
+use crate::spmc::TryRecvError;
+use crate::spmc::TrySendError;
 
 pub struct Shared<T> {
     state: Mutex<State<T>>,

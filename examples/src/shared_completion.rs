@@ -21,7 +21,10 @@
 //! require one channel per consumer and manual fan-out, and a late consumer would need separate
 //! result storage. Completion retains the result and exposes it to every observer.
 
+use std::ptr;
+
 use asyncband::completion;
+use tokio::task::yield_now;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -30,7 +33,7 @@ async fn main() {
     let audit_log = completion.clone();
 
     let worker = tokio::spawn(async move {
-        tokio::task::yield_now().await;
+        yield_now().await;
         completer
             .complete(String::from("build 42 succeeded"))
             .unwrap();
@@ -44,7 +47,7 @@ async fn main() {
     let late_observer = completion.clone();
     let late_result = late_observer.wait().await.unwrap();
 
-    assert!(std::ptr::eq(dashboard_result, audit_result));
-    assert!(std::ptr::eq(dashboard_result, late_result));
+    assert!(ptr::eq(dashboard_result, audit_result));
+    assert!(ptr::eq(dashboard_result, late_result));
     println!("{late_result}");
 }

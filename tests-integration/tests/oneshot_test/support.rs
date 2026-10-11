@@ -29,6 +29,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Wake;
 use std::task::Waker;
+use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -92,12 +93,12 @@ impl Wake for WakerProbe {
     }
 }
 
-pub(super) fn spawn_named<F, T>(name: &str, f: F) -> std::thread::JoinHandle<T>
+pub(super) fn spawn_named<F, T>(name: &str, f: F) -> thread::JoinHandle<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    std::thread::Builder::new()
+    thread::Builder::new()
         .name(name.to_owned())
         .spawn(f)
         .unwrap()
@@ -118,7 +119,7 @@ where
         assert!(Instant::now() < deadline, "timed out waiting for {label}");
 
         if spins % 64 == 0 {
-            std::thread::yield_now();
+            thread::yield_now();
         } else {
             spin_loop();
         }

@@ -24,9 +24,9 @@ use tests_integration::expect_ready;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
 
-use super::support::Manager;
-use super::support::ManagerError;
-use super::support::ready;
+use crate::support::Manager;
+use crate::support::ManagerError;
+use crate::support::ready;
 
 #[test]
 fn targets_account_for_idle_objects_and_checked_out_capacity() {

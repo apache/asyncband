@@ -19,8 +19,10 @@ use std::future::Future;
 use std::marker::PhantomData;
 
 use asyncband::blocking::FutureExt;
+use asyncband::mpmc;
+use asyncband::spmc;
 
-use super::BOUNDED_CAPACITY;
+use crate::channels::BOUNDED_CAPACITY;
 
 pub struct Mpmc;
 pub struct Spmc;
@@ -41,11 +43,11 @@ pub trait Channel: Send + Sync + 'static {
 }
 
 impl<const CAPACITY: usize> Channel for Bounded<Spmc, CAPACITY> {
-    type Sender = asyncband::spmc::BoundedSender<usize>;
-    type Receiver = asyncband::spmc::BoundedReceiver<usize>;
+    type Sender = spmc::BoundedSender<usize>;
+    type Receiver = spmc::BoundedReceiver<usize>;
 
     fn channel() -> (Self::Sender, Self::Receiver) {
-        asyncband::spmc::bounded(CAPACITY)
+        spmc::bounded(CAPACITY)
     }
 
     async fn send(sender: &mut Self::Sender, value: usize) {
@@ -58,11 +60,11 @@ impl<const CAPACITY: usize> Channel for Bounded<Spmc, CAPACITY> {
 }
 
 impl Channel for Unbounded<Spmc> {
-    type Sender = asyncband::spmc::UnboundedSender<usize>;
-    type Receiver = asyncband::spmc::UnboundedReceiver<usize>;
+    type Sender = spmc::UnboundedSender<usize>;
+    type Receiver = spmc::UnboundedReceiver<usize>;
 
     fn channel() -> (Self::Sender, Self::Receiver) {
-        asyncband::spmc::unbounded()
+        spmc::unbounded()
     }
 
     async fn send(sender: &mut Self::Sender, value: usize) {
@@ -139,11 +141,11 @@ pub trait UnboundedMpmc: Send + Sync + 'static {
 }
 
 impl BoundedMpmc for Mpmc {
-    type Receiver = asyncband::mpmc::BoundedReceiver<usize>;
-    type Sender = asyncband::mpmc::BoundedSender<usize>;
+    type Receiver = mpmc::BoundedReceiver<usize>;
+    type Sender = mpmc::BoundedSender<usize>;
 
     fn channel(capacity: usize) -> (Self::Sender, Self::Receiver) {
-        asyncband::mpmc::bounded(capacity)
+        mpmc::bounded(capacity)
     }
 
     async fn send_async(sender: &Self::Sender, value: usize) {
@@ -159,11 +161,11 @@ impl BoundedMpmc for Mpmc {
 }
 
 impl UnboundedMpmc for Mpmc {
-    type Receiver = asyncband::mpmc::UnboundedReceiver<usize>;
-    type Sender = asyncband::mpmc::UnboundedSender<usize>;
+    type Receiver = mpmc::UnboundedReceiver<usize>;
+    type Sender = mpmc::UnboundedSender<usize>;
 
     fn channel() -> (Self::Sender, Self::Receiver) {
-        asyncband::mpmc::unbounded()
+        mpmc::unbounded()
     }
 
     fn send(sender: &Self::Sender, value: usize) {

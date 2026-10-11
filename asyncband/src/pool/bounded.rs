@@ -73,6 +73,7 @@
 //! # }
 //! ```
 
+use std::fmt;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -164,12 +165,12 @@ pub struct Pool<M: ManageObject> {
     slots: Mutex<PoolState<M::Object>>,
 }
 
-impl<M> std::fmt::Debug for Pool<M>
+impl<M> fmt::Debug for Pool<M>
 where
     M: ManageObject,
-    M::Object: std::fmt::Debug,
+    M::Object: fmt::Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Pool")
             .field("slots", &self.slots)
             .field("config", &self.config)
@@ -336,6 +337,7 @@ impl<M: ManageObject> Pool<M> {
     /// # use asyncband::pool::ObjectStatus;
     /// # use asyncband::pool::bounded::Pool;
     /// # use asyncband::pool::bounded::PoolConfig;
+    /// use tokio::time::sleep;
     /// let interval = Duration::from_secs(30);
     /// let max_age = Duration::from_secs(60);
     ///
@@ -360,7 +362,7 @@ impl<M: ManageObject> Pool<M> {
     /// let weak_pool = Arc::downgrade(&pool);
     /// tokio::spawn(async move {
     ///     loop {
-    ///         tokio::time::sleep(interval).await;
+    ///         sleep(interval).await;
     ///         if let Some(pool) = weak_pool.upgrade() {
     ///             pool.retain(|_, status| status.last_used().elapsed() < max_age);
     ///         } else {
@@ -476,12 +478,12 @@ pub struct Object<M: ManageObject> {
     pool: Weak<Pool<M>>,
 }
 
-impl<M> std::fmt::Debug for Object<M>
+impl<M> fmt::Debug for Object<M>
 where
     M: ManageObject,
-    M::Object: std::fmt::Debug,
+    M::Object: fmt::Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Object")
             .field("state", &self.state)
             .field("permit", &self.permit)

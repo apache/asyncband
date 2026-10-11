@@ -25,9 +25,12 @@
 //! These are coordination patterns for jobs such as parallel imports. The work within a batch is
 //! represented by a yield; the examples focus on when workers can join, proceed, and leave.
 
+use std::future::ready;
+
 use asyncband::phaser::Closed;
 use asyncband::phaser::Phaser;
 use asyncband::phaser::PhaserParticipant;
+use tokio::task::yield_now;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Closed> {
@@ -62,7 +65,7 @@ async fn work(mut participant: PhaserParticipant, rounds: usize) -> Result<(), C
     for _ in 0..rounds {
         let observed = participant.arrive()?;
         // This work does not hold up the other participants' arrivals.
-        tokio::task::yield_now().await;
+        yield_now().await;
         let next = participant.wait().await?;
         assert_ne!(observed, next);
     }
@@ -125,7 +128,7 @@ async fn cancellation_retry() -> Result<(), Closed> {
         biased;
         result = participant.wait() => panic!("peer has not arrived: {result:?}"),
         // Poll the wait once, then cancel it deterministically without a timer or sleep.
-        _ = std::future::ready(()) => {}
+        _ = ready(()) => {}
     }
     assert_eq!(phaser.arrived_parties(), 1);
     peer.arrive()?;

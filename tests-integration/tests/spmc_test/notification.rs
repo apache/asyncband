@@ -30,7 +30,7 @@ use tests_integration::expect_ready;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
 
-use super::DropSpy;
+use crate::DropSpy;
 
 #[test]
 fn bounded_one_send_wakes_one_of_eight_receivers_and_cancellation_hands_off() {

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use tokio::runtime::Builder;
 use tokio::runtime::Runtime;
 
 pub mod adapters;
@@ -26,11 +27,9 @@ pub const BOUNDED_CAPACITY: usize = 64;
 
 pub fn runtime(worker_threads: usize) -> Runtime {
     if worker_threads == 0 {
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
+        Builder::new_current_thread().build().unwrap()
     } else {
-        tokio::runtime::Builder::new_multi_thread()
+        Builder::new_multi_thread()
             .worker_threads(worker_threads)
             .build()
             .unwrap()
