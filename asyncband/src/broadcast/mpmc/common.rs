@@ -531,9 +531,7 @@ pub fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Reclaimed<T>) -> T {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use crate::broadcast::mpmc::common::Backlog;
+    use super::*;
 
     /// Drives every cursor-count mutation point — subscribing, publishing, receiving, and dropping
     /// — and checks the accounting after each step.

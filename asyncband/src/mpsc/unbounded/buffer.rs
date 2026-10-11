@@ -98,12 +98,9 @@ pub fn pop_batch<T>(batch: &mut VecDeque<T>) -> T {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
     use std::iter::once;
 
-    use crate::mpsc::unbounded::buffer::Buffer;
-    use crate::mpsc::unbounded::buffer::SEGMENT_BYTES;
-    use crate::mpsc::unbounded::buffer::pop_batch;
+    use super::*;
 
     fn allocated_bytes<T>(buffer: &Buffer<T>, batch: &VecDeque<T>) -> usize {
         let slots = batch.capacity()

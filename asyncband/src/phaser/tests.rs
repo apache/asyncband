@@ -15,9 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::task::Poll;
-
-use crate::phaser::Phaser;
+use super::*;
 use crate::test_support::poll_once;
 
 #[test]

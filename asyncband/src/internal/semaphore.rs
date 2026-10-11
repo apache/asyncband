@@ -385,8 +385,6 @@ fn acquired_or_enqueue(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
     use std::task::Wake;
 
     use super::*;

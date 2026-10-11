@@ -23,11 +23,9 @@ use std::hash::Hasher;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
-use std::sync::Arc;
 use std::task::Poll;
 
-use crate::once::once_map::Lookup;
-use crate::once::once_map::OnceMap;
+use super::*;
 use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.

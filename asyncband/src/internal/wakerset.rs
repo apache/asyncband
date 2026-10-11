@@ -111,7 +111,7 @@ impl WakerSet {
 
 #[cfg(test)]
 mod tests {
-    use crate::internal::wakerset::WakerToken;
+    use super::*;
 
     #[test]
     fn waker_token_preserves_the_option_niche() {

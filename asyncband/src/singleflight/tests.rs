@@ -23,7 +23,7 @@ use std::panic::catch_unwind;
 use std::pin::pin;
 use std::task::Poll;
 
-use crate::singleflight::Group;
+use super::*;
 use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
