@@ -302,6 +302,8 @@ impl<T> Channel<T> {
     ///
     /// Returns the waker and whether the receiver still owns allocation cleanup. If the receiver
     /// cancelled from `AWAKING`, this returns `false` and transfers cleanup to the caller.
+    /// The receiver may reclaim the allocation before this function returns, so this must take a
+    /// raw pointer rather than a reference that keeps the allocation borrowed for the entire call.
     ///
     /// # Safety
     ///
@@ -312,9 +314,19 @@ impl<T> Channel<T> {
     ///   method.
     /// * When publishing `MESSAGE`, the caller must own an initialized message that precedes the
     ///   release operation in this method.
+    /// * `channel_ptr` must point to that channel, and the caller must not access the channel after
+    ///   this call unless it returns `false` and transfers allocation cleanup to the caller.
     #[inline(always)]
-    unsafe fn finish_sender_awakening(&self, final_state: u8) -> (Waker, bool) {
+    unsafe fn finish_sender_awakening(
+        channel_ptr: NonNull<Self>,
+        final_state: u8,
+    ) -> (Waker, bool) {
         debug_assert!(matches!(final_state, MESSAGE | DISCONNECTED));
+
+        // SAFETY: The RECEIVING-to-AWAKING transition keeps the allocation live until this swap.
+        // Receiver cancellation can only transfer cleanup to this sender. This local reference
+        // must not be used after the swap, which can let the receiver reclaim the allocation.
+        let channel = unsafe { channel_ptr.as_ref() };
 
         // ORDERING: The caller's Release RMW read RECEIVING with a Relaxed load. Acquire
         // synchronizes that read with the receiver's Release publication before taking the waker.
@@ -322,12 +334,12 @@ impl<T> Channel<T> {
 
         // SAFETY: The caller's RECEIVING-to-AWAKING transition transferred exclusive ownership of
         // the initialized waker to the sender.
-        let waker = unsafe { self.take_waker() };
+        let waker = unsafe { channel.take_waker() };
 
         // ORDERING: Release publishes the message or disconnected state when this replaces
         // AWAKING. The RMW's load half is Relaxed; if it reads a receiver-written DISCONNECTED, the
         // conditional Acquire below completes the reverse allocation-ownership handoff.
-        let previous_state = self.state.swap(final_state, Ordering::Release);
+        let previous_state = channel.state.swap(final_state, Ordering::Release);
         if matches!(previous_state, AWAKING) {
             (waker, true)
         } else {

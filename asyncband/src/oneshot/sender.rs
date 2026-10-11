@@ -61,9 +61,9 @@ impl<T> Sender<T> {
         let sender = ManuallyDrop::new(self);
         let channel_ptr = sender.channel_ptr;
 
-        // SAFETY: The channel exists on the heap for the entire duration of this method, and we
-        // only ever acquire shared references to it. Dropping the receiver does not immediately
-        // free the channel.
+        // SAFETY: The live sender keeps the allocation valid until it publishes MESSAGE. That
+        // publication can let the receiver reclaim it, so no channel access may follow unless
+        // receiver cancellation transfers allocation cleanup to this sender.
         let channel = unsafe { channel_ptr.as_ref() };
 
         // Write the message into the channel on the heap.
@@ -91,7 +91,7 @@ impl<T> Sender<T> {
                 // exclusive ownership of the published waker to this sender. The message was
                 // initialized before the RMW and is ready to publish.
                 let (waker, receiver_owns_allocation) =
-                    unsafe { channel.finish_sender_awakening(MESSAGE) };
+                    unsafe { Channel::finish_sender_awakening(channel_ptr, MESSAGE) };
                 if receiver_owns_allocation {
                     waker.wake();
                 } else {
@@ -159,6 +159,8 @@ impl<T> Drop for Sender<T> {
         // * If we are in the DISCONNECTED state, then the receiver either received the message,
         //   making this statement unreachable, or was dropped and observed that our side was still
         //   alive, and thus didn't free the channel.
+        // Publishing DISCONNECTED can let the receiver reclaim the allocation; no channel access
+        // may follow unless receiver cancellation transfers allocation cleanup to this sender.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
         // Publish the channel's disconnected state directly, or begin awakening a receiving task:
@@ -180,7 +182,7 @@ impl<T> Drop for Sender<T> {
                 // exclusive ownership of the published waker to this sender. Sender::drop has no
                 // message to publish.
                 let (waker, receiver_owns_allocation) =
-                    unsafe { channel.finish_sender_awakening(DISCONNECTED) };
+                    unsafe { Channel::finish_sender_awakening(self.channel_ptr, DISCONNECTED) };
                 if receiver_owns_allocation {
                     waker.wake();
                 } else {
