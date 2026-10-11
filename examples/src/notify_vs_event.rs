@@ -30,7 +30,6 @@ use std::sync::atomic::Ordering;
 use asyncband::event::AutoResetEvent;
 use asyncband::watch;
 use tokio::sync::Notify;
-use tokio::task::yield_now;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -113,7 +112,7 @@ async fn index_readers_with_notify() {
             // The indexer finishes applying this revision before publishing it.
             indexed.store(revision, Ordering::Release);
             changed.notify_waiters();
-            yield_now().await;
+            tokio::task::yield_now().await;
         }
     };
 
@@ -159,7 +158,7 @@ async fn index_readers_with_watch() {
         for revision in 1..=2 {
             // Publishing also works when there are temporarily no requests listening.
             indexed.send_replace(revision);
-            yield_now().await;
+            tokio::task::yield_now().await;
         }
     };
 

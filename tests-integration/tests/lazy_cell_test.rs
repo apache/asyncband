@@ -29,7 +29,6 @@ use std::task::Poll;
 
 use asyncband::once::LazyCell;
 use tokio::sync::Notify;
-use tokio::task::yield_now;
 
 struct DropPanic;
 
@@ -67,7 +66,7 @@ async fn concurrent_force_runs_initializer_once() {
         move || {
             Box::pin(async move {
                 attempts.fetch_add(1, Ordering::SeqCst);
-                yield_now().await;
+                tokio::task::yield_now().await;
                 42
             })
         }
@@ -408,7 +407,7 @@ async fn inline_future_supports_local_non_send_state() {
     let lazy = LazyCell::new({
         let local = Rc::clone(&local);
         async move || {
-            yield_now().await;
+            tokio::task::yield_now().await;
             *local + 1
         }
     });

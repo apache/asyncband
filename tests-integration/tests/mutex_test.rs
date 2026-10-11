@@ -22,7 +22,6 @@ use std::task::Poll;
 
 use asyncband::mutex::*;
 use tests_integration::poll_once;
-use tokio::task::yield_now;
 
 #[test]
 fn test_try_lock_never_blocks() {
@@ -179,7 +178,7 @@ async fn test_mapped_mutex_guard_send() {
         let guard = mutex_clone.lock().await;
         let mapped_guard = MutexGuard::map(guard, |data| &mut data.field1);
 
-        yield_now().await;
+        tokio::task::yield_now().await;
         *mapped_guard
     });
 

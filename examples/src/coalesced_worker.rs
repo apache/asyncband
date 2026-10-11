@@ -23,7 +23,6 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use asyncband::event::AutoResetEvent;
-use tokio::task::yield_now;
 
 #[derive(Default)]
 struct Rebuilder {
@@ -71,7 +70,7 @@ async fn main() {
         rebuilder.request(1);
         rebuilder.request(2);
         rebuilder.request(3);
-        yield_now().await;
+        tokio::task::yield_now().await;
 
         // After rebuilding revision 3, the worker waits for another update.
         rebuilder.request(4);

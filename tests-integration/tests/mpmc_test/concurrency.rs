@@ -20,7 +20,6 @@ use std::time::Duration;
 
 use asyncband::mpmc;
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
 
 use crate::Receiver;
 
@@ -53,7 +52,7 @@ where
         .collect::<Vec<_>>();
     drop(receiver);
 
-    let mut received = timeout(Duration::from_secs(10), async {
+    let mut received = tokio::time::timeout(Duration::from_secs(10), async {
         for producer in producers {
             producer.await.unwrap();
         }

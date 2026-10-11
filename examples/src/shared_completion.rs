@@ -24,7 +24,6 @@
 use std::ptr;
 
 use asyncband::completion;
-use tokio::task::yield_now;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -33,7 +32,7 @@ async fn main() {
     let audit_log = completion.clone();
 
     let worker = tokio::spawn(async move {
-        yield_now().await;
+        tokio::task::yield_now().await;
         completer
             .complete(String::from("build 42 succeeded"))
             .unwrap();

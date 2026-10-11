@@ -337,7 +337,6 @@ impl<M: ManageObject> Pool<M> {
     /// # use asyncband::pool::ObjectStatus;
     /// # use asyncband::pool::bounded::Pool;
     /// # use asyncband::pool::bounded::PoolConfig;
-    /// use tokio::time::sleep;
     /// let interval = Duration::from_secs(30);
     /// let max_age = Duration::from_secs(60);
     ///
@@ -362,7 +361,7 @@ impl<M: ManageObject> Pool<M> {
     /// let weak_pool = Arc::downgrade(&pool);
     /// tokio::spawn(async move {
     ///     loop {
-    ///         sleep(interval).await;
+    ///         tokio::time::sleep(interval).await;
     ///         if let Some(pool) = weak_pool.upgrade() {
     ///             pool.retain(|_, status| status.last_used().elapsed() < max_age);
     ///         } else {

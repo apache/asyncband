@@ -27,7 +27,6 @@ use tests_integration::poll_once;
 use tests_integration::poll_with;
 use tests_integration::test_runtime;
 use tokio::task::JoinHandle;
-use tokio::task::yield_now;
 
 struct NotifyOnDrop(Arc<Condvar>);
 
@@ -145,7 +144,7 @@ fn notify_all_wakes_current_waiters_using_a_predicate_loop() {
                 break;
             }
             drop(state);
-            yield_now().await;
+            tokio::task::yield_now().await;
         }
 
         // Seeing every task's `waiting` update while holding this mutex also means every task has

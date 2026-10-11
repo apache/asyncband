@@ -98,7 +98,7 @@ pub fn pop_batch<T>(batch: &mut VecDeque<T>) -> T {
 
 #[cfg(test)]
 mod tests {
-    use std::iter::once;
+    use std::iter;
 
     use super::*;
 
@@ -147,7 +147,7 @@ mod tests {
             for _ in 0..2 {
                 for value in 0..messages {
                     buffer.push([value as u8; SIZE]);
-                    for segment in once(&buffer.writable).chain(&buffer.sealed) {
+                    for segment in iter::once(&buffer.writable).chain(&buffer.sealed) {
                         assert!(segment.capacity() * SIZE <= SEGMENT_BYTES);
                     }
                 }

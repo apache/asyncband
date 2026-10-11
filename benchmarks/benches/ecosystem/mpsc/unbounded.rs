@@ -28,7 +28,6 @@ use divan::black_box;
 use divan::counter::ItemsCount;
 use tokio::runtime::Builder;
 use tokio::sync::Notify;
-use tokio::task::unconstrained;
 
 use crate::mpsc::adapters::AsyncChannel;
 use crate::mpsc::adapters::Asyncband;
@@ -231,7 +230,8 @@ fn scheduled_bursts_inline<C: UnboundedMpsc<[u8; 1024]>>(
                     // Exclude Tokio's cooperative-budget Pending from the initial empty probe.
                     // Retain the same `recv_async` future so its channel registration drives the
                     // wake.
-                    let mut receive = pin!(unconstrained(C::recv_async(&mut receiver)));
+                    let mut receive =
+                        pin!(tokio::task::unconstrained(C::recv_async(&mut receiver)));
                     let mut released = false;
                     poll_fn(|cx| {
                         let result = receive.as_mut().poll(cx);

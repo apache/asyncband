@@ -37,7 +37,6 @@ use tests_integration::poll_once;
 use tests_integration::poll_with;
 use tests_integration::test_runtime;
 use tokio::sync::oneshot;
-use tokio::task::yield_now;
 use tokio_test::assert_ok;
 
 #[test]
@@ -330,22 +329,22 @@ async fn selection_preserves_messages_across_cancelled_receives() {
 
     tokio::spawn(async move {
         assert_ok!(tx2.send(1));
-        yield_now().await;
+        tokio::task::yield_now().await;
 
         assert_ok!(tx1.send(2));
-        yield_now().await;
+        tokio::task::yield_now().await;
 
         assert_ok!(tx2.send(3));
-        yield_now().await;
+        tokio::task::yield_now().await;
 
         assert_ok!(tx3.send(4).await);
-        yield_now().await;
+        tokio::task::yield_now().await;
 
         assert_ok!(tx4.send(5).await);
-        yield_now().await;
+        tokio::task::yield_now().await;
 
         assert_ok!(tx3.send(6).await);
-        yield_now().await;
+        tokio::task::yield_now().await;
 
         drop((tx1, tx2));
     });

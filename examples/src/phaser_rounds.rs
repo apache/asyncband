@@ -30,7 +30,6 @@ use std::future::ready;
 use asyncband::phaser::Closed;
 use asyncband::phaser::Phaser;
 use asyncband::phaser::PhaserParticipant;
-use tokio::task::yield_now;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Closed> {
@@ -65,7 +64,7 @@ async fn work(mut participant: PhaserParticipant, rounds: usize) -> Result<(), C
     for _ in 0..rounds {
         let observed = participant.arrive()?;
         // This work does not hold up the other participants' arrivals.
-        yield_now().await;
+        tokio::task::yield_now().await;
         let next = participant.wait().await?;
         assert_ne!(observed, next);
     }

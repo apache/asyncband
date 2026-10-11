@@ -21,7 +21,6 @@ use std::time::Duration;
 use asyncband::spmc;
 use tokio::sync::Barrier;
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
 
 const CONSUMERS: usize = 8;
 const TOTAL: usize = 2_048;
@@ -30,7 +29,7 @@ async fn assert_delivered_exactly_once(
     producer: JoinHandle<()>,
     consumers: Vec<JoinHandle<Vec<usize>>>,
 ) {
-    timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         producer.await.unwrap();
         let mut received = Vec::with_capacity(TOTAL);
         for consumer in consumers {

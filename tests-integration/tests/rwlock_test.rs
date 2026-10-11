@@ -22,7 +22,6 @@ use std::sync::Arc;
 use asyncband::rwlock::*;
 use tests_integration::poll_once;
 use tokio::sync::Barrier;
-use tokio::task::yield_now;
 use tokio_test::assert_pending;
 use tokio_test::assert_ready;
 
@@ -81,7 +80,7 @@ async fn concurrent_readers_and_writers_preserve_values() {
         readers.push(tokio::spawn(async move {
             start.wait().await;
             let value = *rwlock.read().await;
-            yield_now().await;
+            tokio::task::yield_now().await;
             value
         }));
     }
@@ -93,7 +92,7 @@ async fn concurrent_readers_and_writers_preserve_values() {
             start.wait().await;
             let mut guard = rwlock.write().await;
             *guard += 1;
-            yield_now().await;
+            tokio::task::yield_now().await;
         }));
     }
 
@@ -424,7 +423,7 @@ async fn aborted_task_releases_its_owned_mapped_rwlock_guard() {
     });
     assert!(rwlock.try_read().is_none());
 
-    yield_now().await;
+    tokio::task::yield_now().await;
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     assert_eq!(*rwlock.try_read().unwrap(), [10, 2]);

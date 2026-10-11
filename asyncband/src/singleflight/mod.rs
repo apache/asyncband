@@ -253,7 +253,6 @@ where
     /// use std::time::Duration;
     ///
     /// use asyncband::singleflight::Group;
-    /// use tokio::time::sleep;
     ///
     /// # #[tokio::main]
     /// # async fn main() {
@@ -264,7 +263,7 @@ where
     /// let fut1 = group.work("key", || async move {
     ///     c1.fetch_add(1, Ordering::SeqCst);
     ///     // simulate heavy work to avoid immediate completion
-    ///     sleep(Duration::from_millis(100)).await;
+    ///     tokio::time::sleep(Duration::from_millis(100)).await;
     ///     "result"
     /// });
     ///
@@ -272,7 +271,7 @@ where
     /// let fut2 = group.work("key", || async move {
     ///     c2.fetch_add(1, Ordering::SeqCst);
     ///     // simulate heavy work to avoid immediate completion
-    ///     sleep(Duration::from_millis(100)).await;
+    ///     tokio::time::sleep(Duration::from_millis(100)).await;
     ///     "result"
     /// });
     ///
@@ -329,7 +328,6 @@ where
     /// use std::time::Duration;
     ///
     /// use asyncband::singleflight::Group;
-    /// use tokio::time::sleep;
     ///
     /// # #[tokio::main]
     /// # async fn main() {
@@ -337,13 +335,13 @@ where
     ///
     /// let fut1 = group.try_work("key", || async move {
     ///     // simulate heavy work to avoid immediate completion
-    ///     sleep(Duration::from_millis(100)).await;
+    ///     tokio::time::sleep(Duration::from_millis(100)).await;
     ///     Err::<_, &'static str>("fut1")
     /// });
     ///
     /// let fut2 = group.try_work("key", || async move {
     ///     // simulate heavy work to avoid immediate completion
-    ///     sleep(Duration::from_millis(200)).await;
+    ///     tokio::time::sleep(Duration::from_millis(200)).await;
     ///     Ok::<_, &'static str>("fut2")
     /// });
     ///

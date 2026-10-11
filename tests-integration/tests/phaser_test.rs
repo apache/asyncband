@@ -27,7 +27,6 @@ use tests_integration::poll_once;
 use tests_integration::poll_with;
 use tests_integration::waker_on_drop;
 use tokio::sync::oneshot;
-use tokio::task::yield_now;
 
 #[test]
 fn batch_registration_joins_one_observed_phase() {
@@ -625,7 +624,7 @@ async fn participant_can_wait_from_a_spawned_task() {
 
     let first_wait = tokio::spawn(async move { first.wait().await });
 
-    yield_now().await;
+    tokio::task::yield_now().await;
     let phase = second.arrive().unwrap();
     assert_eq!(first_wait.await.unwrap().unwrap(), phaser.phase());
     assert_ne!(phase, phaser.phase());
@@ -641,7 +640,7 @@ async fn observer_waits_without_becoming_a_party() {
     let observer_phaser = phaser.clone();
     let observer = tokio::spawn(async move { observer_phaser.wait(observed).await });
 
-    yield_now().await;
+    tokio::task::yield_now().await;
     assert_eq!(phaser.registered_parties(), 2);
     first.arrive().unwrap();
     second.deregister().unwrap();

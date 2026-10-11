@@ -22,7 +22,6 @@ use std::pin::pin;
 use std::sync::Arc;
 
 use asyncband::once::LazyCell;
-use tokio::task::yield_now;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -48,7 +47,7 @@ async fn main() {
     // Arc::pin allocates the cell once and keeps its inline future at a stable address. Cloning the
     // pinned Arc lets multiple tasks resume the same future without a separate future allocation.
     let shared = Arc::pin(LazyCell::new(async || {
-        yield_now().await;
+        tokio::task::yield_now().await;
         "shared".to_owned()
     }));
 

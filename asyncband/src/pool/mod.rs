@@ -124,7 +124,6 @@
 //! use asyncband::pool::bounded::Object;
 //! use asyncband::pool::bounded::Pool;
 //! # use asyncband::pool::bounded::PoolConfig;
-//! use tokio::time::timeout;
 //!
 //! # struct Connection;
 //! # #[derive(Debug)]
@@ -161,7 +160,7 @@
 //!         const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 //!
 //!         // Callers can use the timer implementation of their runtime.
-//!         match timeout(ACQUIRE_TIMEOUT, self.pool.get()).await {
+//!         match tokio::time::timeout(ACQUIRE_TIMEOUT, self.pool.get()).await {
 //!             Ok(result) => result.map_err(AcquireError::Create),
 //!             Err(_) => Err(AcquireError::Timeout),
 //!         }
