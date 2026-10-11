@@ -141,6 +141,9 @@ impl<T: ?Sized> OwnedRwLockWriteGuard<T> {
     ///
     /// There is no unlocked interval in which another writer can modify the value. Queued
     /// requests retain their order, so a waiting writer can prevent later readers from joining.
+    ///
+    /// To retain a shared projection, call this before [`OwnedRwLockReadGuard::map`] or
+    /// [`OwnedRwLockReadGuard::filter_map`]. Mapped write guards cannot be downgraded.
     pub fn downgrade(self) -> OwnedRwLockReadGuard<T> {
         OwnedRwLockReadGuard {
             access: self.access.downgrade(),

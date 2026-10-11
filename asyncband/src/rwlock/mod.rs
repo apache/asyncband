@@ -71,8 +71,28 @@
 //! let slot = RwLockWriteGuard::map(queue.write().await, |items| &mut items[0]);
 //! let mut message = MappedRwLockWriteGuard::filter_map(slot, Option::as_mut).unwrap();
 //! message.push_str(" review");
-//! let message = message.downgrade();
 //! assert_eq!(&*message, "pending review");
+//! # }
+//! ```
+//!
+//! Mapped write guards cannot be downgraded: mutable projections may reach data that other
+//! readers could change through interior mutability. For a shared projection, update through
+//! the original write guard, downgrade it, then map the resulting read guard. This retains
+//! access without an unlocked interval and derives the projection from a shared reference.
+//!
+//! ```
+//! use asyncband::rwlock::RwLock;
+//! use asyncband::rwlock::RwLockReadGuard;
+//!
+//! # #[tokio::main]
+//! # async fn main() {
+//! let queue = RwLock::new(vec![String::from("pending")]);
+//! let mut edit = queue.write().await;
+//! edit[0].push_str(" review");
+//! let message = RwLockReadGuard::map(edit.downgrade(), |items| &items[0]);
+//! let other_reader = queue.try_read().unwrap();
+//! assert_eq!(&*message, &other_reader[0]);
+//! assert!(queue.try_write().is_none());
 //! # }
 //! ```
 //!
@@ -195,6 +215,41 @@ impl<T: ?Sized> RwLock<T> {
 
 #[cfg(doctest)]
 mod compile_fail_tests {
+    /// A mutable projection into a mutex must not coexist with readers that can lock it.
+    ///
+    /// ```compile_fail,E0599
+    /// use asyncband::rwlock::{RwLock, RwLockWriteGuard};
+    ///
+    /// let lock = RwLock::new(std::sync::Mutex::new(0u8));
+    /// let write = RwLockWriteGuard::map(lock.try_write().unwrap(), |inner| {
+    ///     inner.get_mut().unwrap()
+    /// });
+    /// let read = write.downgrade();
+    /// let shared = &*read;
+    /// let outer = lock.try_read().unwrap();
+    /// *outer.lock().unwrap() = 1;
+    /// println!("{shared}");
+    /// ```
+    struct MappedWriteGuardCannotDowngrade;
+
+    /// Keeping the lock alive with an `Arc` does not make a mutable projection shareable.
+    ///
+    /// ```compile_fail,E0599
+    /// use std::sync::{Arc, Mutex};
+    /// use asyncband::rwlock::{OwnedRwLockWriteGuard, RwLock};
+    ///
+    /// let lock = Arc::new(RwLock::new(Mutex::new(0u8)));
+    /// let write = OwnedRwLockWriteGuard::map(lock.clone().try_write_owned().unwrap(), |inner| {
+    ///     inner.get_mut().unwrap()
+    /// });
+    /// let read = write.downgrade();
+    /// let shared = &*read;
+    /// let outer = lock.try_read().unwrap();
+    /// *outer.lock().unwrap() = 1;
+    /// println!("{shared}");
+    /// ```
+    struct OwnedMappedWriteGuardCannotDowngrade;
+
     /// ```compile_fail
     /// use asyncband::rwlock::RwLockWriteGuard;
     ///

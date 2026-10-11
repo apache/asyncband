@@ -23,6 +23,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Breaking changes
+
+* Remove `MappedRwLockWriteGuard::downgrade` and `OwnedMappedRwLockWriteGuard::downgrade`, which could cause undefined behavior with projections into interior-mutable data. Keep the original write guard and downgrade it before projecting with `RwLockReadGuard::map`/`filter_map` or their owned counterparts; projections that require exclusive access must retain the mapped write guard.
+
 ### New features
 
 * Add bounded MPMC `reserve` and `try_reserve` methods returning a borrowed `Permit`, so callers can wait for capacity before constructing a value; sends and reservations receive capacity in wait-queue order, and unused permits release it.

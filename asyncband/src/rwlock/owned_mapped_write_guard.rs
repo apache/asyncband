@@ -29,7 +29,6 @@ use std::ops::DerefMut;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use crate::rwlock::OwnedMappedRwLockReadGuard;
 use crate::rwlock::RwLock;
 use crate::rwlock::access::WriteAccess;
 
@@ -37,6 +36,11 @@ use crate::rwlock::access::WriteAccess;
 ///
 /// Use [`OwnedRwLockWriteGuard::map`](crate::rwlock::OwnedRwLockWriteGuard::map) to select a
 /// component. Dropping the guard releases its access.
+///
+/// This guard cannot be downgraded: a mutable projection may expose data that other readers
+/// could mutate through interior mutability. To retain a shared projection, first downgrade the
+/// original [`OwnedRwLockWriteGuard`](crate::rwlock::OwnedRwLockWriteGuard), then use
+/// [`OwnedRwLockReadGuard::map`](crate::rwlock::OwnedRwLockReadGuard::map) or `filter_map`.
 #[must_use = "dropping the guard releases its write access immediately"]
 pub struct OwnedMappedRwLockWriteGuard<T: ?Sized, U: ?Sized> {
     d: NonNull<U>,
@@ -124,13 +128,5 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockWriteGuard<T, U> {
             }
             None => Err(orig),
         }
-    }
-
-    /// Retains shared access to the same projection while releasing exclusive access.
-    ///
-    /// There is no unlocked interval in which another writer can modify the value. Queued
-    /// requests retain their order, so a waiting writer can prevent later readers from joining.
-    pub fn downgrade(self) -> OwnedMappedRwLockReadGuard<T, U> {
-        OwnedMappedRwLockReadGuard::new(self.d, self.access.downgrade())
     }
 }

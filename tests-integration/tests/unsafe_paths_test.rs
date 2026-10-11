@@ -91,8 +91,8 @@ fn mapped_rwlock_guards_preserve_lock_ownership() {
     let mapped = RwLockWriteGuard::map(write, |data| &mut data.values);
     let mut mapped = MappedRwLockWriteGuard::map(mapped, |values| &mut values[1]);
     *mapped = 3;
-    let mapped = mapped.downgrade();
     assert_eq!(*mapped, 3);
+    assert!(lock.try_read().is_none());
     assert!(lock.try_write().is_none());
     drop(mapped);
 
@@ -113,8 +113,8 @@ fn mapped_rwlock_guards_preserve_lock_ownership() {
     let mut mapped =
         OwnedMappedRwLockWriteGuard::filter_map(mapped, |values| values.first_mut()).unwrap();
     *mapped = 6;
-    let mapped = mapped.downgrade();
     assert_eq!(*mapped, 6);
+    assert!(lock.try_read().is_none());
     drop(mapped);
 
     let read = lock.clone().try_read_owned().unwrap();
@@ -125,6 +125,46 @@ fn mapped_rwlock_guards_preserve_lock_ownership() {
     drop(mapped);
 
     drop(lock);
+    assert!(weak.upgrade().is_none());
+}
+
+#[test]
+fn downgraded_shared_projection_preserves_interior_mutability() {
+    let lock = RwLock::new(Some(std::sync::Mutex::new(0u8)));
+    let mut write = lock.try_write().unwrap();
+    *write.as_mut().unwrap().get_mut().unwrap() = 1;
+    let read = RwLockReadGuard::map(write.downgrade(), |value| value.as_ref().unwrap());
+
+    // The shared projection retains the mutex, so access to its contents remains synchronized.
+    let shared = &*read;
+    let outer = lock.try_read().unwrap();
+    *outer.as_ref().unwrap().lock().unwrap() = 2;
+    assert_eq!(*shared.lock().unwrap(), 2);
+    assert!(lock.try_write().is_none());
+
+    drop(outer);
+    drop(read);
+    assert!(lock.try_write().is_some());
+}
+
+#[test]
+fn owned_downgraded_shared_projection_preserves_interior_mutability() {
+    let lock = Arc::new(RwLock::new(Some(std::sync::Mutex::new(0u8))));
+    let weak = Arc::downgrade(&lock);
+    let mut write = lock.clone().try_write_owned().unwrap();
+    *write.as_mut().unwrap().get_mut().unwrap() = 1;
+    let read = OwnedRwLockReadGuard::filter_map(write.downgrade(), Option::as_ref).unwrap();
+
+    let shared = &*read;
+    let outer = lock.try_read().unwrap();
+    *outer.as_ref().unwrap().lock().unwrap() = 2;
+    assert_eq!(*shared.lock().unwrap(), 2);
+    assert!(lock.try_write().is_none());
+
+    drop(outer);
+    drop(lock);
+    assert_eq!(*shared.lock().unwrap(), 2);
+    drop(read);
     assert!(weak.upgrade().is_none());
 }
 
