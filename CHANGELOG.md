@@ -23,6 +23,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Breaking changes
+
+* Remove `MappedRwLockWriteGuard::downgrade` and `OwnedMappedRwLockWriteGuard::downgrade`, which could cause undefined behavior when the mapped component is reachable by other readers through interior mutability. To keep shared access to a component, downgrade the original write guard first and then map it with `RwLockReadGuard::map` or `OwnedRwLockReadGuard::map`.
+
 ### New features
 
 * Add bounded MPMC `reserve` and `try_reserve` methods returning a borrowed `Permit`, so callers can wait for capacity before constructing a value; sends and reservations receive capacity in wait-queue order, and unused permits release it.

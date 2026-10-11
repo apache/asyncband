@@ -60,6 +60,10 @@
 //! can be repeated, and `filter_map` returns the original guard when the component is absent.
 //! A projection closure that panics releases its guard during unwinding.
 //!
+//! Mapped write guards cannot be downgraded. To keep shared access to a component after an
+//! update, downgrade the write guard first and then map the read guard, as in
+//! `RwLockReadGuard::map(guard.downgrade(), |items| &items[0])`.
+//!
 //! ```
 //! use asyncband::rwlock::MappedRwLockWriteGuard;
 //! use asyncband::rwlock::RwLock;
@@ -71,7 +75,6 @@
 //! let slot = RwLockWriteGuard::map(queue.write().await, |items| &mut items[0]);
 //! let mut message = MappedRwLockWriteGuard::filter_map(slot, Option::as_mut).unwrap();
 //! message.push_str(" review");
-//! let message = message.downgrade();
 //! assert_eq!(&*message, "pending review");
 //! # }
 //! ```
@@ -250,4 +253,28 @@ mod compile_fail_tests {
     /// }
     /// ```
     struct OwnedMappedRwLockWriteGuardIsInvariant;
+
+    /// ```compile_fail
+    /// use asyncband::rwlock::RwLock;
+    /// use asyncband::rwlock::RwLockWriteGuard;
+    ///
+    /// let lock = RwLock::new((0, 0));
+    /// let guard = lock.try_write().unwrap();
+    /// let guard = RwLockWriteGuard::map(guard, |value| &mut value.0);
+    /// let _ = guard.downgrade();
+    /// ```
+    struct MappedRwLockWriteGuardCannotDowngrade;
+
+    /// ```compile_fail
+    /// use std::sync::Arc;
+    ///
+    /// use asyncband::rwlock::OwnedRwLockWriteGuard;
+    /// use asyncband::rwlock::RwLock;
+    ///
+    /// let lock = Arc::new(RwLock::new((0, 0)));
+    /// let guard = lock.try_write_owned().unwrap();
+    /// let guard = OwnedRwLockWriteGuard::map(guard, |value| &mut value.0);
+    /// let _ = guard.downgrade();
+    /// ```
+    struct OwnedMappedRwLockWriteGuardCannotDowngrade;
 }
