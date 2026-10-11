@@ -29,12 +29,12 @@ mod unbounded;
 
 pub use self::bounded::BoundedReceiver;
 pub use self::bounded::BoundedSender;
-pub use self::bounded::Permit;
 pub use self::bounded::bounded;
 pub use self::error::RecvError;
 pub use self::error::SendError;
 pub use self::error::TryRecvError;
 pub use self::error::TrySendError;
+pub use self::queue::Permit;
 pub use self::unbounded::UnboundedReceiver;
 pub use self::unbounded::UnboundedSender;
 pub use self::unbounded::unbounded;

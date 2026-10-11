@@ -22,7 +22,7 @@ use crate::mpmc::RecvError;
 use crate::mpmc::SendError;
 use crate::mpmc::TryRecvError;
 use crate::mpmc::TrySendError;
-pub use crate::mpmc::queue::Permit;
+use crate::mpmc::queue::Permit;
 use crate::mpmc::queue::Shared;
 
 /// Creates a bounded multi-producer, multi-consumer queue.
