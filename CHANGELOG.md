@@ -30,6 +30,7 @@ All notable changes to this project will be documented in this file.
 ### Bug fixes
 
 * Prevent deadlocks in `singleflight::Group::work` and `try_work` when a duplicate key's destructor calls back into the same group.
+* Fix undefined behavior when sending or dropping a oneshot sender races with receiver completion or cancellation.
 
 ### Improvements
 

@@ -301,6 +301,26 @@ fn poll_then_drop_receiver_during_send() {
 }
 
 #[test]
+fn poll_then_drop_receiver_during_sender_drop() {
+    let (sender, receiver) = oneshot::channel::<i32>();
+    let mut receiver = receiver.into_future();
+    let (waker, waker_probe) = WakerProbe::new();
+    let mut context = Context::from_waker(&waker);
+
+    assert!(matches!(
+        Pin::new(&mut receiver).poll(&mut context),
+        Poll::Pending
+    ));
+
+    let sender_thread = spawn_named("sender", move || drop(sender));
+    drop(receiver);
+    sender_thread.join().unwrap();
+
+    // Either endpoint may claim the stored waker; neither may leave it in the freed channel.
+    assert_eq!(WakerProbe::live_waker_count(&waker_probe), 1);
+}
+
+#[test]
 fn concurrent_send_and_try_recv_to_completion() {
     let (sender, receiver) = oneshot::channel::<i32>();
 
@@ -391,4 +411,43 @@ fn concurrent_drop_sender_and_poll_to_completion() {
 
     receiver_thread.join().unwrap();
     sender_thread.join().unwrap();
+}
+
+#[test]
+fn poll_then_complete_receiver_during_sender_wake() {
+    for round in 0..if cfg!(miri) { 128 } else { 1024 } {
+        let send = round % 2 == 0;
+        let (sender, receiver) = oneshot::channel::<i32>();
+        let mut receiver = receiver.into_future();
+        let (waker, _waker_probe) = WakerProbe::new();
+        let mut context = Context::from_waker(&waker);
+
+        // Register the waker first so sending or dropping the sender takes the waking path.
+        assert!(matches!(
+            Pin::new(&mut receiver).poll(&mut context),
+            Poll::Pending
+        ));
+
+        let sender_thread = spawn_named("sender", move || {
+            if send {
+                sender.send(999).unwrap();
+            } else {
+                drop(sender);
+            }
+        });
+
+        spin_until("poll ready", || {
+            match Pin::new(&mut receiver).poll(&mut context) {
+                Poll::Ready(Ok(999)) if send => true,
+                Poll::Ready(Err(oneshot::RecvError::Disconnected)) if !send => true,
+                Poll::Ready(result) => panic!("unexpected result: {result:?}"),
+                Poll::Pending => false,
+            }
+        });
+
+        // The completed receiver frees the channel, possibly before the sender returns from waking
+        // it.
+        drop(receiver);
+        sender_thread.join().unwrap();
+    }
 }

@@ -32,10 +32,14 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
-use self::support::DropProbe;
-use self::support::WakerProbe;
-use self::support::spawn_named;
 use crate::oneshot;
+use crate::oneshot::Channel;
+use crate::oneshot::MESSAGE;
+use crate::oneshot::RECEIVING;
+use crate::oneshot::drop_message_and_deallocate_channel;
+use crate::oneshot::tests::support::DropProbe;
+use crate::oneshot::tests::support::WakerProbe;
+use crate::oneshot::tests::support::spawn_named;
 
 // These tests stay next to the implementation because they inspect private state.
 
@@ -56,10 +60,7 @@ fn poll_returns_while_sender_owns_waker() {
     let channel = unsafe { channel_ptr.as_ref() };
     unsafe { channel.write_message(1234u128) };
     // Pause the synthetic sender in AWAKING immediately after it takes the stored waker.
-    assert_eq!(
-        channel.state.fetch_add(1, Ordering::Release),
-        super::RECEIVING
-    );
+    assert_eq!(channel.state.fetch_add(1, Ordering::Release), RECEIVING);
 
     let (started_tx, started_rx) = mpsc::sync_channel(0);
     let (result_tx, result_rx) = mpsc::sync_channel(1);
@@ -78,7 +79,7 @@ fn poll_returns_while_sender_owns_waker() {
     // SAFETY: fetch_add observed RECEIVING and changed it to AWAKING after the message and waker
     // were initialized.
     let (sender_waker, receiver_owns_allocation) =
-        unsafe { channel.finish_sender_awakening(super::MESSAGE) };
+        unsafe { Channel::finish_sender_awakening(channel_ptr, MESSAGE) };
     assert!(receiver_owns_allocation);
     sender_waker.wake();
     assert_eq!(stored_probe.wake_count(), 1);
@@ -124,10 +125,7 @@ fn drop_transfers_cleanup_while_sender_owns_waker() {
     let channel = unsafe { channel_ptr.as_ref() };
     unsafe { channel.write_message(message) };
     // Pause the synthetic sender in AWAKING immediately after it takes the stored waker.
-    assert_eq!(
-        channel.state.fetch_add(1, Ordering::Release),
-        super::RECEIVING
-    );
+    assert_eq!(channel.state.fetch_add(1, Ordering::Release), RECEIVING);
 
     let (started_tx, started_rx) = mpsc::sync_channel(0);
     let (done_tx, done_rx) = mpsc::sync_channel(1);
@@ -144,14 +142,14 @@ fn drop_transfers_cleanup_while_sender_owns_waker() {
     // SAFETY: fetch_add observed RECEIVING and changed it to AWAKING after the message and waker
     // were initialized.
     let (sender_waker, receiver_owns_allocation) =
-        unsafe { channel.finish_sender_awakening(super::MESSAGE) };
+        unsafe { Channel::finish_sender_awakening(channel_ptr, MESSAGE) };
     if receiver_owns_allocation {
         sender_waker.wake();
     } else {
         // SAFETY: Receiver cancellation transferred allocation cleanup to the synthetic sender, so
         // the original pointer provenance may be reclaimed as a Box. The message is initialized and
         // the waker was moved out above.
-        unsafe { super::drop_message_and_deallocate_channel(channel_ptr) };
+        unsafe { drop_message_and_deallocate_channel(channel_ptr) };
         drop(sender_waker);
     }
 
