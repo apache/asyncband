@@ -33,6 +33,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug fixes
 
+* Prevent undefined behavior when a oneshot receiver frees the channel while the sender is finishing a send or disconnection notification.
 * Prevent deadlocks in `singleflight::Group::work` and `try_work` when a duplicate key's destructor calls back into the same group.
 
 ### Notable changes

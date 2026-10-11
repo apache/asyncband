@@ -305,6 +305,8 @@ impl<T> Channel<T> {
     ///
     /// # Safety
     ///
+    /// * `channel_ptr` must point to the live channel owned by this sender. The caller must not
+    ///   access the channel after this call unless it returns `false` for receiver ownership.
     /// * `final_state` must be `MESSAGE` or `DISCONNECTED`.
     /// * The caller must have just observed `RECEIVING` with an atomic read-modify-write that
     ///   changed the state to `AWAKING`. This gives the caller exclusive ownership of the
@@ -313,8 +315,16 @@ impl<T> Channel<T> {
     /// * When publishing `MESSAGE`, the caller must own an initialized message that precedes the
     ///   release operation in this method.
     #[inline(always)]
-    unsafe fn finish_sender_awakening(&self, final_state: u8) -> (Waker, bool) {
+    unsafe fn finish_sender_awakening(
+        channel_ptr: NonNull<Self>,
+        final_state: u8,
+    ) -> (Waker, bool) {
         debug_assert!(matches!(final_state, MESSAGE | DISCONNECTED));
+
+        // An &self parameter would keep its borrow protected until this function returns, but
+        // the receiver may reclaim the channel as soon as the terminal state is published below.
+        // SAFETY: The caller still owns the live channel's AWAKING state at this point.
+        let channel = unsafe { channel_ptr.as_ref() };
 
         // ORDERING: The caller's Release RMW read RECEIVING with a Relaxed load. Acquire
         // synchronizes that read with the receiver's Release publication before taking the waker.
@@ -322,12 +332,12 @@ impl<T> Channel<T> {
 
         // SAFETY: The caller's RECEIVING-to-AWAKING transition transferred exclusive ownership of
         // the initialized waker to the sender.
-        let waker = unsafe { self.take_waker() };
+        let waker = unsafe { channel.take_waker() };
 
         // ORDERING: Release publishes the message or disconnected state when this replaces
         // AWAKING. The RMW's load half is Relaxed; if it reads a receiver-written DISCONNECTED, the
         // conditional Acquire below completes the reverse allocation-ownership handoff.
-        let previous_state = self.state.swap(final_state, Ordering::Release);
+        let previous_state = channel.state.swap(final_state, Ordering::Release);
         if matches!(previous_state, AWAKING) {
             (waker, true)
         } else {

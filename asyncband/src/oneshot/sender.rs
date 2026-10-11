@@ -61,9 +61,8 @@ impl<T> Sender<T> {
         let sender = ManuallyDrop::new(self);
         let channel_ptr = sender.channel_ptr;
 
-        // SAFETY: The channel exists on the heap for the entire duration of this method, and we
-        // only ever acquire shared references to it. Dropping the receiver does not immediately
-        // free the channel.
+        // SAFETY: This sender keeps the channel alive until it publishes a terminal state. No
+        // access through this reference follows a transfer of allocation ownership to the receiver.
         let channel = unsafe { channel_ptr.as_ref() };
 
         // Write the message into the channel on the heap.
@@ -91,7 +90,7 @@ impl<T> Sender<T> {
                 // exclusive ownership of the published waker to this sender. The message was
                 // initialized before the RMW and is ready to publish.
                 let (waker, receiver_owns_allocation) =
-                    unsafe { channel.finish_sender_awakening(MESSAGE) };
+                    unsafe { Channel::finish_sender_awakening(channel_ptr, MESSAGE) };
                 if receiver_owns_allocation {
                     waker.wake();
                 } else {
@@ -180,7 +179,7 @@ impl<T> Drop for Sender<T> {
                 // exclusive ownership of the published waker to this sender. Sender::drop has no
                 // message to publish.
                 let (waker, receiver_owns_allocation) =
-                    unsafe { channel.finish_sender_awakening(DISCONNECTED) };
+                    unsafe { Channel::finish_sender_awakening(self.channel_ptr, DISCONNECTED) };
                 if receiver_owns_allocation {
                     waker.wake();
                 } else {

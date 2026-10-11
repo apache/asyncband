@@ -78,7 +78,7 @@ fn poll_returns_while_sender_owns_waker() {
     // SAFETY: fetch_add observed RECEIVING and changed it to AWAKING after the message and waker
     // were initialized.
     let (sender_waker, receiver_owns_allocation) =
-        unsafe { channel.finish_sender_awakening(super::MESSAGE) };
+        unsafe { super::Channel::finish_sender_awakening(channel_ptr, super::MESSAGE) };
     assert!(receiver_owns_allocation);
     sender_waker.wake();
     assert_eq!(stored_probe.wake_count(), 1);
@@ -144,7 +144,7 @@ fn drop_transfers_cleanup_while_sender_owns_waker() {
     // SAFETY: fetch_add observed RECEIVING and changed it to AWAKING after the message and waker
     // were initialized.
     let (sender_waker, receiver_owns_allocation) =
-        unsafe { channel.finish_sender_awakening(super::MESSAGE) };
+        unsafe { super::Channel::finish_sender_awakening(channel_ptr, super::MESSAGE) };
     if receiver_owns_allocation {
         sender_waker.wake();
     } else {
