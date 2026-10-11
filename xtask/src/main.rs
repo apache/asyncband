@@ -16,7 +16,7 @@
 // under the License.
 
 use std::path::Path;
-use std::process;
+use std::process::Command as StdCommand;
 use std::process::ExitStatus;
 use std::time::Duration;
 
@@ -24,7 +24,6 @@ use clap::Parser;
 use clap::Subcommand;
 use semver::Version;
 use serde::Deserialize;
-use ureq::Agent;
 
 const PACKAGE_NAME: &str = "asyncband";
 // cargo-semver-checks reserves exit code 100 for completed checks that found deny-level violations.
@@ -285,10 +284,10 @@ impl SemverReleaseType {
     }
 }
 
-fn find_command(cmd: &str) -> process::Command {
+fn find_command(cmd: &str) -> StdCommand {
     match which::which(cmd) {
         Ok(exe) => {
-            let mut cmd = process::Command::new(exe);
+            let mut cmd = StdCommand::new(exe);
             cmd.current_dir(env!("CARGO_WORKSPACE_DIR"));
             cmd
         }
@@ -306,19 +305,19 @@ fn ensure_installed(bin: &str, crate_name: &str) {
     }
 }
 
-fn run_command(cmd: process::Command) {
+fn run_command(cmd: StdCommand) {
     let status = command_status(cmd);
     assert!(status.success(), "command failed: {status}");
 }
 
-fn command_status(mut cmd: process::Command) -> ExitStatus {
+fn command_status(mut cmd: StdCommand) -> ExitStatus {
     println!("{cmd:?}");
     cmd.status().expect("failed to execute process")
 }
 
 fn find_latest_release() -> Option<Version> {
-    let agent = Agent::from(
-        Agent::config_builder()
+    let agent = ureq::Agent::from(
+        ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(10)))
             .build(),
     );
@@ -380,7 +379,7 @@ fn classify_release_type(baseline: &Version, release: &Version) -> SemverRelease
     }
 }
 
-fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> process::Command {
+fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.args([
         "bench",
@@ -398,7 +397,7 @@ fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> process
     cmd
 }
 
-fn make_build_cmd(locked: bool) -> process::Command {
+fn make_build_cmd(locked: bool) -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.args([
         "build",
@@ -415,7 +414,7 @@ fn make_build_cmd(locked: bool) -> process::Command {
     cmd
 }
 
-fn make_test_cmd(no_capture: bool, features: &[String]) -> process::Command {
+fn make_test_cmd(no_capture: bool, features: &[String]) -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.args(["test", "--workspace", "--no-default-features"]);
     for feature in features {
@@ -427,7 +426,7 @@ fn make_test_cmd(no_capture: bool, features: &[String]) -> process::Command {
     cmd
 }
 
-fn make_check_cmd(features: &[String]) -> process::Command {
+fn make_check_cmd(features: &[String]) -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.env("RUSTFLAGS", "-Dwarnings");
     cmd.args([
@@ -444,14 +443,14 @@ fn make_check_cmd(features: &[String]) -> process::Command {
     cmd
 }
 
-fn make_miri_cmd(package: &str, target: &[&str]) -> process::Command {
+fn make_miri_cmd(package: &str, target: &[&str]) -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.args(["+nightly", "miri", "test", "--package", package]);
     cmd.args(target);
     cmd
 }
 
-fn make_format_cmd(fix: bool) -> process::Command {
+fn make_format_cmd(fix: bool) -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.args(["+nightly", "fmt", "--all"]);
     if !fix {
@@ -460,7 +459,7 @@ fn make_format_cmd(fix: bool) -> process::Command {
     cmd
 }
 
-fn make_clippy_cmd(fix: bool) -> process::Command {
+fn make_clippy_cmd(fix: bool) -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.args([
         "+nightly",
@@ -478,7 +477,7 @@ fn make_clippy_cmd(fix: bool) -> process::Command {
     cmd
 }
 
-fn make_doc_cmd() -> process::Command {
+fn make_doc_cmd() -> StdCommand {
     let mut cmd = find_command("cargo");
     cmd.env("RUSTDOCFLAGS", "-D warnings --cfg docsrs");
     cmd.args([
@@ -494,7 +493,7 @@ fn make_doc_cmd() -> process::Command {
 fn make_semver_check_cmd(
     baseline_version: &Version,
     release_type: SemverReleaseType,
-) -> process::Command {
+) -> StdCommand {
     ensure_installed("cargo-semver-checks", "cargo-semver-checks");
     let mut cmd = find_command("cargo");
     cmd.args([
@@ -511,7 +510,7 @@ fn make_semver_check_cmd(
     cmd
 }
 
-fn make_hawkeye_cmd(fix: bool) -> process::Command {
+fn make_hawkeye_cmd(fix: bool) -> StdCommand {
     ensure_installed("hawkeye", "hawkeye");
     let mut cmd = find_command("hawkeye");
     if fix {
@@ -522,12 +521,12 @@ fn make_hawkeye_cmd(fix: bool) -> process::Command {
     cmd
 }
 
-fn make_typos_cmd() -> process::Command {
+fn make_typos_cmd() -> StdCommand {
     ensure_installed("typos", "typos-cli");
     find_command("typos")
 }
 
-fn make_taplo_cmd(fix: bool) -> process::Command {
+fn make_taplo_cmd(fix: bool) -> StdCommand {
     ensure_installed("taplo", "taplo-cli");
     let mut cmd = find_command("taplo");
     if fix {
