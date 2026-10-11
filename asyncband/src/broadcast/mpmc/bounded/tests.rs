@@ -50,10 +50,10 @@ fn buffer_is_preallocated_and_never_shrinks() {
         tx.try_send(i).unwrap();
     }
     for i in 0..capacity {
-        assert_eq!(rx.try_recv(), Ok(i));
+        assert_eq!(rx.try_recv().as_deref(), Ok(&i));
     }
     tx.try_send(0).unwrap();
-    assert_eq!(rx.try_recv(), Ok(0));
+    assert_eq!(rx.try_recv().as_deref(), Ok(&0));
 
     assert_eq!(tx.retained_message_count(), 0);
     assert_eq!(tx.shared.inner.lock().log.buffer_capacity(), allocated);
