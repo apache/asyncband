@@ -301,6 +301,26 @@ fn poll_then_drop_receiver_during_send() {
 }
 
 #[test]
+fn poll_then_drop_receiver_during_sender_drop() {
+    let (sender, receiver) = oneshot::channel::<i32>();
+    let mut receiver = receiver.into_future();
+    let (waker, waker_probe) = WakerProbe::new();
+    let mut context = Context::from_waker(&waker);
+
+    assert!(matches!(
+        Pin::new(&mut receiver).poll(&mut context),
+        Poll::Pending
+    ));
+
+    let sender_thread = spawn_named("sender", move || drop(sender));
+    drop(receiver);
+    sender_thread.join().unwrap();
+
+    // Either endpoint may claim the stored waker; neither may leave it in the freed channel.
+    assert_eq!(WakerProbe::live_waker_count(&waker_probe), 1);
+}
+
+#[test]
 fn concurrent_send_and_try_recv_to_completion() {
     let (sender, receiver) = oneshot::channel::<i32>();
 

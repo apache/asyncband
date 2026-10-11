@@ -31,16 +31,16 @@ use std::sync::atomic::fence;
 use std::task::Context;
 use std::task::Poll;
 
-use super::AWAKING;
-use super::Channel;
-use super::DISCONNECTED;
-use super::EMPTY;
-use super::MESSAGE;
-use super::RECEIVING;
+use crate::oneshot::AWAKING;
+use crate::oneshot::Channel;
+use crate::oneshot::DISCONNECTED;
+use crate::oneshot::EMPTY;
+use crate::oneshot::MESSAGE;
+use crate::oneshot::RECEIVING;
 #[cfg(doc)]
-use super::Sender;
-use super::deallocate_empty_channel;
-use super::drop_message_and_deallocate_channel;
+use crate::oneshot::Sender;
+use crate::oneshot::deallocate_empty_channel;
+use crate::oneshot::drop_message_and_deallocate_channel;
 
 /// Receives a value from the associated [`Sender`].
 ///
