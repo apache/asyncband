@@ -16,11 +16,9 @@
 // under the License.
 
 use std::fmt;
-use std::sync::Mutex as StdMutex;
-use std::sync::MutexGuard;
 use std::sync::PoisonError;
 
-pub struct Mutex<T: ?Sized>(StdMutex<T>);
+pub struct Mutex<T: ?Sized>(std::sync::Mutex<T>);
 
 impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -30,10 +28,10 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
 
 impl<T> Mutex<T> {
     pub const fn new(t: T) -> Self {
-        Self(StdMutex::new(t))
+        Self(std::sync::Mutex::new(t))
     }
 
-    pub fn lock(&self) -> MutexGuard<'_, T> {
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, T> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
