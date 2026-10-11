@@ -31,5 +31,5 @@
 mod auto_reset;
 mod manual_reset;
 
-pub use crate::event::auto_reset::AutoResetEvent;
-pub use crate::event::manual_reset::ManualResetEvent;
+pub use self::auto_reset::AutoResetEvent;
+pub use self::manual_reset::ManualResetEvent;

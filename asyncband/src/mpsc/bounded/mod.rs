@@ -30,9 +30,9 @@ use crate::mpsc::TrySendError;
 mod receiver;
 mod sender;
 
-pub use crate::mpsc::bounded::receiver::BoundedReceiver;
-pub use crate::mpsc::bounded::sender::BoundedSender;
-pub use crate::mpsc::bounded::sender::Permit;
+pub use self::receiver::BoundedReceiver;
+pub use self::sender::BoundedSender;
+pub use self::sender::Permit;
 
 /// Creates a bounded mpsc channel with room for `buffer` queued messages.
 ///

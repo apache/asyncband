@@ -35,6 +35,8 @@ Use imports for referenced symbols. Keep a short module qualifier or use an expl
 
 Start ordinary intra-crate imports at `crate`; avoid explicit `super::...` imports and qualified paths. Reserve `use super::*` for test modules.
 
+Keep `pub use self::...` when re-exporting a module's own children as its public API.
+
 ## Waker Contract
 
 - Allow normal executor `Waker::clone` inside short state critical sections. Custom clone panic recovery and reentrancy are not general guarantees; do not require them in reviews unless an explicit local contract does.

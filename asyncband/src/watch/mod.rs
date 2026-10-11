@@ -71,11 +71,11 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
+pub use self::error::RecvError;
+pub use self::error::SendError;
 use crate::internal::mutex::Mutex;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
-pub use crate::watch::error::RecvError;
-pub use crate::watch::error::SendError;
 
 /// Creates a watch channel with an initial value.
 ///

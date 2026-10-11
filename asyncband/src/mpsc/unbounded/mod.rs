@@ -28,8 +28,8 @@ mod buffer;
 mod receiver;
 mod sender;
 
-pub use crate::mpsc::unbounded::receiver::UnboundedReceiver;
-pub use crate::mpsc::unbounded::sender::UnboundedSender;
+pub use self::receiver::UnboundedReceiver;
+pub use self::sender::UnboundedSender;
 
 /// Creates an unbounded mpsc channel. Sending never waits for capacity.
 ///

@@ -214,8 +214,8 @@ mod state;
 pub mod bounded;
 pub mod unbounded;
 
-pub use crate::pool::common::ManageObject;
-pub use crate::pool::common::ObjectStatus;
-pub use crate::pool::common::QueueStrategy;
-pub use crate::pool::common::RecycleCancelledStrategy;
-pub use crate::pool::common::RetainResult;
+pub use self::common::ManageObject;
+pub use self::common::ObjectStatus;
+pub use self::common::QueueStrategy;
+pub use self::common::RecycleCancelledStrategy;
+pub use self::common::RetainResult;
