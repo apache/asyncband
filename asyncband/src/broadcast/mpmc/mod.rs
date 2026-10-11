@@ -27,9 +27,13 @@
 //!
 //! Receiving a value advances the subscription before returning that value. The channel tracks
 //! unread messages, not application work: retaining a received value or processing it
-//! asynchronously does not hold backlog capacity. There is no acknowledgement or
-//! processing-completion barrier. If cloning a received value panics, that subscription has still
-//! advanced past the value.
+//! asynchronously does not hold backlog capacity. `recv` and `try_recv` hand out the channel's own
+//! `Arc<T>`, so an `Arc` kept past the receive keeps its payload alive after the message has left
+//! the backlog, and a bounded channel's capacity limits retained messages rather than memory.
+//! Callers that wrapped values in an `Arc` only to avoid broadcast cloning can send `T` directly,
+//! since the channel already shares one `Arc<T>` with every receiver. There is no acknowledgement
+//! or processing-completion barrier. If `T::clone` panics inside `recv_cloned` or
+//! `try_recv_cloned`, that subscription has still advanced past the value.
 //!
 //! Sending with no subscriptions discards the value and succeeds. A later subscription starts
 //! with future publications; it does not replay discarded or previously retained values.

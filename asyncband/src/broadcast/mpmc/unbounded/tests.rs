@@ -38,7 +38,7 @@ fn one_off_burst_allocation_is_returned_once_it_is_behind_us() {
     assert!(tx.shared.inner.lock().log.buffer_capacity() >= burst);
 
     for i in 0..burst {
-        assert_eq!(rx.try_recv(), Ok(i));
+        assert_eq!(rx.try_recv().as_deref(), Ok(&i));
     }
 
     // Draining evaluates the cycle that just peaked, so the burst allocation is still held.
@@ -47,7 +47,7 @@ fn one_off_burst_allocation_is_returned_once_it_is_behind_us() {
 
     // The next cycle stays small, which is what releases the memory.
     tx.send(0);
-    assert_eq!(rx.try_recv(), Ok(0));
+    assert_eq!(rx.try_recv().as_deref(), Ok(&0));
     assert!(tx.shared.inner.lock().log.buffer_capacity() < burst);
 }
 
@@ -61,7 +61,7 @@ fn repeated_bursts_keep_their_allocation() {
             tx.send(i);
         }
         for i in 0..burst {
-            assert_eq!(rx.try_recv(), Ok(i));
+            assert_eq!(rx.try_recv().as_deref(), Ok(&i));
         }
     }
 

@@ -46,9 +46,9 @@
 //! let mut late = publisher.subscribe();
 //! publisher.send("after subscription");
 //!
-//! assert_eq!(early.try_recv(), Ok("before subscription"));
-//! assert_eq!(early.try_recv(), Ok("after subscription"));
-//! assert_eq!(late.try_recv(), Ok("after subscription"));
+//! assert_eq!(*early.try_recv().unwrap(), "before subscription");
+//! assert_eq!(*early.try_recv().unwrap(), "after subscription");
+//! assert_eq!(*late.try_recv().unwrap(), "after subscription");
 //! assert_eq!(late.try_recv(), Err(TryRecvError::Empty));
 //! ```
 //!
@@ -66,6 +66,7 @@ use std::task::Poll;
 use super::common;
 use super::common::Backlog;
 use super::common::Inner;
+use super::common::Received;
 use super::error::RecvError;
 use super::error::TryRecvError;
 use crate::internal::arena::SlotId;
@@ -87,9 +88,9 @@ mod tests;
 ///
 /// let (publisher, mut receiver) = unbounded();
 /// publisher.send("ready");
-/// assert_eq!(receiver.try_recv(), Ok("ready"));
+/// assert_eq!(*receiver.try_recv().unwrap(), "ready");
 /// ```
-pub fn unbounded<T: Clone>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
+pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
     let (inner, key) = Inner::with_first_subscription(Backlog::elastic());
     let shared = Arc::new(Shared {
         inner,
@@ -163,8 +164,8 @@ impl<T> UnboundedSender<T> {
     /// let mut second = publisher.subscribe();
     /// publisher.send("update");
     ///
-    /// assert_eq!(first.try_recv(), Ok("update"));
-    /// assert_eq!(second.try_recv(), Ok("update"));
+    /// assert_eq!(*first.try_recv().unwrap(), "update");
+    /// assert_eq!(*second.try_recv().unwrap(), "update");
     /// ```
     pub fn send(&self, msg: T) {
         let msg = Arc::new(msg);
@@ -197,9 +198,9 @@ impl<T> UnboundedSender<T> {
     /// publisher.send("update");
     /// assert_eq!(publisher.retained_message_count(), 1);
     ///
-    /// assert_eq!(fast.try_recv(), Ok("update"));
+    /// assert_eq!(*fast.try_recv().unwrap(), "update");
     /// assert_eq!(publisher.retained_message_count(), 1);
-    /// assert_eq!(slow.try_recv(), Ok("update"));
+    /// assert_eq!(*slow.try_recv().unwrap(), "update");
     /// assert_eq!(publisher.retained_message_count(), 0);
     /// ```
     pub fn retained_message_count(&self) -> usize {
@@ -222,7 +223,7 @@ impl<T> UnboundedSender<T> {
     /// let mut receiver = publisher.subscribe();
     /// assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
     /// publisher.send("later");
-    /// assert_eq!(receiver.try_recv(), Ok("later"));
+    /// assert_eq!(*receiver.try_recv().unwrap(), "later");
     /// ```
     #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn subscribe(&self) -> UnboundedReceiver<T> {
@@ -259,8 +260,12 @@ impl<T> Drop for UnboundedReceiver<T> {
     }
 }
 
-impl<T: Clone> UnboundedReceiver<T> {
-    /// Waits for this receiver's next value.
+impl<T> UnboundedReceiver<T> {
+    /// Waits for this receiver's next value and returns the channel's shared `Arc<T>`.
+    ///
+    /// Receiving never clones `T`. The `Arc` outlives the value's stay in the backlog, so a
+    /// caller that keeps it keeps the payload alive. Use
+    /// [`recv_cloned`](UnboundedReceiver::recv_cloned) to take an owned value instead.
     ///
     /// Values already published for this receiver are returned before disconnection.
     /// [`RecvError::Disconnected`] is returned only when no sender remains and this receiver's
@@ -284,19 +289,20 @@ impl<T: Clone> UnboundedReceiver<T> {
     /// publisher.send("final update");
     /// drop(publisher);
     ///
-    /// assert_eq!(receiver.recv().await, Ok("final update"));
+    /// assert_eq!(*receiver.recv().await.unwrap(), "final update");
     /// assert_eq!(receiver.recv().await, Err(RecvError::Disconnected));
     /// # }
     /// ```
-    pub async fn recv(&mut self) -> Result<T, RecvError> {
-        Recv {
-            receiver: self,
-            token: None,
-        }
-        .await
+    pub async fn recv(&mut self) -> Result<Arc<T>, RecvError> {
+        let (msg, reclaimed) = self.wait_next().await?;
+        Ok(common::share_msg(msg, reclaimed))
     }
 
-    /// Attempts to take this receiver's next value without waiting.
+    /// Attempts to take this receiver's next value without waiting, as the channel's shared
+    /// `Arc<T>`.
+    ///
+    /// See [`recv`](UnboundedReceiver::recv) for what keeping the `Arc` means, and
+    /// [`try_recv_cloned`](UnboundedReceiver::try_recv_cloned) to take an owned value instead.
     ///
     /// [`TryRecvError::Empty`] means this receiver is currently caught up while a sender remains.
     /// [`TryRecvError::Disconnected`] means no sender remains and this receiver has drained its
@@ -312,18 +318,16 @@ impl<T: Clone> UnboundedReceiver<T> {
     /// assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
     ///
     /// publisher.send("update");
-    /// assert_eq!(receiver.try_recv(), Ok("update"));
+    /// assert_eq!(*receiver.try_recv().unwrap(), "update");
     /// drop(publisher);
     /// assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
-    pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
+    pub fn try_recv(&mut self) -> Result<Arc<T>, TryRecvError> {
         let (msg, reclaimed) =
             common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
-        Ok(common::take_msg(msg, reclaimed))
+        Ok(common::share_msg(msg, reclaimed))
     }
-}
 
-impl<T> UnboundedReceiver<T> {
     /// Re-subscribes to the channel, returning a new receiver that starts receiving messages from
     /// the *current* tail of the channel.
     ///
@@ -343,9 +347,9 @@ impl<T> UnboundedReceiver<T> {
     /// assert_eq!(fresh.try_recv(), Err(TryRecvError::Empty));
     /// publisher.send("visible to both");
     ///
-    /// assert_eq!(original.try_recv(), Ok("pending for original"));
-    /// assert_eq!(original.try_recv(), Ok("visible to both"));
-    /// assert_eq!(fresh.try_recv(), Ok("visible to both"));
+    /// assert_eq!(*original.try_recv().unwrap(), "pending for original");
+    /// assert_eq!(*original.try_recv().unwrap(), "visible to both");
+    /// assert_eq!(*fresh.try_recv().unwrap(), "visible to both");
     /// ```
     #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn resubscribe(&self) -> Self {
@@ -374,11 +378,79 @@ impl<T> UnboundedReceiver<T> {
     /// publisher.send("second");
     /// assert_eq!(receiver.unread_message_count(), 2);
     ///
-    /// assert_eq!(receiver.try_recv(), Ok("first"));
+    /// assert_eq!(*receiver.try_recv().unwrap(), "first");
     /// assert_eq!(receiver.unread_message_count(), 1);
     /// ```
     pub fn unread_message_count(&self) -> usize {
         self.shared.inner.lock().log.unread(self.key)
+    }
+
+    fn wait_next(&mut self) -> Recv<'_, T> {
+        Recv {
+            receiver: self,
+            token: None,
+        }
+    }
+}
+
+impl<T: Clone> UnboundedReceiver<T> {
+    /// Waits for this receiver's next value and returns it as an owned `T`.
+    ///
+    /// The payload is moved out of the channel without cloning when this read reclaims the message
+    /// and nothing else still refers to it, such as an `Arc` kept from a shared receive or another
+    /// receiver's clone still in progress. Otherwise it is cloned with the channel unlocked. If
+    /// `T::clone` panics, this receiver has still advanced past the value.
+    ///
+    /// Values already published for this receiver are returned before disconnection.
+    /// [`RecvError::Disconnected`] is returned only when no sender remains and this receiver's
+    /// backlog is empty.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending `recv_cloned` future leaves this receiver's cursor unchanged. A
+    /// subsequent receive can still return the same next value, so these futures may safely be
+    /// raced with other futures in a selection construct.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc::unbounded;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let (publisher, mut receiver) = unbounded();
+    /// publisher.send(String::from("owned"));
+    /// assert_eq!(receiver.recv_cloned().await, Ok(String::from("owned")));
+    /// # }
+    /// ```
+    pub async fn recv_cloned(&mut self) -> Result<T, RecvError> {
+        let (msg, reclaimed) = self.wait_next().await?;
+        Ok(common::take_msg(msg, reclaimed))
+    }
+
+    /// Attempts to take this receiver's next value without waiting and returns it as an owned
+    /// `T`.
+    ///
+    /// See [`recv_cloned`](UnboundedReceiver::recv_cloned) for when the payload is moved out
+    /// rather than cloned.
+    ///
+    /// [`TryRecvError::Empty`] means this receiver is currently caught up while a sender remains.
+    /// [`TryRecvError::Disconnected`] means no sender remains and this receiver has drained its
+    /// backlog.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc::unbounded;
+    ///
+    /// let (publisher, mut receiver) = unbounded();
+    /// publisher.send(String::from("owned"));
+    /// assert_eq!(receiver.try_recv_cloned(), Ok(String::from("owned")));
+    /// ```
+    pub fn try_recv_cloned(&mut self) -> Result<T, TryRecvError> {
+        let (msg, reclaimed) =
+            common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
+        Ok(common::take_msg(msg, reclaimed))
     }
 }
 
@@ -403,24 +475,18 @@ impl<T> Drop for Recv<'_, T> {
     }
 }
 
-impl<T: Clone> Future for Recv<'_, T> {
-    type Output = Result<T, RecvError>;
+impl<T> Future for Recv<'_, T> {
+    type Output = Result<Received<T>, RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self { receiver, token } = self.get_mut();
 
-        let (msg, reclaimed) = match common::poll_receive(
+        common::poll_receive(
             &receiver.shared.inner,
             &receiver.shared.senders,
             receiver.key,
             token,
             cx,
-        ) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-            Poll::Ready(Ok(received)) => received,
-        };
-
-        Poll::Ready(Ok(common::take_msg(msg, reclaimed)))
+        )
     }
 }
