@@ -29,15 +29,15 @@ use std::ptr::NonNull;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::fence;
 
-use super::Channel;
-use super::DISCONNECTED;
-use super::EMPTY;
-use super::MESSAGE;
-use super::RECEIVING;
+use crate::oneshot::Channel;
+use crate::oneshot::DISCONNECTED;
+use crate::oneshot::EMPTY;
+use crate::oneshot::MESSAGE;
+use crate::oneshot::RECEIVING;
 #[cfg(doc)]
-use super::Receiver;
-use super::deallocate_empty_channel;
-use super::drop_message_and_deallocate_channel;
+use crate::oneshot::Receiver;
+use crate::oneshot::deallocate_empty_channel;
+use crate::oneshot::drop_message_and_deallocate_channel;
 
 /// Sends a value to the associated [`Receiver`].
 pub struct Sender<T> {

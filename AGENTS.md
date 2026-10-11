@@ -31,6 +31,10 @@ Use the shared [license-audit skill](.agents/skills/license-audit/SKILL.md) for 
 
 Declare restricted visibility at the module boundary and use `pub` for items in that module's API.
 
+Use imports for referenced symbols. Keep a short module qualifier or use an explicit alias when a bare name would obscure its origin or conflict with another symbol, such as `io::Error`.
+
+Start ordinary intra-crate imports at `crate`; avoid explicit `super::...` imports and qualified paths. Reserve `use super::*` for test modules.
+
 ## Waker Contract
 
 - Allow normal executor `Waker::clone` inside short state critical sections. Custom clone panic recovery and reentrancy are not general guarantees; do not require them in reviews unless an explicit local contract does.
