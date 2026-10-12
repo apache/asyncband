@@ -44,17 +44,18 @@ use crate::internal::waker_batch::WakerBatch;
 #[derive(Debug)]
 pub struct Semaphore {
     /// The current number of available permits in the semaphore.
-    permits: AtomicUsize,
-    /// Set while a locked release is losing races on the balance, so that other releases join
-    /// the lock instead of adding to the traffic. A hint only: a stale read in either direction
-    /// is still correct.
-    contended: AtomicBool,
+    available_permits: AtomicUsize,
+    /// Set when a release holding the queue lock loses a CAS race, and cleared after it
+    /// successfully updates the available count. Releases that observe this flag skip the
+    /// lock-free attempt. This is a performance hint; stale reads do not affect correctness.
+    contention_detected: AtomicBool,
     waiters: Mutex<WaitList<WaitNode>>,
 }
 
 #[derive(Debug)]
 struct WaitNode {
-    permits: usize,
+    /// Permits still needed to satisfy the acquisition or repay the queued permit debt.
+    needed_permits: usize,
     /// A linked node without a waker is permit debt owned by the queue. An acquire node only loses
     /// its waker while being detached, after which its future still owns the node.
     waker: Option<Waker>,
@@ -63,34 +64,36 @@ struct WaitNode {
 impl Semaphore {
     pub const fn new(permits: usize) -> Self {
         Self {
-            permits: AtomicUsize::new(permits),
-            contended: AtomicBool::new(false),
+            available_permits: AtomicUsize::new(permits),
+            contention_detected: AtomicBool::new(false),
             waiters: Mutex::new(WaitList::new()),
         }
     }
 
     /// Returns the current number of available permits.
     pub fn available_permits(&self) -> usize {
-        self.permits.load(Ordering::Acquire)
+        self.available_permits.load(Ordering::Acquire)
     }
 
     /// Tries to acquire `n` permits from the semaphore.
     ///
     /// Returns `true` if the permits were acquired, `false` otherwise.
     pub fn try_acquire(&self, n: usize) -> bool {
-        let mut current = self.permits.load(Ordering::Acquire);
+        let mut available = self.available_permits.load(Ordering::Acquire);
         loop {
-            if current < n {
+            if available < n {
                 return false;
             }
 
-            let next = current - n;
-            match self
-                .permits
-                .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
-            {
+            let next = available - n;
+            match self.available_permits.compare_exchange(
+                available,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
                 Ok(_) => return true,
-                Err(actual) => current = actual,
+                Err(actual) => available = actual,
             }
         }
     }
@@ -103,22 +106,22 @@ impl Semaphore {
             return 0;
         }
 
-        let mut current = self.permits.load(Ordering::Acquire);
+        let mut available = self.available_permits.load(Ordering::Acquire);
         loop {
-            let new = current.saturating_sub(up_to);
-            match self.permits.compare_exchange_weak(
-                current,
-                new,
+            let next = available.saturating_sub(up_to);
+            match self.available_permits.compare_exchange_weak(
+                available,
+                next,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return up_to.min(current),
-                Err(actual) => current = actual,
+                Ok(_) => return up_to.min(available),
+                Err(actual) => available = actual,
             }
         }
     }
 
-    /// Reduces the semaphore's logical permit balance by exactly `n`.
+    /// Removes exactly `n` permits, consuming future releases if fewer are available.
     ///
     /// If fewer than `n` permits are available, a queue-head debt node consumes future releases.
     pub fn reduce_permits(&self, n: usize) {
@@ -128,7 +131,7 @@ impl Semaphore {
     /// Acquires `n` permits from the semaphore.
     pub async fn acquire(&self, n: usize) {
         let fut = Acquire {
-            permits: n,
+            requested_permits: n,
             index: None,
             semaphore: self,
             done: false,
@@ -139,53 +142,57 @@ impl Semaphore {
     /// Returns a future that is resolved when acquired `n` permits from the semaphore.
     pub fn poll_acquire(&self, n: usize) -> Acquire<'_> {
         Acquire {
-            permits: n,
+            requested_permits: n,
             index: None,
             semaphore: self,
             done: false,
         }
     }
 
-    /// Adds `n` permits to the semaphore.
+    /// Releases `n` permits, attempting to update the available count without the queue lock.
+    ///
+    /// Acquires the queue lock if no permits are available, contention has been detected, or the
+    /// compare-exchange fails.
     pub fn release(&self, n: usize) {
         if n == 0 {
             return;
         }
 
-        // A waiter is linked only after the balance has been drained to zero, and permits reach
-        // the balance again only once the queue is empty, so a positive balance means no waiter
-        // is linked and the permits can be added without the queue lock.
+        // A waiter is linked only after all available permits have been taken. Releases make
+        // permits available again only once the queue is empty, so available permits mean no
+        // waiter is linked and the count can be increased without the queue lock.
         //
         // Try the exchange once before falling back to the locked path. Other threads can
-        // still use the fast paths, so a locked balance update may also need to retry.
-        let current = self.permits.load(Ordering::Relaxed);
-        if current != 0
-            && !self.contended.load(Ordering::Relaxed)
-            && self.try_add_to_balance(current, n).is_ok()
+        // still acquire or release permits without the lock, so an update under the lock may
+        // also need to retry.
+        let available = self.available_permits.load(Ordering::Relaxed);
+        if available != 0
+            && !self.contention_detected.load(Ordering::Relaxed)
+            && self.try_update_permits(available, n).is_ok()
         {
             return;
         }
 
-        self.insert_permits_with_lock(n, self.waiters.lock());
+        self.distribute_permits(n, self.waiters.lock());
     }
 
-    /// Adds `n` permits to a semaphore whose every permit the caller holds.
+    /// Releases `n` permits by acquiring the queue lock directly.
     ///
-    /// The balance is zero while one caller holds every permit, so the positive-balance path of
-    /// [`release`](Self::release) cannot succeed and mutex guards skip its probe. The locked path
-    /// is correct for any balance, so the precondition only affects speed.
-    pub fn release_all_held(&self, n: usize) {
+    /// Use this when no permits can be available, as when a mutex guard holds its only permit,
+    /// to skip the speculative attempt in [`release`](Self::release).
+    /// This method also works when permits are available.
+    pub fn release_with_lock(&self, n: usize) {
         if n != 0 {
-            self.insert_permits_with_lock(n, self.waiters.lock());
+            self.distribute_permits(n, self.waiters.lock());
         }
     }
 
-    /// Adds `n` permits to the semaphore if there is any waiter.
+    /// Releases `n` permits only if the queue contains waiters when locked.
     #[cfg(feature = "broadcast")]
-    pub fn release_if_nonempty(&self, n: usize) {
+    pub fn release_if_waiters(&self, n: usize) {
         let waiters = self.waiters.lock();
         if !waiters.is_empty() {
-            self.insert_permits_with_lock(n, waiters);
+            self.distribute_permits(n, waiters);
         }
     }
 
@@ -195,7 +202,7 @@ impl Semaphore {
         let mut waiters = self.waiters.lock();
         let mut wakers = WakerBatch::new();
         while let Some((id, waiter)) = waiters.unlink_first_waiter(|node| {
-            node.permits = 0;
+            node.needed_permits = 0;
             true
         }) {
             if let Some(waker) = waiter.waker.take() {
@@ -208,38 +215,43 @@ impl Semaphore {
         wakers.wake_all();
     }
 
-    /// Adds `n` permits to a balance expected to hold `current`, or returns the balance observed
-    /// instead.
+    /// Tries to update the available permit count from `expected` to `expected + released`.
     ///
-    /// The overflow check and the addition are one exchange because the positive-balance path of
-    /// [`release`](Self::release) can grow the balance even while the queue lock is held. The
-    /// exchange is the strong form because `release` tries it only once.
+    /// Returns the observed count if it does not match `expected`. Panics if the sum would
+    /// overflow.
+    ///
+    /// The overflow check and addition must use the same count because other releases can add
+    /// permits even while the queue lock is held. The exchange is the strong form because
+    /// [`release`](Self::release) tries it only once.
     ///
     /// ORDERING: Release publishes the work protected by the released permits to the Acquire
-    /// load or exchange that next observes this balance.
-    fn try_add_to_balance(&self, current: usize, n: usize) -> Result<(), usize> {
-        let next = current.checked_add(n).unwrap_or_else(|| {
-            panic!("number of added permits ({n}) would overflow usize::MAX (prev: {current})")
+    /// load or exchange that next observes this permit count.
+    fn try_update_permits(&self, expected: usize, released: usize) -> Result<(), usize> {
+        let next = expected.checked_add(released).unwrap_or_else(|| {
+            panic!(
+                "number of added permits ({released}) would overflow usize::MAX (prev: {expected})"
+            )
         });
-        self.permits
-            .compare_exchange(current, next, Ordering::Release, Ordering::Relaxed)
+        self.available_permits
+            .compare_exchange(expected, next, Ordering::Release, Ordering::Relaxed)
             .map(|_| ())
     }
 
-    fn insert_permits_with_lock<'a>(
+    /// Assigns permits to queued waiters, then makes any surplus available.
+    fn distribute_permits<'a>(
         &'a self,
-        mut rem: usize,
+        mut remaining: usize,
         mut waiters: MutexGuard<'a, WaitList<WaitNode>>,
     ) {
         let mut batch = WakerBatch::new();
 
         loop {
-            while rem > 0 && !batch.will_spill() {
+            while remaining > 0 && !batch.will_spill() {
                 let Some((id, waiter)) = waiters.unlink_first_waiter(|node| {
-                    let acquired = node.permits.min(rem);
-                    node.permits -= acquired;
-                    rem -= acquired;
-                    node.permits == 0
+                    let assigned = node.needed_permits.min(remaining);
+                    node.needed_permits -= assigned;
+                    remaining -= assigned;
+                    node.needed_permits == 0
                 }) else {
                     break;
                 };
@@ -250,28 +262,30 @@ impl Semaphore {
                 }
             }
 
-            if rem > 0 && waiters.is_empty() {
-                // Fast releases can grow the balance under this lock, so the overflow check and
-                // addition must be one exchange. A zero balance cannot change under the lock, but
-                // still needs an RMW to extend the previous release sequence.
-                let mut current = self.permits.load(Ordering::Relaxed);
-                if current == 0 {
-                    self.permits.fetch_add(rem, Ordering::Release);
+            if remaining > 0 && waiters.is_empty() {
+                // Releases can add available permits without taking this lock, so the overflow
+                // check and addition must use the same count. If none are available, other threads
+                // cannot add any under this lock, but an RMW is still needed to extend the previous
+                // release sequence.
+                let mut available = self.available_permits.load(Ordering::Relaxed);
+                if available == 0 {
+                    self.available_permits
+                        .fetch_add(remaining, Ordering::Release);
                 } else {
-                    while let Err(actual) = self.try_add_to_balance(current, rem) {
-                        // Losing under the lock means another thread is on the balance now:
-                        // route its release through the lock as well.
-                        self.contended.store(true, Ordering::Relaxed);
-                        current = actual;
+                    while let Err(actual) = self.try_update_permits(available, remaining) {
+                        // Another thread changed the available count despite our queue lock;
+                        // ask subsequent releases to acquire the lock as well.
+                        self.contention_detected.store(true, Ordering::Relaxed);
+                        available = actual;
                     }
-                    self.contended.store(false, Ordering::Relaxed);
+                    self.contention_detected.store(false, Ordering::Relaxed);
                 }
-                rem = 0;
+                remaining = 0;
             }
 
             drop(waiters);
             batch.wake_all();
-            if rem == 0 {
+            if remaining == 0 {
                 return;
             }
             waiters = self.waiters.lock();
@@ -281,7 +295,7 @@ impl Semaphore {
 
 #[derive(Debug)]
 pub struct Acquire<'a> {
-    permits: usize,
+    requested_permits: usize,
     index: Option<WaiterId>,
     semaphore: &'a Semaphore,
     done: bool,
@@ -293,13 +307,13 @@ impl Drop for Acquire<'_> {
             let mut waiters = self.semaphore.waiters.lock();
             let mut acquired = 0;
             waiters.unlink_waiter(index, |node| {
-                acquired = self.permits - node.permits;
-                node.permits = 0;
+                acquired = self.requested_permits - node.needed_permits;
+                node.needed_permits = 0;
                 true
             });
             let waiter = waiters.remove_unlinked_waiter(index);
             if acquired > 0 {
-                self.semaphore.insert_permits_with_lock(acquired, waiters);
+                self.semaphore.distribute_permits(acquired, waiters);
             } else {
                 drop(waiters);
             }
@@ -311,7 +325,7 @@ impl Drop for Acquire<'_> {
 impl Acquire<'_> {
     pub fn poll_once(&mut self, waker: &Waker) -> Poll<()> {
         let Self {
-            permits,
+            requested_permits,
             index,
             semaphore,
             done,
@@ -327,7 +341,7 @@ impl Acquire<'_> {
                 let mut waiters = semaphore.waiters.lock();
                 let ready = {
                     let node = waiters.waiter_mut(*idx);
-                    if node.permits > 0 {
+                    if node.needed_permits > 0 {
                         old_waker = register_waker(&mut node.waker, waker);
                         false
                     } else {
@@ -343,9 +357,9 @@ impl Acquire<'_> {
             }
             None => {
                 // not yet enqueued
-                let needed = *permits;
+                let requested = *requested_permits;
 
-                if acquired_or_enqueue(semaphore, needed, Some(index), Some(waker), true) {
+                if acquired_or_enqueue(semaphore, requested, Some(index), Some(waker), true) {
                     *done = true;
                     return Poll::Ready(());
                 }
@@ -369,7 +383,7 @@ impl Future for Acquire<'_> {
 /// Returns `true` if successfully acquired the semaphore; `false` otherwise.
 fn acquired_or_enqueue(
     sem: &Semaphore,
-    needed: usize,
+    requested: usize,
     index: Option<&mut Option<WaiterId>>,
     waker: Option<&Waker>,
     enqueue_last: bool,
@@ -379,50 +393,52 @@ fn acquired_or_enqueue(
         waker.is_some(),
         "only acquire waiters have a future owner"
     );
-    let mut current = sem.permits.load(Ordering::Acquire);
+    let mut available = sem.available_permits.load(Ordering::Acquire);
     let mut lock = None;
 
     loop {
-        let (remaining, next) = if current >= needed {
-            (0, current - needed)
+        let (needed, next) = if available >= requested {
+            (0, available - requested)
         } else {
-            (needed - current, 0)
+            (requested - available, 0)
         };
 
-        if remaining > 0 && lock.is_none() {
+        if needed > 0 && lock.is_none() {
             // No permits were immediately available, so this permit will
             // (probably) need to wait. We'll need to acquire a lock on the
             // wait queue before continuing. We need to do this _before_ the
-            // CAS that sets the new value of the semaphore's `permits`
+            // CAS that sets the new value of the semaphore's `available_permits`
             // counter. Otherwise, if we subtract the permits and then
             // acquire the lock, we might miss additional permits being
             // added while waiting for the lock.
             lock = Some(sem.waiters.lock());
         }
 
-        if let Err(actual) =
-            sem.permits
-                .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
-        {
+        if let Err(actual) = sem.available_permits.compare_exchange(
+            available,
+            next,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
             // other thread changed the permits; retry
-            current = actual;
+            available = actual;
             continue;
         }
 
-        // all needed permits were acquired
-        if remaining == 0 {
+        // all requested permits were acquired
+        if needed == 0 {
             return true;
         }
 
         // all available permits were acquired, but more are needed;
-        // enqueue a waiter with the remaining needed permits
+        // enqueue a waiter for the permits still needed
 
         let mut waiters = lock.take().unwrap_or_else(|| {
-            unreachable!("lock must be acquired when remaining {remaining} > 0");
+            unreachable!("lock must be acquired when needed {needed} > 0");
         });
 
         let node = WaitNode {
-            permits: remaining,
+            needed_permits: needed,
             waker: waker.cloned(),
         };
         let id = if enqueue_last {
@@ -472,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn release_with_positive_balance_does_not_take_the_queue_lock() {
+    fn release_uses_available_permits_without_queue_lock() {
         let semaphore = Semaphore::new(1);
 
         // Holding the queue lock deadlocks a release that needs it.
@@ -486,18 +502,18 @@ mod tests {
     }
 
     #[test]
-    fn contended_release_takes_the_locked_path_and_clears_the_flag() {
+    fn release_takes_queue_lock_and_clears_detected_contention() {
         let semaphore = Semaphore::new(1);
-        semaphore.contended.store(true, Ordering::Relaxed);
+        semaphore.contention_detected.store(true, Ordering::Relaxed);
 
-        // Only the locked path clears the flag, so a cleared flag proves the fast path was skipped.
+        // Only the locked path clears this flag, so clearing it proves that the lock was taken.
         semaphore.release(1);
         assert_eq!(semaphore.available_permits(), 2);
-        assert!(!semaphore.contended.load(Ordering::Relaxed));
+        assert!(!semaphore.contention_detected.load(Ordering::Relaxed));
     }
 
     #[test]
-    fn release_with_zero_balance_hands_permits_to_the_queue() {
+    fn release_hands_permits_to_waiters_when_none_are_available() {
         let semaphore = Semaphore::new(0);
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
         let waker = Waker::from(counter.clone());
@@ -509,7 +525,7 @@ mod tests {
         assert_eq!(semaphore.available_permits(), 1);
         assert!(acquire.poll_once(&waker).is_ready());
 
-        // Queue empty and balance positive again: the lock is not needed.
+        // The queue is empty and permits are available again: the lock is not needed.
         let queue = semaphore.waiters.lock();
         semaphore.release(1);
         drop(queue);
@@ -517,19 +533,19 @@ mod tests {
     }
 
     #[test]
-    fn locked_path_adds_to_a_positive_balance() {
+    fn distribute_permits_adds_to_available_permits() {
         let semaphore = Semaphore::new(2);
 
-        // A release that observed zero can find a positive balance once it holds the lock.
-        semaphore.insert_permits_with_lock(3, semaphore.waiters.lock());
+        // Another release can make permits available before this one acquires the lock.
+        semaphore.distribute_permits(3, semaphore.waiters.lock());
         assert_eq!(semaphore.available_permits(), 5);
     }
 
     #[test]
-    fn locked_overflow_panics_without_adding_permits() {
+    fn distribute_permits_overflow_preserves_available_permits() {
         let semaphore = Semaphore::new(usize::MAX);
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            semaphore.insert_permits_with_lock(1, semaphore.waiters.lock());
+            semaphore.distribute_permits(1, semaphore.waiters.lock());
         }));
         assert!(result.is_err());
         assert_eq!(semaphore.available_permits(), usize::MAX);
@@ -537,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn release_all_held_hands_permits_to_the_queue() {
+    fn release_with_lock_hands_permits_to_waiters() {
         let semaphore = Semaphore::new(1);
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
         let waker = Waker::from(counter.clone());
@@ -545,12 +561,12 @@ mod tests {
         let mut acquire = semaphore.poll_acquire(1);
         assert!(acquire.poll_once(&waker).is_pending());
 
-        semaphore.release_all_held(1);
+        semaphore.release_with_lock(1);
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);
         assert_eq!(semaphore.available_permits(), 0);
         assert!(acquire.poll_once(&waker).is_ready());
 
-        semaphore.release_all_held(1);
+        semaphore.release_with_lock(1);
         assert_eq!(semaphore.available_permits(), 1);
     }
 

@@ -124,7 +124,7 @@ impl Semaphore {
         self.s.drain_permits(up_to)
     }
 
-    /// Reduces the semaphore's logical permit balance by exactly `n`.
+    /// Removes exactly `n` permits, consuming future releases if fewer are available.
     ///
     /// This method returns immediately. If fewer than `n` permits are currently available, future
     /// releases repay the resulting deficit before ordinary queued acquisitions may proceed.

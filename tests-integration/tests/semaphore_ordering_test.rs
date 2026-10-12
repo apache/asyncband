@@ -16,11 +16,12 @@
 // under the License.
 
 //! An acquire synchronizes with the release whose release sequence it reads from, and every
-//! write to the balance is a read-modify-write, so that sequence extends through later releases
-//! and acquisitions. A plain store would end it, and Miri would report a data race here.
+//! update to the available permit count is a read-modify-write, so that sequence extends through
+//! later releases and acquisitions. A plain store would end it, and Miri would report a data race
+//! here.
 //!
-//! The race shows only on schedules where the final acquire reads the latest balance rather than
-//! a stale one, so the test repeats the scenario to cover several schedules in one run.
+//! The race shows only on schedules where the final acquire reads the latest permit count rather
+//! than a stale one, so the test repeats the scenario to cover several schedules in one run.
 
 use std::cell::UnsafeCell;
 use std::sync::Arc;
@@ -55,7 +56,7 @@ fn run_once() {
     let data = Arc::new(Data(UnsafeCell::new(0)));
     let step = Arc::new(AtomicUsize::new(0));
 
-    // Writes, then releases onto a positive balance.
+    // Writes, then releases while a permit is still available.
     let writer = {
         let (semaphore, data, step) = (semaphore.clone(), data.clone(), step.clone());
         thread::spawn(move || {
@@ -66,7 +67,7 @@ fn run_once() {
         })
     };
 
-    // Takes every permit, so the balance is zero.
+    // Takes every available permit.
     let drainer = {
         let (semaphore, step) = (semaphore.clone(), step.clone());
         thread::spawn(move || {
@@ -82,7 +83,7 @@ fn run_once() {
         })
     };
 
-    // Releases onto the zero balance without any synchronization with the writer.
+    // Releases when no permits are available, without any synchronization with the writer.
     let releaser = {
         let (semaphore, step) = (semaphore.clone(), step.clone());
         thread::spawn(move || {

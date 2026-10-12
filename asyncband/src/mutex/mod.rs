@@ -278,7 +278,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for MutexGuard<'_, T> {}
 
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.s.release_all_held(1);
+        self.lock.s.release_with_lock(1);
     }
 }
 
@@ -445,7 +445,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for OwnedMutexGuard<T> {}
 
 impl<T: ?Sized> Drop for OwnedMutexGuard<T> {
     fn drop(&mut self) {
-        self.lock.s.release_all_held(1);
+        self.lock.s.release_with_lock(1);
     }
 }
 
@@ -641,7 +641,7 @@ unsafe impl<T: ?Sized + Sync> Sync for MappedMutexGuard<'_, T> {}
 
 impl<T: ?Sized> Drop for MappedMutexGuard<'_, T> {
     fn drop(&mut self) {
-        self.s.release_all_held(1);
+        self.s.release_with_lock(1);
     }
 }
 
@@ -840,7 +840,7 @@ unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Send + Sync> Sync for OwnedMapp
 
 impl<T: ?Sized, U: ?Sized> Drop for OwnedMappedMutexGuard<T, U> {
     fn drop(&mut self) {
-        self.lock.s.release_all_held(1);
+        self.lock.s.release_with_lock(1);
     }
 }
 

@@ -195,7 +195,7 @@ impl<T> Shared<T> {
         // subscription.
         let waiting = self.waiting_senders();
         if freed > 0 && waiting > 0 {
-            self.tx_permits.release_if_nonempty(freed.min(waiting));
+            self.tx_permits.release_if_waiters(freed.min(waiting));
         }
     }
 
@@ -323,7 +323,7 @@ impl<T> BoundedSender<T> {
                 };
 
                 loop {
-                    // Enqueue before rechecking. `release_if_nonempty` adds nothing when no
+                    // Enqueue before rechecking. `release_if_waiters` adds nothing when no
                     // producer is queued, so a reclaim landing between the recheck and the
                     // registration would otherwise drop its wake-up and park this producer for
                     // good. Registering first orders this producer's semaphore acquisition ahead

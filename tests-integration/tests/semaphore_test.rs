@@ -229,7 +229,7 @@ fn reduce_permits_takes_priority_over_pending_acquires() {
     assert_eq!(s.available_permits(), 1);
 }
 
-/// Releases race acquisitions that drain the balance to zero and link waiters. The permit count
+/// Releases race acquisitions that take all available permits and link waiters. The permit count
 /// must be conserved, and no more permits than the capacity may ever be held at once.
 #[test]
 fn concurrent_releases_conserve_permits() {
@@ -308,8 +308,8 @@ fn concurrent_releases_conserve_permits() {
     assert!(semaphore.try_acquire(PERMITS).is_some());
 }
 
-/// Two releases race on a balance one below `usize::MAX`: exactly one may succeed, and the other
-/// must panic before adding anything, whichever path each of them takes.
+/// Two releases race with `usize::MAX - 1` permits available: exactly one may succeed, and the
+/// other must panic before adding anything, whichever path each of them takes.
 #[test]
 fn concurrent_releases_at_the_limit_panic_exactly_once() {
     let semaphore = Arc::new(Semaphore::new(usize::MAX - 1));
