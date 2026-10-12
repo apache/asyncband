@@ -23,6 +23,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Notable changes
+
+* Executor waker operations, including cloning, waking, and dropping, are expected not to panic; recovery from panicking waker callbacks is no longer supported.
+
 ### New features
 
 * Add bounded MPMC `reserve` and `try_reserve` methods returning a borrowed `Permit`, so callers can wait for capacity before constructing a value; sends and reservations receive capacity in wait-queue order, and unused permits release it.
@@ -36,10 +40,6 @@ All notable changes to this project will be documented in this file.
 
 * Reduce `ManualResetEvent` state-query and already-set wait overhead, especially with concurrent readers.
 * Add a lock-free fast path for releasing `Semaphore` permits while permits remain available, which speeds up dropping `RwLock` read guards, releasing multi-permit `Semaphore` permits, and returning objects to a bounded pool that is not at capacity. `Mutex` releases are unchanged.
-
-### Notable changes
-
-* Executor waker operations, including cloning, waking, and dropping, are expected not to panic; recovery from panicking waker callbacks is no longer supported.
 
 ## v0.7.3 (2026-09-29)
 
