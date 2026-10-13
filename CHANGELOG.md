@@ -38,6 +38,7 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
+* Improve `FutureExt::block_on` throughput and reduce context switches when many threads repeatedly block on the same primitive, such as a contended MPMC channel; an isolated cross-thread wake-up costs slightly more.
 * Reduce `ManualResetEvent` state-query and already-set wait overhead, especially with concurrent readers.
 * Add a lock-free fast path for releasing `Semaphore` permits while permits remain available, which speeds up dropping `RwLock` read guards, releasing multi-permit `Semaphore` permits, and returning objects to a bounded pool that is not at capacity. `Mutex` releases are unchanged.
 
