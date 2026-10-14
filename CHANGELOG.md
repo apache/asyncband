@@ -23,6 +23,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## v0.7.4
+
 ### Notable changes
 
 * Executor waker operations, including cloning, waking, and dropping, are expected not to panic; recovery from panicking waker callbacks is no longer supported.
