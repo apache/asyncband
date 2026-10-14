@@ -30,6 +30,25 @@
 //! them back when dropped. [`Semaphore::try_acquire`] performs the same operation without waiting,
 //! while [`Semaphore::release`] adds permits that were not represented by a guard.
 //!
+//! # Usage
+//!
+//! Use a semaphore to bound concurrent work by counting: acquire permits before starting each
+//! unit of work and drop the returned guard when it finishes, so the number of running units
+//! stays within the permit total. Prefer the signaling primitives when the goal is to notify
+//! rather than to count: `ManualResetEvent` for a reusable readiness gate and `AutoResetEvent`
+//! for waking one consumer per signal.
+//!
+//! Requesting more permits than the semaphore can ever grant blocks the acquisition until other
+//! code adds permits with [`Semaphore::release`]. Pending acquisitions complete in request
+//! order, so a large acquisition that is still short of permits holds back smaller acquisitions
+//! queued behind it until it completes. Cancelling a pending acquisition passes the permits
+//! already assigned to it to the next queued acquisitions rather than returning them to the
+//! available count.
+//!
+//! [`Semaphore::drain_permits`] removes up to the requested number of available permits and
+//! never creates a deficit, while [`Semaphore::reduce_permits`] removes exactly the requested
+//! number, consuming future releases when fewer are available.
+//!
 //! # Examples
 //!
 //! ```
