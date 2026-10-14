@@ -155,6 +155,7 @@ impl Wake for ParkerState {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::sync::mpsc;
 
     use super::*;
 
@@ -179,6 +180,18 @@ mod tests {
         YIELD_COUNT.with(Cell::get)
     }
 
+    fn with_watchdog(test: impl FnOnce() + Send + 'static) {
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            test();
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("blocking test did not complete");
+        worker.join().unwrap();
+    }
+
     #[test]
     fn token_park_does_not_yield() {
         reset_yields();
@@ -198,29 +211,33 @@ mod tests {
 
     #[test]
     fn notification_during_yield_wakes_park() {
-        reset_yields();
-        let parker = Parker::new();
-        WAKE_AFTER_YIELD.with(|waker| *waker.borrow_mut() = Some(parker.waker()));
-        parker.park();
-        assert_eq!(yield_count(), 1);
-        assert_eq!(parker.state.state.load(SeqCst), EMPTY);
+        with_watchdog(|| {
+            reset_yields();
+            let parker = Parker::new();
+            WAKE_AFTER_YIELD.with(|waker| *waker.borrow_mut() = Some(parker.waker()));
+            parker.park();
+            assert_eq!(yield_count(), 1);
+            assert_eq!(parker.state.state.load(SeqCst), EMPTY);
+        });
     }
 
     #[test]
     fn park_sleeps_after_yield_until_woken() {
-        reset_yields();
-        let parker = Parker::new();
-        let state = parker.state.clone();
-        let notifier = thread::spawn(move || {
-            // Waiting for PARKED forces the park through its condvar wait.
-            while state.state.load(SeqCst) != PARKED {
-                thread::yield_now();
-            }
-            state.unpark();
+        with_watchdog(|| {
+            reset_yields();
+            let parker = Parker::new();
+            let state = parker.state.clone();
+            let notifier = thread::spawn(move || {
+                // Waiting for PARKED forces the park through its condvar wait.
+                while state.state.load(SeqCst) != PARKED {
+                    thread::yield_now();
+                }
+                state.unpark();
+            });
+            parker.park();
+            assert_eq!(yield_count(), 1);
+            assert_eq!(parker.state.state.load(SeqCst), EMPTY);
+            notifier.join().unwrap();
         });
-        parker.park();
-        assert_eq!(yield_count(), 1);
-        assert_eq!(parker.state.state.load(SeqCst), EMPTY);
-        notifier.join().unwrap();
     }
 }
