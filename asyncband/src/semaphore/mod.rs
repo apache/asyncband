@@ -149,7 +149,7 @@ impl Semaphore {
         self.s.reduce_permits(n);
     }
 
-    /// Adds `n` new permits to the semaphore.
+    /// Adds `permits` new permits to the semaphore.
     ///
     /// # Panics
     ///
@@ -168,7 +168,7 @@ impl Semaphore {
         self.s.release(permits);
     }
 
-    /// Attempts to acquire `n` permits from the semaphore without blocking.
+    /// Attempts to acquire `permits` permits from the semaphore without blocking.
     ///
     /// If the permits are successfully acquired, a [`SemaphorePermit`] is returned.
     /// The permits will be automatically returned to the semaphore when the permit
@@ -202,7 +202,7 @@ impl Semaphore {
         }
     }
 
-    /// Acquires `n` permits from the semaphore.
+    /// Acquires `permits` permits from the semaphore.
     ///
     /// If the permits are not immediately available, this method will wait until they become
     /// available. Returns a [`SemaphorePermit`] that will release the permits when dropped.
@@ -241,7 +241,7 @@ impl Semaphore {
         SemaphorePermit { sem: self, permits }
     }
 
-    /// Attempts to acquire `n` permits from the semaphore without blocking.
+    /// Attempts to acquire `permits` permits from the semaphore without blocking.
     ///
     /// The semaphore must be wrapped in an [`Arc`] to call this method.
     ///
@@ -277,7 +277,7 @@ impl Semaphore {
         }
     }
 
-    /// Acquires `n` permits from the semaphore.
+    /// Acquires `permits` permits from the semaphore.
     ///
     /// The semaphore must be wrapped in an [`Arc`] to call this method.
     ///
