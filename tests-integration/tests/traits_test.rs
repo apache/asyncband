@@ -52,7 +52,9 @@ use asyncband::rwlock::OwnedMappedRwLockWriteGuard;
 use asyncband::rwlock::OwnedRwLockReadGuard;
 use asyncband::rwlock::RwLock;
 use asyncband::rwlock::RwLockReadGuard;
+use asyncband::rwlock::RwLockUpgradableReadGuard;
 use asyncband::rwlock::RwLockWriteGuard;
+use asyncband::rwlock::UpgradableRwLock;
 use asyncband::semaphore::Semaphore;
 use asyncband::shutdown::Shutdown;
 use asyncband::shutdown::ShutdownGuard;
@@ -107,6 +109,8 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<Mutex<i64>>();
     assert_send_and_sync::<MutexGuard<'_, i64>>();
     assert_send_and_sync::<RwLock<i64>>();
+    assert_send_and_sync::<UpgradableRwLock<i64>>();
+    assert_send_and_sync::<RwLockUpgradableReadGuard<'_, i64>>();
     assert_send_and_sync::<OwnedRwLockReadGuard<i64>>();
     assert_send_and_sync::<RwLockReadGuard<'_, i64>>();
     assert_send_and_sync::<RwLockWriteGuard<'_, i64>>();
@@ -153,6 +157,7 @@ fn movable_public_types_are_send() {
     fn assert_send<T: Send>() {}
     fn assert_send_value<T: Send>(_: T) {}
 
+    assert_send::<UpgradableRwLock<Cell<u8>>>();
     assert_send::<RwLockReadGuard<'_, std::sync::MutexGuard<'static, ()>>>();
     assert_send::<MappedRwLockReadGuard<'_, std::sync::MutexGuard<'static, ()>>>();
     assert_send::<MappedRwLockWriteGuard<'_, Cell<u8>>>();
@@ -160,6 +165,12 @@ fn movable_public_types_are_send() {
     assert_send::<oneshot::Receiver<i64>>();
     assert_send::<oneshot::Recv<i64>>();
     assert_send::<pool::unbounded::Object<Cell<u8>>>();
+
+    let lock = UpgradableRwLock::new(0);
+    assert_send_value(lock.read());
+    assert_send_value(lock.write());
+    assert_send_value(lock.upgradable_read());
+    assert_send_value(lock.try_upgradable_read().unwrap().upgrade());
 
     let (_tx, mut rx) = watch::channel(0);
     assert_send_value(rx.changed());
@@ -203,6 +214,8 @@ fn public_types_are_unpin() {
     assert_unpin::<Mutex<i64>>();
     assert_unpin::<MutexGuard<'_, i64>>();
     assert_unpin::<RwLock<i64>>();
+    assert_unpin::<UpgradableRwLock<i64>>();
+    assert_unpin::<RwLockUpgradableReadGuard<'_, i64>>();
     assert_unpin::<RwLockReadGuard<'_, i64>>();
     assert_unpin::<RwLockWriteGuard<'_, i64>>();
     assert_unpin::<broadcast::mpmc::UnboundedSender<i64>>();
