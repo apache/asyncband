@@ -166,6 +166,8 @@ github:
           type: User
         - id: orthur2
           type: User
+        - id: QwQBiG
+          type: User
       wait_timer: 0
       prevent_self_review: false
       deployment_branch_policy:
