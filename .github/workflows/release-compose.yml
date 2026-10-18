@@ -62,14 +62,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Install SBOM tools
-        run: |
-          rustup toolchain install "${RUSTUP_TOOLCHAIN}" --profile minimal --no-self-update
-          cargo install cargo-cyclonedx --version 0.5.9 --locked
-          curl --fail --location --retry 3 \
-            https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.33.1/cyclonedx-linux-x64 \
-            --output "${RUNNER_TEMP}/cyclonedx"
-          echo "bfc8b2538da86fe239bc53658bbb63c1c8c510a293c1e6891aa5bea5d3c58746  ${RUNNER_TEMP}/cyclonedx" | sha256sum --check
-          chmod +x "${RUNNER_TEMP}/cyclonedx"
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-cyclonedx@0.5.9,cyclonedx@0.33.1
+      - name: Install Rust
+        run: rustup toolchain install "${RUSTUP_TOOLCHAIN}" --profile minimal --no-self-update
       - id: source
         name: Archive the release candidate
         run: |
@@ -113,31 +110,34 @@ jobs:
             echo
             cat "${source}.tar.gz.sha512"
           } >> "${GITHUB_STEP_SUMMARY}"
-      - name: Generate, reproduce, and validate the source SBOM
+      - name: Generate and validate the library dependency SBOM
         env:
           ARCHIVE: ${{ steps.source.outputs.archive }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           set -euo pipefail
-          cargo x sbom \
-            --archive "${RUNNER_TEMP}/source/${ARCHIVE}" \
-            --output "${RUNNER_TEMP}/source/${ARCHIVE}.cdx.json"
-          cargo x sbom \
-            --archive "${RUNNER_TEMP}/source/${ARCHIVE}" \
-            --output "${RUNNER_TEMP}/reproduced.cdx.json"
-          cmp "${RUNNER_TEMP}/source/${ARCHIVE}.cdx.json" "${RUNNER_TEMP}/reproduced.cdx.json"
-          "${RUNNER_TEMP}/cyclonedx" validate --input-version v1_5 --fail-on-errors \
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${SOURCE_COMMIT}")"
+          export SOURCE_DATE_EPOCH
+          for attempt in 1 2; do
+            source_dir="${RUNNER_TEMP}/sbom-source-${attempt}"
+            mkdir "${source_dir}"
+            tar -xzf "${RUNNER_TEMP}/source/${ARCHIVE}" --strip-components=1 -C "${source_dir}"
+            cargo x sbom --source "${source_dir}" --revision "${SOURCE_COMMIT}" \
+              --output "${RUNNER_TEMP}/sbom-${attempt}.cdx.json"
+          done
+          cmp "${RUNNER_TEMP}/sbom-1.cdx.json" "${RUNNER_TEMP}/sbom-2.cdx.json"
+          mv "${RUNNER_TEMP}/sbom-1.cdx.json" "${RUNNER_TEMP}/source/${ARCHIVE}.cdx.json"
+          cyclonedx validate --input-version v1_5 --fail-on-errors \
             --input-file "${RUNNER_TEMP}/source/${ARCHIVE}.cdx.json"
-          # Cross-check the selected graph independently of cargo-cyclonedx.
-          cargo tree --locked --package asyncband --edges normal,build --all-features \
+          # Cross-check the package set independently of cargo-cyclonedx.
+          cargo tree --manifest-path "${source_dir}/asyncband/Cargo.toml" --locked \
+            --package asyncband --edges normal,build --all-features \
             --target all --prefix none --format '{p}' \
             | awk '{ print $1 "@" substr($2, 2) }' | sort -u > "${RUNNER_TEMP}/expected-packages"
-          jq -r '.components[] | select(.type == "library") | .name + "@" + .version' \
+          jq -r '(.metadata.component, .components[]) | .name + "@" + .version' \
             "${RUNNER_TEMP}/source/${ARCHIVE}.cdx.json" | sort -u > "${RUNNER_TEMP}/sbom-packages"
           cmp "${RUNNER_TEMP}/expected-packages" "${RUNNER_TEMP}/sbom-packages"
           cd "${RUNNER_TEMP}/source"
-          archive_sha512="$(cut -d ' ' -f 1 "${ARCHIVE}.sha512")"
-          jq -e --arg checksum "${archive_sha512}" \
-            '.metadata.component.hashes | any(.alg == "SHA-512" and .content == $checksum)' "${ARCHIVE}.cdx.json"
           shasum -a 512 "${ARCHIVE}.cdx.json" > "${ARCHIVE}.cdx.json.sha512"
           cat "${ARCHIVE}.cdx.json.sha512" >> "${GITHUB_STEP_SUMMARY}"
       - id: bundle

@@ -214,22 +214,11 @@ document additional uses of the same upstream works.
 In this section, "derived", "adapted", and "ported" identify incorporated
 source code.
 
-Source records use TOML between the BEGIN SOURCE and END SOURCE delimiters.
-Each record binds an upstream version and license to exact source URLs and
-local-to-upstream file mappings. The release SBOM reads these records directly.
-
 Tokio
 
-The Mutex guard APIs incorporate the following source:
+Portions of asyncband/src/mutex/mod.rs are derived from Tokio 1.41.0:
 
-BEGIN SOURCE
-name = "tokio"
-version = "1.41.0"
-license = "MIT"
-upstream = ["https://github.com/tokio-rs/tokio/blob/01e04daaa162ce6122bb894fdda0b6803dd32093/tokio/src/sync/mutex.rs"]
-[files]
-"asyncband/src/mutex/mod.rs" = ["tokio/src/sync/mutex.rs"]
-END SOURCE
+  https://github.com/tokio-rs/tokio/blob/01e04daaa162ce6122bb894fdda0b6803dd32093/tokio/src/sync/mutex.rs
 
 Asyncband's Mutex core predates the incorporation of Tokio's owned and mapped
 guard APIs. It is built on Asyncband's own fair semaphore, has no closed state
@@ -245,24 +234,33 @@ independent Mutex core and the substantial modifications contributed to Apache
 Asyncband. It does not replace the Tokio copyright notice or MIT License
 applicable to the incorporated portions.
 
-The RwLock guard APIs incorporate the following source:
+Portions of the following files are derived from Tokio 1.42.0. Each local path
+is followed by its upstream source path or paths:
 
-BEGIN SOURCE
-name = "tokio"
-version = "1.42.0"
-license = "MIT"
-upstream = ["https://github.com/tokio-rs/tokio/tree/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync"]
-[files]
-"asyncband/src/rwlock/mod.rs" = ["tokio/src/sync/rwlock.rs"]
-"asyncband/src/rwlock/read_guard.rs" = ["tokio/src/sync/rwlock/read_guard.rs"]
-"asyncband/src/rwlock/write_guard.rs" = ["tokio/src/sync/rwlock/write_guard.rs"]
-"asyncband/src/rwlock/owned_read_guard.rs" = ["tokio/src/sync/rwlock/owned_read_guard.rs"]
-"asyncband/src/rwlock/owned_write_guard.rs" = ["tokio/src/sync/rwlock/owned_write_guard.rs"]
-"asyncband/src/rwlock/mapped_write_guard.rs" = ["tokio/src/sync/rwlock/write_guard_mapped.rs"]
-"asyncband/src/rwlock/owned_mapped_write_guard.rs" = ["tokio/src/sync/rwlock/owned_write_guard_mapped.rs"]
-"asyncband/src/rwlock/mapped_read_guard.rs" = ["tokio/src/sync/rwlock/read_guard.rs", "tokio/src/sync/rwlock/write_guard_mapped.rs"]
-"asyncband/src/rwlock/owned_mapped_read_guard.rs" = ["tokio/src/sync/rwlock/owned_read_guard.rs", "tokio/src/sync/rwlock/owned_write_guard_mapped.rs"]
-END SOURCE
+  asyncband/src/rwlock/mod.rs
+    tokio/src/sync/rwlock.rs
+  asyncband/src/rwlock/read_guard.rs
+    tokio/src/sync/rwlock/read_guard.rs
+  asyncband/src/rwlock/write_guard.rs
+    tokio/src/sync/rwlock/write_guard.rs
+  asyncband/src/rwlock/owned_read_guard.rs
+    tokio/src/sync/rwlock/owned_read_guard.rs
+  asyncband/src/rwlock/owned_write_guard.rs
+    tokio/src/sync/rwlock/owned_write_guard.rs
+  asyncband/src/rwlock/mapped_write_guard.rs
+    tokio/src/sync/rwlock/write_guard_mapped.rs
+  asyncband/src/rwlock/owned_mapped_write_guard.rs
+    tokio/src/sync/rwlock/owned_write_guard_mapped.rs
+  asyncband/src/rwlock/mapped_read_guard.rs
+    tokio/src/sync/rwlock/read_guard.rs
+    tokio/src/sync/rwlock/write_guard_mapped.rs
+  asyncband/src/rwlock/owned_mapped_read_guard.rs
+    tokio/src/sync/rwlock/owned_read_guard.rs
+    tokio/src/sync/rwlock/owned_write_guard_mapped.rs
+
+The exact Tokio 1.42.0 revision is:
+
+  https://github.com/tokio-rs/tokio/tree/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync
 
 Asyncband substantially rewrote RwLock's guard lifecycle and documentation.
 Private RAII access tokens release permits through Asyncband's semaphore.
@@ -276,17 +274,17 @@ read guards use separate borrowed and owned types rather than changing a type
 parameter on the original read guard. All mapped guards use filter_map naming,
 and mutable mapped guards carry explicit invariance.
 
-OnceCell and ValueCell incorporate the following source:
+Portions of the following files originated from Tokio 1.47.0's OnceCell. Each
+local path is followed by its upstream source path:
 
-BEGIN SOURCE
-name = "tokio"
-version = "1.47.0"
-license = "MIT"
-upstream = ["https://github.com/tokio-rs/tokio/blob/3911cb8523f190142f61c64b66881c07c0d3e7be/tokio/src/sync/once_cell.rs"]
-[files]
-"asyncband/src/once/once_cell/mod.rs" = ["tokio/src/sync/once_cell.rs"]
-"asyncband/src/internal/value_cell.rs" = ["tokio/src/sync/once_cell.rs"]
-END SOURCE
+  asyncband/src/once/once_cell/mod.rs
+    tokio/src/sync/once_cell.rs
+  asyncband/src/internal/value_cell.rs
+    tokio/src/sync/once_cell.rs
+
+The exact Tokio 1.47.0 source is:
+
+  https://github.com/tokio-rs/tokio/blob/3911cb8523f190142f61c64b66881c07c0d3e7be/tokio/src/sync/once_cell.rs
 
 Asyncband substantially changed this implementation. OnceCell uses a permit
 only to serialize initialization and does not close its semaphore when a value
@@ -296,20 +294,18 @@ closed or initializing state. ValueCell factors storage out of OnceCell,
 contains no semaphore or closed-state invariant, supports mutation, removal,
 and reinitialization, and is shared by OnceCell and LazyCell.
 
-The public and internal semaphores incorporate the following source:
+Portions of the following files originated from Tokio 1.42.0's public and
+internal semaphore implementations:
 
-BEGIN SOURCE
-name = "tokio"
-version = "1.42.0"
-license = "MIT"
-upstream = [
-  "https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/semaphore.rs",
-  "https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/batch_semaphore.rs",
-]
-[files]
-"asyncband/src/semaphore/mod.rs" = ["tokio/src/sync/semaphore.rs"]
-"asyncband/src/internal/semaphore.rs" = ["tokio/src/sync/batch_semaphore.rs"]
-END SOURCE
+  asyncband/src/semaphore/mod.rs
+    tokio/src/sync/semaphore.rs
+  asyncband/src/internal/semaphore.rs
+    tokio/src/sync/batch_semaphore.rs
+
+The exact Tokio 1.42.0 sources are:
+
+  https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/semaphore.rs
+  https://github.com/tokio-rs/tokio/blob/bb9d57017e100985f86d8ca41ac105ee9140423e/tokio/src/sync/batch_semaphore.rs
 
 Asyncband substantially changed this implementation. It has no closed state,
 close operation, close errors, reserved status bits, or fixed maximum-permit
@@ -355,23 +351,33 @@ The Apache License, Version 2.0, reproduced above, applies to the upstream
 portions identified below. Where an upstream project offers a choice of
 Apache-2.0 or MIT, Apache Asyncband uses the Apache-2.0 option.
 
-The oneshot channel and its tests incorporate the following source. This is
-the version originally incorporated, before oneshot split its implementation
-across sender, receiver, channel, and state modules.
+Portions of the following files are derived or adapted from oneshot v0.1.11.
+This is the version that Asyncband originally incorporated, before oneshot split
+its channel implementation across sender, receiver, channel, and state modules.
+Each local path is followed by its upstream source path or paths:
 
-BEGIN SOURCE
-name = "oneshot"
-version = "0.1.11"
-license = "Apache-2.0"
-upstream = ["https://github.com/faern/oneshot/tree/25274e995ee0a702b3e9e1ac81e577f8c3ce0892"]
-[files]
-"asyncband/src/oneshot/mod.rs" = ["src/lib.rs"]
-"asyncband/src/oneshot/receiver.rs" = ["src/lib.rs", "src/errors.rs"]
-"asyncband/src/oneshot/sender.rs" = ["src/lib.rs", "src/errors.rs"]
-"asyncband/src/oneshot/tests.rs" = ["tests/helpers/mod.rs", "tests/helpers/waker.rs"]
-"tests-integration/tests/oneshot_test/main.rs" = ["tests/async.rs", "tests/future.rs", "tests/sync.rs"]
-"tests-integration/tests/oneshot_test/support.rs" = ["tests/helpers/mod.rs", "tests/helpers/waker.rs"]
-END SOURCE
+  asyncband/src/oneshot/mod.rs
+    src/lib.rs
+  asyncband/src/oneshot/receiver.rs
+    src/lib.rs
+    src/errors.rs
+  asyncband/src/oneshot/sender.rs
+    src/lib.rs
+    src/errors.rs
+  asyncband/src/oneshot/tests.rs
+    tests/helpers/mod.rs
+    tests/helpers/waker.rs
+  tests-integration/tests/oneshot_test/main.rs
+    tests/async.rs
+    tests/future.rs
+    tests/sync.rs
+  tests-integration/tests/oneshot_test/support.rs
+    tests/helpers/mod.rs
+    tests/helpers/waker.rs
+
+The exact upstream revision is:
+
+  https://github.com/faern/oneshot/tree/25274e995ee0a702b3e9e1ac81e577f8c3ce0892
 
 The oneshot crate is licensed under Apache-2.0 or MIT. Apache Asyncband uses
 the Apache-2.0 option for the incorporated portions.
@@ -379,28 +385,16 @@ the Apache-2.0 option for the incorporated portions.
 Asyncband does not provide the upstream crate's synchronized receive
 operations and simplifies the incorporated implementation accordingly.
 
-The executor's polling loop incorporates the following source:
+The polling loop in asyncband/src/blocking/executor.rs is adapted from Pollster
+1.0.1 at the following exact revision and source path:
 
-BEGIN SOURCE
-name = "pollster"
-version = "1.0.1"
-license = "Apache-2.0"
-upstream = ["https://github.com/zesterer/pollster/blob/6a1a148208326e9c5b231b16f199f5227c550774/src/lib.rs"]
-[files]
-"asyncband/src/blocking/executor.rs" = ["src/lib.rs"]
-END SOURCE
+  https://github.com/zesterer/pollster/blob/6a1a148208326e9c5b231b16f199f5227c550774/src/lib.rs
 
-Its reuse of a thread-local Parker/Waker pair, with a fresh pair for recursive
-calls, incorporates the following source:
+The same file's reuse of a thread-local Parker/Waker pair, with a fresh pair
+for recursive calls, is adapted from futures-lite 2.6.1 at the following exact
+revision and source path:
 
-BEGIN SOURCE
-name = "futures-lite"
-version = "2.6.1"
-license = "Apache-2.0"
-upstream = ["https://github.com/smol-rs/futures-lite/blob/226ce18976d8714d6bd9700b61dcc81d7200bc9a/src/future.rs#L62-L91"]
-[files]
-"asyncband/src/blocking/executor.rs" = ["src/future.rs#L62-L91"]
-END SOURCE
+  https://github.com/smol-rs/futures-lite/blob/226ce18976d8714d6bd9700b61dcc81d7200bc9a/src/future.rs#L62-L91
 
 Pollster is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
 Apache-2.0 option for the incorporated portions. The upstream source carries
@@ -411,16 +405,10 @@ the following copyright notice:
 futures-lite is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
 Apache-2.0 option for the incorporated portions.
 
-The parker incorporates the following source:
+Portions of asyncband/src/blocking/parker.rs are adapted from parking 2.2.1 at
+the following exact revision and source path:
 
-BEGIN SOURCE
-name = "parking"
-version = "2.2.1"
-license = "Apache-2.0"
-upstream = ["https://github.com/smol-rs/parking/blob/0ece32dbfd6cd1bc1510ede6ed56acb772edf83f/src/lib.rs#L327-L429"]
-[files]
-"asyncband/src/blocking/parker.rs" = ["src/lib.rs#L327-L429"]
-END SOURCE
+  https://github.com/smol-rs/parking/blob/0ece32dbfd6cd1bc1510ede6ed56acb772edf83f/src/lib.rs#L327-L429
 
 parking is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
 Apache-2.0 option for the incorporated portions. The upstream source carries
@@ -428,20 +416,24 @@ the following copyright notice:
 
   Copyright 2014-2020 The Rust Project Developers
 
-The pool incorporates the following source:
+Portions of the following files are ported from Fastpool 1.1.1. Each local path
+is followed by its upstream source path or paths:
 
-BEGIN SOURCE
-name = "fastpool"
-version = "1.1.1"
-license = "Apache-2.0"
-upstream = ["https://github.com/fast/fastpool/tree/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool"]
-[files]
-"asyncband/src/pool/mod.rs" = ["fastpool/src/lib.rs"]
-"asyncband/src/pool/bounded.rs" = ["fastpool/src/bounded.rs"]
-"asyncband/src/pool/common.rs" = ["fastpool/src/common.rs"]
-"asyncband/src/pool/state.rs" = ["fastpool/src/bounded.rs", "fastpool/src/unbounded.rs"]
-"asyncband/src/pool/unbounded.rs" = ["fastpool/src/unbounded.rs"]
-END SOURCE
+  asyncband/src/pool/mod.rs
+    fastpool/src/lib.rs
+  asyncband/src/pool/bounded.rs
+    fastpool/src/bounded.rs
+  asyncband/src/pool/common.rs
+    fastpool/src/common.rs
+  asyncband/src/pool/state.rs
+    fastpool/src/bounded.rs
+    fastpool/src/unbounded.rs
+  asyncband/src/pool/unbounded.rs
+    fastpool/src/unbounded.rs
+
+The exact upstream revision is:
+
+  https://github.com/fast/fastpool/tree/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool
 
 Asyncband retains Fastpool's runtime-agnostic design and caller-side timeout
 composition. Fastpool is licensed under Apache-2.0, and its source carries the

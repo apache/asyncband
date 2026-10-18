@@ -27,17 +27,11 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-anyhow = { workspace = true }
 cargo_metadata = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-flate2 = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
-tar = { workspace = true }
-tempfile = { workspace = true }
-toml = { workspace = true }
 ureq = { workspace = true, features = ["json", "rustls"] }
 which = { workspace = true }
 

@@ -38,7 +38,7 @@ For example, use `git -C "${REPO_ROOT}" rev-parse "${RC_TAG}^{commit}"` to resol
 
 On trusted hardware outside GitHub Actions, run the candidate's compose recipe in a Linux environment and compare the rebuilt archive's SHA-512 with the ATR artifact. Record this once per candidate to satisfy [ASF automated signing](https://infra.apache.org/release-signing.html#automated-release-signing). When diagnosing a mismatch, compare source contents separately from archive headers and compression.
 
-When the candidate includes an SBOM, follow [SBOM reproduction](sbom.md) using that candidate's tools and compare the regenerated JSON byte-for-byte with the signed sidecar. Confirm that its subject hash is the source archive's SHA-512 and review its incorporated-source pedigree against the records in LICENSE. Record both independent rebuild results before voting.
+When the candidate includes an SBOM, follow [SBOM reproduction](sbom.md) using that candidate's tools and compare the regenerated JSON byte-for-byte with the signed sidecar. Check that its library identity and LICENSE link identify the candidate commit. This is a Cargo dependency inventory; review incorporated source separately through LICENSE and the license audit. Record both independent rebuild results before voting.
 
 ## Verify the build and Cargo package
 

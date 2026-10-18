@@ -66,7 +66,7 @@ enum SubCommand {
     Lint(CommandLint),
     #[clap(about = "Check memory safety with Miri.")]
     Miri(CommandMiri),
-    #[clap(about = "Compose the library and incorporated-source SBOM.")]
+    #[clap(about = "Generate the library's Cargo dependency SBOM.")]
     Sbom(CommandSbom),
     #[clap(about = "Verify API compatibility for a planned release.")]
     Semver(CommandSemver),
