@@ -24,6 +24,12 @@ on:
     paths:
       - .github/workflows/release-compose.yml
       - .asf.yaml
+      - Cargo.toml
+      - Cargo.lock
+      - '**/Cargo.toml'
+      - '**/*.rs'
+      - LICENSE
+      - xtask/**
 
 permissions:
   contents: read
@@ -34,6 +40,7 @@ defaults:
 
 env:
   LC_ALL: C
+  RUSTUP_TOOLCHAIN: "1.95.0"
 
 concurrency:
   group: source-release-${{ github.event_name == 'pull_request' && github.event.number || 'compose' }}
@@ -43,7 +50,7 @@ jobs:
   compose:
     name: Compose source release
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     outputs:
       commit: ${{ steps.source.outputs.commit }}
       version: ${{ steps.source.outputs.version }}
@@ -57,6 +64,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - name: Install SBOM tools
+        run: |
+          rustup toolchain install "${RUSTUP_TOOLCHAIN}" --profile minimal --no-self-update
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
+          python3 -m pip install 'cyclonedx-python-lib[json-validation]==11.12.0'
+      - name: Test SBOM composition
+        run: cargo x sbom test
       - id: source
         name: Archive the release candidate
         run: |
@@ -89,17 +103,33 @@ jobs:
             | gzip -n -9 > "${RUNNER_TEMP}/source/${source}.tar.gz"
           cd "${RUNNER_TEMP}/source"
           shasum -a 512 "${source}.tar.gz" > "${source}.tar.gz.sha512"
-          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "archive=${source}.tar.gz" >> "${GITHUB_OUTPUT}"
+          {
+            echo "commit=${commit}"
+            echo "version=${version}"
+            echo "archive=${source}.tar.gz"
+          } >> "${GITHUB_OUTPUT}"
           {
             echo "Source ref: ${GITHUB_REF}"
             echo "Source commit: ${commit}"
             echo
             cat "${source}.tar.gz.sha512"
           } >> "${GITHUB_STEP_SUMMARY}"
+      - name: Generate and reproduce the source SBOM
+        env:
+          ARCHIVE: ${{ steps.source.outputs.archive }}
+        run: |
+          set -euo pipefail
+          cargo x sbom generate \
+            --archive "${RUNNER_TEMP}/source/${ARCHIVE}" \
+            --output "${RUNNER_TEMP}/source/${ARCHIVE}.cdx.json"
+          cargo x sbom generate \
+            --archive "${RUNNER_TEMP}/source/${ARCHIVE}" \
+            --output "${RUNNER_TEMP}/reproduced.cdx.json"
+          cmp "${RUNNER_TEMP}/source/${ARCHIVE}.cdx.json" "${RUNNER_TEMP}/reproduced.cdx.json"
+          cd "${RUNNER_TEMP}/source"
+          shasum -a 512 "${ARCHIVE}.cdx.json" > "${ARCHIVE}.cdx.json.sha512"
+          cat "${ARCHIVE}.cdx.json.sha512" >> "${GITHUB_STEP_SUMMARY}"
       - id: bundle
-        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'apache/asyncband' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: source-${{ github.run_id }}-${{ github.run_attempt }}
@@ -148,11 +178,13 @@ jobs:
             exit 1
           fi
           cd "${RUNNER_TEMP}/source"
-          shasum -a 512 --check "${ARCHIVE}.sha512"
-          gpg --batch --armor --detach-sign --local-user "${SIGNING_FINGERPRINT}" "${ARCHIVE}"
-          gpg --batch --status-fd 1 --verify "${ARCHIVE}.asc" "${ARCHIVE}" \
-            | awk -v fingerprint="${SIGNING_FINGERPRINT}" \
-              '$2 == "VALIDSIG" && ($3 == fingerprint || $NF == fingerprint) { valid = 1 } END { exit !valid }'
+          for artifact in "${ARCHIVE}" "${ARCHIVE}.cdx.json"; do
+            shasum -a 512 --check "${artifact}.sha512"
+            gpg --batch --armor --detach-sign --local-user "${SIGNING_FINGERPRINT}" "${artifact}"
+            gpg --batch --status-fd 1 --verify "${artifact}.asc" "${artifact}" \
+              | awk -v fingerprint="${SIGNING_FINGERPRINT}" \
+                '$2 == "VALIDSIG" && ($3 == fingerprint || $NF == fingerprint) { valid = 1 } END { exit !valid }'
+          done
       - name: Upload to ATR compose
         uses: apache/tooling-actions/upload-to-atr@fa721a0b176d713807b574da721b96545b587eea
         with:
@@ -169,6 +201,7 @@ jobs:
             echo "Uploaded RC tag ${GITHUB_REF_NAME} (${SOURCE_COMMIT}) to ATR project asyncband, version ${VERSION}."
             echo
             cat "${RUNNER_TEMP}/source/${ARCHIVE}.sha512"
+            cat "${RUNNER_TEMP}/source/${ARCHIVE}.cdx.json.sha512"
             echo
             echo "Inspect ATR checks and record the candidate URL and revision before starting a vote."
             echo "Inspect ATR before rerunning this job after an upload failure; it reuses the source archive and signs it again."

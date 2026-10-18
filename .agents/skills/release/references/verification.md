@@ -30,13 +30,15 @@ Obtain signing fingerprints from trusted project key records and import verifica
 ## Verify identity and source contents
 
 1. Record the resolved commit, ATR revision, and artifact paths. Check the RC tag's commit and signature against `RELEASE_COMMIT` and the release manager's personal signing-key fingerprint recorded in the issue.
-2. Verify the downloaded archive's SHA-512 against its checksum file and the compose summary. Verify its detached signature against the expected source-signing fingerprint, recording the primary fingerprint when a signing subkey is used. The archive signer can differ from the Git tag signer; check both identities.
+2. Verify the downloaded archive and SBOM sidecar's SHA-512 values against their checksum files and the compose summary. Verify both detached signatures against the expected source-signing fingerprint, recording the primary fingerprint when a signing subkey is used. The artifact signer can differ from the Git tag signer; check both identities. Older candidates without an SBOM retain their original file set.
 3. Inspect the archive member list before extracting. Check the expected `apache-asyncband-${VERSION}-incubating-src/` root, reject paths that escape the extraction directory, and inspect symlinks without following them outside the extracted tree.
 4. Compare the archived source inventory, file contents, executable bits, and symlink targets with `git archive` of the resolved candidate commit, using a separate temporary extraction. Report missing, added, or changed entries with concrete paths. Check the package version in the extracted manifest against `VERSION`.
 
 For example, use `git -C "${REPO_ROOT}" rev-parse "${RC_TAG}^{commit}"` to resolve a candidate and `git -C "${REPO_ROOT}" verify-tag "${RC_TAG}"` to inspect its signature. Run `shasum -a 512 --check` from the artifact directory and `gpg --verify` with the explicitly supplied signature and archive. Inspect checksum filenames before using the checksum file so it checks the intended artifact.
 
 On trusted hardware outside GitHub Actions, run the candidate's compose recipe in a Linux environment and compare the rebuilt archive's SHA-512 with the ATR artifact. Record this once per candidate to satisfy [ASF automated signing](https://infra.apache.org/release-signing.html#automated-release-signing). When diagnosing a mismatch, compare source contents separately from archive headers and compression.
+
+When the candidate includes an SBOM, follow [SBOM reproduction](sbom.md) using that candidate's tools and compare the regenerated JSON byte-for-byte with the signed sidecar. Confirm that its subject hash is the source archive's SHA-512 and review the source-origin index against LICENSE. Record both independent rebuild results before voting.
 
 ## Verify the build and Cargo package
 

@@ -43,6 +43,13 @@ impl Command {
             SubCommand::Check(cmd) => cmd.run(),
             SubCommand::Lint(cmd) => cmd.run(),
             SubCommand::Miri(cmd) => cmd.run(),
+            SubCommand::Sbom { args } => {
+                let mut cmd = find_command("python3");
+                cmd.env("PYTHONDONTWRITEBYTECODE", "1");
+                cmd.arg(Path::new(env!("CARGO_WORKSPACE_DIR")).join("xtask/sbom.py"));
+                cmd.args(args);
+                run_command(cmd);
+            }
             SubCommand::Semver(cmd) => cmd.run(),
             SubCommand::Test(cmd) => cmd.run(),
         }
@@ -61,6 +68,14 @@ enum SubCommand {
     Lint(CommandLint),
     #[clap(about = "Check memory safety with Miri.")]
     Miri(CommandMiri),
+    #[clap(
+        about = "Generate and test source-release SBOMs (Python 3.12+).",
+        disable_help_flag = true
+    )]
+    Sbom {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     #[clap(about = "Verify API compatibility for a planned release.")]
     Semver(CommandSemver),
     #[clap(about = "Run workspace tests.")]
