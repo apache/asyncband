@@ -26,6 +26,8 @@
 use std::future::Future;
 use std::future::IntoFuture;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
@@ -33,6 +35,7 @@ use std::task::Poll;
 use asyncband::blocking::FutureExt;
 use asyncband::oneshot;
 use asyncband::oneshot::TryRecvError;
+use tests_integration::waker_on_clone;
 
 use crate::support::DropProbe;
 use crate::support::WakerProbe;
@@ -226,6 +229,44 @@ fn poll_with_different_wakers() {
     assert_eq!(waker_probe1.wake_count(), 0);
     assert_eq!(WakerProbe::live_waker_count(&waker_probe2), 1);
     assert_eq!(waker_probe2.wake_count(), 1);
+}
+
+#[test]
+fn polls_clone_wakers_only_for_new_or_changed_registrations() {
+    let clones = Arc::new(AtomicUsize::new(0));
+    let on_clone = clones.clone();
+    let waker = waker_on_clone(move || {
+        on_clone.fetch_add(1, Ordering::Relaxed);
+    });
+    let mut context = Context::from_waker(&waker);
+    let (sender, receiver) = oneshot::channel::<u128>();
+    let mut receiver = receiver.into_future();
+
+    assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Pending);
+    assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Pending);
+    assert_eq!(clones.load(Ordering::Relaxed), 1);
+
+    let on_clone = clones.clone();
+    let replacement = waker_on_clone(move || {
+        on_clone.fetch_add(1, Ordering::Relaxed);
+    });
+    let mut replacement_context = Context::from_waker(&replacement);
+    assert_eq!(
+        Pin::new(&mut receiver).poll(&mut replacement_context),
+        Poll::Pending
+    );
+    assert_eq!(clones.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        Pin::new(&mut receiver).poll(&mut replacement_context),
+        Poll::Pending
+    );
+    assert_eq!(clones.load(Ordering::Relaxed), 2);
+
+    sender.send(1234).unwrap();
+    assert_eq!(
+        Pin::new(&mut receiver).poll(&mut replacement_context),
+        Poll::Ready(Ok(1234))
+    );
 }
 
 #[test]
