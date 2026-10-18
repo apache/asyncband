@@ -269,7 +269,7 @@ fn wake_and_waker_destruction_happen_outside_the_event_lock() {
     assert_completes_without_deadlock(|| {
         let event = Arc::new(AutoResetEvent::new());
         let mut first = Box::pin(event.wait());
-        let mut second = Box::pin(event.wait());
+        let mut second = pin!(event.wait());
         assert!(poll_once(first.as_mut()).is_pending());
         event.set();
         {
@@ -284,7 +284,7 @@ fn wake_and_waker_destruction_happen_outside_the_event_lock() {
         drop(first); // The cancellation handoff wakes the second waiter.
         assert!(poll_once(second.as_mut()).is_ready());
 
-        let mut wait = Box::pin(event.wait());
+        let mut wait = pin!(event.wait());
         {
             let waker = Waker::from(Arc::new(ReentrantWaker(event.clone())));
             assert!(

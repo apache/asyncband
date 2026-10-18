@@ -16,6 +16,7 @@
 // under the License.
 
 use std::future::pending;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -122,12 +123,12 @@ async fn panicked_initializer_can_be_retried() {
 #[tokio::test]
 async fn wait_observes_completion() {
     let once = Once::new();
-    let mut waiting = Box::pin(once.wait());
+    let mut waiting = pin!(once.wait());
 
     assert!(poll_once(waiting.as_mut()).is_pending());
     once.call_once(async || {}).await;
     assert!(poll_once(waiting.as_mut()).is_ready());
 
-    let mut completed = Box::pin(once.wait());
+    let mut completed = pin!(once.wait());
     assert!(poll_once(completed.as_mut()).is_ready());
 }

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -45,7 +46,7 @@ fn receiver_notifications<S, R: Receiver<usize>>(
         let (sender, receiver) = channel();
         let competing = receiver.clone();
         let mut first = Box::pin(receiver.recv());
-        let mut second = Box::pin(competing.recv());
+        let mut second = pin!(competing.recv());
         let (first_waker, first_wakes) = WakeCounter::new();
         let (second_waker, second_wakes) = WakeCounter::new();
 
@@ -103,8 +104,8 @@ fn notified_receiver_that_loses_the_value_queues_behind_waiting_receivers() {
     let (sender, receiver) = mpmc::unbounded();
     let second_receiver = receiver.clone();
     let barging = receiver.clone();
-    let mut first = Box::pin(receiver.recv());
-    let mut second = Box::pin(second_receiver.recv());
+    let mut first = pin!(receiver.recv());
+    let mut second = pin!(second_receiver.recv());
     let (first_waker, first_wakes) = WakeCounter::new();
     let (second_waker, second_wakes) = WakeCounter::new();
 
@@ -150,7 +151,7 @@ fn bounded_cancelled_sender_notifies_next_sender_before_dropping_value() {
         seen: wakes_during_drop.clone(),
     };
     let mut cancelled = Box::pin(first_sender.send((1, Some(observer))));
-    let mut waiting = Box::pin(second_sender.send((2, None)));
+    let mut waiting = pin!(second_sender.send((2, None)));
 
     assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
     assert!(poll_with(waiting.as_mut(), &waiting_waker).is_pending());
@@ -170,8 +171,8 @@ fn bounded_cancelled_sender_notifies_next_sender_before_dropping_value() {
 fn last_sender_wakes_every_pending_receiver() {
     let (sender, receiver) = mpmc::unbounded::<usize>();
     let competing = receiver.clone();
-    let mut first = Box::pin(receiver.recv());
-    let mut second = Box::pin(competing.recv());
+    let mut first = pin!(receiver.recv());
+    let mut second = pin!(competing.recv());
     let mut cancelled = Box::pin(receiver.recv());
     let (first_waker, first_wakes) = WakeCounter::new();
     let (second_waker, second_wakes) = WakeCounter::new();
@@ -200,8 +201,8 @@ fn last_receiver_wakes_every_pending_sender() {
     let (sender, receiver) = mpmc::bounded(1);
     sender.try_send(0).unwrap();
     let competing = sender.clone();
-    let mut first = Box::pin(sender.send(1));
-    let mut second = Box::pin(competing.send(2));
+    let mut first = pin!(sender.send(1));
+    let mut second = pin!(competing.send(2));
     let mut cancelled = Box::pin(sender.send(3));
     let (first_waker, first_wakes) = WakeCounter::new();
     let (second_waker, second_wakes) = WakeCounter::new();

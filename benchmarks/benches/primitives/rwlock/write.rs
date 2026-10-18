@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::pin::pin;
 use std::sync::Arc;
 
 use asyncband::rwlock::RwLock;
@@ -36,7 +37,7 @@ fn readers_then_queued_writer(bencher: Bencher, reader_count: usize) {
         let readers = (0..reader_count)
             .map(|_| poll_ready(lock.clone().read_owned(), &mut context))
             .collect::<Vec<_>>();
-        let mut writer = Box::pin(lock.clone().write_owned());
+        let mut writer = pin!(lock.clone().write_owned());
         poll_pending(writer.as_mut(), &mut context);
 
         drop(readers);

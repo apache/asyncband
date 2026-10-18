@@ -18,6 +18,7 @@
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::task::Context;
@@ -245,7 +246,7 @@ fn send_waits_while_the_slowest_subscription_holds_capacity() {
     let mut rx2 = tx.subscribe();
     tx.try_send(1).unwrap();
 
-    let mut send = Box::pin(tx.send(2));
+    let mut send = pin!(tx.send(2));
     assert!(poll_once(send.as_mut()).is_pending());
 
     // The fast receiver draining is not enough while the slow one still retains the message.
@@ -264,7 +265,7 @@ fn receive_that_vacates_the_head_wakes_a_blocked_sender() {
 
     let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
-    let mut send = Box::pin(tx.send(1));
+    let mut send = pin!(tx.send(1));
     assert!(
         send.as_mut()
             .poll(&mut Context::from_waker(&waker))
@@ -284,7 +285,7 @@ fn parked_recv_that_reclaims_wakes_a_blocked_sender() {
 
     let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
-    let mut send = Box::pin(tx.send(1));
+    let mut send = pin!(tx.send(1));
     assert!(
         send.as_mut()
             .poll(&mut Context::from_waker(&waker))
@@ -306,8 +307,8 @@ fn wakes_blocked_senders_as_capacity_frees() {
     let (tx, mut rx) = bounded(1);
     tx.try_send(0).unwrap();
 
-    let mut first = Box::pin(tx.send(1));
-    let mut second = Box::pin(tx.send(2));
+    let mut first = pin!(tx.send(1));
+    let mut second = pin!(tx.send(2));
     assert!(poll_once(first.as_mut()).is_pending());
     assert!(poll_once(second.as_mut()).is_pending());
 
@@ -327,7 +328,7 @@ fn dropping_a_lagging_receiver_wakes_blocked_senders() {
     let rx2 = tx.subscribe();
     tx.try_send(0).unwrap();
 
-    let mut send = Box::pin(tx.send(1));
+    let mut send = pin!(tx.send(1));
     assert_eq!(rx1.try_recv(), Ok(0));
     assert!(poll_once(send.as_mut()).is_pending());
 
@@ -386,7 +387,7 @@ fn sends_never_block_once_all_receivers_are_gone() {
     tx.try_send(1).unwrap();
     tx.try_send(2).unwrap();
 
-    let mut send = Box::pin(tx.send(3));
+    let mut send = pin!(tx.send(3));
     assert!(poll_once(send.as_mut()).is_ready());
     assert_eq!(tx.retained_message_count(), 0);
 }
@@ -396,7 +397,7 @@ fn subscribing_while_producers_are_blocked_does_not_release_capacity() {
     let (tx, _rx) = bounded(1);
     tx.try_send(0).unwrap();
 
-    let mut send = Box::pin(tx.send(1));
+    let mut send = pin!(tx.send(1));
     assert!(poll_once(send.as_mut()).is_pending());
 
     // A new cursor starts at the tail, so it cannot lower the retained backlog.
@@ -432,7 +433,7 @@ fn cancelled_notified_sender_passes_capacity_to_the_next_sender() {
     tx.try_send(0).unwrap();
 
     let mut first = Box::pin(tx.send(1));
-    let mut second = Box::pin(tx.send(2));
+    let mut second = pin!(tx.send(2));
     assert!(poll_once(first.as_mut()).is_pending());
     assert!(poll_once(second.as_mut()).is_pending());
 
@@ -488,7 +489,7 @@ fn dropping_a_woken_recv_keeps_another_receivers_waiter() {
     let second = Arc::new(WakeCounter::default());
     let waker = Waker::from(second.clone());
     let mut context = Context::from_waker(&waker);
-    let mut recv2 = Box::pin(rx2.recv());
+    let mut recv2 = pin!(rx2.recv());
     assert!(recv2.as_mut().poll(&mut context).is_pending());
 
     // `recv1` was already woken, so dropping it must not release the slot `recv2` now owns.
@@ -524,7 +525,7 @@ fn bounded_parked_recv_wakes_when_the_last_sender_drops() {
 
     let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
-    let mut recv = Box::pin(rx.recv());
+    let mut recv = pin!(rx.recv());
     assert!(
         recv.as_mut()
             .poll(&mut Context::from_waker(&waker))
@@ -632,7 +633,7 @@ fn panicking_payload_destructor_still_releases_capacity() {
         rx1.try_recv().unwrap();
     }
 
-    let mut send = Box::pin(tx.send(PanicOnDrop { armed: false }));
+    let mut send = pin!(tx.send(PanicOnDrop { armed: false }));
     assert!(poll_once(send.as_mut()).is_pending());
 
     // Dropping `rx2` reclaims all three retained messages and their destructors panic. The

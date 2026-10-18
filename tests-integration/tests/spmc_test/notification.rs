@@ -67,7 +67,7 @@ fn bounded_cancelling_before_notification_removes_the_waiter() {
     let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
     let (waiting_waker, waiting_wakes) = WakeCounter::new();
     let mut cancelled = Box::pin(receiver.recv());
-    let mut waiting = Box::pin(competing.recv());
+    let mut waiting = pin!(competing.recv());
     assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
     assert!(poll_with(waiting.as_mut(), &waiting_waker).is_pending());
 
@@ -137,7 +137,7 @@ fn unbounded_cancelling_before_notification_removes_the_waiter() {
     let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
     let (waiting_waker, waiting_wakes) = WakeCounter::new();
     let mut cancelled = Box::pin(receiver.recv());
-    let mut waiting = Box::pin(competing.recv());
+    let mut waiting = pin!(competing.recv());
     assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
     assert!(poll_with(waiting.as_mut(), &waiting_waker).is_pending());
 
@@ -242,7 +242,7 @@ fn last_receiver_wakes_pending_sender_and_returns_its_value() {
     let competing = receiver.clone();
     sender.try_send(0).unwrap();
     let (waker, wakes) = WakeCounter::new();
-    let mut pending = Box::pin(sender.send(1));
+    let mut pending = pin!(sender.send(1));
     assert!(poll_with(pending.as_mut(), &waker).is_pending());
 
     drop(receiver);

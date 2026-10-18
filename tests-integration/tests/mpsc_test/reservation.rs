@@ -17,6 +17,7 @@
 
 use std::cell::Cell;
 use std::mem;
+use std::pin::pin;
 use std::thread;
 
 use asyncband::mpsc;
@@ -59,7 +60,7 @@ fn held_permits_consume_capacity_without_claiming_message_order() {
 fn released_capacity_is_granted_to_the_oldest_waiter() {
     let (tx, mut rx) = mpsc::bounded(1);
     let held = tx.try_reserve().unwrap();
-    let mut waiting = Box::pin(tx.reserve());
+    let mut waiting = pin!(tx.reserve());
     let (waker, wakes) = WakeCounter::new();
     assert!(poll_with(waiting.as_mut(), &waker).is_pending());
     drop(held);
@@ -78,7 +79,7 @@ fn cancelling_a_granted_reservation_passes_capacity_to_a_waiting_send() {
     let (tx, mut rx) = mpsc::bounded(1);
     let held = tx.try_reserve().unwrap();
     let mut reservation = Box::pin(tx.reserve());
-    let mut send = Box::pin(tx.send(7));
+    let mut send = pin!(tx.send(7));
     let (waker, wakes) = WakeCounter::new();
     assert!(poll_once(reservation.as_mut()).is_pending());
     assert!(poll_with(send.as_mut(), &waker).is_pending());
@@ -98,8 +99,8 @@ fn cancelling_a_granted_reservation_passes_capacity_to_a_waiting_send() {
 fn closing_after_a_grant_returns_the_unsent_message() {
     let (tx, mut rx) = mpsc::bounded(1);
     tx.try_send(String::from("queued")).unwrap();
-    let mut send = Box::pin(tx.send(String::from("unsent")));
-    let mut reservation = Box::pin(tx.reserve());
+    let mut send = pin!(tx.send(String::from("unsent")));
+    let mut reservation = pin!(tx.reserve());
     let mut cancelled = Box::pin(tx.reserve());
     assert!(poll_once(send.as_mut()).is_pending());
     assert!(poll_once(reservation.as_mut()).is_pending());
@@ -120,7 +121,7 @@ fn receiver_drop_does_not_wait_for_held_or_forgotten_permits() {
     tx.try_send(String::from("ready")).unwrap();
     assert_eq!(rx.try_recv().unwrap(), "ready");
     tx.try_send(String::from("discarded on close")).unwrap();
-    let mut waiting = Box::pin(tx.reserve());
+    let mut waiting = pin!(tx.reserve());
     let (waker, wakes) = WakeCounter::new();
     assert!(poll_with(waiting.as_mut(), &waker).is_pending());
     drop(rx);

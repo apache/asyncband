@@ -239,20 +239,12 @@ fn publication_racing_with_receiver_registration_cannot_lose_wakeup() {
     for capacity in [1, 3] {
         let (tx, mut rx) = mpsc::bounded(capacity);
         for value in 0..128 {
-            receive_racing_with(
-                Box::pin(rx.recv()).as_mut(),
-                || tx.try_send(value).unwrap(),
-                Ok(value),
-            );
+            receive_racing_with(pin!(rx.recv()), || tx.try_send(value).unwrap(), Ok(value));
         }
     }
     let (tx, mut rx) = mpsc::unbounded();
     for value in 0..128 {
-        receive_racing_with(
-            Box::pin(rx.recv()).as_mut(),
-            || tx.send(value).unwrap(),
-            Ok(value),
-        );
+        receive_racing_with(pin!(rx.recv()), || tx.send(value).unwrap(), Ok(value));
     }
 }
 
@@ -261,13 +253,13 @@ fn last_sender_drop_racing_with_receiver_registration_cannot_lose_wakeup() {
     for _ in 0..128 {
         let (tx, mut rx) = mpsc::bounded::<usize>(1);
         receive_racing_with(
-            Box::pin(rx.recv()).as_mut(),
+            pin!(rx.recv()),
             move || drop(tx),
             Err(RecvError::Disconnected),
         );
         let (tx, mut rx) = mpsc::unbounded::<usize>();
         receive_racing_with(
-            Box::pin(rx.recv()).as_mut(),
+            pin!(rx.recv()),
             move || drop(tx),
             Err(RecvError::Disconnected),
         );

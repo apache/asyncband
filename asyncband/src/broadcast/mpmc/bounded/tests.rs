@@ -18,6 +18,7 @@
 // These run under Miri via `cargo x miri`, so they stay single-threaded and small. Behavior
 // reachable from the public API is covered in `tests-integration/tests/broadcast_test/bounded.rs`.
 
+use std::pin::pin;
 use std::task::Waker;
 
 use super::*;
@@ -75,7 +76,7 @@ fn a_large_reclaim_leaves_no_permit_slack() {
     }
 
     let mut cx = Context::from_waker(Waker::noop());
-    let mut send = Box::pin(tx.send(capacity));
+    let mut send = pin!(tx.send(capacity));
     assert!(send.as_mut().poll(&mut cx).is_pending());
 
     drop(lagging);

@@ -103,7 +103,7 @@ fn cancelling_a_committed_waiter_leaves_the_others_committed() {
     let waker = Waker::from(tracker.clone());
     let mut context = Context::from_waker(&waker);
     let mut cancelled = Box::pin(event.wait());
-    let mut survivor = Box::pin(event.wait());
+    let mut survivor = pin!(event.wait());
 
     assert!(cancelled.as_mut().poll(&mut context).is_pending());
     assert!(survivor.as_mut().poll(&mut context).is_pending());
@@ -141,7 +141,7 @@ fn wakers_are_woken_and_dropped_outside_the_internal_lock() {
         let event = Arc::new(ManualResetEvent::new());
 
         // `set` wakes the waiter, and the waker re-enters `reset`.
-        let mut woken = Box::pin(event.clone().wait_owned());
+        let mut woken = pin!(event.clone().wait_owned());
         {
             let waker = Waker::from(Arc::new(ReentrantWaker(event.clone())));
             assert!(
@@ -221,7 +221,7 @@ fn a_wait_registered_from_a_wake_callback_belongs_to_the_next_period() {
         fresh_was_pending: AtomicBool::new(false),
     });
     let waker = Waker::from(hook.clone());
-    let mut released = Box::pin(event.clone().wait_owned());
+    let mut released = pin!(event.clone().wait_owned());
 
     assert!(
         released

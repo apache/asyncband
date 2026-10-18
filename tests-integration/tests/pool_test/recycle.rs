@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::pin::pin;
+
 use asyncband::pool::RecycleCancelledStrategy;
 use tests_integration::WakeCounter;
 use tests_integration::expect_ready;
@@ -96,7 +98,7 @@ macro_rules! recycle_contract {
                 drop(ready(pool.get()).unwrap());
                 let validation = manager.pause_recycle();
                 let (waker, wakes) = WakeCounter::new();
-                let mut checkout = Box::pin(pool.get());
+                let mut checkout = pin!(pool.get());
                 assert!(poll_with(checkout.as_mut(), &waker).is_pending());
                 validation
                     .send(if reject { Err(ManagerError) } else { Ok(()) })
