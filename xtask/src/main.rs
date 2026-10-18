@@ -25,6 +25,10 @@ use clap::Subcommand;
 use semver::Version;
 use serde::Deserialize;
 
+use crate::sbom::CommandSbom;
+
+mod sbom;
+
 const PACKAGE_NAME: &str = "asyncband";
 // cargo-semver-checks reserves exit code 100 for completed checks that found deny-level violations.
 const SEMVER_VIOLATIONS_EXIT_CODE: i32 = 100;
@@ -43,13 +47,7 @@ impl Command {
             SubCommand::Check(cmd) => cmd.run(),
             SubCommand::Lint(cmd) => cmd.run(),
             SubCommand::Miri(cmd) => cmd.run(),
-            SubCommand::Sbom { args } => {
-                let mut cmd = find_command("python3");
-                cmd.env("PYTHONDONTWRITEBYTECODE", "1");
-                cmd.arg(Path::new(env!("CARGO_WORKSPACE_DIR")).join("xtask/sbom.py"));
-                cmd.args(args);
-                run_command(cmd);
-            }
+            SubCommand::Sbom(cmd) => cmd.run(),
             SubCommand::Semver(cmd) => cmd.run(),
             SubCommand::Test(cmd) => cmd.run(),
         }
@@ -68,14 +66,8 @@ enum SubCommand {
     Lint(CommandLint),
     #[clap(about = "Check memory safety with Miri.")]
     Miri(CommandMiri),
-    #[clap(
-        about = "Generate and test source-release SBOMs (Python 3.12+).",
-        disable_help_flag = true
-    )]
-    Sbom {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
+    #[clap(about = "Compose the library and incorporated-source SBOM.")]
+    Sbom(CommandSbom),
     #[clap(about = "Verify API compatibility for a planned release.")]
     Semver(CommandSemver),
     #[clap(about = "Run workspace tests.")]

@@ -23,33 +23,32 @@ Compose produces `apache-asyncband-${VERSION}-incubating-src.tar.gz.cdx.json` al
 
 ## Scope and identity
 
-This CycloneDX 1.5 document describes the Cargo source workspace with all features and all target platforms. It includes every workspace member and resolved registry dependency, including build and dev dependencies. It is not a record of one executable's runtime dependencies. GitHub Actions, the Rust toolchain, system libraries, and the generator's own dependencies are outside this inventory.
+This CycloneDX 1.5 document covers the published `asyncband` library's normal and build dependencies across all features and target platforms, plus the incorporated source recorded in LICENSE throughout the archive, including tests. It is a pre-build source inventory: conditional dependencies do not imply that every consumer uses them. External dependencies used only by tests, examples, benchmarks, or xtask are outside this scope, as are GitHub Actions, the Rust toolchain, and system libraries.
 
-`cargo-cyclonedx` supplies per-crate component metadata. Locked `cargo metadata` supplies the complete graph and dev-only packages omitted by that tool. Each dependency edge's Cargo kind and target expression is retained in an `apache:asyncband:cargo-dependency` component property, encoded as JSON. The `apache:asyncband:distribution` property distinguishes bundled workspace source, external registry crates, and bundled derived source. Registry checksums identify the downloaded crates; their source is not included in the ASF archive.
+The Rust xtask consumes only the library BOM emitted by cargo-cyclonedx; it does not merge the other workspace members' BOMs or add dev-dependencies. Cargo metadata supplies the kind and target condition of edges already present in that graph, retained in `apache:asyncband:cargo-dependency` properties. The `apache:asyncband:distribution` property distinguishes bundled library source, external registry crates, and incorporated source. Registry checksums identify downloaded crates whose source is not included in the ASF archive.
 
-Workspace package identifiers are relative to the source tree and qualified by the source commit in their PURLs. For registry crates, `supplier` identifies the crates.io distribution service, not an inferred author or employer. Upstream author, repository, and license metadata are retained where supplied. Git dependencies, alternative registries, and non-workspace path packages require explicit source/supplier support before they can be released through this generator.
+The library's PURL identifies its source commit and relative path. For registry crates, `supplier` identifies the crates.io distribution service, not an inferred author or employer. Upstream author, repository, and license metadata are retained where supplied. Dependencies from other sources require a supplier review before generation supports them.
 
-`xtask/sbom-sources.toml` indexes incorporated source documented in LICENSE. Generation verifies its version references, immutable source URLs, and complete set of local paths against LICENSE, and checks that those files exist. License texts and modification descriptions remain in LICENSE and still require review. The SBOM represents each set of adapted portions as a file component with occurrences and an upstream `pedigree.ancestors` entry. It does not claim that the whole upstream crate is bundled or that the upstream version describes the modified implementation.
+LICENSE is the only maintained source for incorporated-source metadata. Each TOML record between `BEGIN SOURCE` and `END SOURCE` binds `name`, `version`, `license`, exact `upstream` URLs, and a `files` map from repository-relative local paths to upstream paths. The record sits beside its modification description and applicable license text; update it there when changing incorporated portions. Generation rejects malformed records and missing local files, and emits each record's occurrences and upstream pedigree together. It does not infer provenance, prove the declared license, or detect undocumented copying; those remain part of the license audit. The file components describe adapted portions, not complete upstream crates.
 
 ## Reproduce and verify
 
-Use the versions pinned by the candidate's Compose workflow: Rust 1.95.0, Python 3.12, cargo-cyclonedx 0.5.9, and cyclonedx-python-lib 11.12.0 with its JSON-validation extra. Install Python dependencies into a virtual environment outside the checkout and put its `python3` on PATH.
+Use the versions pinned by the candidate's Compose workflow: Rust 1.95.0, cargo-cyclonedx 0.5.9, and the native CycloneDX CLI 0.33.1 for schema validation. Install the CLI for your platform from its upstream release and verify its published checksum. Generation does not require Python.
 
 ```shell
 rustup toolchain install 1.95.0 --profile minimal --no-self-update
 cargo +1.95.0 install cargo-cyclonedx --version 0.5.9 --locked
-python3 -m pip install 'cyclonedx-python-lib[json-validation]==11.12.0'
 cargo x sbom --help
-cargo x sbom generate --help
-cargo x sbom test
-RUSTUP_TOOLCHAIN=1.95.0 cargo x sbom generate \
+RUSTUP_TOOLCHAIN=1.95.0 cargo x sbom \
   --archive "${SOURCE_ARCHIVE}" \
   --output "${SCRATCH_DIR}/reproduced.cdx.json"
 cmp "${SOURCE_ARCHIVE}.cdx.json" "${SCRATCH_DIR}/reproduced.cdx.json"
+cyclonedx validate --input-version v1_5 --fail-on-errors \
+  --input-file "${SCRATCH_DIR}/reproduced.cdx.json"
 ```
 
-Run from the candidate checkout or extracted source, keeping the original archive outside it. Generation extracts a fresh temporary copy, uses the commit/time recorded by `git archive`, resolves metadata with `--locked`, and checks that cargo-cyclonedx has not changed Cargo.lock. The source index and package metadata come from that extracted archive. Generation requires registry access for uncached Cargo metadata; after that resolution, cargo-cyclonedx runs offline.
+Run from the candidate checkout or extracted source, keeping the original archive outside it. Generation extracts a fresh temporary copy, uses the commit/time recorded by `git archive`, resolves metadata with `--locked`, and checks that cargo-cyclonedx has not changed Cargo.lock. LICENSE and package metadata come from that extracted archive. Generation requires registry access for uncached Cargo metadata; after that resolution, cargo-cyclonedx runs offline.
 
-The output removes machine-local package identifiers and random document IDs, sorts components and graph edges, and uses the source commit time. It validates against the CycloneDX schema and checks graph closure before writing. Compose compares two separate extractions; a voter must also reproduce the signed SBOM independently, along with the source archive, as described in [candidate verification](verification.md).
+The output removes machine-local package identifiers, sorts components and graph edges, and uses the source commit time. Generation checks graph closure. Compose validates the schema, compares two separate extractions, independently compares the package set with `cargo tree --edges normal,build`, and checks the subject hash against the actual archive checksum. These checks exercise the real release output. A voter must also reproduce the signed SBOM independently, along with the source archive, as described in [candidate verification](verification.md).
 
-When changing the generator, run `cargo x sbom test`, `cargo x lint`, and Compose on the PR. Inspect the uploaded SBOM's subjects, pedigree, license metadata, dependency kinds, and suppliers. Never retrofit a sidecar into an active vote; preserve the voted manifest and use the updated workflow for a future candidate.
+When changing the generator, run `cargo x lint`, `cargo x test`, and Compose on the PR. Inspect the uploaded SBOM's subject, pedigree, license metadata, dependency kinds, and suppliers. Review changes to LICENSE records and their surrounding text together. Never retrofit a sidecar into an active vote; preserve the voted manifest and use the updated workflow for a future candidate.

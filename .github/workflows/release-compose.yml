@@ -61,22 +61,21 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
       - name: Install SBOM tools
         run: |
           rustup toolchain install "${RUSTUP_TOOLCHAIN}" --profile minimal --no-self-update
           cargo install cargo-cyclonedx --version 0.5.9 --locked
-          python3 -m pip install 'cyclonedx-python-lib[json-validation]==11.12.0'
-      - name: Test SBOM composition
-        run: cargo x sbom test
+          curl --fail --location --retry 3 \
+            https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.33.1/cyclonedx-linux-x64 \
+            --output "${RUNNER_TEMP}/cyclonedx"
+          echo "bfc8b2538da86fe239bc53658bbb63c1c8c510a293c1e6891aa5bea5d3c58746  ${RUNNER_TEMP}/cyclonedx" | sha256sum --check
+          chmod +x "${RUNNER_TEMP}/cyclonedx"
       - id: source
         name: Archive the release candidate
         run: |
           set -euo pipefail
           commit="$(git rev-parse HEAD)"
-          package_version="$(git show "${commit}:asyncband/Cargo.toml" | python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["package"]["version"])')"
+          package_version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "asyncband") | .version')"
           if [[ "${GITHUB_EVENT_NAME}" == push ]]; then
             if [[ ! "${GITHUB_REF_NAME}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)$ ]]; then
               echo "::error::Expected an RC tag named vX.Y.Z-rc.N with a positive RC number."
@@ -114,19 +113,31 @@ jobs:
             echo
             cat "${source}.tar.gz.sha512"
           } >> "${GITHUB_STEP_SUMMARY}"
-      - name: Generate and reproduce the source SBOM
+      - name: Generate, reproduce, and validate the source SBOM
         env:
           ARCHIVE: ${{ steps.source.outputs.archive }}
         run: |
           set -euo pipefail
-          cargo x sbom generate \
+          cargo x sbom \
             --archive "${RUNNER_TEMP}/source/${ARCHIVE}" \
             --output "${RUNNER_TEMP}/source/${ARCHIVE}.cdx.json"
-          cargo x sbom generate \
+          cargo x sbom \
             --archive "${RUNNER_TEMP}/source/${ARCHIVE}" \
             --output "${RUNNER_TEMP}/reproduced.cdx.json"
           cmp "${RUNNER_TEMP}/source/${ARCHIVE}.cdx.json" "${RUNNER_TEMP}/reproduced.cdx.json"
+          "${RUNNER_TEMP}/cyclonedx" validate --input-version v1_5 --fail-on-errors \
+            --input-file "${RUNNER_TEMP}/source/${ARCHIVE}.cdx.json"
+          # Cross-check the selected graph independently of cargo-cyclonedx.
+          cargo tree --locked --package asyncband --edges normal,build --all-features \
+            --target all --prefix none --format '{p}' \
+            | awk '{ print $1 "@" substr($2, 2) }' | sort -u > "${RUNNER_TEMP}/expected-packages"
+          jq -r '.components[] | select(.type == "library") | .name + "@" + .version' \
+            "${RUNNER_TEMP}/source/${ARCHIVE}.cdx.json" | sort -u > "${RUNNER_TEMP}/sbom-packages"
+          cmp "${RUNNER_TEMP}/expected-packages" "${RUNNER_TEMP}/sbom-packages"
           cd "${RUNNER_TEMP}/source"
+          archive_sha512="$(cut -d ' ' -f 1 "${ARCHIVE}.sha512")"
+          jq -e --arg checksum "${archive_sha512}" \
+            '.metadata.component.hashes | any(.alg == "SHA-512" and .content == $checksum)' "${ARCHIVE}.cdx.json"
           shasum -a 512 "${ARCHIVE}.cdx.json" > "${ARCHIVE}.cdx.json.sha512"
           cat "${ARCHIVE}.cdx.json.sha512" >> "${GITHUB_STEP_SUMMARY}"
       - id: bundle
