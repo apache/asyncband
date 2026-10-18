@@ -294,6 +294,17 @@ fn compose(
             "distribution",
             if bundled { "bundled" } else { "external" },
         ));
+        if bundled {
+            let package = metadata
+                .packages
+                .iter()
+                .find(|p| p.id.repr == id)
+                .context("library is missing from Cargo metadata")?;
+            properties.push(property(
+                "cargo-feature-definitions",
+                json!(package.features),
+            ));
+        }
         refs.insert(id, reference);
     }
     let mut edges = BTreeMap::<String, BTreeSet<String>>::new();
@@ -335,6 +346,10 @@ fn compose(
             .iter_mut()
             .find(|c| c["bom-ref"] == *reference)
             .unwrap();
+        component["properties"]
+            .as_array_mut()
+            .unwrap()
+            .push(property("cargo-enabled-features", json!(node.features)));
         for dependency in &node.deps {
             let Some(target) = refs.get(&dependency.pkg.repr) else {
                 continue;
