@@ -110,6 +110,7 @@ impl CommandSbom {
         }
         bom["metadata"]["authors"] =
             json!([{"name": "Apache Asyncband", "email": "dev@asyncband.apache.org"}]);
+        bom["metadata"]["supplier"] = bom["metadata"]["component"]["supplier"].clone();
         bom["metadata"]["lifecycles"] = json!([{"phase": "pre-build"}]);
         bom["metadata"]["properties"].as_array_mut().unwrap().push(json!({
             "name": "apache:asyncband:scope",
