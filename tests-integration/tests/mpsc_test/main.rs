@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::pin::pin;
 use std::task::Poll;
 
 use asyncband::mpsc;
@@ -94,7 +95,7 @@ fn buffered_messages_are_drained_before_disconnection() {
 fn cancelled_receive_does_not_consume_a_later_message() {
     let (unbounded_tx, mut unbounded_rx) = mpsc::unbounded();
     {
-        let mut receive = Box::pin(unbounded_rx.recv());
+        let mut receive = pin!(unbounded_rx.recv());
         assert!(poll_once(receive.as_mut()).is_pending());
     }
     unbounded_tx.send(1).unwrap();
@@ -102,7 +103,7 @@ fn cancelled_receive_does_not_consume_a_later_message() {
 
     let (bounded_tx, mut bounded_rx) = mpsc::bounded(1);
     {
-        let mut receive = Box::pin(bounded_rx.recv());
+        let mut receive = pin!(bounded_rx.recv());
         assert!(poll_once(receive.as_mut()).is_pending());
     }
     bounded_tx.try_send(2).unwrap();
@@ -118,8 +119,7 @@ fn disconnected_sends_return_the_unsent_value() {
         tx.try_send(String::from("try")),
         Err(TrySendError::Disconnected(String::from("try")))
     );
-    let error =
-        expect_ready(poll_once(Box::pin(tx.send(String::from("async"))).as_mut())).unwrap_err();
+    let error = expect_ready(poll_once(pin!(tx.send(String::from("async"))))).unwrap_err();
     assert_eq!(error.into_inner(), "async");
 
     let (tx, rx) = mpsc::unbounded::<String>();
@@ -142,7 +142,7 @@ fn receives_wake_for_messages_and_the_last_sender_drop() {
     assert_eq!(poll_with(receive.as_mut(), &waker), Poll::Ready(Ok(7)));
     drop(receive);
 
-    let mut receive = Box::pin(rx.recv());
+    let mut receive = pin!(rx.recv());
     assert!(poll_with(receive.as_mut(), &waker).is_pending());
     drop(tx);
     assert_eq!(counter.count(), 1);
@@ -163,7 +163,7 @@ fn receives_wake_for_messages_and_the_last_sender_drop() {
     assert_eq!(poll_with(receive.as_mut(), &waker), Poll::Ready(Ok(7)));
     drop(receive);
 
-    let mut receive = Box::pin(rx.recv());
+    let mut receive = pin!(rx.recv());
     assert!(poll_with(receive.as_mut(), &waker).is_pending());
     drop(tx);
     assert_eq!(counter.count(), 1);

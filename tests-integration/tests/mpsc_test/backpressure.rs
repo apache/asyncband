@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::pin::pin;
+
 use asyncband::mpsc;
 use tests_integration::WakeCounter;
 use tests_integration::expect_ready;
@@ -28,8 +30,8 @@ fn bounded_wakes_blocked_senders_one_at_a_time() {
 
     let first_tx = tx.clone();
     let second_tx = tx.clone();
-    let mut first = Box::pin(first_tx.send(1));
-    let mut second = Box::pin(second_tx.send(2));
+    let mut first = pin!(first_tx.send(1));
+    let mut second = pin!(second_tx.send(2));
 
     let (first_waker, first_wakes) = WakeCounter::new();
     let (second_waker, second_wakes) = WakeCounter::new();
@@ -54,7 +56,7 @@ fn cancelling_a_sender_preserves_capacity_and_notifies_the_next_waiter() {
         let (tx, mut rx) = mpsc::bounded(1);
         tx.try_send(0).unwrap();
         let mut first = Box::pin(tx.send(1));
-        let mut second = Box::pin(tx.send(2));
+        let mut second = pin!(tx.send(2));
         let (first_waker, first_wakes) = WakeCounter::new();
         let (second_waker, second_wakes) = WakeCounter::new();
         assert!(poll_with(first.as_mut(), &first_waker).is_pending());
@@ -91,8 +93,8 @@ fn bounded_receiver_drop_returns_values_to_all_blocked_senders() {
 
     let first_tx = tx.clone();
     let second_tx = tx.clone();
-    let mut first = Box::pin(first_tx.send(1));
-    let mut second = Box::pin(second_tx.send(2));
+    let mut first = pin!(first_tx.send(1));
+    let mut second = pin!(second_tx.send(2));
 
     let (first_waker, first_wakes) = WakeCounter::new();
     let (second_waker, second_wakes) = WakeCounter::new();

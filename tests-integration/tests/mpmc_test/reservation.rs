@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -33,7 +34,7 @@ fn permits_and_messages_share_exact_capacity_without_reserving_message_order() {
     let competing = receiver.clone();
     let permit: mpmc::Permit<'_, _> = sender.try_reserve().unwrap();
     sender.try_send(1).unwrap();
-    expect_ready(poll_once(Box::pin(sender.send(2)).as_mut())).unwrap();
+    expect_ready(poll_once(pin!(sender.send(2)))).unwrap();
     assert_eq!(sender.try_send(3), Err(TrySendError::Full(3)));
     assert!(matches!(sender.try_reserve(), Err(TrySendError::Full(()))));
 
@@ -53,9 +54,9 @@ fn mixed_sends_and_reservations_receive_grants_in_wait_queue_order() {
     let (sender, receiver) = mpmc::bounded(1);
     let competing = receiver.clone();
     sender.try_send(0).unwrap();
-    let mut first = Box::pin(sender.reserve());
-    let mut second = Box::pin(sender.send(2));
-    let mut third = Box::pin(sender.reserve());
+    let mut first = pin!(sender.reserve());
+    let mut second = pin!(sender.send(2));
+    let mut third = pin!(sender.reserve());
     let (first_waker, first_wakes) = WakeCounter::new();
     let (second_waker, second_wakes) = WakeCounter::new();
     let (third_waker, third_wakes) = WakeCounter::new();
@@ -90,7 +91,7 @@ fn mixed_sends_and_reservations_receive_grants_in_wait_queue_order() {
 fn dropping_an_unused_permit_transfers_its_one_slot_to_a_waiter() {
     let (sender, receiver) = mpmc::bounded(1);
     let held = sender.try_reserve().unwrap();
-    let mut waiting = Box::pin(sender.reserve());
+    let mut waiting = pin!(sender.reserve());
     let (waker, wakes) = WakeCounter::new();
     assert!(poll_with(waiting.as_mut(), &waker).is_pending());
     drop(held);
@@ -113,7 +114,7 @@ fn cancelling_a_reservation_before_its_grant_skips_it() {
     let (sender, _receiver) = mpmc::bounded::<usize>(1);
     let held = sender.try_reserve().unwrap();
     let mut cancelled = Box::pin(sender.reserve());
-    let mut waiting = Box::pin(sender.reserve());
+    let mut waiting = pin!(sender.reserve());
     let (waker, wakes) = WakeCounter::new();
     assert!(poll_once(cancelled.as_mut()).is_pending());
     assert!(poll_with(waiting.as_mut(), &waker).is_pending());
@@ -132,7 +133,7 @@ fn cancelling_a_granted_reservation_hands_capacity_to_the_next_sender() {
     let (sender, receiver) = mpmc::bounded(1);
     let held = sender.try_reserve().unwrap();
     let mut cancelled = Box::pin(sender.reserve());
-    let mut waiting = Box::pin(sender.send(7));
+    let mut waiting = pin!(sender.send(7));
     let (first_waker, first_wakes) = WakeCounter::new();
     let (second_waker, second_wakes) = WakeCounter::new();
     assert!(poll_with(cancelled.as_mut(), &first_waker).is_pending());
@@ -168,7 +169,7 @@ fn cancelling_a_granted_send_wakes_the_next_waiter_before_dropping_its_value() {
         wakes: waiting_wakes.clone(),
         seen: wakes_at_drop.clone(),
     })));
-    let mut waiting = Box::pin(sender.reserve());
+    let mut waiting = pin!(sender.reserve());
     let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
     assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
     assert!(poll_with(waiting.as_mut(), &waiting_waker).is_pending());
@@ -195,7 +196,7 @@ fn cancelling_an_ungranted_send_drops_its_value_without_taking_capacity() {
     let held = sender.try_reserve().unwrap();
     let drops = Arc::new(AtomicUsize::new(0));
     let mut cancelled = Box::pin(sender.send(Some(CountDrop(drops.clone()))));
-    let mut waiting = Box::pin(sender.reserve());
+    let mut waiting = pin!(sender.reserve());
     let (waker, wakes) = WakeCounter::new();
     assert!(poll_once(cancelled.as_mut()).is_pending());
     assert!(poll_with(waiting.as_mut(), &waker).is_pending());
@@ -217,8 +218,8 @@ fn last_receiver_drop_fails_pending_and_granted_reservations() {
     let (sender, receiver) = mpmc::bounded::<usize>(1);
     let competing = receiver.clone();
     sender.try_send(0).unwrap();
-    let mut granted = Box::pin(sender.reserve());
-    let mut pending = Box::pin(sender.reserve());
+    let mut granted = pin!(sender.reserve());
+    let mut pending = pin!(sender.reserve());
     let (first_waker, first_wakes) = WakeCounter::new();
     let (second_waker, second_wakes) = WakeCounter::new();
     assert!(poll_with(granted.as_mut(), &first_waker).is_pending());
@@ -257,7 +258,7 @@ fn permit_does_not_keep_receivers_alive_and_returns_the_unsent_value() {
         sender.try_reserve(),
         Err(TrySendError::Disconnected(()))
     ));
-    let error = match expect_ready(poll_once(Box::pin(sender.reserve()).as_mut())) {
+    let error = match expect_ready(poll_once(pin!(sender.reserve()))) {
         Ok(_) => panic!("reservation succeeded after the last receiver dropped"),
         Err(error) => error,
     };

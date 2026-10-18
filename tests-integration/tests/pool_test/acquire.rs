@@ -131,7 +131,7 @@ fn cancelling_create_restores_capacity_for_waiting_get() {
 
     let wakes = Arc::new(WakeCounter::default());
     let waker = Waker::from(wakes.clone());
-    let mut next = Box::pin(pool.get());
+    let mut next = pin!(pool.get());
     assert!(
         next.as_mut()
             .poll(&mut Context::from_waker(&waker))

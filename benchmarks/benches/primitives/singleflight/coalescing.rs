@@ -16,6 +16,7 @@
 // under the License.
 
 use std::cell::Cell;
+use std::pin::pin;
 
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
@@ -39,7 +40,7 @@ fn complete_coalesced(bencher: Bencher, caller_count: usize) {
         .counter(ItemsCount::new(caller_count))
         .bench_local(|| {
             let gate = Cell::new(false);
-            let mut leader = Box::pin(group.work(0, || async {
+            let mut leader = pin!(group.work(0, || async {
                 wait_until_open(&gate).await;
                 black_box(1usize)
             }));
@@ -70,7 +71,7 @@ fn sequential_retries_after_leader_error(bencher: Bencher, caller_count: usize) 
         .counter(ItemsCount::new(caller_count))
         .bench_local(|| {
             let gate = Cell::new(false);
-            let mut leader = Box::pin(group.try_work(0, || async {
+            let mut leader = pin!(group.try_work(0, || async {
                 wait_until_open(&gate).await;
                 Err::<usize, ()>(())
             }));
