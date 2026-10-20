@@ -17,3 +17,9 @@
 
 mod adapters;
 mod paths;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    paths::register(runner);
+}

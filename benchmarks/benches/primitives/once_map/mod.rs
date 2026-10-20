@@ -22,3 +22,11 @@ mod initialize;
 mod lookup;
 mod maintenance;
 mod support;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    initialize::register(runner);
+    lookup::register(runner);
+    maintenance::register(runner);
+}

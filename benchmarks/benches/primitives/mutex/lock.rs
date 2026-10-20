@@ -15,20 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use asyncband::mutex::Mutex;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const QUEUE_DEPTHS: &[usize] = &[1, 4, 16];
 
-#[divan::bench]
 fn uncontended_reuse(bencher: Bencher) {
     let mutex = Mutex::new(0usize);
     let mut context = bench_context();
@@ -40,7 +40,6 @@ fn uncontended_reuse(bencher: Bencher) {
     });
 }
 
-#[divan::bench(args = QUEUE_DEPTHS)]
 fn queued_handoff_cycle(bencher: Bencher, queue_depth: usize) {
     let mut context = bench_context();
     let mutex = Arc::new(Mutex::new(0usize));
@@ -63,4 +62,24 @@ fn queued_handoff_cycle(bencher: Bencher, queue_depth: usize) {
         let value = *mutex.try_lock().expect("queued mutex handoff must finish");
         black_box(value)
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.case(
+        concat!(module_path!(), "::uncontended_reuse"),
+        24_000_000,
+        1,
+        uncontended_reuse,
+    );
+    for &arg in QUEUE_DEPTHS {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::queued_handoff_cycle")
+            ),
+            (5_000_000 / arg).max(1),
+            1,
+            |bencher| queued_handoff_cycle(bencher, arg),
+        );
+    }
 }

@@ -16,3 +16,9 @@
 // under the License.
 
 mod send;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    send::register(runner);
+}

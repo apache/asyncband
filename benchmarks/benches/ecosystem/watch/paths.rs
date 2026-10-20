@@ -18,14 +18,15 @@
 // Both adapters return an owned `usize`. The Tokio adapter's `recv` combines `changed` and
 // `borrow_and_update`.
 
+use std::hint::black_box;
 use std::pin::pin;
 
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
 use crate::watch::adapters::Asyncband;
 use crate::watch::adapters::Tokio;
@@ -33,7 +34,6 @@ use crate::watch::adapters::Watch;
 
 const RECEIVER_COUNTS: &[usize] = &[2, 4, 8, 32];
 
-#[divan::bench(types = [Asyncband, Tokio])]
 fn get_current<C: Watch>(bencher: Bencher) {
     let (sender, mut receivers) = C::channel(1);
     let receiver = receivers.pop().unwrap();
@@ -41,7 +41,6 @@ fn get_current<C: Watch>(bencher: Bencher) {
     black_box(sender);
 }
 
-#[divan::bench(types = [Asyncband, Tokio])]
 fn publish_then_snapshot<C: Watch>(bencher: Bencher) {
     let (sender, mut receivers) = C::channel(1);
     let receiver = receivers.pop().unwrap();
@@ -51,7 +50,6 @@ fn publish_then_snapshot<C: Watch>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, Tokio])]
 fn publish_then_receive<C: Watch>(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receivers) = C::channel(1);
@@ -62,7 +60,6 @@ fn publish_then_receive<C: Watch>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, Tokio])]
 fn publish_then_observe_version<C: Watch>(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receivers) = C::channel(1);
@@ -73,7 +70,6 @@ fn publish_then_observe_version<C: Watch>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, Tokio])]
 fn register_publish_observe<C: Watch>(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receivers) = C::channel(1);
@@ -86,7 +82,6 @@ fn register_publish_observe<C: Watch>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, Tokio], args = RECEIVER_COUNTS)]
 fn register_publish_observe_fanout<C: Watch>(bencher: Bencher, receiver_count: usize) {
     let mut context = bench_context();
     let (sender, mut receivers) = C::channel(receiver_count);
@@ -105,4 +100,76 @@ fn register_publish_observe_fanout<C: Watch>(bencher: Bencher, receiver_count: u
             poll_pinned_ready(future.as_mut(), &mut context);
         }
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    register_implementation::<Asyncband>(runner, "Asyncband");
+    register_implementation::<Tokio>(runner, "Tokio");
+}
+
+fn register_implementation<C>(runner: &mut Runner, implementation: &str)
+where
+    C: Watch,
+{
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::get_current")
+        ),
+        80_000_000,
+        1,
+        get_current::<C>,
+    );
+
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::publish_then_snapshot")
+        ),
+        15_000_000,
+        1,
+        publish_then_snapshot::<C>,
+    );
+
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::publish_then_receive")
+        ),
+        9_000_000,
+        1,
+        publish_then_receive::<C>,
+    );
+
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::publish_then_observe_version")
+        ),
+        12_000_000,
+        1,
+        publish_then_observe_version::<C>,
+    );
+
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::register_publish_observe")
+        ),
+        6_000_000,
+        1,
+        register_publish_observe::<C>,
+    );
+
+    for &arg in RECEIVER_COUNTS {
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg}",
+                concat!(module_path!(), "::register_publish_observe_fanout")
+            ),
+            (5_000_000 / arg).max(1),
+            1,
+            |bencher| register_publish_observe_fanout::<C>(bencher, arg),
+        );
+    }
 }

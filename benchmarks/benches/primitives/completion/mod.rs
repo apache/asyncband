@@ -15,19 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::completion;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const OBSERVER_COUNTS: &[usize] = &[2, 4, 16];
 
-#[divan::bench]
 fn ready_wait(bencher: Bencher) {
     let mut context = bench_context();
     let (completer, completion) = completion::new();
@@ -36,7 +36,6 @@ fn ready_wait(bencher: Bencher) {
     bencher.bench_local(|| black_box(*poll_ready(completion.wait(), &mut context).unwrap()));
 }
 
-#[divan::bench]
 fn complete_then_wait(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -47,7 +46,6 @@ fn complete_then_wait(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn notify_pending(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -61,7 +59,6 @@ fn notify_pending(bencher: Bencher) {
     });
 }
 
-#[divan::bench(args = OBSERVER_COUNTS)]
 fn notify_pending_fanout(bencher: Bencher, observer_count: usize) {
     let mut context = bench_context();
 
@@ -81,7 +78,6 @@ fn notify_pending_fanout(bencher: Bencher, observer_count: usize) {
     });
 }
 
-#[divan::bench]
 fn abandoned_wait(bencher: Bencher) {
     let mut context = bench_context();
     let (completer, completion) = completion::new::<usize>();
@@ -90,7 +86,6 @@ fn abandoned_wait(bencher: Bencher) {
     bencher.bench_local(|| black_box(poll_ready(completion.wait(), &mut context).unwrap_err()));
 }
 
-#[divan::bench]
 fn repoll_pending(bencher: Bencher) {
     let mut context = bench_context();
     let (_completer, completion) = completion::new::<usize>();
@@ -100,7 +95,6 @@ fn repoll_pending(bencher: Bencher) {
     bencher.bench_local(|| poll_pending(wait.as_mut(), &mut context));
 }
 
-#[divan::bench]
 fn cancel_pending(bencher: Bencher) {
     let mut context = bench_context();
     let (_completer, completion) = completion::new::<usize>();
@@ -110,4 +104,54 @@ fn cancel_pending(bencher: Bencher) {
         poll_pending(wait.as_mut(), &mut context);
     });
     black_box(completion);
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.case(
+        concat!(module_path!(), "::ready_wait"),
+        100_000_000,
+        1,
+        ready_wait,
+    );
+    runner.case(
+        concat!(module_path!(), "::complete_then_wait"),
+        6_000_000,
+        1,
+        complete_then_wait,
+    );
+    runner.case(
+        concat!(module_path!(), "::notify_pending"),
+        3_000_000,
+        1,
+        notify_pending,
+    );
+    for &arg in OBSERVER_COUNTS {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::notify_pending_fanout")
+            ),
+            (5_000_000 / arg).max(1),
+            1,
+            |bencher| notify_pending_fanout(bencher, arg),
+        );
+    }
+    runner.case(
+        concat!(module_path!(), "::abandoned_wait"),
+        96_000_000,
+        1,
+        abandoned_wait,
+    );
+    runner.case(
+        concat!(module_path!(), "::repoll_pending"),
+        50_000_000,
+        1,
+        repoll_pending,
+    );
+    runner.case(
+        concat!(module_path!(), "::cancel_pending"),
+        24_000_000,
+        1,
+        cancel_pending,
+    );
 }

@@ -19,3 +19,10 @@
 
 mod block_on;
 mod wait_timeout;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    block_on::register(runner);
+    wait_timeout::register(runner);
+}

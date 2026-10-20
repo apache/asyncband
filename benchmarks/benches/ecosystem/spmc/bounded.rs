@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use benchmarks::channels::BATCH_MESSAGES;
 use benchmarks::channels::adapters::AsyncChannel;
 use benchmarks::channels::adapters::Bounded;
 use benchmarks::channels::adapters::Channel;
@@ -25,23 +24,49 @@ use benchmarks::channels::adapters::Spmc;
 use benchmarks::channels::runtime;
 use benchmarks::channels::spmc::CONSUMERS;
 use benchmarks::channels::spmc::TaskBatch;
-use divan::Bencher;
-use divan::counter::ItemsCount;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 
-#[divan::bench(
-    types = [Spmc, Mpmc, AsyncChannel, Flume],
-    consts = [0, 4],
-    args = CONSUMERS,
-    sample_count = 20,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn task_batch<C, const WORKERS: usize>(bencher: Bencher, consumers: usize)
 where
     Bounded<C>: Channel,
 {
     let runtime = runtime(WORKERS);
-    bencher
-        .with_inputs(|| TaskBatch::new::<Bounded<C>>(&runtime, consumers))
-        .bench_local_refs(|batch| runtime.block_on(batch.run()));
+    bencher.bench_local(|| {
+        let mut batch = TaskBatch::new::<Bounded<C>>(&runtime, consumers);
+        runtime.block_on(batch.run())
+    });
+}
+
+pub fn register(runner: &mut Runner) {
+    register_implementation::<Spmc>(runner, "Spmc");
+    register_implementation::<Mpmc>(runner, "Mpmc");
+    register_implementation::<AsyncChannel>(runner, "AsyncChannel");
+    register_implementation::<Flume>(runner, "Flume");
+}
+
+fn register_implementation<C>(runner: &mut Runner, implementation: &str)
+where
+    Bounded<C>: Channel,
+{
+    for &arg in CONSUMERS {
+        runner.case(
+            format!(
+                "{}/{implementation}/0/{arg}",
+                concat!(module_path!(), "::task_batch")
+            ),
+            320,
+            1,
+            |bencher| task_batch::<C, 0>(bencher, arg),
+        );
+        runner.case(
+            format!(
+                "{}/{implementation}/4/{arg}",
+                concat!(module_path!(), "::task_batch")
+            ),
+            320,
+            1,
+            |bencher| task_batch::<C, 4>(bencher, arg),
+        );
+    }
 }

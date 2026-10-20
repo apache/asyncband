@@ -17,18 +17,18 @@
 
 // Tokio broadcast overwrites at capacity, so it cannot participate in lossless backpressure cases.
 
+use std::hint::black_box;
+
 use benchmarks::channels::runtime;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
-use divan::Bencher;
-use divan::black_box;
-use divan::counter::ItemsCount;
 use tokio::runtime::Builder;
 
 use crate::broadcast::mpmc::adapters::AsyncBroadcast;
 use crate::broadcast::mpmc::adapters::Asyncband;
 use crate::broadcast::mpmc::adapters::BoundedBroadcastMpmc;
 use crate::broadcast::mpmc::support::BACKPRESSURE_SHAPE;
-use crate::broadcast::mpmc::support::BATCH_MESSAGES;
 use crate::broadcast::mpmc::support::BOUNDED_SHAPES;
 use crate::broadcast::mpmc::support::BoundedConcurrent;
 use crate::broadcast::mpmc::support::BoundedShape;
@@ -36,7 +36,6 @@ use crate::broadcast::mpmc::support::BoundedTasks;
 use crate::broadcast::mpmc::support::ROUND_TRIP_CAPACITY;
 
 // Send-then-receive pairing keeps at most one message retained, so these never reach capacity.
-#[divan::bench(types = [Asyncband, AsyncBroadcast], sample_size = 512)]
 fn try_send_receive<C: BoundedBroadcastMpmc>(bencher: Bencher) {
     let (sender, mut receivers) = C::channel(ROUND_TRIP_CAPACITY, 1);
     let mut receiver = receivers.pop().unwrap();
@@ -47,7 +46,6 @@ fn try_send_receive<C: BoundedBroadcastMpmc>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, AsyncBroadcast], sample_size = 512)]
 fn ready_send_receive<C: BoundedBroadcastMpmc>(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receivers) = C::channel(ROUND_TRIP_CAPACITY, 1);
@@ -59,42 +57,91 @@ fn ready_send_receive<C: BoundedBroadcastMpmc>(bencher: Bencher) {
     });
 }
 
-// Keep one fixture per sample so workers from other fixtures are not alive during timing.
-#[divan::bench(
-    types = [Asyncband, AsyncBroadcast],
-    args = BOUNDED_SHAPES,
-    sample_count = 10,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
+// Finish and join each fixture before starting the next round.
 fn thread_batch<C: BoundedBroadcastMpmc>(bencher: Bencher, shape: BoundedShape) {
-    bencher
-        .with_inputs(|| BoundedConcurrent::new::<C>(shape))
-        .bench_local_refs(BoundedConcurrent::run);
+    bencher.bench_local(|| {
+        let mut input = BoundedConcurrent::new::<C>(shape);
+        BoundedConcurrent::run(&mut input)
+    });
 }
 
-#[divan::bench(
-    types = [Asyncband, AsyncBroadcast],
-    args = BOUNDED_SHAPES,
-    sample_count = 10,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn task_batch<C: BoundedBroadcastMpmc>(bencher: Bencher, shape: BoundedShape) {
     let runtime = Builder::new_multi_thread()
         .worker_threads(4)
         .build()
         .unwrap();
-    bencher
-        .with_inputs(|| BoundedTasks::new::<C>(&runtime, shape))
-        .bench_local_refs(|tasks| tasks.run(&runtime));
+    bencher.bench_local(|| {
+        let mut tasks = BoundedTasks::new::<C>(&runtime, shape);
+        tasks.run(&runtime)
+    });
 }
 
-#[divan::bench(types = [Asyncband, AsyncBroadcast], sample_count = 10, sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES))]
 fn capacity_one_task_handoff<C: BoundedBroadcastMpmc>(bencher: Bencher) {
     let runtime = runtime(4);
-    bencher
-        .with_inputs(|| BoundedTasks::new::<C>(&runtime, BACKPRESSURE_SHAPE))
-        .bench_local_refs(|tasks| tasks.run(&runtime));
+    bencher.bench_local(|| {
+        let mut tasks = BoundedTasks::new::<C>(&runtime, BACKPRESSURE_SHAPE);
+        tasks.run(&runtime)
+    });
+}
+
+pub fn register(runner: &mut Runner) {
+    register_implementation::<Asyncband>(runner, "Asyncband");
+    register_implementation::<AsyncBroadcast>(runner, "AsyncBroadcast");
+}
+
+fn register_implementation<C>(runner: &mut Runner, implementation: &str)
+where
+    C: BoundedBroadcastMpmc,
+{
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::try_send_receive")
+        ),
+        9_000_000,
+        1,
+        try_send_receive::<C>,
+    );
+
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::ready_send_receive")
+        ),
+        10_000_000,
+        1,
+        ready_send_receive::<C>,
+    );
+
+    for &arg in BOUNDED_SHAPES {
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg}",
+                concat!(module_path!(), "::thread_batch")
+            ),
+            128,
+            1,
+            |bencher| thread_batch::<C>(bencher, arg),
+        );
+    }
+    for &arg in BOUNDED_SHAPES {
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg}",
+                concat!(module_path!(), "::task_batch")
+            ),
+            320,
+            1,
+            |bencher| task_batch::<C>(bencher, arg),
+        );
+    }
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::capacity_one_task_handoff")
+        ),
+        80,
+        1,
+        capacity_one_task_handoff::<C>,
+    );
 }

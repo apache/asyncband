@@ -16,16 +16,16 @@
 // under the License.
 
 use std::future::IntoFuture;
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::oneshot::channel;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-use divan::Bencher;
-use divan::black_box;
 
-#[divan::bench]
 fn send_before_poll(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -39,7 +39,6 @@ fn send_before_poll(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn poll_before_send(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -52,4 +51,19 @@ fn poll_before_send(bencher: Bencher) {
 
         black_box(poll_pinned_ready(receiver.as_mut(), &mut context).unwrap())
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.case(
+        concat!(module_path!(), "::send_before_poll"),
+        15_000_000,
+        1,
+        send_before_poll,
+    );
+    runner.case(
+        concat!(module_path!(), "::poll_before_send"),
+        15_000_000,
+        1,
+        poll_before_send,
+    );
 }

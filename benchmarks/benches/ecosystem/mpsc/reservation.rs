@@ -16,19 +16,18 @@
 // under the License.
 
 use std::future::Future;
+use std::hint::black_box;
 use std::marker::PhantomData;
 
 use asyncband::blocking::FutureExt;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
-use divan::counter::ItemsCount;
 
 use crate::mpsc::adapters::Asyncband;
 use crate::mpsc::adapters::BoundedMpsc;
 use crate::mpsc::adapters::Tokio;
-use crate::mpsc::support::BATCH_MESSAGES;
 use crate::mpsc::support::ConcurrentMpsc;
 use crate::mpsc::support::RepeatedTasks;
 use crate::mpsc::support::TASK_SHAPES;
@@ -67,8 +66,6 @@ impl Reservable for Tokio {
     }
 }
 
-// `sample_size` is pinned for the reason documented in `bounded.rs`.
-#[divan::bench(types = [Asyncband, Tokio], sample_size = 512)]
 fn reserve_publish_receive<C: Reservable>(bencher: Bencher) {
     let (sender, mut receiver) = C::channel(64);
     let mut context = bench_context();
@@ -102,14 +99,6 @@ impl<C: Reservable, const CAPACITY: usize> ConcurrentMpsc for Reserved<C, CAPACI
     }
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio],
-    consts = [64, 1024],
-    args = TASK_SHAPES,
-    sample_count = 50,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn reused_tasks<C: Reservable, const CAPACITY: usize>(
     bencher: Bencher,
     TaskShape { producers, workers }: TaskShape,
@@ -119,16 +108,73 @@ fn reused_tasks<C: Reservable, const CAPACITY: usize>(
     bencher.bench_local(|| batch.run());
 }
 
-#[divan::bench(types = [Asyncband, Tokio], sample_count = 20, sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES))]
 fn capacity_one_task_handoff<C: Reservable>(bencher: Bencher) {
     let mut batch = RepeatedTasks::<Reserved<C, 1>>::new(4, 4);
     batch.run();
     bencher.bench_local(|| batch.run());
 }
 
-#[divan::bench(types = [Asyncband, Tokio], sample_size = 1024)]
 fn cancel_reserved_capacity<C: Reservable>(bencher: Bencher) {
     let (sender, _receiver) = C::channel(64);
     bencher.bench_local(|| drop(black_box(C::try_reserve(&sender))));
+}
+
+pub fn register(runner: &mut Runner) {
+    register_implementation::<Asyncband>(runner, "Asyncband");
+    register_implementation::<Tokio>(runner, "Tokio");
+}
+
+fn register_implementation<C>(runner: &mut Runner, implementation: &str)
+where
+    C: Reservable,
+{
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::reserve_publish_receive")
+        ),
+        15_000_000,
+        1,
+        reserve_publish_receive::<C>,
+    );
+
+    for &arg in TASK_SHAPES {
+        runner.case(
+            format!(
+                "{}/{implementation}/64/{arg}",
+                concat!(module_path!(), "::reused_tasks")
+            ),
+            512,
+            1,
+            |bencher| reused_tasks::<C, 64>(bencher, arg),
+        );
+        runner.case(
+            format!(
+                "{}/{implementation}/1024/{arg}",
+                concat!(module_path!(), "::reused_tasks")
+            ),
+            512,
+            1,
+            |bencher| reused_tasks::<C, 1024>(bencher, arg),
+        );
+    }
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::capacity_one_task_handoff")
+        ),
+        128,
+        1,
+        capacity_one_task_handoff::<C>,
+    );
+
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::cancel_reserved_capacity")
+        ),
+        30_000_000,
+        1,
+        cancel_reserved_capacity::<C>,
+    );
 }

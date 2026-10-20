@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -22,20 +23,16 @@ use std::task::Wake;
 use std::task::Waker;
 
 use asyncband::event::ManualResetEvent;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
-use benchmarks::support::defer_input_drop;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-use divan::Bencher;
-use divan::black_box;
-use divan::counter::ItemsCount;
 
 const WAITER_COUNTS: &[usize] = &[1, 4, 16];
 const THREAD_COUNTS: &[usize] = &[1, 2, 4, 8];
-const CONTENDED_SAMPLE_SIZE: u32 = 256;
 
 // All benchmark threads read the same event without concurrent state transitions.
-#[divan::bench(args = [false, true], threads = THREAD_COUNTS, sample_size = CONTENDED_SAMPLE_SIZE)]
 fn is_set(bencher: Bencher, is_set: bool) {
     let event = ManualResetEvent::with_state(is_set);
 
@@ -43,7 +40,6 @@ fn is_set(bencher: Bencher, is_set: bool) {
 }
 
 // Each iteration creates and polls a fresh wait against the same already-set event.
-#[divan::bench(threads = THREAD_COUNTS, sample_size = CONTENDED_SAMPLE_SIZE)]
 fn wait_already_set(bencher: Bencher) {
     let event = ManualResetEvent::with_state(true);
 
@@ -55,7 +51,6 @@ fn wait_already_set(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn set_reset_cycle(bencher: Bencher) {
     let event = ManualResetEvent::new();
 
@@ -66,7 +61,6 @@ fn set_reset_cycle(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn reused_waiter_handoff(bencher: Bencher) {
     let mut context = bench_context();
     let event = ManualResetEvent::new();
@@ -83,31 +77,27 @@ fn reused_waiter_handoff(bencher: Bencher) {
 }
 
 // Measures the full fan-out lifecycle, including allocation, registration, set, and completion.
-#[divan::bench(args = WAITER_COUNTS)]
 fn waiter_fan_out(bencher: Bencher, waiter_count: usize) {
     let mut context = bench_context();
 
-    bencher
-        .counter(ItemsCount::new(waiter_count))
-        .bench_local(|| {
-            let event = ManualResetEvent::new();
-            let mut waiters = (0..waiter_count)
-                .map(|_| Box::pin(event.wait()))
-                .collect::<Vec<_>>();
-            for waiter in &mut waiters {
-                poll_pending(waiter.as_mut(), &mut context);
-            }
+    bencher.bench_local(|| {
+        let event = ManualResetEvent::new();
+        let mut waiters = (0..waiter_count)
+            .map(|_| Box::pin(event.wait()))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            poll_pending(waiter.as_mut(), &mut context);
+        }
 
-            event.set();
-            for mut waiter in waiters {
-                poll_pinned_ready(waiter.as_mut(), &mut context);
-            }
-            black_box(event)
-        });
+        event.set();
+        for mut waiter in waiters {
+            poll_pinned_ready(waiter.as_mut(), &mut context);
+        }
+        black_box(event)
+    });
 }
 
 // A fresh event per iteration includes allocating its waiter storage.
-#[divan::bench]
 fn cancel_pending(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -122,7 +112,6 @@ fn cancel_pending(bencher: Bencher) {
 }
 
 // Reusing the event retains waiter storage capacity across registration/cancellation cycles.
-#[divan::bench]
 fn cancel_pending_reused(bencher: Bencher) {
     let mut context = bench_context();
     let event = ManualResetEvent::new();
@@ -133,8 +122,7 @@ fn cancel_pending_reused(bencher: Bencher) {
     });
 }
 
-// Initial registration is outside the timed loop; every repoll uses the same waker.
-#[divan::bench]
+// Register once before the repeated polls; every repoll uses the same waker.
 fn repoll_pending(bencher: Bencher) {
     let mut context = bench_context();
     let event = ManualResetEvent::new();
@@ -144,7 +132,6 @@ fn repoll_pending(bencher: Bencher) {
     bencher.bench_local(|| poll_pending(wait.as_mut(), &mut context));
 }
 
-#[divan::bench]
 fn replace_pending_waker(bencher: Bencher) {
     struct Task;
     #[allow(clippy::manual_noop_waker)]
@@ -166,12 +153,10 @@ fn replace_pending_waker(bencher: Bencher) {
     });
 }
 
-// Isolates set/detach/wake from registration and cleanup. The smaller sample size limits setup
-// costs for large cohorts; use --sample-count 200 without a time limit for repeated measurements.
-#[divan::bench(args = [1, 16, 256], sample_size = 64)]
+// Register a fresh cohort, detach it with set, then cancel the completed registrations.
 fn set_registered(bencher: Bencher, waiter_count: usize) {
-    bencher
-        .with_inputs(|| {
+    bencher.bench_local(|| {
+        let (event, waiters) = {
             let event = Arc::new(ManualResetEvent::new());
             let mut context = bench_context();
             let mut waiters = (0..waiter_count)
@@ -181,10 +166,88 @@ fn set_registered(bencher: Bencher, waiter_count: usize) {
                 poll_pending(waiter.as_mut(), &mut context);
             }
             (event, waiters)
-        })
-        .bench_local_values(|(event, waiters)| {
-            // Time cohort detachment and wake callbacks, excluding registration and cleanup.
-            event.set();
-            defer_input_drop((event, waiters), ())
-        });
+        };
+        // Include registration, cohort detachment, wake callbacks, and cleanup in each round.
+        event.set();
+        drop((event, waiters));
+    });
+}
+
+pub fn register(runner: &mut Runner) {
+    for &arg in &[false, true] {
+        for &threads in THREAD_COUNTS {
+            runner.case(
+                format!(
+                    "{}/{arg}/threads={threads}",
+                    concat!(module_path!(), "::is_set")
+                ),
+                960_000_000,
+                threads,
+                |bencher| is_set(bencher, arg),
+            );
+        }
+    }
+    for &threads in THREAD_COUNTS {
+        runner.case(
+            format!(
+                "{}/threads={threads}",
+                concat!(module_path!(), "::wait_already_set")
+            ),
+            240_000_000,
+            threads,
+            wait_already_set,
+        );
+    }
+    runner.case(
+        concat!(module_path!(), "::set_reset_cycle"),
+        24_000_000,
+        1,
+        set_reset_cycle,
+    );
+    runner.case(
+        concat!(module_path!(), "::reused_waiter_handoff"),
+        12_000_000,
+        1,
+        reused_waiter_handoff,
+    );
+    for &arg in WAITER_COUNTS {
+        runner.case(
+            format!("{}/{arg}", concat!(module_path!(), "::waiter_fan_out")),
+            (5_000_000 / arg).max(1),
+            1,
+            |bencher| waiter_fan_out(bencher, arg),
+        );
+    }
+    runner.case(
+        concat!(module_path!(), "::cancel_pending"),
+        6_000_000,
+        1,
+        cancel_pending,
+    );
+    runner.case(
+        concat!(module_path!(), "::cancel_pending_reused"),
+        24_000_000,
+        1,
+        cancel_pending_reused,
+    );
+    runner.case(
+        concat!(module_path!(), "::repoll_pending"),
+        50_000_000,
+        1,
+        repoll_pending,
+    );
+    runner.case(
+        concat!(module_path!(), "::replace_pending_waker"),
+        48_000_000,
+        1,
+        replace_pending_waker,
+    );
+    for &arg in &[1, 16, 256] {
+        runner.case(
+            format!("{}/{arg}", concat!(module_path!(), "::set_registered")),
+            (5_000_000 / arg).max(1),
+            1,
+            |bencher| set_registered(bencher, arg),
+        );
+    }
 }

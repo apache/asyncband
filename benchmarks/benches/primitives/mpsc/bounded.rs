@@ -15,16 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
+
 use asyncband::mpsc;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const SENDER_COUNTS: &[usize] = &[1, 4, 16];
 
-#[divan::bench(args = SENDER_COUNTS)]
 fn drain_backpressured_senders(bencher: Bencher, sender_count: usize) {
     let mut context = bench_context();
     let (sender, mut receiver) = mpsc::bounded(1);
@@ -51,7 +52,6 @@ fn drain_backpressured_senders(bencher: Bencher, sender_count: usize) {
     });
 }
 
-#[divan::bench(args = SENDER_COUNTS)]
 fn cancel_backpressured_senders(bencher: Bencher, sender_count: usize) {
     let mut context = bench_context();
     let (sender, mut receiver) = mpsc::bounded(1);
@@ -73,4 +73,29 @@ fn cancel_backpressured_senders(bencher: Bencher, sender_count: usize) {
         drop(sends);
         black_box(receiver.try_recv().unwrap())
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    for &arg in SENDER_COUNTS {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::drain_backpressured_senders")
+            ),
+            (5_000_000 / arg).max(1),
+            1,
+            |bencher| drain_backpressured_senders(bencher, arg),
+        );
+    }
+    for &arg in SENDER_COUNTS {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::cancel_backpressured_senders")
+            ),
+            (8_000_000 / arg).max(1),
+            1,
+            |bencher| cancel_backpressured_senders(bencher, arg),
+        );
+    }
 }

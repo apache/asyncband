@@ -17,3 +17,10 @@
 
 mod get_or_init;
 mod wait;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    get_or_init::register(runner);
+    wait::register(runner);
+}
