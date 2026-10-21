@@ -146,6 +146,10 @@ The `blocking` module is a lightweight, thread-parking single-future executor, n
 
 Asyncband types implement `Send` and `Sync` only when the protected, transferred, or managed value satisfies the necessary bounds. See each API's documentation for its exact contract.
 
+## Platform support
+
+Asyncband supports x86, x86-64, ARMv6 or later, and AArch64 targets. It requires 64-bit atomics and fails to compile on targets without them, such as ARMv5TE, 32-bit PowerPC, and 32-bit MIPS.
+
 ## Minimum Supported Rust Version (MSRV)
 
 This crate is built against the latest stable release, and its minimum supported rustc version is 1.86.0.

@@ -47,6 +47,19 @@ fn send_then_recv(bencher: Bencher) {
 }
 
 #[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
+fn try_reserve_then_send(bencher: Bencher) {
+    let (sender, receiver) = mpmc::bounded(1);
+    bencher.bench_local(|| {
+        sender
+            .try_reserve()
+            .unwrap()
+            .send(black_box(1usize))
+            .unwrap();
+        black_box(receiver.try_recv().unwrap())
+    });
+}
+
+#[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
 fn wake_blocked_sender(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, receiver) = mpmc::bounded(1);

@@ -22,25 +22,26 @@ use crate::mpmc::RecvError;
 use crate::mpmc::SendError;
 use crate::mpmc::TryRecvError;
 use crate::mpmc::TrySendError;
-use crate::mpmc::queue::Permit;
-use crate::mpmc::queue::Shared;
+use crate::mpmc::ring::Permit;
+use crate::mpmc::ring::Shared;
 
 /// Creates a bounded multi-producer, multi-consumer queue.
 ///
 /// Queued values, held permits, and capacity granted to waiting senders occupy at most `capacity`
 /// slots. Pending `send` and `reserve` operations receive capacity in wait-queue order. Sending
-/// waits for a receiver to free capacity when none is available.
+/// waits for a receiver to free capacity when none is available. Storage for `capacity` values is
+/// allocated when the queue is created.
 ///
 /// The `try_*` methods do not wait for capacity or messages, but may briefly block on an internal
-/// mutex.
+/// mutex or spin while another sender or receiver finishes with the same slot.
 ///
 /// # Panics
 ///
-/// Panics if `capacity` is zero.
+/// Panics if `capacity` is zero or greater than 2,097,151.
 #[track_caller]
 pub fn bounded<T>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     assert!(capacity > 0, "mpmc bounded queue requires capacity > 0");
-    let shared = Arc::new(Shared::bounded(capacity));
+    let shared = Arc::new(Shared::new(capacity));
     (
         BoundedSender {
             shared: shared.clone(),

@@ -41,6 +41,7 @@ project:
     source_excludes_lightweight:
       - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/blocking/executor.rs"
       - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/blocking/parker.rs"
+      - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/internal/cache_padded.rs"
       - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/pool/bounded.rs"
       - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/pool/common.rs"
       - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/pool/mod.rs"

@@ -112,6 +112,11 @@
 //! Asyncband types implement `Send` and `Sync` only when their protected, transferred, or managed
 //! values satisfy the required bounds. Consult each API's documentation for its exact contract.
 //!
+//! # Platform support
+//!
+//! Asyncband supports x86, x86-64, ARMv6 or later, and AArch64 targets. It requires 64-bit atomics
+//! and fails to compile on targets without them, such as ARMv5TE, 32-bit PowerPC, and 32-bit MIPS.
+//!
 //! # Disclaimer
 //!
 //! Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software
@@ -123,6 +128,13 @@
 //!
 //! While incubation status is not necessarily a reflection of the completeness or stability of the
 //! code, it does indicate that the project has yet to be fully endorsed by the ASF.
+// The bounded MPMC queue packs a slot position, its held capacity, and a lap count into one 64-bit
+// cursor. Narrower cursors leave too few lap bits to rule out a stale claim in practice.
+#[cfg(not(target_has_atomic = "64"))]
+compile_error!(
+    "asyncband requires a target with 64-bit atomics, such as x86, x86-64, ARMv6 or later, or AArch64"
+);
+
 mod internal;
 
 #[cfg(feature = "barrier")]
