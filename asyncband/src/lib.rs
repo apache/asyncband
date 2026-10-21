@@ -128,6 +128,7 @@
 //!
 //! While incubation status is not necessarily a reflection of the completeness or stability of the
 //! code, it does indicate that the project has yet to be fully endorsed by the ASF.
+
 // The bounded MPMC queue packs a slot position, its held capacity, and a lap count into one 64-bit
 // cursor. Narrower cursors leave too few lap bits to rule out a stale claim in practice.
 #[cfg(not(target_has_atomic = "64"))]
