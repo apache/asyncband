@@ -23,7 +23,6 @@ excludes = [
   # These third-party-derived files retain the applicable upstream license and copyright notices.
   "asyncband/src/blocking/executor.rs",
   "asyncband/src/blocking/parker.rs",
-  "asyncband/src/internal/cache_padded.rs",
   "asyncband/src/pool/bounded.rs",
   "asyncband/src/pool/common.rs",
   "asyncband/src/pool/mod.rs",
