@@ -148,7 +148,7 @@ Asyncband types implement `Send` and `Sync` only when the protected, transferred
 
 ## Platform support
 
-Asyncband supports x86, x86-64, ARMv6 or later, and AArch64 targets. It requires 64-bit atomics and fails to compile on targets without them, such as ARMv5TE, 32-bit PowerPC, and 32-bit MIPS.
+Asyncband supports x86, x86-64, ARMv6 or later, and AArch64 targets. It also compiles on targets without 64-bit atomics, such as ARMv5TE, 32-bit PowerPC, and 32-bit MIPS, where bounded MPMC queues protect their cursors with locks and run slower.
 
 ## Minimum Supported Rust Version (MSRV)
 

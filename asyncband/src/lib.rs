@@ -114,8 +114,9 @@
 //!
 //! # Platform support
 //!
-//! Asyncband supports x86, x86-64, ARMv6 or later, and AArch64 targets. It requires 64-bit atomics
-//! and fails to compile on targets without them, such as ARMv5TE, 32-bit PowerPC, and 32-bit MIPS.
+//! Asyncband supports x86, x86-64, ARMv6 or later, and AArch64 targets. It also compiles on targets
+//! without 64-bit atomics, such as ARMv5TE, 32-bit PowerPC, and 32-bit MIPS, where bounded MPMC
+//! queues protect their cursors with locks and run slower.
 //!
 //! # Disclaimer
 //!
@@ -128,13 +129,6 @@
 //!
 //! While incubation status is not necessarily a reflection of the completeness or stability of the
 //! code, it does indicate that the project has yet to be fully endorsed by the ASF.
-
-// The bounded MPMC queue packs a slot position, its held capacity, and a lap count into one 64-bit
-// cursor. Narrower cursors leave too few lap bits to rule out a stale claim in practice.
-#[cfg(not(target_has_atomic = "64"))]
-compile_error!(
-    "asyncband requires a target with 64-bit atomics, such as x86, x86-64, ARMv6 or later, or AArch64"
-);
 
 mod internal;
 

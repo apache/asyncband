@@ -42,6 +42,7 @@ use std::task::Poll;
 use std::task::Waker;
 use std::thread;
 
+use crate::internal::atomic_u64::AtomicU64;
 use crate::internal::cache_padded::CachePadded;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
@@ -54,8 +55,9 @@ use crate::mpmc::TrySendError;
 use crate::mpmc::waiters::RecvWaiter;
 use crate::mpmc::waiters::remove_waiter;
 
-// Positions are 64 bits on every target, which is why the crate requires 64-bit atomics.
-type AtomicIndex = std::sync::atomic::AtomicU64;
+// Positions are 64 bits on every target. Targets without native 64-bit atomics protect each cursor
+// and stamp with a lock instead, which is slower but keeps the same algorithm.
+type AtomicIndex = AtomicU64;
 type Index = u64;
 
 /// The largest capacity whose tail keeps enough lap bits that an exchange prepared from an earlier

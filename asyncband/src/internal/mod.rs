@@ -55,6 +55,9 @@ pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> 
 pub(crate) mod arena;
 
 #[cfg(feature = "mpmc")]
+pub(crate) mod atomic_u64;
+
+#[cfg(feature = "mpmc")]
 pub(crate) mod cache_padded;
 
 #[cfg(any(feature = "latch", feature = "once"))]
