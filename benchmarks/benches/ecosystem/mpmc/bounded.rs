@@ -17,9 +17,11 @@
 
 use benchmarks::channels::BATCH_MESSAGES;
 use benchmarks::channels::BOUNDED_CAPACITY;
+use benchmarks::channels::adapters::AsyncBoundedMpmc;
 use benchmarks::channels::adapters::AsyncChannel;
 use benchmarks::channels::adapters::Bounded;
 use benchmarks::channels::adapters::BoundedMpmc;
+use benchmarks::channels::adapters::Crossbeam;
 use benchmarks::channels::adapters::Flume;
 use benchmarks::channels::adapters::Mpmc;
 use benchmarks::channels::mpmc::TOPOLOGIES;
@@ -31,7 +33,7 @@ use divan::Bencher;
 use divan::counter::ItemsCount;
 
 #[divan::bench(
-    types = [Mpmc, AsyncChannel, Flume],
+    types = [Mpmc, AsyncChannel, Flume, Crossbeam],
     args = TOPOLOGIES,
     sample_count = 20,
     sample_size = 1,
@@ -43,6 +45,39 @@ fn thread_batch<C: BoundedMpmc>(bencher: Bencher, topology: Topology) {
         .bench_local_refs(|batch| batch.run());
 }
 
+/// Capacity 1 makes every send wait for a receiver, while 1024 rarely fills.
+#[divan::bench(
+    types = [Mpmc, AsyncChannel, Flume, Crossbeam],
+    consts = [1, 1024],
+    args = TOPOLOGIES,
+    sample_count = 20,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn thread_batch_capacity<C: BoundedMpmc, const CAPACITY: usize>(
+    bencher: Bencher,
+    topology: Topology,
+) {
+    bencher
+        .with_inputs(|| ThreadBatch::new_bounded::<C>(CAPACITY, topology))
+        .bench_local_refs(|batch| batch.run());
+}
+
+/// Endpoints spin on the nonblocking operations, so this measures queue contention without
+/// parking or wakeups.
+#[divan::bench(
+    types = [Mpmc, AsyncChannel, Flume, Crossbeam],
+    args = TOPOLOGIES,
+    sample_count = 20,
+    sample_size = 1,
+    counter = ItemsCount::new(BATCH_MESSAGES),
+)]
+fn spin_batch<C: BoundedMpmc>(bencher: Bencher, topology: Topology) {
+    bencher
+        .with_inputs(|| ThreadBatch::new_bounded_spinning::<C>(BOUNDED_CAPACITY, topology))
+        .bench_local_refs(|batch| batch.run());
+}
+
 #[divan::bench(
     types = [Mpmc, AsyncChannel, Flume],
     consts = [0, 4],
@@ -51,7 +86,7 @@ fn thread_batch<C: BoundedMpmc>(bencher: Bencher, topology: Topology) {
     sample_size = 1,
     counter = ItemsCount::new(BATCH_MESSAGES),
 )]
-fn task_batch<C: BoundedMpmc, const WORKERS: usize>(bencher: Bencher, topology: Topology) {
+fn task_batch<C: AsyncBoundedMpmc, const WORKERS: usize>(bencher: Bencher, topology: Topology) {
     let runtime = runtime(WORKERS);
     bencher
         .with_inputs(|| TaskBatch::new::<Bounded<C>>(&runtime, topology))

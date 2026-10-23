@@ -17,6 +17,7 @@
 
 use std::future::Future;
 use std::marker::PhantomData;
+use std::task::Poll;
 
 use asyncband::blocking::FutureExt;
 use asyncband::mpmc;
@@ -28,6 +29,7 @@ pub struct Mpmc;
 pub struct Spmc;
 pub struct AsyncChannel;
 pub struct Flume;
+pub struct Crossbeam;
 
 pub struct Bounded<C, const CAPACITY: usize = BOUNDED_CAPACITY>(PhantomData<C>);
 pub struct Unbounded<C>(PhantomData<C>);
@@ -76,7 +78,7 @@ impl Channel for Unbounded<Spmc> {
     }
 }
 
-impl<C: BoundedMpmc, const CAPACITY: usize> Channel for Bounded<C, CAPACITY> {
+impl<C: AsyncBoundedMpmc, const CAPACITY: usize> Channel for Bounded<C, CAPACITY> {
     type Sender = C::Sender;
     type Receiver = C::Receiver;
 
@@ -110,21 +112,26 @@ impl<C: UnboundedMpmc> Channel for Unbounded<C> {
     }
 }
 
+/// A bounded MPMC queue that dedicated threads can use.
 pub trait BoundedMpmc: Send + Sync + 'static {
     type Sender: Clone + Send + Sync + 'static;
     type Receiver: Clone + Send + Sync + 'static;
 
     fn channel(capacity: usize) -> (Self::Sender, Self::Receiver);
+    fn send(sender: &Self::Sender, value: usize);
+    fn recv(receiver: &Self::Receiver) -> Option<usize>;
+
+    /// Sends without waiting, returning the value while the queue is full.
+    fn try_send(sender: &Self::Sender, value: usize) -> Result<(), usize>;
+
+    /// Receives without waiting. `Pending` means empty and `Ready(None)` means disconnected.
+    fn try_recv(receiver: &Self::Receiver) -> Poll<Option<usize>>;
+}
+
+/// A bounded MPMC queue that asynchronous tasks can also use.
+pub trait AsyncBoundedMpmc: BoundedMpmc {
     fn send_async(sender: &Self::Sender, value: usize) -> impl Future<Output = ()> + Send;
     fn recv_async(receiver: &Self::Receiver) -> impl Future<Output = Option<usize>> + Send;
-
-    fn send(sender: &Self::Sender, value: usize) {
-        Self::send_async(sender, value).block_on();
-    }
-
-    fn recv(receiver: &Self::Receiver) -> Option<usize> {
-        Self::recv_async(receiver).block_on()
-    }
 }
 
 pub trait UnboundedMpmc: Send + Sync + 'static {
@@ -148,6 +155,32 @@ impl BoundedMpmc for Mpmc {
         mpmc::bounded(capacity)
     }
 
+    fn send(sender: &Self::Sender, value: usize) {
+        <Self as AsyncBoundedMpmc>::send_async(sender, value).block_on();
+    }
+
+    fn recv(receiver: &Self::Receiver) -> Option<usize> {
+        <Self as AsyncBoundedMpmc>::recv_async(receiver).block_on()
+    }
+
+    fn try_send(sender: &Self::Sender, value: usize) -> Result<(), usize> {
+        match sender.try_send(value) {
+            Ok(()) => Ok(()),
+            Err(mpmc::TrySendError::Full(value)) => Err(value),
+            Err(mpmc::TrySendError::Disconnected(_)) => panic!("benchmark receiver disconnected"),
+        }
+    }
+
+    fn try_recv(receiver: &Self::Receiver) -> Poll<Option<usize>> {
+        match receiver.try_recv() {
+            Ok(value) => Poll::Ready(Some(value)),
+            Err(mpmc::TryRecvError::Empty) => Poll::Pending,
+            Err(mpmc::TryRecvError::Disconnected) => Poll::Ready(None),
+        }
+    }
+}
+
+impl AsyncBoundedMpmc for Mpmc {
     async fn send_async(sender: &Self::Sender, value: usize) {
         sender
             .send(value)
@@ -185,6 +218,36 @@ impl BoundedMpmc for AsyncChannel {
         async_channel::bounded(capacity)
     }
 
+    fn send(sender: &Self::Sender, value: usize) {
+        sender
+            .send_blocking(value)
+            .expect("benchmark sender disconnected");
+    }
+
+    fn recv(receiver: &Self::Receiver) -> Option<usize> {
+        receiver.recv_blocking().ok()
+    }
+
+    fn try_send(sender: &Self::Sender, value: usize) -> Result<(), usize> {
+        match sender.try_send(value) {
+            Ok(()) => Ok(()),
+            Err(async_channel::TrySendError::Full(value)) => Err(value),
+            Err(async_channel::TrySendError::Closed(_)) => {
+                panic!("benchmark receiver disconnected")
+            }
+        }
+    }
+
+    fn try_recv(receiver: &Self::Receiver) -> Poll<Option<usize>> {
+        match receiver.try_recv() {
+            Ok(value) => Poll::Ready(Some(value)),
+            Err(async_channel::TryRecvError::Empty) => Poll::Pending,
+            Err(async_channel::TryRecvError::Closed) => Poll::Ready(None),
+        }
+    }
+}
+
+impl AsyncBoundedMpmc for AsyncChannel {
     async fn send_async(sender: &Self::Sender, value: usize) {
         sender
             .send(value)
@@ -194,16 +257,6 @@ impl BoundedMpmc for AsyncChannel {
 
     async fn recv_async(receiver: &Self::Receiver) -> Option<usize> {
         receiver.recv().await.ok()
-    }
-
-    fn send(sender: &Self::Sender, value: usize) {
-        sender
-            .send_blocking(value)
-            .expect("benchmark sender disconnected");
-    }
-
-    fn recv(receiver: &Self::Receiver) -> Option<usize> {
-        receiver.recv_blocking().ok()
     }
 }
 
@@ -238,6 +291,32 @@ impl BoundedMpmc for Flume {
         flume::bounded(capacity)
     }
 
+    fn send(sender: &Self::Sender, value: usize) {
+        sender.send(value).expect("benchmark sender disconnected");
+    }
+
+    fn recv(receiver: &Self::Receiver) -> Option<usize> {
+        receiver.recv().ok()
+    }
+
+    fn try_send(sender: &Self::Sender, value: usize) -> Result<(), usize> {
+        match sender.try_send(value) {
+            Ok(()) => Ok(()),
+            Err(flume::TrySendError::Full(value)) => Err(value),
+            Err(flume::TrySendError::Disconnected(_)) => panic!("benchmark receiver disconnected"),
+        }
+    }
+
+    fn try_recv(receiver: &Self::Receiver) -> Poll<Option<usize>> {
+        match receiver.try_recv() {
+            Ok(value) => Poll::Ready(Some(value)),
+            Err(flume::TryRecvError::Empty) => Poll::Pending,
+            Err(flume::TryRecvError::Disconnected) => Poll::Ready(None),
+        }
+    }
+}
+
+impl AsyncBoundedMpmc for Flume {
     async fn send_async(sender: &Self::Sender, value: usize) {
         sender
             .send_async(value)
@@ -247,14 +326,6 @@ impl BoundedMpmc for Flume {
 
     async fn recv_async(receiver: &Self::Receiver) -> Option<usize> {
         receiver.recv_async().await.ok()
-    }
-
-    fn send(sender: &Self::Sender, value: usize) {
-        sender.send(value).expect("benchmark sender disconnected");
-    }
-
-    fn recv(receiver: &Self::Receiver) -> Option<usize> {
-        receiver.recv().ok()
     }
 }
 
@@ -276,5 +347,40 @@ impl UnboundedMpmc for Flume {
 
     fn recv(receiver: &Self::Receiver) -> Option<usize> {
         receiver.recv().ok()
+    }
+}
+
+impl BoundedMpmc for Crossbeam {
+    type Receiver = crossbeam_channel::Receiver<usize>;
+    type Sender = crossbeam_channel::Sender<usize>;
+
+    fn channel(capacity: usize) -> (Self::Sender, Self::Receiver) {
+        crossbeam_channel::bounded(capacity)
+    }
+
+    fn send(sender: &Self::Sender, value: usize) {
+        sender.send(value).expect("benchmark receiver disconnected");
+    }
+
+    fn recv(receiver: &Self::Receiver) -> Option<usize> {
+        receiver.recv().ok()
+    }
+
+    fn try_send(sender: &Self::Sender, value: usize) -> Result<(), usize> {
+        match sender.try_send(value) {
+            Ok(()) => Ok(()),
+            Err(crossbeam_channel::TrySendError::Full(value)) => Err(value),
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                panic!("benchmark receiver disconnected")
+            }
+        }
+    }
+
+    fn try_recv(receiver: &Self::Receiver) -> Poll<Option<usize>> {
+        match receiver.try_recv() {
+            Ok(value) => Poll::Ready(Some(value)),
+            Err(crossbeam_channel::TryRecvError::Empty) => Poll::Pending,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => Poll::Ready(None),
+        }
     }
 }

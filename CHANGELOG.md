@@ -23,6 +23,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Notable changes
+
+* Bounded MPMC queues now panic when created with a capacity greater than 2,097,151.
+
+### Improvements
+
+* Bounded MPMC sends, receives, and reservations no longer take a lock unless a sender or receiver is waiting, which speeds up contended workloads on threads and async runtimes. Creating a bounded queue now allocates storage for its full capacity, and handoffs where every send waits for a receiver, such as through a capacity-1 queue, are slightly slower. On targets without 64-bit atomics, bounded queues protect their cursors with locks, which can be slower than before.
+
 ## v0.7.4
 
 ### Notable changes

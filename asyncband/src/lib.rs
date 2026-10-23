@@ -112,6 +112,12 @@
 //! Asyncband types implement `Send` and `Sync` only when their protected, transferred, or managed
 //! values satisfy the required bounds. Consult each API's documentation for its exact contract.
 //!
+//! # Platform support
+//!
+//! Asyncband supports x86, x86-64, ARMv6 or later, and AArch64 targets. It also compiles on targets
+//! without 64-bit atomics, such as ARMv5TE, 32-bit PowerPC, and 32-bit MIPS, where bounded MPMC
+//! queues protect their cursors with locks and run slower.
+//!
 //! # Disclaimer
 //!
 //! Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software
@@ -123,6 +129,7 @@
 //!
 //! While incubation status is not necessarily a reflection of the completeness or stability of the
 //! code, it does indicate that the project has yet to be fully endorsed by the ASF.
+
 mod internal;
 
 #[cfg(feature = "barrier")]

@@ -21,7 +21,6 @@ use std::sync::Arc;
 use crate::mpmc::RecvError;
 use crate::mpmc::SendError;
 use crate::mpmc::TryRecvError;
-use crate::mpmc::TrySendError;
 use crate::mpmc::queue::Shared;
 
 /// Creates an unbounded multi-producer, multi-consumer queue.
@@ -73,11 +72,7 @@ impl<T> UnboundedSender<T> {
     ///
     /// If all receivers have been dropped, the value is returned in [`SendError`].
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
-        match self.shared.try_send(value) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Disconnected(value)) => Err(SendError::new(value)),
-            Err(TrySendError::Full(_)) => unreachable!("unbounded queue cannot be full"),
-        }
+        self.shared.send(value)
     }
 }
 

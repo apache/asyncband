@@ -49,6 +49,7 @@ asyncband = { workspace = true, features = [
   "waitgroup",
   "watch",
 ] }
+crossbeam-channel = { workspace = true }
 divan = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
