@@ -32,6 +32,11 @@ use crate::rwlock::RwLock;
 use crate::rwlock::RwLockReadGuard;
 use crate::rwlock::access::WriteAccess;
 
+/// Transfers an already acquired exclusive access token into a borrowed write guard.
+pub fn from_access<T: ?Sized>(access: WriteAccess<&RwLock<T>>) -> RwLockWriteGuard<'_, T> {
+    RwLockWriteGuard { access }
+}
+
 impl<T: ?Sized> RwLock<T> {
     /// Waits for exclusive access and returns a guard borrowing this lock.
     ///
