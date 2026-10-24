@@ -92,7 +92,7 @@ git push https://github.com/apache/asyncband.git "${RC_TAG}"
 Follow both workflows for this tag:
 
 - `Release` checks the `${VERSION}` Cargo package.
-- `Compose source release` builds `apache-asyncband-${VERSION}-incubating-src.tar.gz` and its checksum. After a `release` environment reviewer listed in `.asf.yaml` approves its job, which the release manager can do when listed there, it signs with the automated project key and uploads the archive, `.asc`, and `.sha512` to ATR project `asyncband`, version `${VERSION}`.
+- `Compose source release` builds `apache-asyncband-${VERSION}-incubating-src.tar.gz`, its CycloneDX `.tar.gz.cdx.json` sidecar, and both checksums. It validates the SBOM and compares two independent generations before signing. After a `release` environment reviewer listed in `.asf.yaml` approves its job, which the release manager can do when listed there, it signs both artifacts with the automated project key and uploads them with their `.asc` and `.sha512` files to ATR project `asyncband`, version `${VERSION}`. See [SBOM composition](references/sbom.md) for scope, tools, and reproduction.
 
 Open the candidate in [ATR](https://releases.apache.org/projects/asyncband), inspect its checks, and record its URL, ATR revision, workflow run, and SHA-512 in the issue. Download that revision and complete [verification](references/verification.md) and `license-audit` on the actual distributions before voting. The `release_verifier` and `license_auditor` agents can perform these checks independently; reuse completed checks for the same candidate.
 
