@@ -18,5 +18,9 @@
 mod bounded;
 mod unbounded;
 
-// Fixed sample sizes keep one-time warm-up work from changing Divan's iteration granularity.
-const FAST_SAMPLE_SIZE: u32 = 256;
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    bounded::register(runner);
+    unbounded::register(runner);
+}

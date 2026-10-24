@@ -16,3 +16,9 @@
 // under the License.
 
 mod mpmc;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    mpmc::register(runner);
+}

@@ -16,3 +16,9 @@
 // under the License.
 
 mod wait;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    wait::register(runner);
+}

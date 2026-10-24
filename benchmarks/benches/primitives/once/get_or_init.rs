@@ -16,19 +16,19 @@
 // under the License.
 
 use std::cell::Cell;
+use std::hint::black_box;
 
 use asyncband::once::OnceCell;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
 use benchmarks::support::wait_until_open;
-use divan::Bencher;
-use divan::black_box;
 
 const WAITER_COUNTS: &[usize] = &[1, 4, 16];
 
-#[divan::bench]
 fn initialize_cell(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -42,7 +42,6 @@ fn initialize_cell(bencher: Bencher) {
     });
 }
 
-#[divan::bench(args = WAITER_COUNTS)]
 fn initialize_cell_waiter_batch(bencher: Bencher, waiter_count: usize) {
     let mut context = bench_context();
 
@@ -71,4 +70,24 @@ fn initialize_cell_waiter_batch(bencher: Bencher, waiter_count: usize) {
             black_box(*value);
         }
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.case(
+        concat!(module_path!(), "::initialize_cell"),
+        6_000_000,
+        1,
+        initialize_cell,
+    );
+    for &arg in WAITER_COUNTS {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::initialize_cell_waiter_batch")
+            ),
+            (4_000_000 / arg).max(1),
+            1,
+            |bencher| initialize_cell_waiter_batch(bencher, arg),
+        );
+    }
 }

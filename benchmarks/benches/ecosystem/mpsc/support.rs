@@ -17,6 +17,7 @@
 
 use std::fmt;
 use std::future::Future;
+use std::hint::black_box;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Barrier;
@@ -27,7 +28,6 @@ use std::thread::JoinHandle;
 
 pub use benchmarks::channels::BATCH_MESSAGES;
 pub use benchmarks::channels::BOUNDED_CAPACITY;
-use divan::black_box;
 use tokio::runtime::Builder;
 use tokio::runtime::Runtime;
 use tokio::sync::Notify;
@@ -184,7 +184,8 @@ impl<C: UnboundedMpsc> ConcurrentMpsc for Unbounded<C> {
     }
 }
 
-// Reuse worker threads and channel storage so steady-state samples exclude thread creation.
+// Reuse worker threads and channel storage across rounds; startup and shutdown happen once per
+// workload.
 pub struct RepeatedBatch<C: ConcurrentMpsc<Message = usize>> {
     receiver: C::Receiver,
     start: Arc<Barrier>,

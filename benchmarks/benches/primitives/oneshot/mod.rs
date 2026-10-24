@@ -17,3 +17,9 @@
 
 mod recv;
 mod send;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    send::register(runner);
+}

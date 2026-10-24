@@ -15,20 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::pin;
 use std::sync::Arc;
 
 use asyncband::rwlock::RwLock;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const READER_COUNTS: &[usize] = &[1, 4, 16];
 
-#[divan::bench(args = READER_COUNTS)]
 fn readers_then_queued_writer(bencher: Bencher, reader_count: usize) {
     let mut context = bench_context();
 
@@ -45,4 +45,18 @@ fn readers_then_queued_writer(bencher: Bencher, reader_count: usize) {
         *guard = guard.wrapping_add(1);
         black_box(*guard)
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    for &arg in READER_COUNTS {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::readers_then_queued_writer")
+            ),
+            (5_000_000 / arg).max(1),
+            1,
+            |bencher| readers_then_queued_writer(bencher, arg),
+        );
+    }
 }

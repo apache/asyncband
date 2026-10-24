@@ -15,16 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::sync::Arc;
 
 use asyncband::semaphore::Semaphore;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
-use benchmarks::support::defer_input_drop;
 use benchmarks::support::poll_pending;
-use divan::Bencher;
-use divan::black_box;
 
-#[divan::bench]
 fn fulfill_debt_repeatedly(bencher: Bencher) {
     const CYCLES: usize = 64;
 
@@ -38,10 +37,9 @@ fn fulfill_debt_repeatedly(bencher: Bencher) {
     });
 }
 
-#[divan::bench(args = [1, 2, 32, 256], sample_size = 64)]
 fn release_to_waiters(bencher: Bencher, waiter_count: usize) {
-    bencher
-        .with_inputs(|| {
+    bencher.bench_local(|| {
+        let (semaphore, waiters) = {
             let semaphore = Arc::new(Semaphore::new(0));
             let mut context = bench_context();
             let mut waiters = (0..waiter_count)
@@ -51,11 +49,26 @@ fn release_to_waiters(bencher: Bencher, waiter_count: usize) {
                 poll_pending(waiter.as_mut(), &mut context);
             }
             (semaphore, waiters)
-        })
-        .bench_local_values(|(semaphore, waiters)| {
-            // Only release and wake callbacks are timed; registration and future cleanup are
-            // not.
-            semaphore.release(black_box(waiter_count));
-            defer_input_drop((semaphore, waiters), ())
-        });
+        };
+        // Include registration, release, wake callbacks, and cancellation in each round.
+        semaphore.release(black_box(waiter_count));
+        drop((semaphore, waiters));
+    });
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.case(
+        concat!(module_path!(), "::fulfill_debt_repeatedly"),
+        300_000,
+        1,
+        fulfill_debt_repeatedly,
+    );
+    for &arg in &[1, 2, 32, 256] {
+        runner.case(
+            format!("{}/{arg}", concat!(module_path!(), "::release_to_waiters")),
+            (4_000_000 / arg).max(1),
+            1,
+            |bencher| release_to_waiters(bencher, arg),
+        );
+    }
 }

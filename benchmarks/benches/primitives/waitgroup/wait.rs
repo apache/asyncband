@@ -16,17 +16,17 @@
 // under the License.
 
 use std::future::IntoFuture;
+use std::hint::black_box;
 
 use asyncband::waitgroup::WaitGroup;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const WAITER_COUNTS: &[usize] = &[1, 4, 16];
 
-#[divan::bench(args = WAITER_COUNTS)]
 fn complete_waiter_batch(bencher: Bencher, waiter_count: usize) {
     let mut context = bench_context();
 
@@ -47,4 +47,18 @@ fn complete_waiter_batch(bencher: Bencher, waiter_count: usize) {
         }
         black_box(())
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    for &arg in WAITER_COUNTS {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::complete_waiter_batch")
+            ),
+            (5_000_000 / arg).max(1),
+            1,
+            |bencher| complete_waiter_batch(bencher, arg),
+        );
+    }
 }

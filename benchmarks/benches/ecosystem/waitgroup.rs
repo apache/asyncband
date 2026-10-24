@@ -17,13 +17,14 @@
 
 use std::future::Future;
 use std::future::IntoFuture;
+use std::hint::black_box;
 use std::pin::pin;
 
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const WORKER_COUNTS: &[usize] = &[1, 4, 16];
 
@@ -76,7 +77,6 @@ impl WaitGroup for WaitgroupRs {
     }
 }
 
-#[divan::bench(types = [Asyncband, WaitgroupRs])]
 fn complete_waiter<C: WaitGroup>(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -91,7 +91,6 @@ fn complete_waiter<C: WaitGroup>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, WaitgroupRs], args = WORKER_COUNTS)]
 fn complete_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
     let mut context = bench_context();
 
@@ -108,7 +107,6 @@ fn complete_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
     });
 }
 
-#[divan::bench(types = [Asyncband, WaitgroupRs])]
 fn ready_empty<C: WaitGroup>(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -118,7 +116,6 @@ fn ready_empty<C: WaitGroup>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, WaitgroupRs])]
 fn cancel_pending<C: WaitGroup>(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -133,7 +130,6 @@ fn cancel_pending<C: WaitGroup>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, WaitgroupRs], args = WORKER_COUNTS)]
 fn worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
     bencher.bench_local(|| {
         let group = C::new();
@@ -145,7 +141,6 @@ fn worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
     });
 }
 
-#[divan::bench(types = [Asyncband, WaitgroupRs], args = WORKER_COUNTS)]
 fn nested_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
     bencher.bench_local(|| {
         let group = C::new();
@@ -157,4 +152,78 @@ fn nested_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
         black_box(worker);
         black_box(group);
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    register_implementation::<Asyncband>(runner, "Asyncband");
+    register_implementation::<WaitgroupRs>(runner, "WaitgroupRs");
+}
+
+fn register_implementation<C>(runner: &mut Runner, implementation: &str)
+where
+    C: WaitGroup,
+{
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::complete_waiter")
+        ),
+        6_000_000,
+        1,
+        complete_waiter::<C>,
+    );
+
+    for &arg in WORKER_COUNTS {
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg}",
+                concat!(module_path!(), "::complete_worker_batch")
+            ),
+            (10_000_000 / arg).max(1),
+            1,
+            |bencher| complete_worker_batch::<C>(bencher, arg),
+        );
+    }
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::ready_empty")
+        ),
+        10_000_000,
+        1,
+        ready_empty::<C>,
+    );
+
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::cancel_pending")
+        ),
+        6_000_000,
+        1,
+        cancel_pending::<C>,
+    );
+
+    for &arg in WORKER_COUNTS {
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg}",
+                concat!(module_path!(), "::worker_batch")
+            ),
+            (10_000_000 / arg).max(1),
+            1,
+            |bencher| worker_batch::<C>(bencher, arg),
+        );
+    }
+    for &arg in WORKER_COUNTS {
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg}",
+                concat!(module_path!(), "::nested_worker_batch")
+            ),
+            (10_000_000 / arg).max(1),
+            1,
+            |bencher| nested_worker_batch::<C>(bencher, arg),
+        );
+    }
 }

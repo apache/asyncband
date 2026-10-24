@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::sync::Arc;
 
-use divan::black_box;
 use tokio::runtime::Runtime;
 use tokio::sync::Barrier;
 use tokio::task::JoinSet;

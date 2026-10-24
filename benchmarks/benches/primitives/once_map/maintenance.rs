@@ -15,29 +15,51 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use benchmarks::support::defer_input_drop;
-use divan::Bencher;
-use divan::black_box;
+use std::hint::black_box;
 
-use crate::once_map::support::BATCH_SAMPLE_SIZE;
-use crate::once_map::support::FAST_SAMPLE_SIZE;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::support::bench_context;
+use benchmarks::support::poll_ready;
+
 use crate::once_map::support::NONEMPTY_ENTRY_COUNTS;
 use crate::once_map::support::READY_ENTRY_COUNTS;
 use crate::once_map::support::ready_map;
 
-#[divan::bench(args = NONEMPTY_ENTRY_COUNTS, sample_size = BATCH_SAMPLE_SIZE)]
-fn remove_hit(bencher: Bencher, ready_entries: usize) {
+// Restore the removed middle entry so every round sees the same populated working set.
+fn remove_reinitialize_cycle(bencher: Bencher, ready_entries: usize) {
     let key = ready_entries / 2;
-    bencher
-        .with_inputs(|| ready_map(ready_entries))
-        .bench_local_values(|map| {
-            let removed = black_box(map.remove(black_box(&key)));
-            defer_input_drop(map, removed)
-        });
+    let map = ready_map(ready_entries);
+    let mut context = bench_context();
+    bencher.bench_local(|| {
+        black_box(map.remove(black_box(&key)));
+        black_box(poll_ready(map.compute(key, || async { key }), &mut context));
+    });
 }
 
-#[divan::bench(args = READY_ENTRY_COUNTS, sample_size = FAST_SAMPLE_SIZE)]
 fn remove_miss(bencher: Bencher, ready_entries: usize) {
     let map = ready_map(ready_entries);
     bencher.bench_local(|| black_box(map.remove(black_box(&usize::MAX))));
+}
+
+pub fn register(runner: &mut Runner) {
+    for &arg in NONEMPTY_ENTRY_COUNTS {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::remove_reinitialize_cycle")
+            ),
+            3_000_000,
+            1,
+            |bencher| remove_reinitialize_cycle(bencher, arg),
+        );
+    }
+    for &arg in READY_ENTRY_COUNTS {
+        runner.case(
+            format!("{}/{arg}", concat!(module_path!(), "::remove_miss")),
+            48_000_000,
+            1,
+            |bencher| remove_miss(bencher, arg),
+        );
+    }
 }

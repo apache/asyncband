@@ -16,13 +16,13 @@
 // under the License.
 
 use std::fmt;
+use std::hint::black_box;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 use std::thread::JoinHandle;
 
-use divan::black_box;
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 

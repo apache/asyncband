@@ -16,107 +16,91 @@
 // under the License.
 
 use std::cell::Cell;
+use std::hint::black_box;
 
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
-use benchmarks::support::defer_input_drop;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
 use benchmarks::support::wait_until_open;
-use divan::Bencher;
-use divan::black_box;
-use divan::counter::ItemsCount;
 
-use crate::once_map::support::BATCH_SAMPLE_SIZE;
 use crate::once_map::support::BATCH_SIZES;
 use crate::once_map::support::BenchMap;
-use crate::once_map::support::FAST_SAMPLE_SIZE;
 use crate::once_map::support::READY_ENTRY_COUNTS;
 use crate::once_map::support::ready_map;
 
 const ABSENT_KEY: usize = usize::MAX;
 
-// Measures the complete absent-key path: lookup, pending entry creation, publication, and return.
-// Input construction and map destruction stay outside the timed section.
-#[divan::bench(args = READY_ENTRY_COUNTS, sample_size = BATCH_SAMPLE_SIZE)]
-fn initialize_success(bencher: Bencher, ready_entries: usize) {
+// Reuse the ready working set and remove the new entry after each successful initialization.
+// Rebuilding the whole map on every round would hide the cost of the absent-key path.
+fn initialize_remove_cycle(bencher: Bencher, ready_entries: usize) {
+    let map = ready_map(ready_entries);
     let mut context = bench_context();
-    bencher
-        .with_inputs(|| ready_map(ready_entries))
-        .bench_local_values(|map| {
-            let result = black_box(poll_ready(
-                map.compute(black_box(ABSENT_KEY), || async { black_box(1) }),
-                &mut context,
-            ));
-            defer_input_drop(map, result)
-        });
+    bencher.bench_local(|| {
+        black_box(poll_ready(
+            map.compute(black_box(ABSENT_KEY), || async { black_box(1) }),
+            &mut context,
+        ));
+        black_box(map.remove(&ABSENT_KEY));
+    });
 }
 
 // Deterministically polls every caller while the leader is suspended. This measures actual
 // same-key coalescing rather than relying on OS threads to overlap by chance.
-#[divan::bench(args = BATCH_SIZES, sample_size = BATCH_SAMPLE_SIZE)]
 fn initialize_same_key(bencher: Bencher, caller_count: usize) {
     let mut context = bench_context();
-    bencher
-        .with_inputs(BenchMap::default)
-        .counter(ItemsCount::new(caller_count))
-        .bench_local_values(|map| {
-            let gate = Cell::new(false);
-            let mut calls = (0..caller_count)
-                .map(|_| {
-                    Box::pin(map.compute(0, || async {
-                        wait_until_open(&gate).await;
-                        black_box(1usize)
-                    }))
-                })
-                .collect::<Vec<_>>();
-            for call in &mut calls {
-                poll_pending(call.as_mut(), &mut context);
-            }
+    bencher.bench_local(|| {
+        let map = BenchMap::default();
+        let gate = Cell::new(false);
+        let mut calls = (0..caller_count)
+            .map(|_| {
+                Box::pin(map.compute(0, || async {
+                    wait_until_open(&gate).await;
+                    black_box(1usize)
+                }))
+            })
+            .collect::<Vec<_>>();
+        for call in &mut calls {
+            poll_pending(call.as_mut(), &mut context);
+        }
 
-            gate.set(true);
-            for mut call in calls {
-                black_box(poll_pinned_ready(call.as_mut(), &mut context));
-            }
-
-            defer_input_drop(map, ())
-        });
+        gate.set(true);
+        for mut call in calls {
+            black_box(poll_pinned_ready(call.as_mut(), &mut context));
+        }
+    });
 }
 
 // Uses the same scheduling scaffold as initialize_same_key, but every caller initializes a
 // different key. Their difference isolates coalescing from independent cold-key bookkeeping.
-#[divan::bench(args = BATCH_SIZES, sample_size = BATCH_SAMPLE_SIZE)]
 fn initialize_distinct_keys(bencher: Bencher, caller_count: usize) {
     let mut context = bench_context();
-    bencher
-        .with_inputs(BenchMap::default)
-        .counter(ItemsCount::new(caller_count))
-        .bench_local_values(|map| {
-            let gate = Cell::new(false);
-            let mut calls = (0..caller_count)
-                .map(|key| {
-                    let gate = &gate;
-                    Box::pin(map.compute(key, move || async move {
-                        wait_until_open(gate).await;
-                        black_box(key)
-                    }))
-                })
-                .collect::<Vec<_>>();
-            for call in &mut calls {
-                poll_pending(call.as_mut(), &mut context);
-            }
+    bencher.bench_local(|| {
+        let map = BenchMap::default();
+        let gate = Cell::new(false);
+        let mut calls = (0..caller_count)
+            .map(|key| {
+                let gate = &gate;
+                Box::pin(map.compute(key, move || async move {
+                    wait_until_open(gate).await;
+                    black_box(key)
+                }))
+            })
+            .collect::<Vec<_>>();
+        for call in &mut calls {
+            poll_pending(call.as_mut(), &mut context);
+        }
 
-            gate.set(true);
-            for mut call in calls {
-                black_box(poll_pinned_ready(call.as_mut(), &mut context));
-            }
-
-            defer_input_drop(map, ())
-        });
+        gate.set(true);
+        for mut call in calls {
+            black_box(poll_pinned_ready(call.as_mut(), &mut context));
+        }
+    });
 }
 
 // Failed initialization leaves the key absent, allowing retries on the same map.
-#[divan::bench(args = READY_ENTRY_COUNTS, sample_size = FAST_SAMPLE_SIZE)]
 fn initialize_error(bencher: Bencher, ready_entries: usize) {
     let map = ready_map(ready_entries);
     let mut context = bench_context();
@@ -126,4 +110,45 @@ fn initialize_error(bencher: Bencher, ready_entries: usize) {
             &mut context,
         ))
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    for &arg in READY_ENTRY_COUNTS {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::initialize_remove_cycle")
+            ),
+            3_000_000,
+            1,
+            |bencher| initialize_remove_cycle(bencher, arg),
+        );
+    }
+    for &arg in BATCH_SIZES {
+        runner.case(
+            format!("{}/{arg}", concat!(module_path!(), "::initialize_same_key")),
+            (3_000_000 / arg).max(1),
+            1,
+            |bencher| initialize_same_key(bencher, arg),
+        );
+    }
+    for &arg in BATCH_SIZES {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::initialize_distinct_keys")
+            ),
+            (2_000_000 / arg).max(1),
+            1,
+            |bencher| initialize_distinct_keys(bencher, arg),
+        );
+    }
+    for &arg in READY_ENTRY_COUNTS {
+        runner.case(
+            format!("{}/{arg}", concat!(module_path!(), "::initialize_error")),
+            3_000_000,
+            1,
+            |bencher| initialize_error(bencher, arg),
+        );
+    }
 }
