@@ -22,7 +22,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
-use std::task::Poll;
 use std::task::Waker;
 use std::thread;
 
@@ -30,6 +29,8 @@ use asyncband::blocking::FutureExt;
 use asyncband::broadcast::mpmc::*;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
+use tests_integration::expect_ready;
+use tests_integration::poll_with;
 
 /// A payload whose destructor re-enters the channel it was sent through.
 struct Reentrant {
@@ -96,7 +97,7 @@ fn test_try_recv() {
 
     // Success
     tx.send(10);
-    assert_eq!(rx.try_recv(), Ok(10));
+    assert_eq!(rx.try_recv().as_deref(), Ok(&10));
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
 
     // Disconnected
@@ -115,12 +116,12 @@ async fn test_slow_receiver_keeps_every_message() {
 
     // The fast receiver draining fully must not reclaim anything the slow one still needs.
     for i in 0..1024 {
-        assert_eq!(rx1.recv().await, Ok(i));
+        assert_eq!(rx1.recv().await.as_deref(), Ok(&i));
     }
     assert_eq!(tx.retained_message_count(), 1024);
 
     for i in 0..1024 {
-        assert_eq!(rx2.recv().await, Ok(i));
+        assert_eq!(rx2.recv().await.as_deref(), Ok(&i));
     }
     assert_eq!(tx.retained_message_count(), 0);
 }
@@ -135,14 +136,14 @@ async fn retained_message_count_tracks_the_slowest_receiver() {
     assert_eq!(tx.retained_message_count(), 2);
 
     // Reclaiming waits for the slowest receiver, message by message.
-    assert_eq!(rx1.recv().await, Ok(1));
+    assert_eq!(rx1.recv().await.as_deref(), Ok(&1));
     assert_eq!(tx.retained_message_count(), 2);
-    assert_eq!(rx2.recv().await, Ok(1));
+    assert_eq!(rx2.recv().await.as_deref(), Ok(&1));
     assert_eq!(tx.retained_message_count(), 1);
 
-    assert_eq!(rx1.recv().await, Ok(2));
+    assert_eq!(rx1.recv().await.as_deref(), Ok(&2));
     assert_eq!(tx.retained_message_count(), 1);
-    assert_eq!(rx2.recv().await, Ok(2));
+    assert_eq!(rx2.recv().await.as_deref(), Ok(&2));
     assert_eq!(tx.retained_message_count(), 0);
 }
 
@@ -155,7 +156,7 @@ async fn test_dropping_a_lagging_receiver_releases_its_backlog() {
         tx.send(i);
     }
     for i in 0..128 {
-        assert_eq!(rx1.recv().await, Ok(i));
+        assert_eq!(rx1.recv().await.as_deref(), Ok(&i));
     }
     assert_eq!(tx.retained_message_count(), 128);
 
@@ -175,12 +176,12 @@ async fn resubscribe_keeps_the_original_receivers_backlog() {
 
     tx.send(3);
 
-    assert_eq!(rx2.recv().await, Ok(3));
+    assert_eq!(rx2.recv().await.as_deref(), Ok(&3));
     assert_eq!(tx.retained_message_count(), 3);
 
-    assert_eq!(rx.recv().await, Ok(1));
-    assert_eq!(rx.recv().await, Ok(2));
-    assert_eq!(rx.recv().await, Ok(3));
+    assert_eq!(rx.recv().await.as_deref(), Ok(&1));
+    assert_eq!(rx.recv().await.as_deref(), Ok(&2));
+    assert_eq!(rx.recv().await.as_deref(), Ok(&3));
     assert_eq!(tx.retained_message_count(), 0);
 }
 
@@ -197,7 +198,7 @@ async fn send_without_receivers_does_not_buffer() {
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
 
     tx.send(3);
-    assert_eq!(rx.recv().await, Ok(3));
+    assert_eq!(rx.recv().await.as_deref(), Ok(&3));
 }
 
 #[test]
@@ -216,11 +217,11 @@ fn unread_message_count_tracks_each_receiver() {
     assert_eq!(rx1.unread_message_count(), 3);
     assert_eq!(rx2.unread_message_count(), 1);
 
-    assert_eq!(rx2.try_recv(), Ok(3));
+    assert_eq!(rx2.try_recv().as_deref(), Ok(&3));
     assert_eq!(rx2.unread_message_count(), 0);
     drop(rx2);
 
-    assert_eq!(rx1.try_recv(), Ok(1));
+    assert_eq!(rx1.try_recv().as_deref(), Ok(&1));
     assert_eq!(rx1.unread_message_count(), 2);
 }
 
@@ -240,16 +241,58 @@ fn sole_receiver_takes_messages_without_cloning() {
     let (tx, mut rx) = unbounded();
     for i in 0..8 {
         tx.send(CountClone(i));
-        assert_eq!(rx.try_recv().unwrap().0, i);
+        assert_eq!(rx.try_recv_cloned().unwrap().0, i);
     }
     assert_eq!(CLONES.load(Ordering::Relaxed), 0);
 
     // A second receiver means the payload is shared, so it has to be cloned again.
     let mut second = tx.subscribe();
     tx.send(CountClone(8));
-    assert_eq!(rx.try_recv().unwrap().0, 8);
-    assert_eq!(second.try_recv().unwrap().0, 8);
+    assert_eq!(rx.try_recv_cloned().unwrap().0, 8);
+    assert_eq!(second.try_recv_cloned().unwrap().0, 8);
     assert_eq!(CLONES.load(Ordering::Relaxed), 1);
+
+    // An `Arc` that outlives the last read keeps the payload shared, so even the read that
+    // reclaims the slot has to clone.
+    tx.send(CountClone(9));
+    let shared = second.try_recv().unwrap();
+    assert_eq!(rx.try_recv_cloned().unwrap().0, 9);
+    assert_eq!(CLONES.load(Ordering::Relaxed), 2);
+    assert_eq!(shared.0, 9);
+}
+
+#[tokio::test]
+async fn shares_one_arc_across_receivers() {
+    // Not `Clone`: fanning out never needs to copy the payload.
+    struct Payload(u64);
+
+    let (tx, mut rx1) = unbounded();
+    let mut rx2 = tx.subscribe();
+    let mut rx3 = tx.subscribe();
+    tx.send(Payload(7));
+
+    let first = rx1.recv().await.unwrap();
+    let second = rx2.try_recv().unwrap();
+    let third = rx3.recv().await.unwrap();
+    assert!(Arc::ptr_eq(&first, &second));
+    assert!(Arc::ptr_eq(&first, &third));
+    assert_eq!(first.0, 7);
+    assert_eq!(tx.retained_message_count(), 0);
+}
+
+#[tokio::test]
+async fn shared_and_cloned_receives_advance_the_same_cursor() {
+    let (tx, mut rx) = unbounded();
+    for value in 1..=4 {
+        tx.send(value);
+    }
+
+    assert_eq!(rx.recv().await.as_deref(), Ok(&1));
+    assert_eq!(rx.recv_cloned().await, Ok(2));
+    assert_eq!(rx.try_recv().as_deref(), Ok(&3));
+    assert_eq!(rx.try_recv_cloned(), Ok(4));
+    assert_eq!(rx.unread_message_count(), 0);
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[test]
@@ -266,12 +309,14 @@ fn panicking_clone_leaves_the_channel_consistent() {
         panic: false,
     });
 
-    // Two receivers share the payload, so `try_recv` has to clone it.
-    let result = catch_unwind(AssertUnwindSafe(|| rx1.try_recv().map(|msg| msg.value)));
+    // Two receivers share the payload, so `try_recv_cloned` has to clone it.
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        rx1.try_recv_cloned().map(|msg| msg.value)
+    }));
     assert!(result.is_err());
 
-    // The panicking `try_recv` call still consumed the message for `rx1`, and left the channel
-    // usable for both receivers.
+    // The panicking `try_recv_cloned` call still consumed the message for `rx1`, and left the
+    // channel usable for both receivers.
     assert_eq!(rx1.try_recv().unwrap().value, 2);
     assert_eq!(rx2.try_recv().unwrap().value, 1);
     assert_eq!(rx2.try_recv().unwrap().value, 2);
@@ -320,7 +365,10 @@ fn send_wakes_a_parked_receiver_exactly_once() {
     tx.send(42);
 
     assert_eq!(tracker.count(), 1);
-    assert_eq!(recv.as_mut().poll(&mut context), Poll::Ready(Ok(42)));
+    assert_eq!(
+        expect_ready(recv.as_mut().poll(&mut context)).as_deref(),
+        Ok(&42)
+    );
 }
 
 #[test]
@@ -340,7 +388,23 @@ fn cancelled_recv_releases_its_waker() {
 
     tx.send(());
     assert_eq!(tracker.count(), 0);
-    assert_eq!(rx.try_recv(), Ok(()));
+    assert_eq!(rx.try_recv().as_deref(), Ok(&()));
+}
+
+#[test]
+fn cancelled_recv_cloned_leaves_the_cursor_unchanged() {
+    let (tx, mut rx) = unbounded();
+    let (waker, counter) = WakeCounter::new();
+
+    let mut recv = Box::pin(rx.recv_cloned());
+    assert!(poll_with(recv.as_mut(), &waker).is_pending());
+    tx.send(1);
+    assert_eq!(counter.count(), 1);
+
+    // The woken future is dropped before it is polled again, so it never advances the cursor.
+    drop(recv);
+    assert_eq!(rx.unread_message_count(), 1);
+    assert_eq!(rx.try_recv_cloned(), Ok(1));
 }
 
 #[test]
@@ -356,7 +420,7 @@ fn dropping_a_woken_recv_keeps_another_receivers_waiter() {
 
     tx.send(1);
     assert_eq!(first.count(), 1);
-    assert_eq!(rx2.try_recv(), Ok(1));
+    assert_eq!(rx2.try_recv().as_deref(), Ok(&1));
 
     let second = Arc::new(WakeCounter::default());
     let waker = Waker::from(second.clone());
@@ -405,7 +469,10 @@ fn parked_recv_prefers_buffered_messages_over_disconnection() {
     tx.send(7);
     drop(tx);
 
-    assert_eq!(recv.as_mut().poll(&mut context), Poll::Ready(Ok(7)));
+    assert_eq!(
+        expect_ready(recv.as_mut().poll(&mut context)).as_deref(),
+        Ok(&7)
+    );
     drop(recv);
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
 }
@@ -418,8 +485,8 @@ async fn recv_drains_buffered_messages_before_reporting_disconnection() {
     tx.send(2);
     drop(tx);
 
-    assert_eq!(rx.recv().await, Ok(1));
-    assert_eq!(rx.recv().await, Ok(2));
+    assert_eq!(rx.recv().await.as_deref(), Ok(&1));
+    assert_eq!(rx.recv().await.as_deref(), Ok(&2));
     assert_eq!(rx.recv().await, Err(RecvError::Disconnected));
 }
 
@@ -457,7 +524,7 @@ fn concurrent_senders_deliver_every_message_to_every_receiver() {
             thread::spawn(move || {
                 let mut seen = vec![];
                 while let Ok(value) = FutureExt::block_on(receiver.recv()) {
-                    seen.push(value);
+                    seen.push(*value);
                 }
                 seen
             })
@@ -495,7 +562,7 @@ fn randomized_operations_track_the_reference_model() {
                     let index = rng.below(model.len() as u64) as usize;
                     let (receiver, cursor) = &mut model[index];
                     if *cursor < tail {
-                        assert_eq!(receiver.try_recv(), Ok(*cursor), "seed {seed}");
+                        assert_eq!(receiver.try_recv().as_deref(), Ok(&*cursor), "seed {seed}");
                         *cursor += 1;
                     } else {
                         assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty), "seed {seed}");
