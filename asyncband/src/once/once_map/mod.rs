@@ -116,9 +116,11 @@ where
         hash: u64,
         matches: impl Fn(&Entry<K, V>) -> bool,
     ) -> Option<Arc<Entry<K, V>>> {
+        // A reader holding a pending entry would stop an abandoned computation from reclaiming it.
         self.entries
             .lock()
             .find(hash, |entry| matches(entry))
+            .filter(|entry| entry.cell.initialized())
             .cloned()
     }
 
@@ -129,8 +131,10 @@ where
         V: Clone,
     {
         let hash = self.hasher.hash_one(key);
-        let entry = self.find_entry(hash, |entry| entry.key.borrow() == key)?;
-        entry.cell.get().cloned()
+        let entry = self.find_entry(hash, |entry| entry.key.borrow() == key);
+        #[cfg(test)]
+        tests::after_get_lookup();
+        entry?.cell.get().cloned()
     }
 
     fn remove_entry<Q>(&self, key: &Q) -> Option<Arc<Entry<K, V>>>
