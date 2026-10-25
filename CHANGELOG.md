@@ -27,7 +27,7 @@ All notable changes to this project will be documented in this file.
 
 * Reduce the cost of polling a pending oneshot receive again from the same task, which now keeps its registered waker instead of cloning and dropping it.
 
-## v0.7.4
+## v0.7.4 (2026-10-25)
 
 ### Notable changes
 
