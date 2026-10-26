@@ -147,15 +147,9 @@ fn failed_compute_preserves_entry_for_waiter_retry() {
 #[test]
 fn colliding_pending_entries_are_tracked_independently() {
     let map: OnceMap<usize, usize, BuildHasherDefault<ConstantHasher>> = OnceMap::default();
-    let Lookup::Pending(first) = map.get_or_insert(1) else {
-        unreachable!()
-    };
-    let Lookup::Pending(first_waiter) = map.get_or_insert(1) else {
-        unreachable!()
-    };
-    let Lookup::Pending(second) = map.get_or_insert(2) else {
-        unreachable!()
-    };
+    let first = map.get_or_insert(1);
+    let first_waiter = map.get_or_insert(1);
+    let second = map.get_or_insert(2);
 
     assert!(Arc::ptr_eq(&first, &first_waiter));
     assert!(!Arc::ptr_eq(&first, &second));
