@@ -30,8 +30,6 @@ use crate::once::OnceCell;
 #[cfg(test)]
 mod tests;
 
-type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
-
 struct Entry<K, V> {
     hash: u64,
     key: K,
@@ -44,7 +42,7 @@ struct Entry<K, V> {
 /// as `Arc<T>`, when entries are large or frequently shared.
 pub struct OnceMap<K, V, S = RandomState> {
     // Hashbrown allocates the table lazily, and computation always runs after releasing this lock.
-    entries: Mutex<Entries<K, V>>,
+    entries: Mutex<HashTable<Arc<Entry<K, V>>>>,
     hasher: S,
 }
 
@@ -100,17 +98,6 @@ where
             .cloned()
     }
 
-    fn get_value<Q>(&self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-        V: Clone,
-    {
-        let hash = self.hasher.hash_one(key);
-        let entry = self.find_entry(hash, |entry| entry.key.borrow() == key)?;
-        entry.cell.get().cloned()
-    }
-
     fn remove_entry<Q>(&self, key: &Q) -> Option<Arc<Entry<K, V>>>
     where
         K: Borrow<Q>,
@@ -121,9 +108,7 @@ where
         let occupied = entries
             .find_entry(hash, |entry| entry.key.borrow() == key)
             .ok()?;
-        let (entry, _) = occupied.remove();
-        drop(entries);
-        Some(entry)
+        Some(occupied.remove().0)
     }
 
     fn cleanup_abandoned_entry(&self, entry: Arc<Entry<K, V>>) {
@@ -142,7 +127,7 @@ where
                 Some(occupied.remove().0)
             } else {
                 // A waiting cleanup must observe this call's reference being released before it
-                // can inspect the count while holding the write lock.
+                // can inspect the count while holding the table lock.
                 drop(entry);
                 None
             }
@@ -325,7 +310,9 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.get_value(key)
+        let hash = self.hasher.hash_one(key);
+        let entry = self.find_entry(hash, |entry| entry.key.borrow() == key)?;
+        entry.cell.get().cloned()
     }
 
     /// Remove the given key from the map.
