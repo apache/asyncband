@@ -119,21 +119,20 @@ fn failed_compute_preserves_entry_for_waiter_retry() {
     let map = OnceMap::new();
     let released = Cell::new(false);
 
-    let first = map.try_compute("key", async || {
+    let mut first = pin!(map.try_compute("key", async || {
         poll_fn(|_| {
-            released
-                .get()
-                .then_some(())
-                .map_or(Poll::Pending, Poll::Ready)
+            if released.get() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
         })
         .await;
         Err::<i32, &str>("fail")
-    });
-    let mut first = pin!(first);
+    }));
     assert!(poll_once(first.as_mut()).is_pending());
 
-    let retry = map.try_compute("key", async || Ok::<i32, &str>(1));
-    let mut retry = pin!(retry);
+    let mut retry = pin!(map.try_compute("key", async || Ok::<i32, &str>(1)));
     assert!(poll_once(retry.as_mut()).is_pending());
 
     released.set(true);
