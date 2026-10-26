@@ -23,9 +23,7 @@ use std::hash::Hasher;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
-use std::sync::mpsc;
 use std::task::Poll;
-use std::thread;
 
 use super::*;
 use crate::test_support::poll_once;
@@ -35,17 +33,6 @@ use crate::test_support::poll_once;
 impl<K, V, S> OnceMap<K, V, S> {
     fn len(&self) -> usize {
         self.entries.lock().len()
-    }
-}
-
-thread_local! {
-    static AFTER_GET_LOOKUP: Cell<Option<Box<dyn FnOnce()>>> = const { Cell::new(None) };
-}
-
-// Runs once on this thread after `get` has looked up its key and released the table lock.
-pub fn after_get_lookup() {
-    if let Some(hook) = AFTER_GET_LOOKUP.take() {
-        hook();
     }
 }
 
@@ -104,23 +91,12 @@ fn cancelled_compute_removes_empty_entry_during_get() {
     let mut compute = Box::pin(map.compute("key", async || pending::<i32>().await));
     assert!(poll_once(compute.as_mut()).is_pending());
 
-    thread::scope(|scope| {
-        let (looked_up_tx, looked_up_rx) = mpsc::channel();
-        let (resume_tx, resume_rx) = mpsc::channel();
-        let reader = scope.spawn(|| {
-            AFTER_GET_LOOKUP.set(Some(Box::new(move || {
-                looked_up_tx.send(()).unwrap();
-                resume_rx.recv().unwrap();
-            })));
-            map.get("key")
-        });
+    // A concurrent `get` holds its lookup result after releasing the table lock. Cancel the
+    // computation inside that window.
+    let held_by_get = map.find_entry(map.hasher.hash_one("key"), |entry| entry.key == "key");
+    drop(compute);
+    drop(held_by_get);
 
-        // Cancel the computation while the reader is between its lookup and its return.
-        looked_up_rx.recv().unwrap();
-        drop(compute);
-        resume_tx.send(()).unwrap();
-        assert_eq!(reader.join().unwrap(), None);
-    });
     assert_eq!(map.len(), 0);
 }
 

@@ -131,10 +131,8 @@ where
         V: Clone,
     {
         let hash = self.hasher.hash_one(key);
-        let entry = self.find_entry(hash, |entry| entry.key.borrow() == key);
-        #[cfg(test)]
-        tests::after_get_lookup();
-        entry?.cell.get().cloned()
+        let entry = self.find_entry(hash, |entry| entry.key.borrow() == key)?;
+        entry.cell.get().cloned()
     }
 
     fn remove_entry<Q>(&self, key: &Q) -> Option<Arc<Entry<K, V>>>
