@@ -19,17 +19,22 @@ use std::future::Future;
 use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Wake;
 use std::task::Waker;
+use std::thread;
 
+use asyncband::blocking::FutureExt;
 use asyncband::event::ManualResetEvent;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
+use tests_integration::waker_on_clone;
 
 #[test]
 fn set_is_sticky_and_reset_blocks_new_waiters() {
@@ -97,7 +102,7 @@ fn cancelling_a_committed_waiter_leaves_the_others_committed() {
     let waker = Waker::from(tracker.clone());
     let mut context = Context::from_waker(&waker);
     let mut cancelled = Box::pin(event.wait());
-    let mut survivor = Box::pin(event.wait());
+    let mut survivor = pin!(event.wait());
 
     assert!(cancelled.as_mut().poll(&mut context).is_pending());
     assert!(survivor.as_mut().poll(&mut context).is_pending());
@@ -124,7 +129,7 @@ impl Wake for ReentrantWaker {
 
 impl Drop for ReentrantWaker {
     fn drop(&mut self) {
-        self.0.is_set();
+        self.0.reset();
     }
 }
 
@@ -135,7 +140,7 @@ fn wakers_are_woken_and_dropped_outside_the_internal_lock() {
         let event = Arc::new(ManualResetEvent::new());
 
         // `set` wakes the waiter, and the waker re-enters `reset`.
-        let mut woken = Box::pin(event.clone().wait_owned());
+        let mut woken = pin!(event.clone().wait_owned());
         {
             let waker = Waker::from(Arc::new(ReentrantWaker(event.clone())));
             assert!(
@@ -176,7 +181,7 @@ fn wakers_are_woken_and_dropped_outside_the_internal_lock() {
             );
         }
 
-        // Cancelling a pending wait drops the registered waker, which re-enters `is_set`. The
+        // Cancelling a pending wait drops the registered waker, which re-enters `reset`. The
         // registration holds the last reference, so the drop runs here.
         drop(replaced);
     });
@@ -215,7 +220,7 @@ fn a_wait_registered_from_a_wake_callback_belongs_to_the_next_period() {
         fresh_was_pending: AtomicBool::new(false),
     });
     let waker = Waker::from(hook.clone());
-    let mut released = Box::pin(event.clone().wait_owned());
+    let mut released = pin!(event.clone().wait_owned());
 
     assert!(
         released
@@ -334,4 +339,78 @@ fn cancelling_an_owned_waiter_releases_its_waker_and_event_handle() {
 
     event.set();
     assert_eq!(tracker.count(), 0);
+}
+
+#[test]
+fn waits_clone_wakers_only_for_new_or_changed_registrations() {
+    let clones = Arc::new(AtomicUsize::new(0));
+    let on_clone = clones.clone();
+    let waker = waker_on_clone(move || {
+        on_clone.fetch_add(1, Ordering::Relaxed);
+    });
+    let mut context = Context::from_waker(&waker);
+    let event = ManualResetEvent::with_state(true);
+    assert!(pin!(event.wait()).as_mut().poll(&mut context).is_ready());
+    assert_eq!(clones.load(Ordering::Relaxed), 0);
+
+    event.reset();
+    let mut wait = pin!(event.wait());
+    assert!(wait.as_mut().poll(&mut context).is_pending());
+    assert!(wait.as_mut().poll(&mut context).is_pending());
+    assert_eq!(clones.load(Ordering::Relaxed), 1);
+
+    let on_clone = clones.clone();
+    let replacement = waker_on_clone(move || {
+        on_clone.fetch_add(1, Ordering::Relaxed);
+    });
+    let mut replacement_context = Context::from_waker(&replacement);
+    assert!(wait.as_mut().poll(&mut replacement_context).is_pending());
+    assert_eq!(clones.load(Ordering::Relaxed), 2);
+    assert!(wait.as_mut().poll(&mut replacement_context).is_pending());
+    assert_eq!(clones.load(Ordering::Relaxed), 2);
+
+    event.set();
+    event.reset();
+    // A released waiter remains ready with a different waker, without cloning it.
+    assert!(wait.as_mut().poll(&mut context).is_ready());
+    assert_eq!(clones.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn concurrent_sets_and_waits_publish_state_across_reset_cycles() {
+    assert_completes_without_deadlock(|| {
+        let event = ManualResetEvent::new();
+        let round = Barrier::new(2);
+        let value = AtomicUsize::new(0);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                for expected in 1..=300 {
+                    round.wait();
+                    value.store(expected, Ordering::Relaxed);
+                    event.set();
+                    round.wait();
+                }
+            });
+            for expected in 1..=300 {
+                // The opening barrier precedes publication; only the event publishes value.
+                round.wait();
+                match expected % 3 {
+                    0 => event.wait().block_on(),
+                    1 => {
+                        while !event.try_wait() {
+                            thread::yield_now();
+                        }
+                    }
+                    _ => {
+                        while !event.is_set() {
+                            thread::yield_now();
+                        }
+                    }
+                }
+                assert_eq!(value.load(Ordering::Relaxed), expected);
+                round.wait();
+                event.reset();
+            }
+        });
+    });
 }

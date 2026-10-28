@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Waker;
@@ -67,8 +68,8 @@ fn final_arrival_wakes_every_waiter() {
     let second_waker = Waker::from(second_tracker.clone());
     let mut first_context = Context::from_waker(&first_waker);
     let mut second_context = Context::from_waker(&second_waker);
-    let mut first = Box::pin(latch.wait());
-    let mut second = Box::pin(latch.wait());
+    let mut first = pin!(latch.wait());
+    let mut second = pin!(latch.wait());
 
     assert!(first.as_mut().poll(&mut first_context).is_pending());
     assert!(second.as_mut().poll(&mut second_context).is_pending());

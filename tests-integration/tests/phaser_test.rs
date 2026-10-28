@@ -17,6 +17,7 @@
 
 use std::array;
 use std::panic;
+use std::pin::pin;
 use std::task::Poll;
 use std::thread;
 
@@ -45,7 +46,7 @@ fn batch_registration_joins_one_observed_phase() {
     assert_eq!(phaser.phase(), observed);
 
     let (waker, counter) = WakeCounter::new();
-    let mut wait = Box::pin(first.wait());
+    let mut wait = pin!(first.wait());
     assert!(poll_with(wait.as_mut(), &waker).is_pending());
     drop(participants);
     assert_eq!(counter.count(), 1);
@@ -164,7 +165,7 @@ fn cancelled_wait_retry_waits_for_original_phase_after_advance() {
     let mut second = phaser.register_one().unwrap();
 
     {
-        let mut cancelled = Box::pin(first.wait());
+        let mut cancelled = pin!(first.wait());
         assert!(poll_once(cancelled.as_mut()).is_pending());
     }
 
@@ -174,7 +175,7 @@ fn cancelled_wait_retry_waits_for_original_phase_after_advance() {
     assert_ne!(phase1, phase0);
     assert_eq!(phaser.arrived_parties(), 0);
 
-    let mut retry = Box::pin(first.wait());
+    let mut retry = pin!(first.wait());
     assert_eq!(poll_once(retry.as_mut()), Poll::Ready(Ok(phase1)));
     assert_eq!(phaser.arrived_parties(), 0);
 }
@@ -186,11 +187,11 @@ fn cancelled_wait_retry_before_advance_does_not_arrive_twice() {
     let mut second = phaser.register_one().unwrap();
 
     {
-        let mut cancelled = Box::pin(first.wait());
+        let mut cancelled = pin!(first.wait());
         assert!(poll_once(cancelled.as_mut()).is_pending());
     }
 
-    let mut retry = Box::pin(first.wait());
+    let mut retry = pin!(first.wait());
     assert!(poll_once(retry.as_mut()).is_pending());
     assert_eq!(phaser.arrived_parties(), 1);
 
@@ -306,7 +307,7 @@ fn observer_wait_is_cancel_safe_and_does_not_participate() {
     let (waker, counter) = WakeCounter::new();
 
     {
-        let mut wait = Box::pin(phaser.wait(phase));
+        let mut wait = pin!(phaser.wait(phase));
         assert_eq!(poll_with(wait.as_mut(), &waker), Poll::Pending);
         assert_eq!(phaser.registered_parties(), 0);
     }
@@ -324,8 +325,8 @@ fn advancing_a_phase_wakes_every_registered_waiter_once() {
     let participant = phaser.register_one().unwrap();
     let (first_waker, first_counter) = WakeCounter::new();
     let (second_waker, second_counter) = WakeCounter::new();
-    let mut first_wait = Box::pin(phaser.wait(observed));
-    let mut second_wait = Box::pin(phaser.wait(observed));
+    let mut first_wait = pin!(phaser.wait(observed));
+    let mut second_wait = pin!(phaser.wait(observed));
 
     assert_eq!(poll_with(first_wait.as_mut(), &first_waker), Poll::Pending);
     assert_eq!(
@@ -355,7 +356,7 @@ fn partial_arrivals_and_withdrawals_preserve_pending_waits() {
     let withdrawing = participants.next().unwrap();
     let mut last = participants.next().unwrap();
     let (waker, counter) = WakeCounter::new();
-    let mut wait = Box::pin(phaser.wait(observed));
+    let mut wait = pin!(phaser.wait(observed));
     assert!(poll_with(wait.as_mut(), &waker).is_pending());
 
     first.arrive().unwrap();
@@ -381,7 +382,7 @@ fn cancelling_after_partial_arrival_preserves_other_waiters() {
 
     first.arrive().unwrap();
     let (waker, counter) = WakeCounter::new();
-    let mut remaining = Box::pin(phaser.wait(observed));
+    let mut remaining = pin!(phaser.wait(observed));
     assert!(poll_with(remaining.as_mut(), &waker).is_pending());
     drop(cancelled);
 
@@ -399,7 +400,7 @@ fn repolling_updates_the_task_that_will_be_notified() {
     let participant = phaser.register_one().unwrap();
     let (first_waker, first) = WakeCounter::new();
     let (second_waker, second) = WakeCounter::new();
-    let mut wait = Box::pin(phaser.wait(phaser.phase()));
+    let mut wait = pin!(phaser.wait(phaser.phase()));
 
     for waker in [&first_waker, &first_waker, &second_waker, &second_waker] {
         assert!(poll_with(wait.as_mut(), waker).is_pending());
@@ -427,7 +428,7 @@ fn cancelling_a_woken_waiter_does_not_unregister_a_next_phase_waiter() {
 
     let participant = phaser.register_one().unwrap();
     let (current_waker, current_counter) = WakeCounter::new();
-    let mut current_wait = Box::pin(phaser.wait(phase1));
+    let mut current_wait = pin!(phaser.wait(phase1));
     assert_eq!(
         poll_with(current_wait.as_mut(), &current_waker),
         Poll::Pending
@@ -449,7 +450,7 @@ fn a_late_waiter_for_a_completed_phase_is_immediately_ready() {
     let participant = phaser.register_one().unwrap();
     drop(participant);
 
-    let mut wait = Box::pin(phaser.wait(observed));
+    let mut wait = pin!(phaser.wait(observed));
     assert_eq!(poll_once(wait.as_mut()), Poll::Ready(Ok(phaser.phase())));
 }
 
@@ -477,17 +478,11 @@ fn explicit_arrival_and_wait_observe_the_same_completed_phase() {
     let next = phaser.phase();
 
     assert_ne!(observed, next);
-    assert_eq!(
-        poll_once(Box::pin(first.wait()).as_mut()),
-        Poll::Ready(Ok(next))
-    );
-    assert_eq!(
-        poll_once(Box::pin(second.wait()).as_mut()),
-        Poll::Ready(Ok(next))
-    );
+    assert_eq!(poll_once(pin!(first.wait())), Poll::Ready(Ok(next)));
+    assert_eq!(poll_once(pin!(second.wait())), Poll::Ready(Ok(next)));
     assert_eq!(phaser.arrived_parties(), 0);
 
-    let mut wait = Box::pin(first.wait());
+    let mut wait = pin!(first.wait());
     assert!(poll_once(wait.as_mut()).is_pending());
     second.arrive().unwrap();
     assert_eq!(poll_once(wait.as_mut()), Poll::Ready(Ok(phaser.phase())));
@@ -498,12 +493,12 @@ fn explicit_arrival_replaces_a_cancelled_pending_observation() {
     let phaser = Phaser::new();
     let mut first = phaser.register_one().unwrap();
     let mut second = phaser.register_one().unwrap();
-    assert!(poll_once(Box::pin(first.wait()).as_mut()).is_pending());
+    assert!(poll_once(pin!(first.wait())).is_pending());
     second.arrive().unwrap();
     let next = first.arrive().unwrap();
     assert_eq!(next, phaser.phase());
 
-    let mut wait = Box::pin(first.wait());
+    let mut wait = pin!(first.wait());
     assert!(poll_once(wait.as_mut()).is_pending());
     second.arrive().unwrap();
     assert_eq!(poll_once(wait.as_mut()), Poll::Ready(Ok(phaser.phase())));
@@ -519,7 +514,7 @@ fn cloned_handles_observe_without_registering_and_participants_own_the_state() {
     let observed = observer.phase();
     participant.arrive().unwrap();
     assert_eq!(
-        poll_once(Box::pin(observer.wait(observed)).as_mut()),
+        poll_once(pin!(observer.wait(observed))),
         Poll::Ready(Ok(observer.phase()))
     );
 }
@@ -531,7 +526,7 @@ fn closing_wakes_all_waiters_once_and_rejects_new_obligations() {
     let second = phaser.register_one().unwrap();
     let observed = first.arrive().unwrap();
     let (waker, counter) = WakeCounter::new();
-    let mut observer = Box::pin(phaser.wait(observed));
+    let mut observer = pin!(phaser.wait(observed));
     let mut wait = Box::pin(first.wait());
     assert!(poll_with(observer.as_mut(), &waker).is_pending());
     assert!(poll_with(wait.as_mut(), &waker).is_pending());
@@ -560,21 +555,15 @@ fn completed_arrival_remains_successful_after_close_but_cannot_start_another_rou
     let mut first = phaser.register_one().unwrap();
     let mut second = phaser.register_one().unwrap();
     let observed = first.arrive().unwrap();
-    let mut observer = Box::pin(phaser.wait(observed));
+    let mut observer = pin!(phaser.wait(observed));
     assert!(poll_once(observer.as_mut()).is_pending());
     second.arrive().unwrap();
     let completed = phaser.phase();
     phaser.close();
 
     assert_eq!(poll_once(observer.as_mut()), Poll::Ready(Ok(completed)));
-    assert_eq!(
-        poll_once(Box::pin(first.wait()).as_mut()),
-        Poll::Ready(Ok(completed))
-    );
-    assert!(matches!(
-        poll_once(Box::pin(first.wait()).as_mut()),
-        Poll::Ready(Err(_))
-    ));
+    assert_eq!(poll_once(pin!(first.wait())), Poll::Ready(Ok(completed)));
+    assert!(matches!(poll_once(pin!(first.wait())), Poll::Ready(Err(_))));
     drop(first);
     drop(second);
     assert_eq!(phaser.phase(), completed);
@@ -587,7 +576,7 @@ fn replacing_a_waiter_waker_can_close_the_phaser_from_its_destructor() {
         let phaser = phaser.clone();
         move || phaser.close()
     });
-    let mut wait = Box::pin(phaser.wait(phaser.phase()));
+    let mut wait = pin!(phaser.wait(phaser.phase()));
     assert!(poll_with(wait.as_mut(), &waker).is_pending());
     drop(waker);
     assert!(!phaser.is_closed());

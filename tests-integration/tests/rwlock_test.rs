@@ -17,6 +17,7 @@
 
 use std::future::pending;
 use std::num::NonZeroUsize;
+use std::pin::pin;
 use std::sync::Arc;
 
 use asyncband::rwlock::*;
@@ -271,8 +272,8 @@ async fn downgraded_guard_counts_against_max_readers() {
 async fn queued_writer_precedes_a_later_reader() {
     let rwlock = RwLock::new(0);
     let first_reader = rwlock.read().await;
-    let mut writer = Box::pin(rwlock.write());
-    let mut later_reader = Box::pin(rwlock.read());
+    let mut writer = pin!(rwlock.write());
+    let mut later_reader = pin!(rwlock.read());
 
     assert_pending!(poll_once(writer.as_mut()));
     assert_pending!(poll_once(later_reader.as_mut()));
@@ -292,8 +293,8 @@ fn downgrade_preserves_queue_order_at_reader_limits() {
     for limit in [1, 3, usize::MAX] {
         let lock = RwLock::with_max_readers(0, NonZeroUsize::new(limit).unwrap());
         let writer = lock.try_write().unwrap();
-        let mut next_writer = Box::pin(lock.write());
-        let mut reader = Box::pin(lock.read());
+        let mut next_writer = pin!(lock.write());
+        let mut reader = pin!(lock.read());
         assert_pending!(poll_once(next_writer.as_mut()));
         assert_pending!(poll_once(reader.as_mut()));
 
@@ -364,7 +365,7 @@ fn cancelled_mapped_reader_admits_a_queued_writer() {
         pending::<()>().await;
     });
     assert_pending!(poll_once(reader.as_mut()));
-    let mut writer = Box::pin(rwlock.write());
+    let mut writer = pin!(rwlock.write());
     assert_pending!(poll_once(writer.as_mut()));
 
     drop(reader);
@@ -382,7 +383,7 @@ fn cancelled_mapped_writer_admits_a_queued_reader() {
         pending::<()>().await;
     });
     assert_pending!(poll_once(writer.as_mut()));
-    let mut reader = Box::pin(rwlock.read());
+    let mut reader = pin!(rwlock.read());
     assert_pending!(poll_once(reader.as_mut()));
 
     drop(writer);

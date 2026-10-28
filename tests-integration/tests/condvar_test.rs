@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::pin::pin;
 use std::sync::Arc;
 use std::task::Wake;
 use std::task::Waker;
@@ -73,7 +74,7 @@ fn notify_one_is_not_buffered() {
             condvar.notify_one();
         }
 
-        let mut wait = Box::pin(condvar.wait(mutex.lock().await));
+        let mut wait = pin!(condvar.wait(mutex.lock().await));
         assert!(poll_once(wait.as_mut()).is_pending());
     });
 }
@@ -86,7 +87,7 @@ fn notify_all_is_not_buffered() {
 
         condvar.notify_all();
 
-        let mut wait = Box::pin(condvar.wait(mutex.lock().await));
+        let mut wait = pin!(condvar.wait(mutex.lock().await));
         assert!(poll_once(wait.as_mut()).is_pending());
     });
 }
@@ -97,10 +98,10 @@ fn notify_one_wakes_one_waiter_at_a_time() {
         let mutex = Mutex::new(());
         let condvar = Condvar::new();
 
-        let mut first = Box::pin(condvar.wait(mutex.lock().await));
+        let mut first = pin!(condvar.wait(mutex.lock().await));
         assert!(poll_once(first.as_mut()).is_pending());
 
-        let mut second = Box::pin(condvar.wait(mutex.lock().await));
+        let mut second = pin!(condvar.wait(mutex.lock().await));
         assert!(poll_once(second.as_mut()).is_pending());
 
         condvar.notify_one();
@@ -185,7 +186,7 @@ fn cancelling_notified_waiter_passes_notify_one_to_next_waiter() {
             let mut first = Box::pin(condvar.wait(mutex.lock().await));
             assert!(poll_once(first.as_mut()).is_pending());
 
-            let mut second = Box::pin(condvar.wait(mutex.lock().await));
+            let mut second = pin!(condvar.wait(mutex.lock().await));
             assert!(poll_once(second.as_mut()).is_pending());
 
             let held = mutex.lock().await;
@@ -222,7 +223,7 @@ fn cancelling_only_notified_waiter_does_not_buffer_notify_one() {
             drop(first);
             drop(held);
 
-            let mut late = Box::pin(condvar.wait(mutex.lock().await));
+            let mut late = pin!(condvar.wait(mutex.lock().await));
             assert!(poll_once(late.as_mut()).is_pending());
         }
     });
@@ -238,7 +239,7 @@ fn cancelled_notify_all_waiter_does_not_wake_late_waiter() {
         assert!(poll_once(current.as_mut()).is_pending());
         condvar.notify_all();
 
-        let mut late = Box::pin(condvar.wait(mutex.lock().await));
+        let mut late = pin!(condvar.wait(mutex.lock().await));
         assert!(poll_once(late.as_mut()).is_pending());
         drop(current);
 
@@ -254,7 +255,7 @@ fn wait_owned_reacquires_the_mutex() {
         let mutex = Arc::new(Mutex::new(0));
         let condvar = Condvar::new();
 
-        let mut wait = Box::pin(condvar.wait_owned(mutex.clone().lock_owned().await));
+        let mut wait = pin!(condvar.wait_owned(mutex.clone().lock_owned().await));
         assert!(poll_once(wait.as_mut()).is_pending());
         condvar.notify_one();
 
@@ -271,7 +272,7 @@ fn predicate_waits_support_unsized_state() {
     let condvar = Condvar::new();
 
     let guard = mutex.try_lock().unwrap();
-    let mut borrowed = Box::pin(condvar.wait_while(guard, |bytes| bytes[0] == 0));
+    let mut borrowed = pin!(condvar.wait_while(guard, |bytes| bytes[0] == 0));
     assert!(poll_once(borrowed.as_mut()).is_pending());
     mutex.try_lock().unwrap()[0] = 1;
     condvar.notify_one();
@@ -281,7 +282,7 @@ fn predicate_waits_support_unsized_state() {
     drop(guard);
 
     let guard = mutex.clone().try_lock_owned().unwrap();
-    let mut owned = Box::pin(condvar.wait_while_owned(guard, |bytes| bytes[1] == 0));
+    let mut owned = pin!(condvar.wait_while_owned(guard, |bytes| bytes[1] == 0));
     assert!(poll_once(owned.as_mut()).is_pending());
     mutex.try_lock().unwrap()[1] = 2;
     condvar.notify_one();

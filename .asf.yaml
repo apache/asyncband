@@ -34,6 +34,18 @@ project:
       - .github/workflows/release-compose.yml
     source_artifact_paths:
       - "apache-asyncband-*-incubating-src.tar.gz"
+    # This file contains only conventional editor settings.
+    source_excludes_rat:
+      - "apache-asyncband-*-incubating-src/.editorconfig"
+    # These files retain upstream notices and remain in the RAT scan scope.
+    source_excludes_lightweight:
+      - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/blocking/executor.rs"
+      - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/blocking/parker.rs"
+      - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/pool/bounded.rs"
+      - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/pool/common.rs"
+      - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/pool/mod.rs"
+      - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/pool/state.rs"
+      - "/apache-asyncband-*-incubating-src.tar.gz/*/asyncband/src/pool/unbounded.rs"
     vote_mode: email
     min_hours: 72
     vote_recipients:
@@ -165,6 +177,8 @@ github:
         - id: PragmaTwice
           type: User
         - id: orthur2
+          type: User
+        - id: QwQBiG
           type: User
       wait_timer: 0
       prevent_self_review: false

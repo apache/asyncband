@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::pin::pin;
+
 use asyncband::mpmc;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
@@ -30,7 +32,7 @@ fn replacing_a_send_waker_allows_its_destructor_to_receive() {
         let reentrant = receiver.clone();
         let first = waker_on_drop(move || assert_eq!(reentrant.try_recv(), Ok(0)));
         let (second, second_wakes) = WakeCounter::new();
-        let mut send = Box::pin(sender.send(1));
+        let mut send = pin!(sender.send(1));
 
         assert!(poll_with(send.as_mut(), &first).is_pending());
         drop(first);
@@ -49,7 +51,7 @@ fn replacing_a_receive_waker_allows_its_destructor_to_send() {
         let reentrant = sender.clone();
         let first = waker_on_drop(move || reentrant.send(1).unwrap());
         let (second, second_wakes) = WakeCounter::new();
-        let mut recv = Box::pin(receiver.recv());
+        let mut recv = pin!(receiver.recv());
 
         assert!(poll_with(recv.as_mut(), &first).is_pending());
         drop(first);

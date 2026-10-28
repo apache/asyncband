@@ -389,6 +389,8 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
 
     /// Extends the pool with the objects of an iterator.
     ///
+    /// The iterator is consumed while the pool is locked and must not call back into it.
+    ///
     /// # Examples
     ///
     /// ```

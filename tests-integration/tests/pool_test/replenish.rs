@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::pin::pin;
 use std::task::Poll;
 
 use asyncband::pool::bounded::Pool;
@@ -80,7 +81,7 @@ fn in_flight_creation_reserves_capacity_against_other_replenishers() {
     assert_eq!(ready(pool.replenish_to(1)), Ok(1));
 
     let creation = manager.pause_create();
-    let mut first = Box::pin(pool.replenish_to(3));
+    let mut first = pin!(pool.replenish_to(3));
     assert!(poll_once(first.as_mut()).is_pending());
     assert_eq!(manager.created(), 2);
     assert_eq!(ready(pool.replenish_to(3)), Ok(0));
@@ -98,11 +99,11 @@ fn replenished_object_wakes_a_checkout_waiting_for_capacity() {
     let pool = Pool::new(PoolConfig::new(2), manager.clone());
     let held = ready(pool.get()).unwrap();
     let creation = manager.pause_create();
-    let mut replenish = Box::pin(pool.replenish_to(2));
+    let mut replenish = pin!(pool.replenish_to(2));
     assert!(poll_once(replenish.as_mut()).is_pending());
 
     let (waker, wakes) = WakeCounter::new();
-    let mut checkout = Box::pin(pool.get());
+    let mut checkout = pin!(pool.get());
     assert!(poll_with(checkout.as_mut(), &waker).is_pending());
     assert_eq!(manager.created(), 2);
     creation.send(Ok(())).unwrap();
@@ -132,7 +133,7 @@ fn cancellation_keeps_finished_objects_and_releases_unfilled_reservations() {
 
         let mut active: Vec<_> = (0..completed).map(|_| ready(pool.get()).unwrap()).collect();
         let (waker, wakes) = WakeCounter::new();
-        let mut checkout = Box::pin(pool.get());
+        let mut checkout = pin!(pool.get());
         assert!(poll_with(checkout.as_mut(), &waker).is_pending());
         drop(replenish);
         assert!(creation.is_closed());
@@ -145,7 +146,7 @@ fn cancellation_keeps_finished_objects_and_releases_unfilled_reservations() {
         assert_eq!(pool.status().current_size, 3);
         assert_eq!(pool.status().idle_count, 0);
         assert!(manager.detached().is_empty());
-        assert!(poll_once(Box::pin(pool.get()).as_mut()).is_pending());
+        assert!(poll_once(pin!(pool.get())).is_pending());
         drop(active);
         assert_eq!(pool.status().idle_count, 3);
     }

@@ -86,6 +86,21 @@ fn cancelled_compute_removes_empty_entry() {
 }
 
 #[test]
+fn cancelled_compute_removes_empty_entry_during_get() {
+    let map = OnceMap::<&str, i32>::new();
+    let mut compute = Box::pin(map.compute("key", async || pending::<i32>().await));
+    assert!(poll_once(compute.as_mut()).is_pending());
+
+    // A concurrent `get` holds its lookup result after releasing the table lock. Cancel the
+    // computation inside that window.
+    let held_by_get = map.find_entry(map.hasher.hash_one("key"), |entry| entry.key == "key");
+    drop(compute);
+    drop(held_by_get);
+
+    assert_eq!(map.len(), 0);
+}
+
+#[test]
 fn pending_computation_does_not_block_another_key() {
     let map = OnceMap::new();
     {

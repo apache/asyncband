@@ -27,6 +27,20 @@ All notable changes to this project will be documented in this file.
 
 * Remove `MappedRwLockWriteGuard::downgrade` and `OwnedMappedRwLockWriteGuard::downgrade`, which could cause undefined behavior when the mapped component is reachable by other readers through interior mutability. To keep shared access to a component, downgrade the original write guard first and then map it with `RwLockReadGuard::map` or `OwnedRwLockReadGuard::map`.
 
+### Bug fixes
+
+* Prevent `OnceMap` from keeping an empty entry when a computation fails, panics, or is cancelled while a concurrent `get` looks up the same key.
+
+### Improvements
+
+* Reduce the cost of polling a pending oneshot receive again from the same task, which now keeps its registered waker instead of cloning and dropping it.
+
+## v0.7.4 (2026-10-25)
+
+### Notable changes
+
+* Executor waker operations, including cloning, waking, and dropping, are expected not to panic; recovery from panicking waker callbacks is no longer supported.
+
 ### New features
 
 * Add bounded MPMC `reserve` and `try_reserve` methods returning a borrowed `Permit`, so callers can wait for capacity before constructing a value; sends and reservations receive capacity in wait-queue order, and unused permits release it.
@@ -36,9 +50,11 @@ All notable changes to this project will be documented in this file.
 * Prevent deadlocks in `singleflight::Group::work` and `try_work` when a duplicate key's destructor calls back into the same group.
 * Fix undefined behavior when sending or dropping a oneshot sender races with receiver completion or cancellation.
 
-### Notable changes
+### Improvements
 
-* Executor waker operations, including cloning, waking, and dropping, are expected not to panic; recovery from panicking waker callbacks is no longer supported.
+* Improve `FutureExt::block_on` throughput and reduce context switches when many threads repeatedly block on the same primitive, such as a contended MPMC channel; an isolated cross-thread wake-up costs slightly more.
+* Reduce `ManualResetEvent` state-query and already-set wait overhead, especially with concurrent readers.
+* Add a lock-free fast path for releasing `Semaphore` permits while permits remain available, which speeds up dropping `RwLock` read guards, releasing multi-permit `Semaphore` permits, and returning objects to a bounded pool that is not at capacity. `Mutex` releases are unchanged.
 
 ## v0.7.3 (2026-09-29)
 

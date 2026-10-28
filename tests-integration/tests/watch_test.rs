@@ -17,6 +17,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -305,7 +306,7 @@ fn only_the_last_sender_drop_wakes_a_waiter() {
     let other = tx.clone();
     let tracker = Arc::new(WakeCounter::default());
     let waker = Waker::from(tracker.clone());
-    let mut changed = Box::pin(rx.changed());
+    let mut changed = pin!(rx.changed());
 
     assert!(poll_with(changed.as_mut(), &waker).is_pending());
     drop(tx);
@@ -333,7 +334,7 @@ fn dropping_a_stale_changed_future_keeps_a_new_waiter_registered() {
     assert_eq!(FutureExt::block_on(second.recv()).unwrap(), 1);
     let second_tracker = Arc::new(WakeCounter::default());
     let second_waker = Waker::from(second_tracker.clone());
-    let mut second_changed = Box::pin(second.changed());
+    let mut second_changed = pin!(second.changed());
     assert!(poll_with(second_changed.as_mut(), &second_waker).is_pending());
 
     drop(first_changed);
@@ -374,7 +375,7 @@ fn wake_callbacks_run_outside_the_channel_lock() {
         let waker = waker_on_wake(move || {
             assert!(observer.is_disconnected());
         });
-        let mut changed = Box::pin(rx.changed());
+        let mut changed = pin!(rx.changed());
         assert!(poll_with(changed.as_mut(), &waker).is_pending());
         drop(tx);
         assert_eq!(
@@ -392,7 +393,7 @@ fn replaced_wakers_are_dropped_outside_the_channel_lock() {
         let old_waker = waker_on_drop(move || {
             drop(callback_sender.subscribe());
         });
-        let mut changed = Box::pin(rx.changed());
+        let mut changed = pin!(rx.changed());
         assert!(poll_with(changed.as_mut(), &old_waker).is_pending());
         drop(old_waker);
 

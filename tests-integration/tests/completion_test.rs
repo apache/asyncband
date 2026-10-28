@@ -16,6 +16,7 @@
 // under the License.
 
 use std::cell::Cell;
+use std::pin::pin;
 use std::ptr;
 use std::sync::Arc;
 use std::sync::Barrier;
@@ -95,8 +96,8 @@ fn abandonment_wakes_registered_waits_and_is_visible_to_late_observers() {
     let second_tracker = Arc::new(WakeCounter::default());
     let first_waker = Waker::from(first_tracker.clone());
     let second_waker = Waker::from(second_tracker.clone());
-    let mut first_wait = Box::pin(first.wait());
-    let mut second_wait = Box::pin(second.wait());
+    let mut first_wait = pin!(first.wait());
+    let mut second_wait = pin!(second.wait());
 
     assert!(poll_with(first_wait.as_mut(), &first_waker).is_pending());
     assert!(poll_with(second_wait.as_mut(), &second_waker).is_pending());
@@ -140,7 +141,7 @@ fn cancelling_a_wait_releases_only_its_waker() {
     let waiting_waker = Waker::from(waiting_tracker.clone());
     let baseline = Arc::strong_count(&cancelled_tracker);
     let mut cancelled = Box::pin(completion.wait());
-    let mut waiting = Box::pin(completion.wait());
+    let mut waiting = pin!(completion.wait());
 
     assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
     assert!(poll_with(waiting.as_mut(), &waiting_waker).is_pending());
@@ -210,7 +211,7 @@ fn wake_callbacks_run_outside_the_completion_lock() {
         let waker = waker_on_wake(move || {
             assert!(FutureExt::block_on(callback_completion.wait()).is_err());
         });
-        let mut wait = Box::pin(completion.wait());
+        let mut wait = pin!(completion.wait());
         assert!(poll_with(wait.as_mut(), &waker).is_pending());
         drop(completer);
         assert!(matches!(
@@ -225,7 +226,7 @@ fn replaced_wakers_are_dropped_outside_the_completion_lock() {
     assert_completes_without_deadlock(|| {
         let (completer, completion) = completion::new::<usize>();
         let old_waker = waker_on_drop(move || drop(completer));
-        let mut wait = Box::pin(completion.wait());
+        let mut wait = pin!(completion.wait());
         assert!(poll_with(wait.as_mut(), &old_waker).is_pending());
         drop(old_waker);
 
