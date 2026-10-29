@@ -56,8 +56,8 @@ jobs:
           --component clippy
           --allow-downgrade
           --no-self-update
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: typos-cli,taplo-cli,hawkeye
       - run: cargo x lint
@@ -84,7 +84,7 @@ jobs:
           rustup toolchain install ${{ matrix.rust-version }}
           --profile minimal
           --no-self-update
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Run unit tests
         run: cargo x test --no-capture
         shell: bash
@@ -108,7 +108,7 @@ jobs:
           --component miri
           --allow-downgrade
           --no-self-update
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Set up Miri
         run: cargo +nightly miri setup
       - name: Run Miri tests
