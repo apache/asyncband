@@ -17,15 +17,15 @@
 
 use std::future::Future;
 use std::future::poll_fn;
+use std::hint::black_box;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
-use divan::Bencher;
-use divan::black_box;
-use divan::counter::ItemsCount;
 use tokio::runtime::Builder;
 use tokio::sync::Notify;
 
@@ -42,7 +42,6 @@ use crate::mpsc::support::TASK_SHAPES;
 use crate::mpsc::support::TaskShape;
 use crate::mpsc::support::Unbounded;
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
 fn ready_send_receive<C: UnboundedMpsc>(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receiver) = C::channel();
@@ -53,7 +52,6 @@ fn ready_send_receive<C: UnboundedMpsc>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
 fn try_send_receive<C: UnboundedMpsc>(bencher: Bencher) {
     let (sender, mut receiver) = C::channel();
 
@@ -63,23 +61,10 @@ fn try_send_receive<C: UnboundedMpsc>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = [32, 1024, 65_536],
-    sample_count = 20,
-    sample_size = 1,
-)]
 fn burst_drain<C: UnboundedMpsc>(bencher: Bencher, messages: usize) {
     repeated_bursts::<C, _, _>(bencher, messages, 0, || usize::MAX);
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    consts = [64, 1024],
-    args = [1024],
-    sample_count = 20,
-    sample_size = 1,
-)]
 fn burst_drain_inline<C: UnboundedMpsc<[u8; SIZE]>, const SIZE: usize>(
     bencher: Bencher,
     messages: usize,
@@ -87,23 +72,11 @@ fn burst_drain_inline<C: UnboundedMpsc<[u8; SIZE]>, const SIZE: usize>(
     repeated_bursts::<C, _, _>(bencher, messages, 0, || [1; SIZE]);
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = [1024],
-    sample_count = 20,
-    sample_size = 1,
-)]
 fn burst_drain_boxed<C: UnboundedMpsc<Box<[u8; 1024]>>>(bencher: Bencher, messages: usize) {
     // Include payload allocation and destruction to compare the complete boxed-message lifecycle.
     repeated_bursts::<C, _, _>(bencher, messages, 0, || Box::new([1; 1024]));
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = [1024, 65_536],
-    sample_count = 20,
-    sample_size = 1,
-)]
 fn burst_with_backlog<C: UnboundedMpsc>(bencher: Bencher, messages: usize) {
     repeated_bursts::<C, _, _>(bencher, messages, messages / 2, || usize::MAX);
 }
@@ -114,7 +87,7 @@ fn repeated_bursts<C: UnboundedMpsc<T>, T, F: Fn() -> T>(
     backlog: usize,
     make_value: F,
 ) {
-    // Keep one channel alive across samples so allocation reuse and reclamation are measured.
+    // Keep one channel alive across rounds so allocation reuse and reclamation are measured.
     let (sender, mut receiver) = C::channel();
     for _ in 0..backlog {
         C::send(&sender, make_value());
@@ -130,29 +103,15 @@ fn repeated_bursts<C: UnboundedMpsc<T>, T, F: Fn() -> T>(
     // Measure recurring bursts after the initial allocation, including a deliberately retained
     // backlog where requested. Do not require an extra `try_recv` call to trigger reclamation.
     run();
-    bencher.counter(ItemsCount::new(messages)).bench_local(run);
+    bencher.bench_local(run);
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = PRODUCER_COUNTS,
-    sample_count = 50,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn reused_threads<C: UnboundedMpsc>(bencher: Bencher, producer_count: usize) {
     let mut batch = RepeatedBatch::<Unbounded<C>>::new(producer_count);
     batch.run();
     bencher.bench_local(|| batch.run());
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = TASK_SHAPES,
-    sample_count = 50,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn reused_tasks<C: UnboundedMpsc>(bencher: Bencher, TaskShape { producers, workers }: TaskShape) {
     let mut batch = RepeatedTasks::<Unbounded<C>>::new(producers, workers);
     batch.run();
@@ -168,19 +127,11 @@ fn check_inline_message(value: [u8; 1024], expected: &mut [u64]) -> usize {
     usize::from(value[1023])
 }
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume])]
 fn clone_drop_sender<C: UnboundedMpsc>(bencher: Bencher) {
     let (sender, _receiver) = C::channel();
     bencher.bench_local(|| drop(black_box(sender.clone())));
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = [(1, 64), (8, 64), (1, 1024), (8, 1024)],
-    sample_count = 50,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn scheduled_bursts_inline<C: UnboundedMpsc<[u8; 1024]>>(
     bencher: Bencher,
     (producers, burst_messages): (usize, usize),
@@ -274,4 +225,138 @@ fn scheduled_bursts_inline<C: UnboundedMpsc<[u8; 1024]>>(
             worker.await.expect("benchmark producer panicked");
         }
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    register_implementation::<Asyncband>(runner, "Asyncband");
+    register_implementation::<Tokio>(runner, "Tokio");
+    register_implementation::<AsyncChannel>(runner, "AsyncChannel");
+    register_implementation::<Flume>(runner, "Flume");
+}
+
+fn register_implementation<C>(runner: &mut Runner, implementation: &str)
+where
+    C: UnboundedMpsc
+        + UnboundedMpsc<[u8; 64]>
+        + UnboundedMpsc<[u8; 1024]>
+        + UnboundedMpsc<Box<[u8; 1024]>>,
+{
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::ready_send_receive")
+        ),
+        30_000_000,
+        1,
+        ready_send_receive::<C>,
+    );
+
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::try_send_receive")
+        ),
+        30_000_000,
+        1,
+        try_send_receive::<C>,
+    );
+
+    for &arg in &[32, 1024, 65_536] {
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg}",
+                concat!(module_path!(), "::burst_drain")
+            ),
+            (32_000_000 / arg).max(1),
+            1,
+            |bencher| burst_drain::<C>(bencher, arg),
+        );
+    }
+    {
+        let &arg = &1024;
+        runner.case(
+            format!(
+                "{}/{implementation}/64/{arg}",
+                concat!(module_path!(), "::burst_drain_inline")
+            ),
+            (8_000_000 / arg).max(1),
+            1,
+            |bencher| burst_drain_inline::<C, 64>(bencher, arg),
+        );
+        runner.case(
+            format!(
+                "{}/{implementation}/1024/{arg}",
+                concat!(module_path!(), "::burst_drain_inline")
+            ),
+            (8_000_000 / arg).max(1),
+            1,
+            |bencher| burst_drain_inline::<C, 1024>(bencher, arg),
+        );
+    }
+    {
+        let &arg = &1024;
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg}",
+                concat!(module_path!(), "::burst_drain_boxed")
+            ),
+            (5_000_000 / arg).max(1),
+            1,
+            |bencher| burst_drain_boxed::<C>(bencher, arg),
+        );
+    }
+    for &arg in &[1024, 65_536] {
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg}",
+                concat!(module_path!(), "::burst_with_backlog")
+            ),
+            (32_000_000 / arg).max(1),
+            1,
+            |bencher| burst_with_backlog::<C>(bencher, arg),
+        );
+    }
+    for &arg in PRODUCER_COUNTS {
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg}",
+                concat!(module_path!(), "::reused_threads")
+            ),
+            320,
+            1,
+            |bencher| reused_threads::<C>(bencher, arg),
+        );
+    }
+    for &arg in TASK_SHAPES {
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg}",
+                concat!(module_path!(), "::reused_tasks")
+            ),
+            512,
+            1,
+            |bencher| reused_tasks::<C>(bencher, arg),
+        );
+    }
+    runner.case(
+        format!(
+            "{}/{implementation}",
+            concat!(module_path!(), "::clone_drop_sender")
+        ),
+        96_000_000,
+        1,
+        clone_drop_sender::<C>,
+    );
+
+    for &arg in &[(1, 64), (8, 64), (1, 1024), (8, 1024)] {
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg:?}",
+                concat!(module_path!(), "::scheduled_bursts_inline")
+            ),
+            64,
+            1,
+            |bencher| scheduled_bursts_inline::<C>(bencher, arg),
+        );
+    }
 }

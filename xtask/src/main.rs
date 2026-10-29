@@ -78,7 +78,7 @@ struct CommandBench {
     #[arg(
         last = true,
         conflicts_with = "no_run",
-        help = "Arguments passed to Divan."
+        help = "Arguments passed to the fixed-workload benchmark runner (see -- --help)."
     )]
     args: Vec<String>,
 }

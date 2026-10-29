@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use benchmarks::channels::BATCH_MESSAGES;
 use benchmarks::channels::adapters::AsyncChannel;
 use benchmarks::channels::adapters::Flume;
 use benchmarks::channels::adapters::Mpmc;
@@ -26,33 +25,63 @@ use benchmarks::channels::mpmc::TaskBatch;
 use benchmarks::channels::mpmc::ThreadBatch;
 use benchmarks::channels::mpmc::Topology;
 use benchmarks::channels::runtime;
-use divan::Bencher;
-use divan::counter::ItemsCount;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 
-#[divan::bench(
-    types = [Mpmc, AsyncChannel, Flume],
-    args = TOPOLOGIES,
-    sample_count = 20,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn thread_batch<C: UnboundedMpmc>(bencher: Bencher, topology: Topology) {
-    bencher
-        .with_inputs(|| ThreadBatch::new_unbounded::<C>(topology))
-        .bench_local_refs(|batch| batch.run());
+    bencher.bench_local(|| {
+        let mut batch = ThreadBatch::new_unbounded::<C>(topology);
+        batch.run()
+    });
 }
 
-#[divan::bench(
-    types = [Mpmc, AsyncChannel, Flume],
-    consts = [0, 4],
-    args = TOPOLOGIES,
-    sample_count = 20,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn task_batch<C: UnboundedMpmc, const WORKERS: usize>(bencher: Bencher, topology: Topology) {
     let runtime = runtime(WORKERS);
-    bencher
-        .with_inputs(|| TaskBatch::new::<Unbounded<C>>(&runtime, topology))
-        .bench_local_refs(|batch| runtime.block_on(batch.run()));
+    bencher.bench_local(|| {
+        let mut batch = TaskBatch::new::<Unbounded<C>>(&runtime, topology);
+        runtime.block_on(batch.run())
+    });
+}
+
+pub fn register(runner: &mut Runner) {
+    register_implementation::<Mpmc>(runner, "Mpmc");
+    register_implementation::<AsyncChannel>(runner, "AsyncChannel");
+    register_implementation::<Flume>(runner, "Flume");
+}
+
+fn register_implementation<C>(runner: &mut Runner, implementation: &str)
+where
+    C: UnboundedMpmc,
+{
+    for &arg in TOPOLOGIES {
+        runner.case(
+            format!(
+                "{}/{implementation}/{arg}",
+                concat!(module_path!(), "::thread_batch")
+            ),
+            256,
+            1,
+            |bencher| thread_batch::<C>(bencher, arg),
+        );
+    }
+    for &arg in TOPOLOGIES {
+        runner.case(
+            format!(
+                "{}/{implementation}/0/{arg}",
+                concat!(module_path!(), "::task_batch")
+            ),
+            512,
+            1,
+            |bencher| task_batch::<C, 0>(bencher, arg),
+        );
+        runner.case(
+            format!(
+                "{}/{implementation}/4/{arg}",
+                concat!(module_path!(), "::task_batch")
+            ),
+            512,
+            1,
+            |bencher| task_batch::<C, 4>(bencher, arg),
+        );
+    }
 }

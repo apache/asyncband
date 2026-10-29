@@ -21,3 +21,10 @@ mod adapters;
 mod bounded;
 mod no_backpressure;
 mod support;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    bounded::register(runner);
+    no_backpressure::register(runner);
+}

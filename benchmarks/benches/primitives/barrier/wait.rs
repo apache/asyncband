@@ -15,19 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::barrier::Barrier;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const PARTICIPANT_COUNTS: &[usize] = &[1, 4, 16];
 
-#[divan::bench(args = PARTICIPANT_COUNTS)]
 fn reused_generation_fanout(bencher: Bencher, participant_count: usize) {
     let mut context = bench_context();
     let barrier = Barrier::new((participant_count + 1) as u32);
@@ -49,7 +49,6 @@ fn reused_generation_fanout(bencher: Bencher, participant_count: usize) {
     });
 }
 
-#[divan::bench]
 fn cancel_pending(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -61,4 +60,24 @@ fn cancel_pending(bencher: Bencher) {
         }
         black_box(barrier)
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    for &arg in PARTICIPANT_COUNTS {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::reused_generation_fanout")
+            ),
+            (5_000_000 / arg).max(1),
+            1,
+            |bencher| reused_generation_fanout(bencher, arg),
+        );
+    }
+    runner.case(
+        concat!(module_path!(), "::cancel_pending"),
+        6_000_000,
+        1,
+        cancel_pending,
+    );
 }

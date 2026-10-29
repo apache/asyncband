@@ -49,7 +49,7 @@ asyncband = { workspace = true, features = [
   "waitgroup",
   "watch",
 ] }
-divan = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 flume = { workspace = true, features = ["async"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 
@@ -60,7 +60,6 @@ waitgroup = { workspace = true }
 [lib]
 bench = false
 doctest = false
-test = false
 
 [[bench]]
 harness = false

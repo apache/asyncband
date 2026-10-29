@@ -82,12 +82,6 @@ pub fn thread_slot_ticket() -> (usize, usize) {
     (slot, ticket)
 }
 
-// Move the input into the benchmark output so Divan drops it outside the timed section.
-#[inline]
-pub fn defer_input_drop<I, O>(input: I, output: O) -> (I, O) {
-    (input, output)
-}
-
 pub async fn wait_until_open(gate: &Cell<bool>) {
     poll_fn(|_| {
         if gate.get() {

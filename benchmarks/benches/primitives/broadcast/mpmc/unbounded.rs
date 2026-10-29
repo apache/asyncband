@@ -15,17 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Drain each iteration to keep retained memory bounded across samples.
+// Drain each iteration to keep retained memory bounded across rounds.
 
 use std::fmt;
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::broadcast::mpmc;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const RECEIVER_COUNTS: &[usize] = &[1, 4, 16];
 
@@ -57,7 +58,6 @@ const RECLAIM_FANOUTS: &[Fanout] = &[
 ];
 
 // Two receivers read the shared payload; the second reclaims the slot.
-#[divan::bench]
 fn send_and_try_recv_shared(bencher: Bencher) {
     let (sender, mut first) = mpmc::unbounded();
     let mut second = sender.subscribe();
@@ -74,7 +74,6 @@ fn payload() -> String {
     "x".repeat(64)
 }
 
-#[divan::bench]
 fn send_and_try_recv_owned(bencher: Bencher) {
     let (sender, mut receiver) = mpmc::unbounded();
     bencher.bench_local(|| {
@@ -83,7 +82,6 @@ fn send_and_try_recv_owned(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn send_and_try_recv_owned_shared(bencher: Bencher) {
     let (sender, mut first) = mpmc::unbounded();
     let mut second = sender.subscribe();
@@ -94,7 +92,6 @@ fn send_and_try_recv_owned_shared(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn deliver_to_waiting_receiver(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receiver) = mpmc::unbounded();
@@ -109,7 +106,6 @@ fn deliver_to_waiting_receiver(bencher: Bencher) {
     });
 }
 
-#[divan::bench(args = RECEIVER_COUNTS)]
 fn register_and_deliver_fanout(bencher: Bencher, receiver_count: usize) {
     let mut context = bench_context();
 
@@ -135,14 +131,12 @@ fn register_and_deliver_fanout(bencher: Bencher, receiver_count: usize) {
     });
 }
 
-#[divan::bench]
 fn send_without_receivers(bencher: Bencher) {
     let (sender, receiver) = mpmc::unbounded::<usize>();
     drop(receiver);
     bencher.bench_local(|| sender.send(black_box(1)));
 }
 
-#[divan::bench]
 fn try_recv_empty(bencher: Bencher) {
     let (sender, mut receiver) = mpmc::unbounded::<usize>();
     bencher.bench_local(|| black_box(receiver.try_recv()));
@@ -150,7 +144,6 @@ fn try_recv_empty(bencher: Bencher) {
 }
 
 // Compare reclamation with identical historical peaks but different live subscriber counts.
-#[divan::bench(args = RECLAIM_FANOUTS)]
 fn drain_with_receivers(bencher: Bencher, fanout: Fanout) {
     let (sender, receiver) = mpmc::unbounded();
     drop(receiver);
@@ -169,7 +162,6 @@ fn drain_with_receivers(bencher: Bencher, fanout: Fanout) {
     });
 }
 
-#[divan::bench]
 fn cancel_pending(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -181,4 +173,71 @@ fn cancel_pending(bencher: Bencher) {
         }
         black_box((sender, receiver))
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.case(
+        concat!(module_path!(), "::send_and_try_recv_shared"),
+        6_000_000,
+        1,
+        send_and_try_recv_shared,
+    );
+    runner.case(
+        concat!(module_path!(), "::send_and_try_recv_owned"),
+        3_000_000,
+        1,
+        send_and_try_recv_owned,
+    );
+    runner.case(
+        concat!(module_path!(), "::send_and_try_recv_owned_shared"),
+        3_000_000,
+        1,
+        send_and_try_recv_owned_shared,
+    );
+    runner.case(
+        concat!(module_path!(), "::deliver_to_waiting_receiver"),
+        6_000_000,
+        1,
+        deliver_to_waiting_receiver,
+    );
+    for &arg in RECEIVER_COUNTS {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::register_and_deliver_fanout")
+            ),
+            (3_000_000 / arg).max(1),
+            1,
+            |bencher| register_and_deliver_fanout(bencher, arg),
+        );
+    }
+    runner.case(
+        concat!(module_path!(), "::send_without_receivers"),
+        12_000_000,
+        1,
+        send_without_receivers,
+    );
+    runner.case(
+        concat!(module_path!(), "::try_recv_empty"),
+        60_000_000,
+        1,
+        try_recv_empty,
+    );
+    for &arg in RECLAIM_FANOUTS {
+        runner.case(
+            format!(
+                "{}/{arg}",
+                concat!(module_path!(), "::drain_with_receivers")
+            ),
+            (10_000_000 / arg.live).max(1),
+            1,
+            |bencher| drain_with_receivers(bencher, arg),
+        );
+    }
+    runner.case(
+        concat!(module_path!(), "::cancel_pending"),
+        3_000_000,
+        1,
+        cancel_pending,
+    );
 }

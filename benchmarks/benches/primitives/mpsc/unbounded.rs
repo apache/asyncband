@@ -15,16 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::mpsc;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-use divan::Bencher;
-use divan::black_box;
 
-#[divan::bench]
 fn wake_pending_receiver(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receiver) = mpsc::unbounded();
@@ -37,7 +37,6 @@ fn wake_pending_receiver(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn reregister_pending_receiver(bencher: Bencher) {
     let mut context = bench_context();
     let (_sender, mut receiver) = mpsc::unbounded::<usize>();
@@ -45,4 +44,19 @@ fn reregister_pending_receiver(bencher: Bencher) {
     poll_pending(recv.as_mut(), &mut context);
 
     bencher.bench_local(|| poll_pending(recv.as_mut(), &mut context));
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.case(
+        concat!(module_path!(), "::wake_pending_receiver"),
+        15_000_000,
+        1,
+        wake_pending_receiver,
+    );
+    runner.case(
+        concat!(module_path!(), "::reregister_pending_receiver"),
+        40_000_000,
+        1,
+        reregister_pending_receiver,
+    );
 }

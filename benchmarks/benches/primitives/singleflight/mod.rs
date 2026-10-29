@@ -18,3 +18,10 @@
 mod coalescing;
 mod leaders;
 mod support;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    coalescing::register(runner);
+    leaders::register(runner);
+}

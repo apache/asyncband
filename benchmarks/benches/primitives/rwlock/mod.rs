@@ -17,3 +17,10 @@
 
 mod read;
 mod write;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    read::register(runner);
+    write::register(runner);
+}

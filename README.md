@@ -79,6 +79,10 @@ Public paths stay direct—such as `asyncband::mutex`, `asyncband::pool`, and `a
 
 Runnable examples live in the [`examples`](examples) workspace crate. They demonstrate how to choose and compose Asyncband primitives in complete programs.
 
+## Benchmarks
+
+Use `cargo x bench` to run fixed workloads measured in milliseconds. See the [benchmark guide](benchmarks/README.md) for filtering, repeated comparisons, workload sizes, and timing boundaries.
+
 ## API map
 
 | Area                 | API                                                                                            | Feature        | Use                                                                                                             |

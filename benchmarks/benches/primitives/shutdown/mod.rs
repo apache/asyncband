@@ -16,3 +16,9 @@
 // under the License.
 
 mod request_shutdown;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    request_shutdown::register(runner);
+}

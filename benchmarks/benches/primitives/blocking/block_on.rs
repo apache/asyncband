@@ -16,21 +16,20 @@
 // under the License.
 
 use std::future::poll_fn;
+use std::hint::black_box;
 use std::sync::mpsc;
 use std::task::Poll;
 use std::task::Waker;
 use std::thread;
 
 use asyncband::blocking::FutureExt;
-use divan::Bencher;
-use divan::black_box;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 
-#[divan::bench]
 fn ready(bencher: Bencher) {
     bencher.bench_local(|| async { black_box(42usize) }.block_on());
 }
 
-#[divan::bench]
 fn self_wake(bencher: Bencher) {
     bencher.bench_local(|| {
         let mut polled = false;
@@ -47,7 +46,6 @@ fn self_wake(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn cross_thread_wake(bencher: Bencher) {
     let (wakers_tx, wakers_rx) = mpsc::channel::<Waker>();
     let worker = thread::spawn(move || {
@@ -72,4 +70,20 @@ fn cross_thread_wake(bencher: Bencher) {
 
     drop(wakers_tx);
     worker.join().unwrap();
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.case(concat!(module_path!(), "::ready"), 100_000_000, 1, ready);
+    runner.case(
+        concat!(module_path!(), "::self_wake"),
+        60_000_000,
+        1,
+        self_wake,
+    );
+    runner.case(
+        concat!(module_path!(), "::cross_thread_wake"),
+        60_000,
+        1,
+        cross_thread_wake,
+    );
 }

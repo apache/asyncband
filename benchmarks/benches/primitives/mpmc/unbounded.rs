@@ -15,19 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::mpmc;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
-use crate::mpmc::FAST_SAMPLE_SIZE;
-
-#[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
 fn send_then_try_recv(bencher: Bencher) {
     let (sender, receiver) = mpmc::unbounded();
     bencher.bench_local(|| {
@@ -36,7 +34,6 @@ fn send_then_try_recv(bencher: Bencher) {
     });
 }
 
-#[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
 fn send_then_recv(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, receiver) = mpmc::unbounded();
@@ -46,7 +43,6 @@ fn send_then_recv(bencher: Bencher) {
     });
 }
 
-#[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
 fn wake_pending_receiver(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, receiver) = mpmc::unbounded();
@@ -58,11 +54,37 @@ fn wake_pending_receiver(bencher: Bencher) {
     });
 }
 
-#[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
 fn repoll_pending_receiver(bencher: Bencher) {
     let mut context = bench_context();
     let (_sender, receiver) = mpmc::unbounded::<usize>();
     let mut recv = pin!(receiver.recv());
     poll_pending(recv.as_mut(), &mut context);
     bencher.bench_local(|| poll_pending(recv.as_mut(), &mut context));
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.case(
+        concat!(module_path!(), "::send_then_try_recv"),
+        30_000_000,
+        1,
+        send_then_try_recv,
+    );
+    runner.case(
+        concat!(module_path!(), "::send_then_recv"),
+        24_000_000,
+        1,
+        send_then_recv,
+    );
+    runner.case(
+        concat!(module_path!(), "::wake_pending_receiver"),
+        9_000_000,
+        1,
+        wake_pending_receiver,
+    );
+    runner.case(
+        concat!(module_path!(), "::repoll_pending_receiver"),
+        40_000_000,
+        1,
+        repoll_pending_receiver,
+    );
 }
