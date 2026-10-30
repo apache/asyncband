@@ -35,6 +35,11 @@
 //! or processing-completion barrier. If `T::clone` panics inside `recv_cloned` or
 //! `try_recv_cloned`, that subscription has still advanced past the value.
 //!
+//! Shared receives of the same message also share its interior mutable state: changes made through
+//! one subscriber's `Arc<T>` can be observed by the others. To preserve the previous owning-receive
+//! behavior, use `recv_cloned` or `try_recv_cloned`. These methods follow `T`'s `Clone` semantics,
+//! which need not produce an independent copy of its state.
+//!
 //! Sending with no subscriptions discards the value and succeeds. A later subscription starts
 //! with future publications; it does not replay discarded or previously retained values.
 //!
