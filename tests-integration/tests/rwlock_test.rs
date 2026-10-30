@@ -144,7 +144,6 @@ async fn owned_write_mappings_preserve_lock_ownership() {
     let mut value =
         OwnedMappedRwLockWriteGuard::filter_map(value, |value| value.first_mut()).unwrap();
     *value = 100;
-    let value = value.downgrade();
 
     drop(rwlock);
     assert!(weak.upgrade().is_some());
@@ -184,7 +183,7 @@ async fn owned_read_mappings_preserve_lock_ownership() {
 }
 
 #[tokio::test]
-async fn every_write_guard_type_can_downgrade() {
+async fn write_guards_downgrade_before_mapping() {
     let rwlock = Arc::new(RwLock::new((42, "test".to_string())));
 
     {
@@ -213,23 +212,22 @@ async fn every_write_guard_type_can_downgrade() {
     }
 
     {
-        let write_guard = rwlock.write().await;
-        let mut mapped_write = RwLockWriteGuard::map(write_guard, |data| &mut data.0);
-        *mapped_write = 200;
+        let mut write_guard = rwlock.write().await;
+        write_guard.0 = 200;
 
-        let mapped_read = mapped_write.downgrade();
+        let mapped_read = RwLockReadGuard::map(write_guard.downgrade(), |data| &data.0);
         assert_eq!(*mapped_read, 200);
 
         assert!(rwlock.try_write().is_none());
+        assert_eq!(rwlock.try_read().unwrap().0, 200);
         drop(mapped_read);
     }
 
     {
-        let owned_write = rwlock.clone().write_owned().await;
-        let mut owned_mapped = OwnedRwLockWriteGuard::map(owned_write, |data| &mut data.1);
-        *owned_mapped = "final".to_string();
+        let mut owned_write = rwlock.clone().write_owned().await;
+        owned_write.1 = "final".to_string();
 
-        let owned_mapped_read = owned_mapped.downgrade();
+        let owned_mapped_read = OwnedRwLockReadGuard::map(owned_write.downgrade(), |data| &data.1);
         assert_eq!(*owned_mapped_read, "final");
 
         let moved_task = tokio::spawn(async move {

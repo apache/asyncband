@@ -53,6 +53,9 @@ unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Sync> Send for OwnedMappedRwLoc
 unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Sync> Sync for OwnedMappedRwLockReadGuard<T, U> {}
 
 impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockReadGuard<T, U> {
+    /// `d` must come from a shared reference into the locked value, created while `access` was
+    /// held. A pointer derived from `&mut` access is not valid here, because other readers can
+    /// change its target through interior mutability.
     pub(crate) fn new(d: NonNull<U>, access: ReadAccess<Arc<RwLock<T>>>) -> Self {
         Self {
             d,
@@ -77,7 +80,9 @@ impl<T: ?Sized, U: ?Sized + fmt::Display> fmt::Display for OwnedMappedRwLockRead
 impl<T: ?Sized, U: ?Sized> Deref for OwnedMappedRwLockReadGuard<T, U> {
     type Target = U;
     fn deref(&self) -> &Self::Target {
-        // SAFETY: we hold the read lock and the NonNull pointer is valid for the guard's lifetime
+        // SAFETY: `access` keeps the lock alive and holds a read permit, so no writer can reach the
+        // value. `d` comes from a shared reference into the locked value (see `new`), so its target
+        // changes only inside an `UnsafeCell`, as a shared reference permits.
         unsafe { self.d.as_ref() }
     }
 }

@@ -16,4 +16,5 @@
 // under the License.
 
 mod read;
+mod upgradable;
 mod write;
