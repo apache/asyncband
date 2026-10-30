@@ -143,6 +143,10 @@ impl CommandMiri {
         run_command(make_miri_cmd("tests-integration", &["--test", "spmc_test"]));
         run_command(make_miri_cmd(
             "tests-integration",
+            &["--test", "broadcast_test"],
+        ));
+        run_command(make_miri_cmd(
+            "tests-integration",
             &["--test", "phaser_test"],
         ));
         run_command(make_miri_cmd(

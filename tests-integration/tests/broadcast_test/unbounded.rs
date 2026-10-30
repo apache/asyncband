@@ -500,7 +500,7 @@ async fn recv_reports_disconnection_without_any_message() {
 #[test]
 fn concurrent_senders_deliver_every_message_to_every_receiver() {
     const SENDERS: u64 = 4;
-    const PER_SENDER: u64 = 512;
+    const PER_SENDER: u64 = if cfg!(miri) { 8 } else { 512 };
 
     let (tx, rx) = unbounded();
     let mut receivers = Vec::with_capacity(4);
@@ -546,13 +546,15 @@ fn concurrent_senders_deliver_every_message_to_every_receiver() {
 
 #[test]
 fn randomized_operations_track_the_reference_model() {
-    for seed in 1..32u64 {
+    const SEEDS: u64 = if cfg!(miri) { 4 } else { 32 };
+    const STEPS: usize = if cfg!(miri) { 64 } else { 512 };
+    for seed in 1..SEEDS {
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let (tx, rx) = unbounded::<u64>();
         let mut tail = 0u64;
         let mut model = vec![(rx, 0u64)];
 
-        for _ in 0..512 {
+        for _ in 0..STEPS {
             match rng.below(100) {
                 0..=44 => {
                     tx.send(tail);

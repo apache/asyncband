@@ -855,7 +855,7 @@ fn cancelling_a_blocked_send_drops_its_payload_outside_the_channel_lock() {
 
 #[test]
 fn dropping_the_last_receiver_never_strands_a_racing_producer() {
-    const ROUNDS: u64 = 150;
+    const ROUNDS: u64 = if cfg!(miri) { 8 } else { 150 };
     const PRODUCERS: u64 = 4;
 
     // Bound each race independently of the total time spent starting threads across all rounds.
@@ -891,7 +891,7 @@ fn dropping_the_last_receiver_never_strands_a_racing_producer() {
 fn bounded_concurrent_producers_commit_one_order_seen_by_every_receiver() {
     assert_completes_without_deadlock(|| {
         const PRODUCERS: u64 = 4;
-        const PER_PRODUCER: u64 = 128;
+        const PER_PRODUCER: u64 = if cfg!(miri) { 8 } else { 128 };
         const RECEIVERS: usize = 4;
         const TOTAL: u64 = PRODUCERS * PER_PRODUCER;
 
