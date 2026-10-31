@@ -191,11 +191,15 @@ impl<T> Shared<T> {
     ///
     /// Call with the channel unlocked, before payload cloning or destruction can panic.
     fn release_reclaimed(&self, freed: usize) {
+        if freed == 0 {
+            return;
+        }
+
         // Cap permits at the number of blocked producers. Surplus permits make later `send` futures
         // retry a full channel instead of waiting, especially after dropping a lagging
         // subscription.
         let waiting = self.waiting_senders();
-        if freed > 0 && waiting > 0 {
+        if waiting > 0 {
             self.tx_permits.release_if_waiters(freed.min(waiting));
         }
     }
@@ -607,8 +611,9 @@ impl<T> BoundedReceiver<T> {
     /// poll the same way.
     fn receive_released(&mut self) -> Result<Received<T>, TryRecvError> {
         let received = common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
-        self.shared
-            .release_reclaimed(usize::from(received.reclaimed));
+        if received.reclaimed {
+            self.shared.release_reclaimed(1);
+        }
         Ok(received)
     }
 
@@ -784,9 +789,9 @@ impl<T> Future for Recv<'_, T> {
         // Release before handing out the payload, for the same reason as `receive_released`: a
         // panicking `T::clone` or `T::drop` in `take_msg` must not strand producers waiting for
         // the reclaimed slot.
-        receiver
-            .shared
-            .release_reclaimed(usize::from(received.reclaimed));
+        if received.reclaimed {
+            receiver.shared.release_reclaimed(1);
+        }
         Poll::Ready(Ok(received))
     }
 }
