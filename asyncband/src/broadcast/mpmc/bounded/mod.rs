@@ -577,6 +577,45 @@ impl<T> BoundedReceiver<T> {
         Ok(self.wait_next().await?.msg)
     }
 
+    /// Receives the next value for this receiver as an owned `T`.
+    ///
+    /// The payload is moved out of the channel without cloning when this read reclaims the message
+    /// and nothing else still refers to it, such as an `Arc` kept from a shared receive or another
+    /// receiver's clone still in progress. Otherwise it is cloned with the channel unlocked. If
+    /// `T::clone` panics, this receiver has still advanced past the value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(T)`: The next message.
+    /// * `Err(RecvError::Disconnected)`: All senders have been dropped and this receiver has no
+    ///   remaining messages.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending `recv_cloned` future leaves this receiver's cursor unchanged. A
+    /// subsequent receive can still return the same next value, so these futures may safely be
+    /// raced with other futures in a selection construct.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let (tx, mut rx) = mpmc::bounded(4);
+    /// tx.send(String::from("owned")).await;
+    /// assert_eq!(rx.recv_cloned().await, Ok(String::from("owned")));
+    /// # }
+    /// ```
+    pub async fn recv_cloned(&mut self) -> Result<T, RecvError>
+    where
+        T: Clone,
+    {
+        let received = self.wait_next().await?;
+        Ok(common::take_msg(received))
+    }
+
     /// Attempts to receive the next value for this receiver without blocking, as the channel's
     /// shared `Arc<T>`.
     ///
@@ -601,6 +640,35 @@ impl<T> BoundedReceiver<T> {
     /// ```
     pub fn try_recv(&mut self) -> Result<Arc<T>, TryRecvError> {
         Ok(self.receive_released()?.msg)
+    }
+
+    /// Attempts to receive the next value for this receiver without blocking, as an owned `T`.
+    ///
+    /// See [`recv_cloned`](BoundedReceiver::recv_cloned) for when the payload is moved out rather
+    /// than cloned.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(T)`: The next message.
+    /// * `Err(TryRecvError::Empty)`: No message is currently available.
+    /// * `Err(TryRecvError::Disconnected)`: All senders have been dropped and this receiver has no
+    ///   remaining messages.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    ///
+    /// let (tx, mut rx) = mpmc::bounded(4);
+    /// tx.try_send(String::from("owned")).unwrap();
+    /// assert_eq!(rx.try_recv_cloned(), Ok(String::from("owned")));
+    /// ```
+    pub fn try_recv_cloned(&mut self) -> Result<T, TryRecvError>
+    where
+        T: Clone,
+    {
+        let received = self.receive_released()?;
+        Ok(common::take_msg(received))
     }
 
     /// Receives without waiting and hands the capacity this receive released to blocked producers
@@ -680,70 +748,6 @@ impl<T> BoundedReceiver<T> {
             receiver: self,
             token: None,
         }
-    }
-}
-
-impl<T: Clone> BoundedReceiver<T> {
-    /// Receives the next value for this receiver as an owned `T`.
-    ///
-    /// The payload is moved out of the channel without cloning when this read reclaims the message
-    /// and nothing else still refers to it, such as an `Arc` kept from a shared receive or another
-    /// receiver's clone still in progress. Otherwise it is cloned with the channel unlocked. If
-    /// `T::clone` panics, this receiver has still advanced past the value.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(T)`: The next message.
-    /// * `Err(RecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
-    ///
-    /// # Cancel safety
-    ///
-    /// Dropping a pending `recv_cloned` future leaves this receiver's cursor unchanged. A
-    /// subsequent receive can still return the same next value, so these futures may safely be
-    /// raced with other futures in a selection construct.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use asyncband::broadcast::mpmc;
-    ///
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.send(String::from("owned")).await;
-    /// assert_eq!(rx.recv_cloned().await, Ok(String::from("owned")));
-    /// # }
-    /// ```
-    pub async fn recv_cloned(&mut self) -> Result<T, RecvError> {
-        let received = self.wait_next().await?;
-        Ok(common::take_msg(received))
-    }
-
-    /// Attempts to receive the next value for this receiver without blocking, as an owned `T`.
-    ///
-    /// See [`recv_cloned`](BoundedReceiver::recv_cloned) for when the payload is moved out rather
-    /// than cloned.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(T)`: The next message.
-    /// * `Err(TryRecvError::Empty)`: No message is currently available.
-    /// * `Err(TryRecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use asyncband::broadcast::mpmc;
-    ///
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.try_send(String::from("owned")).unwrap();
-    /// assert_eq!(rx.try_recv_cloned(), Ok(String::from("owned")));
-    /// ```
-    pub fn try_recv_cloned(&mut self) -> Result<T, TryRecvError> {
-        let received = self.receive_released()?;
-        Ok(common::take_msg(received))
     }
 }
 
