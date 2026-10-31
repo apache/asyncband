@@ -16,8 +16,9 @@
 // under the License.
 
 //! Uses usize keys, a deterministic hasher, and trivial initializers.
-//! Lookups use threads; coalescing uses controlled polling.
+//! Lookups use threads; coalescing uses controlled polling; builds collect prepared vectors.
 
+mod build;
 mod initialize;
 mod lookup;
 mod maintenance;

@@ -119,21 +119,20 @@ fn failed_compute_preserves_entry_for_waiter_retry() {
     let map = OnceMap::new();
     let released = Cell::new(false);
 
-    let first = map.try_compute("key", async || {
+    let mut first = pin!(map.try_compute("key", async || {
         poll_fn(|_| {
-            released
-                .get()
-                .then_some(())
-                .map_or(Poll::Pending, Poll::Ready)
+            if released.get() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
         })
         .await;
         Err::<i32, &str>("fail")
-    });
-    let mut first = pin!(first);
+    }));
     assert!(poll_once(first.as_mut()).is_pending());
 
-    let retry = map.try_compute("key", async || Ok::<i32, &str>(1));
-    let mut retry = pin!(retry);
+    let mut retry = pin!(map.try_compute("key", async || Ok::<i32, &str>(1)));
     assert!(poll_once(retry.as_mut()).is_pending());
 
     released.set(true);
@@ -147,15 +146,9 @@ fn failed_compute_preserves_entry_for_waiter_retry() {
 #[test]
 fn colliding_pending_entries_are_tracked_independently() {
     let map: OnceMap<usize, usize, BuildHasherDefault<ConstantHasher>> = OnceMap::default();
-    let Lookup::Pending(first) = map.get_or_insert(1) else {
-        unreachable!()
-    };
-    let Lookup::Pending(first_waiter) = map.get_or_insert(1) else {
-        unreachable!()
-    };
-    let Lookup::Pending(second) = map.get_or_insert(2) else {
-        unreachable!()
-    };
+    let first = map.get_or_insert(1);
+    let first_waiter = map.get_or_insert(1);
+    let second = map.get_or_insert(2);
 
     assert!(Arc::ptr_eq(&first, &first_waiter));
     assert!(!Arc::ptr_eq(&first, &second));
