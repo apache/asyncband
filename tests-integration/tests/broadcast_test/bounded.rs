@@ -80,17 +80,8 @@ impl Clone for PanicOnClone {
 }
 
 /// A payload that panics while the channel drops a message it reclaimed.
-///
-/// Clones disarm themselves, so only the copy the channel retains is dangerous. That lets a test
-/// drain a receiver normally and still blow up inside the reclaim.
 struct PanicOnDrop {
     armed: bool,
-}
-
-impl Clone for PanicOnDrop {
-    fn clone(&self) -> Self {
-        Self { armed: false }
-    }
 }
 
 impl Drop for PanicOnDrop {
@@ -769,9 +760,9 @@ fn panicking_payload_destructor_still_releases_capacity() {
     for index in 0..3 {
         tx.try_send(PanicOnDrop { armed: index == 0 }).unwrap();
     }
-    // `rx1` reads clones, which are disarmed; the armed originals stay retained for `rx2`.
+    // `rx1` drains its shared references while `rx2` still retains the messages in the backlog.
     for _ in 0..3 {
-        rx1.try_recv_cloned().unwrap();
+        rx1.try_recv().unwrap();
     }
 
     let mut send = pin!(tx.send(PanicOnDrop { armed: false }));
