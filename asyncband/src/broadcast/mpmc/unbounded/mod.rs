@@ -294,8 +294,7 @@ impl<T> UnboundedReceiver<T> {
     /// # }
     /// ```
     pub async fn recv(&mut self) -> Result<Arc<T>, RecvError> {
-        let (msg, reclaimed) = self.wait_next().await?;
-        Ok(common::share_msg(msg, reclaimed))
+        Ok(self.wait_next().await?.msg)
     }
 
     /// Attempts to take this receiver's next value without waiting, as the channel's shared
@@ -323,9 +322,8 @@ impl<T> UnboundedReceiver<T> {
     /// assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
     pub fn try_recv(&mut self) -> Result<Arc<T>, TryRecvError> {
-        let (msg, reclaimed) =
-            common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
-        Ok(common::share_msg(msg, reclaimed))
+        let received = common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
+        Ok(received.msg)
     }
 
     /// Re-subscribes to the channel, returning a new receiver that starts receiving messages from
@@ -424,8 +422,8 @@ impl<T: Clone> UnboundedReceiver<T> {
     /// # }
     /// ```
     pub async fn recv_cloned(&mut self) -> Result<T, RecvError> {
-        let (msg, reclaimed) = self.wait_next().await?;
-        Ok(common::take_msg(msg, reclaimed))
+        let received = self.wait_next().await?;
+        Ok(common::take_msg(received))
     }
 
     /// Attempts to take this receiver's next value without waiting and returns it as an owned
@@ -448,9 +446,8 @@ impl<T: Clone> UnboundedReceiver<T> {
     /// assert_eq!(receiver.try_recv_cloned(), Ok(String::from("owned")));
     /// ```
     pub fn try_recv_cloned(&mut self) -> Result<T, TryRecvError> {
-        let (msg, reclaimed) =
-            common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
-        Ok(common::take_msg(msg, reclaimed))
+        let received = common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
+        Ok(common::take_msg(received))
     }
 }
 

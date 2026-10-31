@@ -570,8 +570,7 @@ impl<T> BoundedReceiver<T> {
     /// # }
     /// ```
     pub async fn recv(&mut self) -> Result<Arc<T>, RecvError> {
-        let (msg, reclaimed) = self.wait_next().await?;
-        Ok(common::share_msg(msg, reclaimed))
+        Ok(self.wait_next().await?.msg)
     }
 
     /// Attempts to receive the next value for this receiver without blocking, as the channel's
@@ -597,21 +596,20 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(*rx.try_recv().unwrap(), 10);
     /// ```
     pub fn try_recv(&mut self) -> Result<Arc<T>, TryRecvError> {
-        let (msg, reclaimed) = self.receive_released()?;
-        Ok(common::share_msg(msg, reclaimed))
+        Ok(self.receive_released()?.msg)
     }
 
     /// Receives without waiting and hands the capacity this receive released to blocked producers
     /// before the caller can touch the payload.
     ///
-    /// `T::clone` and `T::drop` may panic, and if either ran first the reclaimed slots would never
-    /// be handed to a waiting producer, stalling it permanently. The `Recv` future orders its poll
-    /// the same way.
+    /// `take_msg` may run `T::clone` and `T::drop`, and if either panicked before the freed slot
+    /// was released, a waiting producer would be stalled permanently. The `Recv` future orders its
+    /// poll the same way.
     fn receive_released(&mut self) -> Result<Received<T>, TryRecvError> {
-        let (msg, reclaimed) =
-            common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
-        self.shared.release_reclaimed(reclaimed.len());
-        Ok((msg, reclaimed))
+        let received = common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
+        self.shared
+            .release_reclaimed(usize::from(received.reclaimed));
+        Ok(received)
     }
 
     /// Re-subscribes to the channel, returning a new receiver that starts receiving messages from
@@ -713,8 +711,8 @@ impl<T: Clone> BoundedReceiver<T> {
     /// # }
     /// ```
     pub async fn recv_cloned(&mut self) -> Result<T, RecvError> {
-        let (msg, reclaimed) = self.wait_next().await?;
-        Ok(common::take_msg(msg, reclaimed))
+        let received = self.wait_next().await?;
+        Ok(common::take_msg(received))
     }
 
     /// Attempts to receive the next value for this receiver without blocking, as an owned `T`.
@@ -739,8 +737,8 @@ impl<T: Clone> BoundedReceiver<T> {
     /// assert_eq!(rx.try_recv_cloned(), Ok(String::from("owned")));
     /// ```
     pub fn try_recv_cloned(&mut self) -> Result<T, TryRecvError> {
-        let (msg, reclaimed) = self.receive_released()?;
-        Ok(common::take_msg(msg, reclaimed))
+        let received = self.receive_released()?;
+        Ok(common::take_msg(received))
     }
 }
 
@@ -771,7 +769,7 @@ impl<T> Future for Recv<'_, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self { receiver, token } = self.get_mut();
 
-        let (msg, reclaimed) = match common::poll_receive(
+        let received = match common::poll_receive(
             &receiver.shared.inner,
             &receiver.shared.senders,
             receiver.key,
@@ -784,9 +782,11 @@ impl<T> Future for Recv<'_, T> {
         };
 
         // Release before handing out the payload, for the same reason as `receive_released`: a
-        // panicking `T::clone` or `T::drop` must not strand producers waiting for the reclaimed
-        // slots.
-        receiver.shared.release_reclaimed(reclaimed.len());
-        Poll::Ready(Ok((msg, reclaimed)))
+        // panicking `T::clone` or `T::drop` in `take_msg` must not strand producers waiting for
+        // the reclaimed slot.
+        receiver
+            .shared
+            .release_reclaimed(usize::from(received.reclaimed));
+        Poll::Ready(Ok(received))
     }
 }

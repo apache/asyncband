@@ -43,16 +43,21 @@ use crate::internal::wakerset::WakerToken;
 /// Retained capacity below which an elastic backlog is never shrunk back.
 pub const MIN_RETAINED_CAPACITY: usize = 64;
 
-/// A received message together with any buffer prefix reclaimed while advancing the cursor.
+/// A received message together with whether advancing the cursor vacated the head slot.
 ///
-/// The two travel together because the caller has to act on both with the channel unlocked, and a
-/// bounded channel has to hand the released capacity back before it touches the payload.
-pub type Received<T> = (Arc<T>, Reclaimed<T>);
+/// The two travel together because the caller acts on both with the channel unlocked: a bounded
+/// channel releases the freed slot before touching the payload, and an owning receive uses
+/// `reclaimed` to decide whether it can unwrap the `Arc` instead of cloning.
+pub struct Received<T> {
+    pub msg: Arc<T>,
+    pub reclaimed: bool,
+}
 
-/// Messages removed from the shared buffer and waiting to be dropped after it is unlocked.
+/// Messages removed from the shared buffer when a lagging subscription is dropped, waiting to be
+/// dropped after the channel is unlocked.
 ///
-/// Keeping the first message out of the `Vec` avoids a heap allocation on the common path where
-/// advancing a receiver's cursor reclaims exactly one message.
+/// Keeping the first message out of the `Vec` avoids a heap allocation when removing a
+/// subscription reclaims only one message.
 pub struct Reclaimed<T> {
     first: Option<Arc<T>>,
     rest: Vec<Arc<T>>,
@@ -66,10 +71,7 @@ impl<T> Reclaimed<T> {
         }
     }
 
-    fn first(&self) -> Option<&Arc<T>> {
-        self.first.as_ref()
-    }
-
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.first.is_none()
     }
@@ -293,40 +295,36 @@ impl<T> Backlog<T> {
         }
 
         let slot = &mut self.buffer[offset];
-        let msg = slot.msg.clone();
         slot.cursors -= 1;
-        let reclaimed = if offset == 0 && slot.cursors == 0 {
-            self.reclaim_vacated()
+        let received = if offset == 0 && slot.cursors == 0 {
+            // Moving the cursor onto `version + 1` above guarantees the next slot, if any, has a
+            // non-zero cursor count. A receive therefore vacates only `head` itself and can hand
+            // the slot's `Arc` straight to the caller without touching its reference count.
+            let msg = self.buffer.pop_front().expect("head slot must exist").msg;
+            self.head += 1;
+            debug_assert!(self.head <= self.tail);
+            self.shrink_buffer();
+            Received {
+                msg,
+                reclaimed: true,
+            }
         } else {
-            Reclaimed::empty()
+            Received {
+                msg: slot.msg.clone(),
+                reclaimed: false,
+            }
         };
-        // Reclaiming after advancing the cursor always begins with this receiver's own message: the
-        // reclaim path runs only for a cursor leaving `head`, so the first slot drained is `msg`.
-        // `take_msg` relies on this to recognize that it owns the payload.
-        debug_assert!(
-            reclaimed
-                .first()
-                .is_none_or(|first| Arc::ptr_eq(first, &msg))
-        );
-        Some((msg, reclaimed))
+        Some(received)
     }
 
-    /// Releases the prefix no cursor can still read and hands it to the caller.
+    /// Releases the prefix no cursor can still read when a subscription is removed at `head`, and
+    /// hands the messages to the caller to drop outside the channel lock.
     ///
     /// The head slot's cursor count has just reached zero, so every message up to the next counted
     /// slot is invisible: each cursor is counted in exactly one place, and none of those places is
     /// a slot being popped. Popping the zero-count prefix replaces the old scan over every
     /// subscription for the slowest cursor, so advancing the head costs the messages released
     /// instead of the receivers subscribed.
-    ///
-    /// A call to `receive` releases exactly one message: its cursor is counted at the next version
-    /// before it leaves `head`, so the zero-count prefix ends there. Only removing a lagging
-    /// subscription can release more.
-    ///
-    /// `buffer` shrinks here and grows only in [`Backlog::publish_retained`], so this is the one
-    /// place `retained()` can fall. A bounded channel therefore accounts for released capacity at
-    /// exactly the two call sites that reach this: [`Backlog::receive`] and
-    /// [`Backlog::remove_receiver`].
     fn reclaim_vacated(&mut self) -> Reclaimed<T> {
         debug_assert!(self.buffer.front().is_some_and(|slot| slot.cursors == 0));
 
@@ -503,40 +501,27 @@ pub fn poll_receive<T>(
     }
 }
 
-/// Releases the backlog's reference to the message, then hands out the stored `Arc`, both with the
-/// channel unlocked.
+/// Yields the received message owned with the channel unlocked.
 ///
-/// A receive reclaims at most the message itself, and `msg` keeps the payload alive, so a shared
-/// receive runs neither `T::clone` nor `T::drop`.
-pub fn share_msg<T>(msg: Arc<T>, reclaimed: Reclaimed<T>) -> Arc<T> {
-    drop(reclaimed);
-    msg
-}
-
-/// Drops the reclaimed backlog, then yields the received message owned, both with the channel
-/// unlocked.
+/// When `received.reclaimed` is true, advancing the cursor popped the message from `buffer`, so
+/// the caller may hold the only remaining reference and move the payload out instead of cloning
+/// it.
 ///
-/// A non-empty backlog means receiving this message removed `msg` from the buffer. Once the
-/// reclaimed backlog is dropped, the caller may hold the only remaining reference and can then
-/// move the payload out instead of cloning it.
+/// Ownership is decided from that bookkeeping rather than by probing the reference count on every
+/// receive. Calling [`Arc::unwrap_or_clone`] while the slot is still retained would fail under
+/// fan-out, and its failed compare-exchange writes to a cache line that every receiver draining
+/// the message shares.
 ///
-/// Ownership is decided from that bookkeeping rather than by probing the reference count. An
-/// [`Arc::try_unwrap`] call for every received message would fail under fan-out, and its failed
-/// compare-exchange writes to a cache line that every receiver draining the message shares.
-///
-/// This runs `T::clone` and `T::drop`, either of which may panic, so a bounded channel must
+/// This may run `T::clone` and `T::drop`, either of which can panic, so a bounded channel must
 /// already have released the reclaimed capacity before calling it.
-pub fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Reclaimed<T>) -> T {
-    let sole_owner = !reclaimed.is_empty();
-    drop(reclaimed);
-
-    if !sole_owner {
-        return (*msg).clone();
+pub fn take_msg<T: Clone>(received: Received<T>) -> T {
+    if !received.reclaimed {
+        return (*received.msg).clone();
     }
 
     // Another receiver can still hold an in-flight reference to the same message, or an `Arc` it
     // kept from a shared receive, so the clone remains the fallback.
-    Arc::unwrap_or_clone(msg)
+    Arc::unwrap_or_clone(received.msg)
 }
 
 #[cfg(test)]
@@ -561,7 +546,7 @@ mod tests {
         assert!(log.publish(Arc::new(3)).is_none());
         log.assert_cursor_accounting();
 
-        assert_eq!(*log.receive(a).unwrap().0, 1);
+        assert_eq!(*log.receive(a).unwrap().msg, 1);
         log.assert_cursor_accounting();
 
         // Dropping a subscription parked mid-backlog only decrements that slot and reclaims
@@ -570,8 +555,8 @@ mod tests {
         log.assert_cursor_accounting();
 
         // `a` drains to the tail, leaving zero-count slots behind the lagging `b`.
-        assert_eq!(*log.receive(a).unwrap().0, 2);
-        assert_eq!(*log.receive(a).unwrap().0, 3);
+        assert_eq!(*log.receive(a).unwrap().msg, 2);
+        assert_eq!(*log.receive(a).unwrap().msg, 3);
         log.assert_cursor_accounting();
         assert!(log.receive(a).is_none());
 
@@ -584,12 +569,12 @@ mod tests {
         assert_eq!(log.remove_receiver(b).len(), 3);
         log.assert_cursor_accounting();
 
-        // A call to `receive` that catches up to the tail releases exactly one message and moves
-        // the cursor back to `at_tail`.
+        // A call to `receive` that catches up to the tail releases the head slot and moves the
+        // cursor back to `at_tail`.
         assert!(log.publish(Arc::new(4)).is_none());
-        let (msg, reclaimed) = log.receive(a).unwrap();
-        assert_eq!(*msg, 4);
-        assert_eq!(reclaimed.len(), 1);
+        let received = log.receive(a).unwrap();
+        assert_eq!(*received.msg, 4);
+        assert!(received.reclaimed);
         log.assert_cursor_accounting();
 
         // With no subscription left, a publication is discarded and nothing is counted.
