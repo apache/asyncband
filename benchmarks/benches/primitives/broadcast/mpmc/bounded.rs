@@ -146,7 +146,7 @@ fn drop_lagging_receiver_wakes_senders(bencher: Bencher, backlog: usize) {
             let slow = sender.subscribe();
             for value in 0..backlog {
                 sender.try_send(value).unwrap();
-                assert_eq!(fast.try_recv().unwrap(), value);
+                assert_eq!(*fast.try_recv().unwrap(), value);
             }
             let mut context = bench_context();
             let mut sends = (0..backlog)

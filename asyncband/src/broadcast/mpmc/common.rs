@@ -503,12 +503,22 @@ pub fn poll_receive<T>(
     }
 }
 
-/// Drops the reclaimed backlog, then yields the received message, both with the channel unlocked.
+/// Releases the backlog's reference to the message, then hands out the stored `Arc`, both with the
+/// channel unlocked.
+///
+/// A receive reclaims at most the message itself, and `msg` keeps the payload alive, so a shared
+/// receive runs neither `T::clone` nor `T::drop`.
+pub fn share_msg<T>(msg: Arc<T>, reclaimed: Reclaimed<T>) -> Arc<T> {
+    drop(reclaimed);
+    msg
+}
+
+/// Drops the reclaimed backlog, then yields the received message owned, both with the channel
+/// unlocked.
 ///
 /// A non-empty backlog means receiving this message removed `msg` from the buffer. Once the
 /// reclaimed backlog is dropped, the caller may hold the only remaining reference and can then
-/// move the payload out instead of cloning it. A channel with a single receiver never clones a
-/// payload.
+/// move the payload out instead of cloning it.
 ///
 /// Ownership is decided from that bookkeeping rather than by probing the reference count. An
 /// [`Arc::try_unwrap`] call for every received message would fail under fan-out, and its failed
@@ -524,9 +534,9 @@ pub fn take_msg<T: Clone>(msg: Arc<T>, reclaimed: Reclaimed<T>) -> T {
         return (*msg).clone();
     }
 
-    // Another receiver can still hold an in-flight reference to the same message, so the clone
-    // remains the fallback.
-    Arc::try_unwrap(msg).unwrap_or_else(|msg| (*msg).clone())
+    // Another receiver can still hold an in-flight reference to the same message, or an `Arc` it
+    // kept from a shared receive, so the clone remains the fallback.
+    Arc::unwrap_or_clone(msg)
 }
 
 #[cfg(test)]

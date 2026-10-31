@@ -25,6 +25,7 @@ All notable changes to this project will be documented in this file.
 
 ### Breaking changes
 
+* Return shared messages from `broadcast::mpmc` receivers: `recv` and `try_recv` now yield `Arc<T>`, and `bounded` and `unbounded` no longer require `T: Clone`. Shared receives also share the payload's interior mutable state. To preserve the previous owning-receive behavior, use the new `recv_cloned` and `try_recv_cloned`, which follow `T`'s `Clone` semantics and still move the payload out instead of cloning it when nothing else still refers to the message. Callers that sent `Arc<T>` only to avoid cloning can send `T` directly. A retained `Arc<T>` keeps its payload alive after the message leaves the backlog, so a bounded channel's capacity limits retained messages rather than memory.
 * Remove `MappedRwLockWriteGuard::downgrade` and `OwnedMappedRwLockWriteGuard::downgrade`, which could cause undefined behavior when the mapped component is reachable by other readers through interior mutability. To keep shared access to a component, downgrade the original write guard first and then map it with `RwLockReadGuard::map` or `OwnedRwLockReadGuard::map`.
 
 ### New features

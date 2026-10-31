@@ -68,8 +68,9 @@ fn send_and_try_recv_shared(bencher: Bencher) {
     });
 }
 
-// The `usize` benchmarks above hide the cost of receiving a payload that owns memory: cloning it
-// requires an allocation rather than a register move.
+// The `usize` benchmarks above hide the cost of receiving a payload that owns memory as an owned
+// value: cloning it requires an allocation rather than a register move, and moving it out skips
+// the clone only while no other `Arc` shares it.
 fn payload() -> String {
     "x".repeat(64)
 }
@@ -79,7 +80,7 @@ fn send_and_try_recv_owned(bencher: Bencher) {
     let (sender, mut receiver) = mpmc::unbounded();
     bencher.bench_local(|| {
         sender.send(black_box(payload()));
-        black_box(receiver.try_recv().unwrap())
+        black_box(receiver.try_recv_cloned().unwrap())
     });
 }
 
@@ -89,8 +90,8 @@ fn send_and_try_recv_owned_shared(bencher: Bencher) {
     let mut second = sender.subscribe();
     bencher.bench_local(|| {
         sender.send(black_box(payload()));
-        black_box(first.try_recv().unwrap());
-        black_box(second.try_recv().unwrap())
+        black_box(first.try_recv_cloned().unwrap());
+        black_box(second.try_recv_cloned().unwrap())
     });
 }
 
