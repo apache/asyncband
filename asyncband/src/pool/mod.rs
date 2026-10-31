@@ -206,6 +206,21 @@
 //!     }
 //! }
 //! ```
+//!
+//! # Recycling diagnostics and check timing
+//!
+//! A rejected idle object does not necessarily fail acquisition: [`ManageObject::is_recyclable`]
+//! errors cause `get()` to detach the object and retry. Record rejection reasons in the manager,
+//! or wrap an existing manager to report its errors. Distinguish intentional retirement from failed
+//! health checks in application diagnostics; [`ManageObject::on_detached`] receives no reason.
+//!
+//! Returning an object does not validate or reset it. Callers can await cleanup before return or
+//! detach an object already known to be broken. If cancellation could leave it unusable, an
+//! application guard should own the object before borrower work begins and detach on drop unless
+//! cleanup succeeds. [`RecycleCancelledStrategy`] applies only to checkout checks.
+//!
+//! The [pool recycling example](https://github.com/apache/asyncband/blob/main/examples/src/pool_recycling.rs)
+//! demonstrates diagnostics and cleanup using the existing manager and object APIs.
 
 mod common;
 mod state;
