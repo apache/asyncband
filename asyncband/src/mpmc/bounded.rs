@@ -237,4 +237,25 @@ impl<T> BoundedReceiver<T> {
     pub fn is_disconnected(&self) -> bool {
         !self.shared.has_senders()
     }
+
+    /// Returns `true` if no queued value is waiting to be received.
+    ///
+    /// Held permits and sends still waiting for capacity are not queued values. The result is an
+    /// instantaneous observation and may become stale as other tasks send or receive.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::mpmc;
+    ///
+    /// let (sender, receiver) = mpmc::bounded(1);
+    /// assert!(receiver.is_empty());
+    /// sender.try_send(1).unwrap();
+    /// assert!(!receiver.is_empty());
+    /// assert_eq!(receiver.try_recv(), Ok(1));
+    /// assert!(receiver.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.shared.is_empty()
+    }
 }
