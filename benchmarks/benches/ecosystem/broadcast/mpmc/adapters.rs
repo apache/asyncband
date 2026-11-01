@@ -21,8 +21,6 @@ use std::task::Context;
 use asyncband::blocking::FutureExt;
 use benchmarks::support::poll_ready;
 
-/// The peers hand out owned values, so the asyncband adapters use the cloned receives to keep the
-/// comparison fair.
 pub struct Asyncband;
 pub struct Tokio;
 pub struct AsyncBroadcast;
@@ -56,8 +54,8 @@ impl BroadcastMpmc for Asyncband {
     }
 
     fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
-        match receiver.try_recv_cloned() {
-            Ok(value) => Some(value),
+        match receiver.try_recv() {
+            Ok(value) => Some(*value),
             Err(asyncband::broadcast::mpmc::TryRecvError::Empty) => None,
             Err(asyncband::broadcast::mpmc::TryRecvError::Disconnected) => {
                 panic!("asyncband channel closed during benchmark")
@@ -66,7 +64,7 @@ impl BroadcastMpmc for Asyncband {
     }
 
     fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
-        poll_ready(receiver.recv_cloned(), context).unwrap()
+        *poll_ready(receiver.recv(), context).unwrap()
     }
 }
 
@@ -185,12 +183,12 @@ impl BoundedBroadcastMpmc for Asyncband {
     }
 
     async fn recv_async(receiver: &mut Self::Receiver) -> usize {
-        receiver.recv_cloned().await.unwrap()
+        *receiver.recv().await.unwrap()
     }
 
     fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
-        match receiver.try_recv_cloned() {
-            Ok(value) => Some(value),
+        match receiver.try_recv() {
+            Ok(value) => Some(*value),
             Err(asyncband::broadcast::mpmc::TryRecvError::Empty) => None,
             Err(asyncband::broadcast::mpmc::TryRecvError::Disconnected) => {
                 panic!("asyncband channel closed during benchmark")
