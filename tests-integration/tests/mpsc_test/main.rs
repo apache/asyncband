@@ -142,6 +142,55 @@ fn receivers_report_disconnection_once_the_last_sender_drops() {
 }
 
 #[test]
+fn bounded_is_empty_ignores_reservations_and_blocked_sends() {
+    let (tx, mut rx) = mpsc::bounded(1);
+    assert!(rx.is_empty());
+
+    let permit = tx.try_reserve().unwrap();
+    assert!(rx.is_empty());
+    permit.send(1).unwrap();
+    assert!(!rx.is_empty());
+
+    {
+        let mut blocked = pin!(tx.send(2));
+        assert!(poll_once(blocked.as_mut()).is_pending());
+        assert_eq!(rx.try_recv(), Ok(1));
+        assert!(rx.is_empty());
+        assert_eq!(expect_ready(poll_once(blocked.as_mut())), Ok(()));
+        assert!(!rx.is_empty());
+    }
+    drop(tx);
+    assert!(!rx.is_empty());
+    assert_eq!(rx.try_recv(), Ok(2));
+    assert!(rx.is_empty());
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
+fn unbounded_is_empty_sees_batched_and_queued_messages() {
+    let (tx, mut rx) = mpsc::unbounded();
+    assert!(rx.is_empty());
+
+    for value in 0..3 {
+        tx.send(value).unwrap();
+    }
+    // The first receive moves the remaining queued messages into the receiver's local batch.
+    assert_eq!(rx.try_recv(), Ok(0));
+    assert!(!rx.is_empty());
+    assert_eq!(rx.try_recv(), Ok(1));
+    assert_eq!(rx.try_recv(), Ok(2));
+    assert!(rx.is_empty());
+    tx.send(3).unwrap();
+    assert!(!rx.is_empty());
+
+    drop(tx);
+    assert!(!rx.is_empty());
+    assert_eq!(rx.try_recv(), Ok(3));
+    assert!(rx.is_empty());
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
 fn cancelled_receive_does_not_consume_a_later_message() {
     let (unbounded_tx, mut unbounded_rx) = mpsc::unbounded();
     {

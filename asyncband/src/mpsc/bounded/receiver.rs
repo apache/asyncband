@@ -156,6 +156,28 @@ impl<T> BoundedReceiver<T> {
         self.shared.lock().senders == 0
     }
 
+    /// Returns `true` if no queued value is waiting to be received.
+    ///
+    /// Held permits and sends still waiting for capacity are not queued values. A `true` result
+    /// may become stale as senders add values. A `false` result guarantees that the next receive
+    /// on this receiver finds a value, because receiving requires `&mut self`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::mpsc::bounded;
+    ///
+    /// let (tx, mut rx) = bounded(1);
+    /// assert!(rx.is_empty());
+    /// tx.try_send(1).unwrap();
+    /// assert!(!rx.is_empty());
+    /// assert_eq!(rx.try_recv(), Ok(1));
+    /// assert!(rx.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.shared.lock().queue.is_empty()
+    }
+
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
         let mut state = self.shared.lock();
         match state.pop() {

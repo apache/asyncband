@@ -37,7 +37,8 @@ use crate::mpsc::unbounded::buffer::pop_batch;
 /// receiver discards queued values and makes subsequent attempts to send fail.
 pub struct UnboundedReceiver<T> {
     shared: Arc<Mutex<State<T>>>,
-    // Only accessed through `get_mut`; the mutex preserves Sync for Send-only payloads.
+    // Receiving borrows it through `get_mut`; `is_empty` locks it from `&self`. The mutex also
+    // keeps the receiver Sync for Send-only payloads.
     batch: Mutex<VecDeque<T>>,
 }
 
@@ -166,6 +167,29 @@ impl<T> UnboundedReceiver<T> {
     /// ```
     pub fn is_disconnected(&self) -> bool {
         self.shared.lock().senders == 0
+    }
+
+    /// Returns `true` if no queued value is waiting to be received.
+    ///
+    /// A `true` result may become stale as senders add values. A `false` result guarantees that
+    /// the next receive on this receiver finds a value, because receiving requires `&mut self`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::mpsc::unbounded;
+    ///
+    /// let (tx, mut rx) = unbounded();
+    /// assert!(rx.is_empty());
+    /// tx.send(1).unwrap();
+    /// assert!(!rx.is_empty());
+    /// assert_eq!(rx.try_recv(), Ok(1));
+    /// assert!(rx.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        // Values already moved into the local batch are still unreceived, and checking them
+        // first keeps a receiver with buffered values from contending with senders.
+        self.batch.lock().is_empty() && self.shared.lock().buffer.is_empty()
     }
 
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
