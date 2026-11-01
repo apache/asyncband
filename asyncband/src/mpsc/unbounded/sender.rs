@@ -85,4 +85,24 @@ impl<T> UnboundedSender<T> {
         }
         Ok(())
     }
+
+    /// Returns `true` if the receiver has been dropped.
+    ///
+    /// Once this returns `true`, every later [`send`](Self::send) fails with a disconnection
+    /// error. A `false` result can be outdated as soon as it is returned, because the receiver
+    /// may be dropped concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::mpsc::unbounded;
+    ///
+    /// let (tx, rx) = unbounded::<u8>();
+    /// assert!(!tx.is_disconnected());
+    /// drop(rx);
+    /// assert!(tx.is_disconnected());
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        !self.shared.lock().receiver
+    }
 }

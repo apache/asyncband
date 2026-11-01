@@ -31,6 +31,7 @@ All notable changes to this project will be documented in this file.
 ### New features
 
 * Add `rwlock::UpgradableRwLock` with a single upgradable reader, atomic upgrade and downgrade, and cancellation that releases a pending upgrade's guard; writers and upgradable readers share a FIFO reservation while ordinary readers use the data-permit queue.
+* Add `is_disconnected` to the `mpsc` and `mpmc` senders and receivers, alongside the existing `oneshot` and `watch` methods, so callers can check whether the other side is gone without sending or receiving. A receiver reports disconnection as soon as the last sender is gone, even while queued messages remain receivable.
 
 ### Bug fixes
 

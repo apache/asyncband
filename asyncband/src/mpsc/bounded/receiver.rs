@@ -133,6 +133,29 @@ impl<T> BoundedReceiver<T> {
         poll_fn(|cx| self.poll_recv(cx)).await
     }
 
+    /// Returns `true` if every sender has been dropped.
+    ///
+    /// Queued messages stay receivable after disconnection, so [`recv`](Self::recv) and
+    /// [`try_recv`](Self::try_recv) report disconnection only once the buffer has been drained. A
+    /// `false` result can be outdated as soon as it is returned, because the last sender may be
+    /// dropped concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::mpsc::bounded;
+    ///
+    /// let (tx, mut rx) = bounded(1);
+    /// tx.try_send(1).unwrap();
+    /// assert!(!rx.is_disconnected());
+    /// drop(tx);
+    /// assert!(rx.is_disconnected());
+    /// assert_eq!(rx.try_recv(), Ok(1));
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        self.shared.lock().senders == 0
+    }
+
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
         let mut state = self.shared.lock();
         match state.pop() {

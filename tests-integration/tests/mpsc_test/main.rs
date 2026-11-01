@@ -92,6 +92,56 @@ fn buffered_messages_are_drained_before_disconnection() {
 }
 
 #[test]
+fn senders_report_disconnection_once_the_receiver_drops() {
+    let (tx, rx) = mpsc::bounded(1);
+    let other = tx.clone();
+    let permit = tx.try_reserve().unwrap();
+    assert!(!tx.is_disconnected());
+    assert!(!other.is_disconnected());
+    drop(rx);
+    assert!(tx.is_disconnected());
+    assert!(other.is_disconnected());
+    assert_eq!(permit.send(1).unwrap_err().into_inner(), 1);
+    assert_eq!(tx.try_send(2), Err(TrySendError::Disconnected(2)));
+
+    let (tx, rx) = mpsc::unbounded();
+    let other = tx.clone();
+    assert!(!tx.is_disconnected());
+    drop(rx);
+    assert!(tx.is_disconnected());
+    assert!(other.is_disconnected());
+    assert_eq!(tx.send(3).unwrap_err().into_inner(), 3);
+}
+
+#[test]
+fn receivers_report_disconnection_once_the_last_sender_drops() {
+    let (tx, mut rx) = mpsc::bounded(1);
+    let other = tx.clone();
+    tx.try_send(1).unwrap();
+    drop(tx);
+    assert!(!rx.is_disconnected());
+    drop(other);
+    assert!(rx.is_disconnected());
+    assert_eq!(rx.try_recv(), Ok(1));
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+
+    let (tx, mut rx) = mpsc::unbounded();
+    let other = tx.clone();
+    for value in 1..4 {
+        tx.send(value).unwrap();
+    }
+    // The first receive moves every queued message into the receiver's local batch.
+    assert_eq!(rx.try_recv(), Ok(1));
+    drop(tx);
+    assert!(!rx.is_disconnected());
+    drop(other);
+    assert!(rx.is_disconnected());
+    assert_eq!(rx.try_recv(), Ok(2));
+    assert_eq!(rx.try_recv(), Ok(3));
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
 fn cancelled_receive_does_not_consume_a_later_message() {
     let (unbounded_tx, mut unbounded_rx) = mpsc::unbounded();
     {
