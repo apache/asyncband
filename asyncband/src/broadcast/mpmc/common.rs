@@ -329,10 +329,9 @@ impl<T> Backlog<T> {
         debug_assert!(self.buffer.front().is_some_and(|slot| slot.cursors == 0));
 
         // Move reclaimed messages out so their Drop impls run after the channel is unlocked. Keep
-        // the first one separate so the usual one-message reclaim does not allocate, and skip
-        // building a `Drain` that would yield nothing: even an empty one costs a few nanoseconds
-        // whenever a message is received. A bulk reclaim counts the zero-count prefix up front so
-        // it moves out in one drain instead of growing a vector geometrically, which
+        // the first one separate so reclaiming a single message does not allocate, and skip
+        // building a `Drain` that would yield nothing. A bulk reclaim counts the zero-count prefix
+        // up front so it moves out in one drain instead of growing a vector geometrically, which
         // measured 15% slower for a 32-message backlog.
         let first = self.buffer.pop_front().map(|slot| slot.msg);
         let extra = self
@@ -450,10 +449,11 @@ pub fn unregister<T>(
     drop(waker);
 }
 
-/// Receives without waiting, returning the message and any buffer prefix reclaimed along with it.
+/// Receives without waiting, returning the message and whether advancing the cursor vacated the
+/// head slot.
 ///
-/// The caller owns what happens next: a bounded channel hands the released count back to blocked
-/// producers before it touches the payload.
+/// The caller owns what happens next: a bounded channel releases the freed slot to blocked
+/// producers before touching the payload.
 pub fn try_receive<T>(
     inner: &Mutex<Inner<T>>,
     senders: &AtomicUsize,
