@@ -46,8 +46,8 @@ fn get_hit_distributed(bencher: Bencher, ready_entries: usize) {
         .bench_values(|key| black_box(map.get(black_box(&key))));
 }
 
-// Negative get is still a read-only steady-state path: it traverses the ready index but never
-// creates pending state. Varying absent hashes avoids measuring one unusually cache-hot miss.
+// Negative get is still a read-only steady-state path: it probes the table but never creates
+// pending state. Varying absent hashes avoids measuring one unusually cache-hot miss.
 #[divan::bench(
     threads = THREAD_COUNTS,
     args = READY_ENTRY_COUNTS,
