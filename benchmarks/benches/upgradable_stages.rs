@@ -108,7 +108,7 @@ fn main() {
         "UpgradableRwLock, {} rounds per run, {} runs",
         options.rounds, options.repeat
     );
-    println!("Each operation is timed separately; the clock reads add measurable overhead.");
+    println!("The clock reads add measurable overhead; treat these numbers as diagnostic.");
     report("acquisition", options.rounds, results.acquisition);
     report("promotion", options.rounds, results.promotion);
 }
