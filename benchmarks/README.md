@@ -60,3 +60,5 @@ cargo x bench --bench primitives -- rwlock::upgradable --repeat 5
 ```
 
 The `primitives` target measures Asyncband-only operation cycles for focused before/after comparisons, including ready paths, queued handoffs, wake registration, cancellation, fan-out, and contended tables. Hand-polled cases use a reference-counted waker and exercise bookkeeping without executor scheduling. For `threads=N` cases the workers share a fixture, start at a barrier, and divide a fixed total number of rounds, including the remainder. Smoke mode runs one outer round per worker, preserving inner message batches, topology and correctness checks without making timing claims.
+
+For an uncontended upgradable-lock breakdown, run `cargo x bench --bench upgradable_stages`. It times acquisition and promotion separately on one reused lock. A clock read around every operation adds measurable overhead, so treat the numbers as diagnostic and compare runs made with the same toolchain and machine. Use `upgradable_read_then_upgrade` in the `primitives` target for the uninstrumented whole-cycle measurement.

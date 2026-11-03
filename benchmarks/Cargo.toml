@@ -71,5 +71,10 @@ harness = false
 name = "ecosystem"
 path = "benches/ecosystem/main.rs"
 
+[[bench]]
+harness = false
+name = "upgradable_stages"
+path = "benches/upgradable_stages.rs"
+
 [lints]
 workspace = true
