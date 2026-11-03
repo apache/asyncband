@@ -123,13 +123,13 @@ impl State {
             return Poll::Ready(());
         }
 
-        self.waiters.register(token, cx.waker())
+        self.waiters.register(token, cx.waker(), &self.handles)
     }
 
     #[inline]
     fn unregister(&self, token: &mut Registration) {
         if !matches!(token, Registration::Set(None)) && self.handles.load(Ordering::Acquire) != 0 {
-            self.waiters.unregister(token);
+            self.waiters.unregister(token, &self.handles);
         }
     }
 }
