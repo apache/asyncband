@@ -29,11 +29,15 @@
 //! A write guard allows mutation and excludes every other guard. Both release their access on
 //! drop, including during unwinding; a panic does not poison the lock.
 //!
-//! Waiting requests are served in queue order. A queued writer blocks readers behind it, even
-//! while earlier readers still hold the lock. Consequently, keeping a read guard while waiting
+//! [`RwLock`] serves waiting requests in queue order. A queued writer blocks readers behind it,
+//! even while earlier readers still hold the lock. Consequently, keeping a read guard while waiting
 //! for a write guard, or for another read behind a queued writer, can deadlock. The `try_` methods
 //! never wait or reserve a queue position. Dropping a pending acquisition cancels its request;
 //! a subsequent acquisition starts again at the back of the queue.
+//!
+//! [`UpgradableRwLock`] is a separate lock for inspecting a value before deciding to mutate it.
+//! It reserves one reader's ability to upgrade and has its own [ordering
+//! policy](UpgradableRwLock#ordering).
 //!
 //! # Updating and inspecting
 //!
@@ -60,6 +64,10 @@
 //! can be repeated, and `filter_map` returns the original guard when the component is absent.
 //! A projection closure that panics releases its guard during unwinding.
 //!
+//! Mapped write guards cannot be downgraded. To keep shared access to a component after an
+//! update, downgrade the write guard first and then map the read guard, as in
+//! `RwLockReadGuard::map(guard.downgrade(), |items| &items[0])`.
+//!
 //! ```
 //! use asyncband::rwlock::MappedRwLockWriteGuard;
 //! use asyncband::rwlock::RwLock;
@@ -71,7 +79,6 @@
 //! let slot = RwLockWriteGuard::map(queue.write().await, |items| &mut items[0]);
 //! let mut message = MappedRwLockWriteGuard::filter_map(slot, Option::as_mut).unwrap();
 //! message.push_str(" review");
-//! let message = message.downgrade();
 //! assert_eq!(&*message, "pending review");
 //! # }
 //! ```
@@ -114,6 +121,7 @@ mod owned_mapped_write_guard;
 mod owned_read_guard;
 mod owned_write_guard;
 mod read_guard;
+mod upgradable;
 mod write_guard;
 
 pub use self::mapped_read_guard::MappedRwLockReadGuard;
@@ -123,6 +131,8 @@ pub use self::owned_mapped_write_guard::OwnedMappedRwLockWriteGuard;
 pub use self::owned_read_guard::OwnedRwLockReadGuard;
 pub use self::owned_write_guard::OwnedRwLockWriteGuard;
 pub use self::read_guard::RwLockReadGuard;
+pub use self::upgradable::RwLockUpgradableReadGuard;
+pub use self::upgradable::UpgradableRwLock;
 pub use self::write_guard::RwLockWriteGuard;
 
 /// A value with fair, asynchronous shared or exclusive access.
@@ -250,4 +260,28 @@ mod compile_fail_tests {
     /// }
     /// ```
     struct OwnedMappedRwLockWriteGuardIsInvariant;
+
+    /// ```compile_fail
+    /// use asyncband::rwlock::RwLock;
+    /// use asyncband::rwlock::RwLockWriteGuard;
+    ///
+    /// let lock = RwLock::new((0, 0));
+    /// let guard = lock.try_write().unwrap();
+    /// let guard = RwLockWriteGuard::map(guard, |value| &mut value.0);
+    /// let _ = guard.downgrade();
+    /// ```
+    struct MappedRwLockWriteGuardCannotDowngrade;
+
+    /// ```compile_fail
+    /// use std::sync::Arc;
+    ///
+    /// use asyncband::rwlock::OwnedRwLockWriteGuard;
+    /// use asyncband::rwlock::RwLock;
+    ///
+    /// let lock = Arc::new(RwLock::new((0, 0)));
+    /// let guard = lock.try_write_owned().unwrap();
+    /// let guard = OwnedRwLockWriteGuard::map(guard, |value| &mut value.0);
+    /// let _ = guard.downgrade();
+    /// ```
+    struct OwnedMappedRwLockWriteGuardCannotDowngrade;
 }

@@ -66,10 +66,10 @@
 //! tx.send(10).await;
 //! tx.send(20).await;
 //!
-//! assert_eq!(rx1.recv().await, Ok(10));
-//! assert_eq!(rx1.recv().await, Ok(20));
-//! assert_eq!(rx2.recv().await, Ok(10));
-//! assert_eq!(rx2.recv().await, Ok(20));
+//! assert_eq!(*rx1.recv().await.unwrap(), 10);
+//! assert_eq!(*rx1.recv().await.unwrap(), 20);
+//! assert_eq!(*rx2.recv().await.unwrap(), 10);
+//! assert_eq!(*rx2.recv().await.unwrap(), 20);
 //! # }
 //! ```
 //!
@@ -87,7 +87,7 @@
 //! assert_eq!(tx.try_send(3), Err(TrySendError::Full(3)));
 //!
 //! // `rx1` draining is not enough: `rx2` has read neither message, so both stay retained.
-//! assert_eq!(rx1.try_recv(), Ok(1));
+//! assert_eq!(*rx1.try_recv().unwrap(), 1);
 //! assert_eq!(tx.retained_message_count(), 2);
 //! assert_eq!(tx.try_send(3), Err(TrySendError::Full(3)));
 //!
@@ -112,6 +112,7 @@ use std::task::Poll;
 use crate::broadcast::mpmc::common;
 use crate::broadcast::mpmc::common::Backlog;
 use crate::broadcast::mpmc::common::Inner;
+use crate::broadcast::mpmc::common::Received;
 use crate::broadcast::mpmc::error::RecvError;
 use crate::broadcast::mpmc::error::TryRecvError;
 use crate::broadcast::mpmc::error::TrySendError;
@@ -142,10 +143,10 @@ mod tests;
 ///
 /// let (tx, mut rx) = mpmc::bounded(1);
 /// tx.try_send(10).unwrap();
-/// assert_eq!(rx.try_recv(), Ok(10));
+/// assert_eq!(*rx.try_recv().unwrap(), 10);
 /// ```
 #[track_caller]
-pub fn bounded<T: Clone>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
+pub fn bounded<T>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     assert!(
         capacity > 0,
         "broadcast bounded channel requires capacity > 0"
@@ -190,11 +191,15 @@ impl<T> Shared<T> {
     ///
     /// Call with the channel unlocked, before payload cloning or destruction can panic.
     fn release_reclaimed(&self, freed: usize) {
+        if freed == 0 {
+            return;
+        }
+
         // Cap permits at the number of blocked producers. Surplus permits make later `send` futures
         // retry a full channel instead of waiting, especially after dropping a lagging
         // subscription.
         let waiting = self.waiting_senders();
-        if freed > 0 && waiting > 0 {
+        if waiting > 0 {
             self.tx_permits.release_if_waiters(freed.min(waiting));
         }
     }
@@ -283,7 +288,7 @@ impl<T> BoundedSender<T> {
     /// # async fn main() {
     /// let (tx, mut rx) = mpmc::bounded(1);
     /// tx.send(10).await;
-    /// assert_eq!(rx.recv().await, Ok(10));
+    /// assert_eq!(*rx.recv().await.unwrap(), 10);
     /// # }
     /// ```
     pub async fn send(&self, value: T) {
@@ -380,7 +385,7 @@ impl<T> BoundedSender<T> {
     /// tx.try_send(10).unwrap();
     /// assert_eq!(tx.try_send(20), Err(TrySendError::Full(20)));
     ///
-    /// assert_eq!(rx.try_recv(), Ok(10));
+    /// assert_eq!(*rx.try_recv().unwrap(), 10);
     /// tx.try_send(20).unwrap();
     /// ```
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
@@ -445,7 +450,7 @@ impl<T> BoundedSender<T> {
     /// tx.try_send(10).unwrap();
     /// assert_eq!(tx.retained_message_count(), 1);
     ///
-    /// assert_eq!(rx.try_recv(), Ok(10));
+    /// assert_eq!(*rx.try_recv().unwrap(), 10);
     /// assert_eq!(tx.retained_message_count(), 0);
     /// ```
     pub fn retained_message_count(&self) -> usize {
@@ -488,7 +493,7 @@ impl<T> BoundedSender<T> {
     /// let mut rx = tx.subscribe();
     /// assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
     /// tx.send(20).await;
-    /// assert_eq!(rx.recv().await, Ok(20));
+    /// assert_eq!(*rx.recv().await.unwrap(), 20);
     /// # }
     /// ```
     #[must_use = "the receiver is dropped immediately if it is not retained"]
@@ -537,12 +542,16 @@ impl<T> Drop for BoundedReceiver<T> {
     }
 }
 
-impl<T: Clone> BoundedReceiver<T> {
-    /// Receives the next value for this receiver.
+impl<T> BoundedReceiver<T> {
+    /// Receives the next value for this receiver as the channel's shared `Arc<T>`.
+    ///
+    /// Receiving never clones `T`. The `Arc` outlives the message's stay in the backlog: a
+    /// caller that keeps it keeps the payload alive but holds no capacity. Use
+    /// [`recv_cloned`](BoundedReceiver::recv_cloned) to take an owned value instead.
     ///
     /// # Returns
     ///
-    /// * `Ok(T)`: The next message.
+    /// * `Ok(Arc<T>)`: The next message.
     /// * `Err(RecvError::Disconnected)`: All senders have been dropped and this receiver has no
     ///   remaining messages.
     ///
@@ -561,18 +570,82 @@ impl<T: Clone> BoundedReceiver<T> {
     /// # async fn main() {
     /// let (tx, mut rx) = mpmc::bounded(4);
     /// tx.send(10).await;
-    /// assert_eq!(rx.recv().await, Ok(10));
+    /// assert_eq!(*rx.recv().await.unwrap(), 10);
     /// # }
     /// ```
-    pub async fn recv(&mut self) -> Result<T, RecvError> {
-        Recv {
-            receiver: self,
-            token: None,
-        }
-        .await
+    pub async fn recv(&mut self) -> Result<Arc<T>, RecvError> {
+        Ok(self.wait_next().await?.msg)
     }
 
-    /// Attempts to receive the next value for this receiver without blocking.
+    /// Receives the next value for this receiver as an owned `T`.
+    ///
+    /// The payload is moved out of the channel without cloning when this read reclaims the message
+    /// and nothing else still refers to it, such as an `Arc` kept from a shared receive or another
+    /// receiver's clone still in progress. Otherwise it is cloned with the channel unlocked. If
+    /// `T::clone` panics, this receiver has still advanced past the value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(T)`: The next message.
+    /// * `Err(RecvError::Disconnected)`: All senders have been dropped and this receiver has no
+    ///   remaining messages.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending `recv_cloned` future leaves this receiver's cursor unchanged. A
+    /// subsequent receive can still return the same next value, so these futures may safely be
+    /// raced with other futures in a selection construct.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let (tx, mut rx) = mpmc::bounded(4);
+    /// tx.send(String::from("owned")).await;
+    /// assert_eq!(rx.recv_cloned().await, Ok(String::from("owned")));
+    /// # }
+    /// ```
+    pub async fn recv_cloned(&mut self) -> Result<T, RecvError>
+    where
+        T: Clone,
+    {
+        let received = self.wait_next().await?;
+        Ok(common::take_msg(received))
+    }
+
+    /// Attempts to receive the next value for this receiver without blocking, as the channel's
+    /// shared `Arc<T>`.
+    ///
+    /// See [`recv`](BoundedReceiver::recv) for what keeping the `Arc` means, and
+    /// [`try_recv_cloned`](BoundedReceiver::try_recv_cloned) to take an owned value instead.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Arc<T>)`: The next message.
+    /// * `Err(TryRecvError::Empty)`: No message is currently available.
+    /// * `Err(TryRecvError::Disconnected)`: All senders have been dropped and this receiver has no
+    ///   remaining messages.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    ///
+    /// let (tx, mut rx) = mpmc::bounded(4);
+    /// tx.try_send(10).unwrap();
+    /// assert_eq!(*rx.try_recv().unwrap(), 10);
+    /// ```
+    pub fn try_recv(&mut self) -> Result<Arc<T>, TryRecvError> {
+        Ok(self.receive_released()?.msg)
+    }
+
+    /// Attempts to receive the next value for this receiver without blocking, as an owned `T`.
+    ///
+    /// See [`recv_cloned`](BoundedReceiver::recv_cloned) for when the payload is moved out rather
+    /// than cloned.
     ///
     /// # Returns
     ///
@@ -587,22 +660,31 @@ impl<T: Clone> BoundedReceiver<T> {
     /// use asyncband::broadcast::mpmc;
     ///
     /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.try_send(10).unwrap();
-    /// assert_eq!(rx.try_recv(), Ok(10));
+    /// tx.try_send(String::from("owned")).unwrap();
+    /// assert_eq!(rx.try_recv_cloned(), Ok(String::from("owned")));
     /// ```
-    pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let (msg, reclaimed) =
-            common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
-
-        // Release before taking the payload: `take_msg` runs `T::clone` and `T::drop`, and if
-        // either panics the reclaimed slots would otherwise never be handed to a waiting producer,
-        // stalling it permanently.
-        self.shared.release_reclaimed(reclaimed.len());
-        Ok(common::take_msg(msg, reclaimed))
+    pub fn try_recv_cloned(&mut self) -> Result<T, TryRecvError>
+    where
+        T: Clone,
+    {
+        let received = self.receive_released()?;
+        Ok(common::take_msg(received))
     }
-}
 
-impl<T> BoundedReceiver<T> {
+    /// Receives without waiting and hands the capacity this receive released to blocked producers
+    /// before the caller can touch the payload.
+    ///
+    /// `take_msg` may run `T::clone` and `T::drop`, and if either panicked before the freed slot
+    /// was released, a waiting producer would be stalled permanently. The `Recv` future orders its
+    /// poll the same way.
+    fn receive_released(&mut self) -> Result<Received<T>, TryRecvError> {
+        let received = common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
+        if received.reclaimed {
+            self.shared.release_reclaimed(1);
+        }
+        Ok(received)
+    }
+
     /// Re-subscribes to the channel, returning a new receiver that starts receiving messages from
     /// the *current* tail of the channel.
     ///
@@ -622,7 +704,7 @@ impl<T> BoundedReceiver<T> {
     /// let mut rx2 = rx.resubscribe();
     /// tx.try_send(3).unwrap();
     ///
-    /// assert_eq!(rx2.try_recv(), Ok(3));
+    /// assert_eq!(*rx2.try_recv().unwrap(), 3);
     /// ```
     #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn resubscribe(&self) -> Self {
@@ -654,11 +736,18 @@ impl<T> BoundedReceiver<T> {
     /// tx.try_send(20).unwrap();
     /// assert_eq!(rx.unread_message_count(), 2);
     ///
-    /// assert_eq!(rx.try_recv(), Ok(10));
+    /// assert_eq!(*rx.try_recv().unwrap(), 10);
     /// assert_eq!(rx.unread_message_count(), 1);
     /// ```
     pub fn unread_message_count(&self) -> usize {
         self.shared.inner.lock().log.unread(self.key)
+    }
+
+    fn wait_next(&mut self) -> Recv<'_, T> {
+        Recv {
+            receiver: self,
+            token: None,
+        }
     }
 }
 
@@ -683,13 +772,13 @@ impl<T> Drop for Recv<'_, T> {
     }
 }
 
-impl<T: Clone> Future for Recv<'_, T> {
-    type Output = Result<T, RecvError>;
+impl<T> Future for Recv<'_, T> {
+    type Output = Result<Received<T>, RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self { receiver, token } = self.get_mut();
 
-        let (msg, reclaimed) = match common::poll_receive(
+        let received = match common::poll_receive(
             &receiver.shared.inner,
             &receiver.shared.senders,
             receiver.key,
@@ -701,9 +790,12 @@ impl<T: Clone> Future for Recv<'_, T> {
             Poll::Ready(Ok(received)) => received,
         };
 
-        // Release before taking the payload, for the same reason as `try_recv`: a panicking
-        // `T::clone` must not strand producers waiting for the reclaimed slots.
-        receiver.shared.release_reclaimed(reclaimed.len());
-        Poll::Ready(Ok(common::take_msg(msg, reclaimed)))
+        // Release before handing out the payload, for the same reason as `receive_released`: a
+        // panicking `T::clone` or `T::drop` in `take_msg` must not strand producers waiting for
+        // the reclaimed slot.
+        if received.reclaimed {
+            receiver.shared.release_reclaimed(1);
+        }
+        Poll::Ready(Ok(received))
     }
 }

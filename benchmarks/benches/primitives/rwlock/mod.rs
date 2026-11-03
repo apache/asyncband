@@ -16,11 +16,13 @@
 // under the License.
 
 mod read;
+mod upgradable;
 mod write;
 
 use benchmarks::harness::Runner;
 
 pub fn register(runner: &mut Runner) {
+    upgradable::register(runner);
     read::register(runner);
     write::register(runner);
 }

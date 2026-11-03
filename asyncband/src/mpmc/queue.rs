@@ -247,6 +247,18 @@ impl<T> Shared<T> {
         drop(discarded);
     }
 
+    pub fn has_senders(&self) -> bool {
+        self.state.lock().senders != 0
+    }
+
+    pub fn has_receivers(&self) -> bool {
+        self.state.lock().receivers != 0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.state.lock().values.is_empty()
+    }
+
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
         let waker = {
             let mut state = self.state.lock();

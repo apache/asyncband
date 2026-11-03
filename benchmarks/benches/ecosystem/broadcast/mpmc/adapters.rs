@@ -55,7 +55,7 @@ impl BroadcastMpmc for Asyncband {
 
     fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
         match receiver.try_recv() {
-            Ok(value) => Some(value),
+            Ok(value) => Some(*value),
             Err(asyncband::broadcast::mpmc::TryRecvError::Empty) => None,
             Err(asyncband::broadcast::mpmc::TryRecvError::Disconnected) => {
                 panic!("asyncband channel closed during benchmark")
@@ -64,7 +64,7 @@ impl BroadcastMpmc for Asyncband {
     }
 
     fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
-        poll_ready(receiver.recv(), context).unwrap()
+        *poll_ready(receiver.recv(), context).unwrap()
     }
 }
 
@@ -183,12 +183,12 @@ impl BoundedBroadcastMpmc for Asyncband {
     }
 
     async fn recv_async(receiver: &mut Self::Receiver) -> usize {
-        receiver.recv().await.unwrap()
+        *receiver.recv().await.unwrap()
     }
 
     fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
         match receiver.try_recv() {
-            Ok(value) => Some(value),
+            Ok(value) => Some(*value),
             Err(asyncband::broadcast::mpmc::TryRecvError::Empty) => None,
             Err(asyncband::broadcast::mpmc::TryRecvError::Disconnected) => {
                 panic!("asyncband channel closed during benchmark")

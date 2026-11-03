@@ -230,6 +230,43 @@ impl<T> Channel<T> {
             slot.as_mut_ptr().write(waker);
         }
 
+        // SAFETY: The waker was initialized above, and the caller upholds the remaining
+        // requirements.
+        unsafe { self.publish_waker() }
+    }
+
+    /// Publishes a reclaimed receiver waker again, first replacing it unless it already wakes the
+    /// same task as `waker`, and resolves a raced terminal state immediately.
+    ///
+    /// # Safety
+    ///
+    /// * The `waker` field must contain an initialized waker owned by the receiver.
+    /// * The `state` must not be in the `RECEIVING` or `AWAKING` state when calling this method.
+    /// * No other receiver operation may access the waker slot concurrently.
+    unsafe fn reregister_waker(&self, waker: &Waker) -> Poll<Result<T, RecvError>> {
+        // SAFETY: The sender cannot access the waker until the state becomes RECEIVING.
+        unsafe {
+            let slot = &mut *self.waker.get();
+            if !slot.assume_init_ref().will_wake(waker) {
+                // `Waker::clone_from` would hold the old waker across the clone and slow down
+                // every poll, so drop it first.
+                slot.assume_init_drop();
+                slot.as_mut_ptr().write(waker.clone());
+            }
+        }
+
+        // SAFETY: The slot holds a waker, and the caller upholds the remaining requirements.
+        unsafe { self.publish_waker() }
+    }
+
+    /// Publishes the stored receiver waker, resolving a raced terminal state immediately.
+    ///
+    /// # Safety
+    ///
+    /// * The `waker` field must contain an initialized waker when calling this method.
+    /// * The `state` must not be in the `RECEIVING` or `AWAKING` state when calling this method.
+    /// * No other receiver operation may access the waker slot concurrently.
+    unsafe fn publish_waker(&self) -> Poll<Result<T, RecvError>> {
         // ORDERING: On success, Release publishes the initialized waker. Failure only observes the
         // current state; the MESSAGE branch performs its own conditional Acquire below, while the
         // DISCONNECTED branch does not access sender-owned data.
@@ -242,7 +279,7 @@ impl<T> Channel<T> {
             // The sender sent the message while we prepared to await.
             // We take the message and mark the channel disconnected.
             Err(MESSAGE) => {
-                // SAFETY: We wrote a waker above. The sender cannot have observed the RECEIVING
+                // SAFETY: The slot holds a waker. The sender cannot have observed the RECEIVING
                 // state, so it has not accessed the waker. We must drop it.
                 unsafe { self.drop_waker() };
 
@@ -260,7 +297,7 @@ impl<T> Channel<T> {
             }
             // The sender was dropped before sending anything while we prepared to await.
             Err(DISCONNECTED) => {
-                // SAFETY: We wrote a waker above. The sender cannot have observed the RECEIVING
+                // SAFETY: The slot holds a waker. The sender cannot have observed the RECEIVING
                 // state, so it has not accessed the waker. We must drop it.
                 unsafe { self.drop_waker() };
                 Poll::Ready(Err(RecvError::Disconnected))

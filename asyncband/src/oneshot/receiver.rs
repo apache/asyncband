@@ -250,8 +250,8 @@ impl<T> Future for Recv<T> {
                 // SAFETY: we are in the MESSAGE state and have synchronized with the sender.
                 Poll::Ready(Ok(unsafe { channel.take_message() }))
             }
-            // We were polled again while waiting for the sender. Replace the waker with the new
-            // one.
+            // We were polled again while waiting for the sender. Replace the waker unless it
+            // already wakes the polling task.
             RECEIVING => {
                 // ORDERING: On success, Acquire synchronizes with the Release that published the
                 // stored waker before this poll reclaims it. Failure does not access that waker.
@@ -263,16 +263,10 @@ impl<T> Future for Recv<T> {
                 ) {
                     // The state is EMPTY again.
                     Ok(_) => {
-                        let waker = cx.waker().clone();
-
                         // SAFETY: The successful exchange makes the state EMPTY, so the sender
                         // cannot take the stored waker. The acquire ordering synchronizes with the
                         // waker write.
-                        unsafe { channel.drop_waker() };
-
-                        // SAFETY: The old waker was dropped while the state was EMPTY, so no waker
-                        // remains initialized or owned by the sender.
-                        unsafe { channel.register_waker(waker) }
+                        unsafe { channel.reregister_waker(cx.waker()) }
                     }
                     // The sender sent the message while we prepared to replace the waker.
                     // We take the message and mark the channel disconnected.

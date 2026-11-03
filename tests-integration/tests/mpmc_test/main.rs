@@ -94,6 +94,103 @@ fn receiver_and_sender_clone_counts_control_disconnection() {
 }
 
 #[test]
+fn senders_report_disconnection_once_the_last_receiver_drops() {
+    let (sender, receiver) = mpmc::bounded(1);
+    let other_sender = sender.clone();
+    let competing = receiver.clone();
+    let permit = sender.try_reserve().unwrap();
+    drop(receiver);
+    assert!(!sender.is_disconnected());
+    drop(competing);
+    assert!(sender.is_disconnected());
+    assert!(other_sender.is_disconnected());
+    assert_eq!(permit.send(1).unwrap_err().into_inner(), 1);
+    assert_eq!(sender.try_send(2), Err(TrySendError::Disconnected(2)));
+
+    let (sender, receiver) = mpmc::unbounded();
+    let other_sender = sender.clone();
+    let competing = receiver.clone();
+    drop(receiver);
+    assert!(!sender.is_disconnected());
+    drop(competing);
+    assert!(sender.is_disconnected());
+    assert!(other_sender.is_disconnected());
+    assert_eq!(sender.send(3).unwrap_err().into_inner(), 3);
+}
+
+#[test]
+fn receivers_report_disconnection_once_the_last_sender_drops() {
+    let (sender, receiver) = mpmc::bounded(1);
+    let other_sender = sender.clone();
+    let competing = receiver.clone();
+    sender.try_send(1).unwrap();
+    drop(sender);
+    assert!(!receiver.is_disconnected());
+    drop(other_sender);
+    assert!(receiver.is_disconnected());
+    assert!(competing.is_disconnected());
+    assert_eq!(competing.try_recv(), Ok(1));
+    assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
+
+    let (sender, receiver) = mpmc::unbounded();
+    let other_sender = sender.clone();
+    let competing = receiver.clone();
+    sender.send(2).unwrap();
+    drop(sender);
+    assert!(!receiver.is_disconnected());
+    drop(other_sender);
+    assert!(receiver.is_disconnected());
+    assert!(competing.is_disconnected());
+    assert_eq!(competing.try_recv(), Ok(2));
+    assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
+fn bounded_is_empty_ignores_reservations_and_blocked_sends() {
+    let (sender, receiver) = mpmc::bounded(1);
+    let competing = receiver.clone();
+    assert!(receiver.is_empty());
+
+    let permit = sender.try_reserve().unwrap();
+    assert!(competing.is_empty());
+    permit.send(1).unwrap();
+    assert!(!receiver.is_empty());
+
+    {
+        let mut blocked = pin!(sender.send(2));
+        assert!(poll_once(blocked.as_mut()).is_pending());
+        assert_eq!(competing.try_recv(), Ok(1));
+        assert!(receiver.is_empty());
+        assert_eq!(expect_ready(poll_once(blocked.as_mut())), Ok(()));
+        assert!(!competing.is_empty());
+    }
+    drop(sender);
+    assert!(!receiver.is_empty());
+    assert_eq!(receiver.try_recv(), Ok(2));
+    assert!(competing.is_empty());
+    assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
+fn unbounded_is_empty_tracks_queued_values() {
+    let (sender, receiver) = mpmc::unbounded();
+    let competing = receiver.clone();
+    assert!(receiver.is_empty());
+
+    sender.send(1).unwrap();
+    sender.send(2).unwrap();
+    assert!(!competing.is_empty());
+    assert_eq!(competing.try_recv(), Ok(1));
+    assert!(!receiver.is_empty());
+
+    drop(sender);
+    assert!(!receiver.is_empty());
+    assert_eq!(receiver.try_recv(), Ok(2));
+    assert!(receiver.is_empty());
+    assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
 fn sends_after_the_last_receiver_return_the_value() {
     let (bounded_sender, bounded_receiver) = mpmc::bounded(1);
     let bounded_receiver_clone = bounded_receiver.clone();

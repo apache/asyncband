@@ -29,13 +29,17 @@ use std::ops::DerefMut;
 use std::ptr::NonNull;
 
 use crate::internal::semaphore::Semaphore;
-use crate::rwlock::MappedRwLockReadGuard;
 use crate::rwlock::access::WriteAccess;
 
 /// Exclusive access to a projection of a locked value borrowed for the guard lifetime.
 ///
 /// Use [`RwLockWriteGuard::map`](crate::rwlock::RwLockWriteGuard::map) to select a component.
 /// Dropping the guard releases its access.
+///
+/// A mapped write guard cannot be downgraded, because its projection may reach data that other
+/// readers could change through interior mutability. To keep shared access to a component,
+/// downgrade the original write guard first and then use
+/// [`RwLockReadGuard::map`](crate::rwlock::RwLockReadGuard::map).
 #[must_use = "dropping the guard releases its write access immediately"]
 pub struct MappedRwLockWriteGuard<'a, T: ?Sized> {
     d: NonNull<T>,
@@ -122,13 +126,5 @@ impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
             }
             None => Err(orig),
         }
-    }
-
-    /// Retains shared access to the same projection while releasing exclusive access.
-    ///
-    /// There is no unlocked interval in which another writer can modify the value. Queued
-    /// requests retain their order, so a waiting writer can prevent later readers from joining.
-    pub fn downgrade(self) -> MappedRwLockReadGuard<'a, T> {
-        MappedRwLockReadGuard::new(self.d, self.access.downgrade())
     }
 }

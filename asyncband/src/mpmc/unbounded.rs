@@ -79,6 +79,28 @@ impl<T> UnboundedSender<T> {
             Err(TrySendError::Full(_)) => unreachable!("unbounded queue cannot be full"),
         }
     }
+
+    /// Returns `true` if every receiver has been dropped.
+    ///
+    /// Once this returns `true`, every later [`send`](Self::send) fails with a disconnection
+    /// error. A `false` result can be outdated as soon as it is returned, because the last
+    /// receiver may be dropped concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::mpmc;
+    ///
+    /// let (sender, receiver) = mpmc::unbounded::<u8>();
+    /// let competing = receiver.clone();
+    /// drop(receiver);
+    /// assert!(!sender.is_disconnected());
+    /// drop(competing);
+    /// assert!(sender.is_disconnected());
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        !self.shared.has_receivers()
+    }
 }
 
 /// Receives values from the associated [`UnboundedSender`] handles.
@@ -130,5 +152,49 @@ impl<T> UnboundedReceiver<T> {
     /// [`TryRecvError::Disconnected`] once the queue is empty and all senders have been dropped.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         self.shared.try_recv()
+    }
+
+    /// Returns `true` if every sender has been dropped.
+    ///
+    /// Buffered values stay receivable after disconnection, so [`recv`](Self::recv) and
+    /// [`try_recv`](Self::try_recv) report disconnection only once the queue has been drained. A
+    /// `false` result can be outdated as soon as it is returned, because the last sender may be
+    /// dropped concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::mpmc;
+    ///
+    /// let (sender, receiver) = mpmc::unbounded();
+    /// sender.send(1).unwrap();
+    /// assert!(!receiver.is_disconnected());
+    /// drop(sender);
+    /// assert!(receiver.is_disconnected());
+    /// assert_eq!(receiver.try_recv(), Ok(1));
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        !self.shared.has_senders()
+    }
+
+    /// Returns `true` if no queued value is waiting to be received.
+    ///
+    /// The result is an instantaneous observation and may become stale as other tasks send or
+    /// receive.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::mpmc;
+    ///
+    /// let (sender, receiver) = mpmc::unbounded();
+    /// assert!(receiver.is_empty());
+    /// sender.send(1).unwrap();
+    /// assert!(!receiver.is_empty());
+    /// assert_eq!(receiver.try_recv(), Ok(1));
+    /// assert!(receiver.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.shared.is_empty()
     }
 }

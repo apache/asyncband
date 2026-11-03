@@ -49,6 +49,11 @@ impl<T> Buffer<T> {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        // Sealed segments are never empty.
+        self.writable.is_empty() && self.sealed.is_empty()
+    }
+
     pub fn push(&mut self, value: T) {
         if self.writable.len() == Self::SEGMENT_CAPACITY {
             let next = VecDeque::with_capacity(Self::SEGMENT_CAPACITY);
@@ -123,10 +128,12 @@ mod tests {
         for value in 0..1024usize {
             buffer.push([value; 128]);
         }
+        assert!(!buffer.is_empty());
         let peak = allocated_bytes(&buffer, &batch);
         for value in 0..512 {
             assert_eq!(receive(&mut buffer, &mut batch), [value; 128]);
         }
+        assert!(!buffer.is_empty());
         assert!(allocated_bytes(&buffer, &batch) <= peak * 3 / 4);
         // This value must stay behind both the current batch and the sealed segments.
         buffer.push([1024; 128]);
@@ -136,6 +143,7 @@ mod tests {
         assert!(allocated_bytes(&buffer, &batch) <= 2 * SEGMENT_BYTES);
         drop(buffer.refill(&mut batch));
         assert!(batch.is_empty());
+        assert!(buffer.is_empty());
     }
 
     #[test]
@@ -172,7 +180,9 @@ mod tests {
         let mut buffer = Buffer::new();
         let mut batch = VecDeque::new();
         buffer.push([7u8; SEGMENT_BYTES + 1]);
+        assert!(!buffer.is_empty());
         assert_eq!(receive(&mut buffer, &mut batch), [7u8; SEGMENT_BYTES + 1]);
+        assert!(buffer.is_empty());
         assert_eq!(allocated_bytes(&buffer, &batch), 0);
     }
 }

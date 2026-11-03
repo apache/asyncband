@@ -184,6 +184,27 @@ impl<T> BoundedSender<T> {
             Err(TrySendError::Disconnected(())) => Err(TrySendError::Disconnected(value)),
         }
     }
+
+    /// Returns `true` if the receiver has been dropped.
+    ///
+    /// Once this returns `true`, every later [`send`](Self::send), [`try_send`](Self::try_send),
+    /// [`reserve`](Self::reserve) or [`try_reserve`](Self::try_reserve) fails with a disconnection
+    /// error, as does [`Permit::send`] on a permit reserved earlier. A `false` result can be
+    /// outdated as soon as it is returned, because the receiver may be dropped concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::mpsc::bounded;
+    ///
+    /// let (tx, rx) = bounded::<u8>(1);
+    /// assert!(!tx.is_disconnected());
+    /// drop(rx);
+    /// assert!(tx.is_disconnected());
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        !self.shared.lock().receiver
+    }
 }
 
 /// Capacity reserved for one message on a bounded channel.

@@ -25,8 +25,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
-use std::task::RawWaker;
-use std::task::RawWakerVTable;
 use std::task::Wake;
 use std::task::Waker;
 use std::thread;
@@ -36,6 +34,7 @@ use asyncband::event::ManualResetEvent;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
+use tests_integration::waker_on_clone;
 
 #[test]
 fn set_is_sticky_and_reset_blocks_new_waiters() {
@@ -340,33 +339,6 @@ fn cancelling_an_owned_waiter_releases_its_waker_and_event_handle() {
 
     event.set();
     assert_eq!(tracker.count(), 0);
-}
-
-// Unlike Wake's Arc clone, this exercises the callback used to clone a raw executor waker.
-fn waker_on_clone(callback: impl Fn() + Send + Sync + 'static) -> Waker {
-    struct Hook(Box<dyn Fn() + Send + Sync>);
-
-    unsafe fn clone(data: *const ()) -> RawWaker {
-        // SAFETY: Every raw waker owns an Arc<Hook>; the source remains alive during clone.
-        let hook = unsafe { &*data.cast::<Hook>() };
-        (hook.0)();
-        // SAFETY: The source waker keeps the allocation alive, and the returned waker owns
-        // exactly the additional strong reference created here.
-        unsafe { Arc::increment_strong_count(data.cast::<Hook>()) };
-        RawWaker::new(data, &VTABLE)
-    }
-
-    unsafe fn drop_ref(data: *const ()) {
-        // SAFETY: A consuming wake or drop releases exactly its own raw Arc reference.
-        drop(unsafe { Arc::from_raw(data.cast::<Hook>()) });
-    }
-
-    unsafe fn wake_by_ref(_: *const ()) {}
-
-    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, drop_ref, wake_by_ref, drop_ref);
-    let data = Arc::into_raw(Arc::new(Hook(Box::new(callback)))).cast();
-    // SAFETY: VTABLE maintains the Arc ownership rules, and Hook is Send + Sync.
-    unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) }
 }
 
 #[test]

@@ -15,10 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod recv;
 mod send;
 
 use benchmarks::harness::Runner;
 
 pub fn register(runner: &mut Runner) {
+    recv::register(runner);
     send::register(runner);
 }

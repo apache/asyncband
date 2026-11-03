@@ -116,9 +116,11 @@ where
         hash: u64,
         matches: impl Fn(&Entry<K, V>) -> bool,
     ) -> Option<Arc<Entry<K, V>>> {
+        // A reader holding a pending entry would stop an abandoned computation from reclaiming it.
         self.entries
             .lock()
             .find(hash, |entry| matches(entry))
+            .filter(|entry| entry.cell.initialized())
             .cloned()
     }
 

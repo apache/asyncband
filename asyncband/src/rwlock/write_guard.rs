@@ -32,6 +32,11 @@ use crate::rwlock::RwLock;
 use crate::rwlock::RwLockReadGuard;
 use crate::rwlock::access::WriteAccess;
 
+/// Transfers an already acquired exclusive access token into a borrowed write guard.
+pub fn from_access<T: ?Sized>(access: WriteAccess<&RwLock<T>>) -> RwLockWriteGuard<'_, T> {
+    RwLockWriteGuard { access }
+}
+
 impl<T: ?Sized> RwLock<T> {
     /// Waits for exclusive access and returns a guard borrowing this lock.
     ///
@@ -133,6 +138,9 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
     ///
     /// There is no unlocked interval in which another writer can modify the value. Queued
     /// requests retain their order, so a waiting writer can prevent later readers from joining.
+    ///
+    /// To keep shared access to a component, call this before [`RwLockReadGuard::map`] or
+    /// [`RwLockReadGuard::filter_map`]. Mapped write guards cannot be downgraded.
     pub fn downgrade(self) -> RwLockReadGuard<'a, T> {
         RwLockReadGuard {
             access: self.access.downgrade(),
