@@ -15,19 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::phaser::Phaser;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const PARTICIPANT_COUNTS: &[usize] = &[2, 4, 16];
 
-#[divan::bench]
 fn ready_wait(bencher: Bencher) {
     let mut context = bench_context();
     let phaser = Phaser::new();
@@ -37,7 +38,6 @@ fn ready_wait(bencher: Bencher) {
     bencher.bench_local(|| black_box(poll_ready(phaser.wait(observed), &mut context).unwrap()));
 }
 
-#[divan::bench(args = PARTICIPANT_COUNTS)]
 fn arrive_then_wait(bencher: Bencher, parties: usize) {
     let mut context = bench_context();
     let phaser = Phaser::new();
@@ -53,7 +53,6 @@ fn arrive_then_wait(bencher: Bencher, parties: usize) {
     });
 }
 
-#[divan::bench(args = PARTICIPANT_COUNTS)]
 fn reused_phase_handoff(bencher: Bencher, parties: usize) {
     let mut context = bench_context();
     let phaser = Phaser::new();
@@ -72,7 +71,6 @@ fn reused_phase_handoff(bencher: Bencher, parties: usize) {
     });
 }
 
-#[divan::bench]
 fn repoll_pending(bencher: Bencher) {
     let mut context = bench_context();
     let phaser = Phaser::new();
@@ -82,7 +80,6 @@ fn repoll_pending(bencher: Bencher) {
     bencher.bench_local(|| poll_pending(wait.as_mut(), &mut context));
 }
 
-#[divan::bench]
 fn cancel_pending(bencher: Bencher) {
     let mut context = bench_context();
     let phaser = Phaser::new();
@@ -95,7 +92,6 @@ fn cancel_pending(bencher: Bencher) {
     black_box(phaser);
 }
 
-#[divan::bench(args = PARTICIPANT_COUNTS)]
 fn register_batch(bencher: Bencher, parties: usize) {
     let phaser = Phaser::new();
 
@@ -105,7 +101,6 @@ fn register_batch(bencher: Bencher, parties: usize) {
     });
 }
 
-#[divan::bench(args = PARTICIPANT_COUNTS)]
 fn register_individually(bencher: Bencher, parties: usize) {
     let phaser = Phaser::new();
 
@@ -115,4 +110,26 @@ fn register_individually(bencher: Bencher, parties: usize) {
             .collect();
         drop(black_box(participants));
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    primitive!(runner, ready_wait, 50_000_000);
+    for &arg in PARTICIPANT_COUNTS {
+        primitive!(runner, arrive_then_wait(arg), (20_000_000 / arg).max(1));
+    }
+    for &arg in PARTICIPANT_COUNTS {
+        primitive!(runner, reused_phase_handoff(arg), (8_000_000 / arg).max(1));
+    }
+    primitive!(runner, repoll_pending, 50_000_000);
+    primitive!(runner, cancel_pending, 24_000_000);
+    for &arg in PARTICIPANT_COUNTS {
+        primitive!(runner, register_batch(arg), (20_000_000 / arg).max(1));
+    }
+    for &arg in PARTICIPANT_COUNTS {
+        primitive!(
+            runner,
+            register_individually(arg),
+            (16_000_000 / arg).max(1)
+        );
+    }
 }

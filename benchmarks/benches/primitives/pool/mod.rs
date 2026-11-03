@@ -19,3 +19,10 @@
 
 mod bounded;
 mod unbounded;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    bounded::register(runner);
+    unbounded::register(runner);
+}

@@ -15,11 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use asyncband::pool::unbounded;
-use divan::Bencher;
-use divan::black_box;
+use std::hint::black_box;
 
-#[divan::bench]
+use asyncband::pool::unbounded;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
+
 fn unbounded_warm_try_get_and_return(bencher: Bencher) {
     let pool = unbounded::Pool::<usize>::never_manage(unbounded::PoolConfig::default());
     pool.extend_one(0);
@@ -29,4 +31,8 @@ fn unbounded_warm_try_get_and_return(bencher: Bencher) {
         black_box(*object);
         drop(object);
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    primitive!(runner, unbounded_warm_try_get_and_return, 9_000_000);
 }

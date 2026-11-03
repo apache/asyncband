@@ -19,11 +19,12 @@ use std::future::IntoFuture;
 use std::pin::pin;
 
 use asyncband::oneshot::channel;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
-use divan::Bencher;
 
-#[divan::bench]
 fn repoll_pending(bencher: Bencher) {
     let mut context = bench_context();
     let (_sender, receiver) = channel::<usize>();
@@ -31,4 +32,8 @@ fn repoll_pending(bencher: Bencher) {
     poll_pending(receiver.as_mut(), &mut context);
 
     bencher.bench_local(|| poll_pending(receiver.as_mut(), &mut context));
+}
+
+pub fn register(runner: &mut Runner) {
+    primitive!(runner, repoll_pending, 140_000_000);
 }

@@ -15,17 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
+
 use asyncband::shutdown;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const RECEIVER_COUNTS: &[usize] = &[1, 4, 16];
 
-#[divan::bench(args = RECEIVER_COUNTS)]
 fn signal_and_join(bencher: Bencher, receiver_count: usize) {
     let mut context = bench_context();
 
@@ -52,4 +54,10 @@ fn signal_and_join(bencher: Bencher, receiver_count: usize) {
         poll_ready(shutdown, &mut context);
         black_box(())
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    for &arg in RECEIVER_COUNTS {
+        primitive!(runner, signal_and_join(arg), (3_000_000 / arg).max(1));
+    }
 }

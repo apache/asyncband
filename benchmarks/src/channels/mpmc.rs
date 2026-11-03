@@ -15,13 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::fmt;
+use std::hint::black_box;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 use std::thread::JoinHandle;
 
-use divan::black_box;
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 
@@ -35,43 +34,6 @@ pub struct Topology {
     pub producers: usize,
     pub consumers: usize,
 }
-
-impl fmt::Display for Topology {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} producers / {} consumers",
-            self.producers, self.consumers
-        )
-    }
-}
-
-pub const TOPOLOGIES: &[Topology] = &[
-    Topology {
-        producers: 1,
-        consumers: 1,
-    },
-    Topology {
-        producers: 1,
-        consumers: 4,
-    },
-    Topology {
-        producers: 2,
-        consumers: 2,
-    },
-    Topology {
-        producers: 4,
-        consumers: 1,
-    },
-    Topology {
-        producers: 8,
-        consumers: 1,
-    },
-    Topology {
-        producers: 8,
-        consumers: 8,
-    },
-];
 
 // The caller only coordinates the batch. Spawned tasks send and receive all measured messages,
 // including on the current-thread runtime; `Runtime::block_on` itself receives no data.

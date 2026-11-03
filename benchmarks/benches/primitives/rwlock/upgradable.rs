@@ -15,20 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::rwlock::RwLockUpgradableReadGuard;
 use asyncband::rwlock::UpgradableRwLock;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const READER_COUNTS: &[usize] = &[1, 4, 16];
 
-#[divan::bench]
 fn read_reuse(bencher: Bencher) {
     let lock = UpgradableRwLock::new(0usize);
     let mut context = bench_context();
@@ -39,7 +40,6 @@ fn read_reuse(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn write_reuse(bencher: Bencher) {
     let lock = UpgradableRwLock::new(0usize);
     let mut context = bench_context();
@@ -51,7 +51,6 @@ fn write_reuse(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn eight_reads_then_one_write(bencher: Bencher) {
     const READS_PER_WRITE: usize = 8;
 
@@ -69,7 +68,6 @@ fn eight_reads_then_one_write(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn upgradable_read_reuse(bencher: Bencher) {
     let lock = UpgradableRwLock::new(0usize);
     let mut context = bench_context();
@@ -80,7 +78,6 @@ fn upgradable_read_reuse(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn upgradable_read_then_upgrade(bencher: Bencher) {
     let lock = UpgradableRwLock::new(0usize);
     let mut context = bench_context();
@@ -93,7 +90,6 @@ fn upgradable_read_then_upgrade(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn upgradable_read_then_try_upgrade(bencher: Bencher) {
     let lock = UpgradableRwLock::new(0usize);
     let mut context = bench_context();
@@ -107,7 +103,6 @@ fn upgradable_read_then_try_upgrade(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn upgradable_read_then_downgrade(bencher: Bencher) {
     let lock = UpgradableRwLock::new(0usize);
     let mut context = bench_context();
@@ -121,7 +116,6 @@ fn upgradable_read_then_downgrade(bencher: Bencher) {
 
 // The upgrade waits for the readers to release their data permits, so this covers the slow path
 // where the reservation is already held and only the permit transfer remains.
-#[divan::bench(args = READER_COUNTS)]
 fn readers_then_queued_upgrade(bencher: Bencher, reader_count: usize) {
     let lock = UpgradableRwLock::new(0usize);
     let mut context = bench_context();
@@ -139,4 +133,17 @@ fn readers_then_queued_upgrade(bencher: Bencher, reader_count: usize) {
         *writer = writer.wrapping_add(1);
         black_box(*writer)
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    primitive!(runner, read_reuse, 29_000_000);
+    primitive!(runner, write_reuse, 10_000_000);
+    primitive!(runner, eight_reads_then_one_write, 2_600_000);
+    primitive!(runner, upgradable_read_reuse, 15_000_000);
+    primitive!(runner, upgradable_read_then_upgrade, 8_300_000);
+    primitive!(runner, upgradable_read_then_try_upgrade, 10_000_000);
+    primitive!(runner, upgradable_read_then_downgrade, 15_000_000);
+    for &readers in READER_COUNTS {
+        primitive!(runner, readers_then_queued_upgrade(readers), 1_000_000);
+    }
 }

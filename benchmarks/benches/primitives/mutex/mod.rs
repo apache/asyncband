@@ -16,3 +16,9 @@
 // under the License.
 
 mod lock;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    lock::register(runner);
+}

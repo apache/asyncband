@@ -24,8 +24,8 @@ use asyncband::spmc;
 
 use crate::channels::BOUNDED_CAPACITY;
 
-pub struct Mpmc;
-pub struct Spmc;
+pub struct AsyncbandMpmc;
+pub struct AsyncbandSpmc;
 pub struct AsyncChannel;
 pub struct Flume;
 
@@ -42,7 +42,7 @@ pub trait Channel: Send + Sync + 'static {
     fn recv(receiver: &Self::Receiver) -> impl Future<Output = Option<usize>> + Send;
 }
 
-impl<const CAPACITY: usize> Channel for Bounded<Spmc, CAPACITY> {
+impl<const CAPACITY: usize> Channel for Bounded<AsyncbandSpmc, CAPACITY> {
     type Sender = spmc::BoundedSender<usize>;
     type Receiver = spmc::BoundedReceiver<usize>;
 
@@ -59,7 +59,7 @@ impl<const CAPACITY: usize> Channel for Bounded<Spmc, CAPACITY> {
     }
 }
 
-impl Channel for Unbounded<Spmc> {
+impl Channel for Unbounded<AsyncbandSpmc> {
     type Sender = spmc::UnboundedSender<usize>;
     type Receiver = spmc::UnboundedReceiver<usize>;
 
@@ -140,7 +140,7 @@ pub trait UnboundedMpmc: Send + Sync + 'static {
     }
 }
 
-impl BoundedMpmc for Mpmc {
+impl BoundedMpmc for AsyncbandMpmc {
     type Receiver = mpmc::BoundedReceiver<usize>;
     type Sender = mpmc::BoundedSender<usize>;
 
@@ -160,7 +160,7 @@ impl BoundedMpmc for Mpmc {
     }
 }
 
-impl UnboundedMpmc for Mpmc {
+impl UnboundedMpmc for AsyncbandMpmc {
     type Receiver = mpmc::UnboundedReceiver<usize>;
     type Sender = mpmc::UnboundedSender<usize>;
 

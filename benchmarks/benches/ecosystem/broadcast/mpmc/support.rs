@@ -15,14 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::fmt;
+use std::hint::black_box;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 use std::thread::JoinHandle;
 
-use divan::black_box;
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 
@@ -30,8 +29,6 @@ use crate::broadcast::mpmc::adapters::BoundedBroadcastMpmc;
 use crate::broadcast::mpmc::adapters::BroadcastMpmc;
 
 pub const BATCH_MESSAGES: usize = 4096;
-pub const PRODUCER_COUNTS: &[usize] = &[1, 2, 4, 8];
-pub const RECEIVER_COUNTS: &[usize] = &[1, 2, 4, 8];
 pub const ROUND_TRIP_CAPACITY: usize = 64;
 
 #[derive(Clone, Copy)]
@@ -41,35 +38,11 @@ pub struct BoundedShape {
     pub receivers: usize,
 }
 
-impl BoundedShape {
-    const fn new(capacity: usize, producers: usize, receivers: usize) -> Self {
-        Self {
-            capacity,
-            producers,
-            receivers,
-        }
-    }
-}
-
-impl fmt::Display for BoundedShape {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "cap {} {} producers {} receivers",
-            self.capacity, self.producers, self.receivers
-        )
-    }
-}
-
-pub const BOUNDED_SHAPES: &[BoundedShape] = &[
-    BoundedShape::new(64, 1, 1),
-    BoundedShape::new(64, 1, 4),
-    BoundedShape::new(64, 4, 1),
-    BoundedShape::new(64, 4, 4),
-    BoundedShape::new(1024, 4, 4),
-];
-
-pub const BACKPRESSURE_SHAPE: BoundedShape = BoundedShape::new(1, 4, 4);
+pub const BACKPRESSURE_SHAPE: BoundedShape = BoundedShape {
+    capacity: 1,
+    producers: 4,
+    receivers: 4,
+};
 
 fn recv<C: BroadcastMpmc>(receiver: &mut C::Receiver) -> usize {
     C::try_recv(receiver).expect("the published benchmark batch must be ready")

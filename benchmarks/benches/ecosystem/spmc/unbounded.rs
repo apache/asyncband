@@ -15,33 +15,36 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use benchmarks::channels::BATCH_MESSAGES;
 use benchmarks::channels::adapters::AsyncChannel;
+use benchmarks::channels::adapters::AsyncbandMpmc;
+use benchmarks::channels::adapters::AsyncbandSpmc;
 use benchmarks::channels::adapters::Channel;
 use benchmarks::channels::adapters::Flume;
-use benchmarks::channels::adapters::Mpmc;
-use benchmarks::channels::adapters::Spmc;
 use benchmarks::channels::adapters::Unbounded;
 use benchmarks::channels::runtime;
-use benchmarks::channels::spmc::CONSUMERS;
 use benchmarks::channels::spmc::TaskBatch;
-use divan::Bencher;
-use divan::counter::ItemsCount;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::implementations;
 
-#[divan::bench(
-    types = [Spmc, Mpmc, AsyncChannel, Flume],
-    consts = [0, 4],
-    args = CONSUMERS,
-    sample_count = 20,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn task_batch<C, const WORKERS: usize>(bencher: Bencher, consumers: usize)
 where
     Unbounded<C>: Channel,
 {
     let runtime = runtime(WORKERS);
-    bencher
-        .with_inputs(|| TaskBatch::new::<Unbounded<C>>(&runtime, consumers))
-        .bench_local_refs(|batch| runtime.block_on(batch.run()));
+    bencher.bench_local(|| {
+        let mut batch = TaskBatch::new::<Unbounded<C>>(&runtime, consumers);
+        runtime.block_on(batch.run())
+    });
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.compare(
+        "spmc/unbounded/tasks-1p4c-4w",
+        320,
+        implementations!(
+            [AsyncbandSpmc, AsyncbandMpmc, AsyncChannel, Flume],
+            |C, b| task_batch::<C, 4>(b, 4)
+        ),
+    );
 }

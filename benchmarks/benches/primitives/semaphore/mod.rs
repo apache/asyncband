@@ -17,3 +17,10 @@
 
 mod acquire;
 mod release;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    acquire::register(runner);
+    release::register(runner);
+}

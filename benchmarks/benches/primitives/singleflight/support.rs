@@ -22,9 +22,6 @@ use asyncband::singleflight::Group;
 use benchmarks::support::thread_slot_ticket;
 
 pub const BATCH_SIZES: &[usize] = &[2, 4, 16];
-pub const BATCH_SAMPLE_SIZE: u32 = 64;
-pub const CONTENDED_SAMPLE_SIZE: u32 = 64;
-pub const FAST_SAMPLE_SIZE: u32 = 256;
 pub const THREAD_COUNTS: &[usize] = &[1, 2, 4, 8];
 
 pub type BenchGroup = Group<usize, usize, BuildHasherDefault<DefaultHasher>>;

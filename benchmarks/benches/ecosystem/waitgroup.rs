@@ -19,13 +19,12 @@ use std::future::Future;
 use std::future::IntoFuture;
 use std::pin::pin;
 
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::implementations;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-use divan::Bencher;
-use divan::black_box;
-
-const WORKER_COUNTS: &[usize] = &[1, 4, 16];
 
 struct Asyncband;
 struct WaitgroupRs;
@@ -76,7 +75,6 @@ impl WaitGroup for WaitgroupRs {
     }
 }
 
-#[divan::bench(types = [Asyncband, WaitgroupRs])]
 fn complete_waiter<C: WaitGroup>(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -91,7 +89,6 @@ fn complete_waiter<C: WaitGroup>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, WaitgroupRs], args = WORKER_COUNTS)]
 fn complete_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
     let mut context = bench_context();
 
@@ -108,53 +105,17 @@ fn complete_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
     });
 }
 
-#[divan::bench(types = [Asyncband, WaitgroupRs])]
-fn ready_empty<C: WaitGroup>(bencher: Bencher) {
-    let mut context = bench_context();
-
-    bencher.bench_local(|| {
-        let mut wait = pin!(C::wait(C::new()));
-        poll_pinned_ready(wait.as_mut(), &mut context);
-    });
-}
-
-#[divan::bench(types = [Asyncband, WaitgroupRs])]
-fn cancel_pending<C: WaitGroup>(bencher: Bencher) {
-    let mut context = bench_context();
-
-    bencher.bench_local(|| {
-        let group = C::new();
-        let worker = C::worker(&group);
-        {
-            let mut wait = pin!(C::wait(group));
-            poll_pending(wait.as_mut(), &mut context);
-        }
-        drop(worker);
-    });
-}
-
-#[divan::bench(types = [Asyncband, WaitgroupRs], args = WORKER_COUNTS)]
-fn worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
-    bencher.bench_local(|| {
-        let group = C::new();
-        let workers = (0..worker_count)
-            .map(|_| C::worker(&group))
-            .collect::<Vec<_>>();
-        black_box(workers);
-        black_box(group);
-    });
-}
-
-#[divan::bench(types = [Asyncband, WaitgroupRs], args = WORKER_COUNTS)]
-fn nested_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
-    bencher.bench_local(|| {
-        let group = C::new();
-        let worker = C::worker(&group);
-        let workers = (0..worker_count)
-            .map(|_| worker.clone())
-            .collect::<Vec<_>>();
-        black_box(workers);
-        black_box(worker);
-        black_box(group);
-    });
+pub fn register(runner: &mut Runner) {
+    runner.compare(
+        "waitgroup/complete-waiter",
+        3_500_000,
+        implementations!([Asyncband, WaitgroupRs], |C, b| complete_waiter::<C>(b)),
+    );
+    runner.compare(
+        "waitgroup/complete-4-workers",
+        2_600_000,
+        implementations!([Asyncband, WaitgroupRs], |C, b| complete_worker_batch::<C>(
+            b, 4
+        )),
+    );
 }

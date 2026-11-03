@@ -17,23 +17,21 @@
 
 // Bounded peers have room for the entire batch, excluding their differing overflow policies.
 
+use std::hint::black_box;
+
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::implementations;
 use benchmarks::support::bench_context;
-use divan::Bencher;
-use divan::black_box;
-use divan::counter::ItemsCount;
 
 use crate::broadcast::mpmc::adapters::AsyncBroadcast;
 use crate::broadcast::mpmc::adapters::Asyncband;
 use crate::broadcast::mpmc::adapters::BroadcastMpmc;
 use crate::broadcast::mpmc::adapters::Tokio;
-use crate::broadcast::mpmc::support::BATCH_MESSAGES;
 use crate::broadcast::mpmc::support::ConcurrentSend;
 use crate::broadcast::mpmc::support::Fanout;
-use crate::broadcast::mpmc::support::PRODUCER_COUNTS;
-use crate::broadcast::mpmc::support::RECEIVER_COUNTS;
 use crate::broadcast::mpmc::support::ROUND_TRIP_CAPACITY;
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncBroadcast])]
 fn try_send_receive<C: BroadcastMpmc>(bencher: Bencher) {
     let (sender, mut receivers) = C::channel(ROUND_TRIP_CAPACITY, 1);
     let mut receiver = receivers.pop().unwrap();
@@ -44,7 +42,6 @@ fn try_send_receive<C: BroadcastMpmc>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncBroadcast])]
 fn ready_send_receive<C: BroadcastMpmc>(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receivers) = C::channel(ROUND_TRIP_CAPACITY, 1);
@@ -56,28 +53,48 @@ fn ready_send_receive<C: BroadcastMpmc>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncBroadcast],
-    args = PRODUCER_COUNTS,
-    sample_count = 20,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn publish_batch_then_drain<C: BroadcastMpmc>(bencher: Bencher, producer_count: usize) {
-    bencher
-        .with_inputs(|| ConcurrentSend::<C>::new(producer_count))
-        .bench_local_refs(ConcurrentSend::run);
+    bencher.bench_local(|| {
+        let mut input = ConcurrentSend::<C>::new(producer_count);
+        ConcurrentSend::run(&mut input)
+    });
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncBroadcast],
-    args = RECEIVER_COUNTS,
-    sample_count = 20,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn publish_then_parallel_drain<C: BroadcastMpmc>(bencher: Bencher, receiver_count: usize) {
-    bencher
-        .with_inputs(|| Fanout::<C>::new(receiver_count))
-        .bench_local_refs(Fanout::run);
+    bencher.bench_local(|| {
+        let mut input = Fanout::<C>::new(receiver_count);
+        Fanout::run(&mut input)
+    });
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.compare(
+        "broadcast/no-backpressure/try-roundtrip",
+        9_100_000,
+        implementations!(
+            [Asyncband, Tokio, AsyncBroadcast],
+            |C, b| try_send_receive::<C>(b)
+        ),
+    );
+    runner.compare(
+        "broadcast/no-backpressure/ready-roundtrip",
+        8_000_000,
+        implementations!([Asyncband, Tokio, AsyncBroadcast], |C, b| {
+            ready_send_receive::<C>(b)
+        }),
+    );
+    runner.compare(
+        "broadcast/no-backpressure/publish-4p-drain-1r",
+        810,
+        implementations!([Asyncband, Tokio, AsyncBroadcast], |C, b| {
+            publish_batch_then_drain::<C>(b, 4)
+        }),
+    );
+    runner.compare(
+        "broadcast/no-backpressure/drain-4r",
+        500,
+        implementations!([Asyncband, Tokio, AsyncBroadcast], |C, b| {
+            publish_then_parallel_drain::<C>(b, 4)
+        }),
+    );
 }

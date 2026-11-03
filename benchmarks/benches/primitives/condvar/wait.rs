@@ -15,20 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::condvar::Condvar;
 use asyncband::mutex::Mutex;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const WAITER_COUNTS: &[usize] = &[1, 4, 16];
 
-#[divan::bench]
 fn notify_waiter(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -46,7 +47,6 @@ fn notify_waiter(bencher: Bencher) {
     });
 }
 
-#[divan::bench(args = WAITER_COUNTS)]
 fn notify_waiter_batch(bencher: Bencher, waiter_count: usize) {
     let mut context = bench_context();
 
@@ -70,7 +70,6 @@ fn notify_waiter_batch(bencher: Bencher, waiter_count: usize) {
     });
 }
 
-#[divan::bench]
 fn cancel_pending(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -86,4 +85,12 @@ fn cancel_pending(bencher: Bencher) {
 
         black_box(mutex.try_lock().is_some())
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    primitive!(runner, notify_waiter, 3_000_000);
+    for &arg in WAITER_COUNTS {
+        primitive!(runner, notify_waiter_batch(arg), (3_000_000 / arg).max(1));
+    }
+    primitive!(runner, cancel_pending, 3_000_000);
 }

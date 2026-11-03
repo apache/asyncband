@@ -15,11 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Reused workers and channels are warmed up before timing; batch coordination and checksums are
-//! timed.
+//! Reuses workers and channels across rounds. Startup, priming, coordination, checksums, and
+//! shutdown are all included in the workload time.
 
 mod adapters;
 mod bounded;
 mod reservation;
 mod support;
 mod unbounded;
+
+use benchmarks::harness::Runner;
+
+pub fn register(runner: &mut Runner) {
+    bounded::register(runner);
+    reservation::register(runner);
+    unbounded::register(runner);
+}

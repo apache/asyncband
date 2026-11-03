@@ -15,18 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::latch::Latch;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const WORKER_COUNTS: &[usize] = &[1, 4, 16];
 
-#[divan::bench(args = WORKER_COUNTS)]
 fn worker_fan_in(bencher: Bencher, worker_count: usize) {
     let mut context = bench_context();
 
@@ -43,7 +44,6 @@ fn worker_fan_in(bencher: Bencher, worker_count: usize) {
     });
 }
 
-#[divan::bench(args = WORKER_COUNTS)]
 fn waiter_fan_out(bencher: Bencher, waiter_count: usize) {
     let mut context = bench_context();
 
@@ -64,7 +64,6 @@ fn waiter_fan_out(bencher: Bencher, waiter_count: usize) {
     });
 }
 
-#[divan::bench]
 fn cancel_pending(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -76,4 +75,14 @@ fn cancel_pending(bencher: Bencher) {
         }
         black_box(latch)
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    for &arg in WORKER_COUNTS {
+        primitive!(runner, worker_fan_in(arg), (16_000_000 / arg).max(1));
+    }
+    for &arg in WORKER_COUNTS {
+        primitive!(runner, waiter_fan_out(arg), (5_000_000 / arg).max(1));
+    }
+    primitive!(runner, cancel_pending, 6_000_000);
 }

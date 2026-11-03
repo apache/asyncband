@@ -16,26 +16,23 @@
 // under the License.
 
 use std::cell::Cell;
+use std::hint::black_box;
 
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
 use benchmarks::support::wait_until_open;
-use divan::Bencher;
-use divan::black_box;
-use divan::counter::ItemsCount;
 
-use crate::singleflight::support::BATCH_SAMPLE_SIZE;
 use crate::singleflight::support::BATCH_SIZES;
 use crate::singleflight::support::BenchGroup;
-use crate::singleflight::support::CONTENDED_SAMPLE_SIZE;
-use crate::singleflight::support::FAST_SAMPLE_SIZE;
 use crate::singleflight::support::THREAD_COUNTS;
 use crate::singleflight::support::unique_thread_key;
 
 // Reuse the group so table capacity survives completed calls.
-#[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
 fn leader_success(bencher: Bencher) {
     let group = BenchGroup::default();
     let mut context = bench_context();
@@ -48,39 +45,36 @@ fn leader_success(bencher: Bencher) {
 }
 
 // Suspend all leaders so their distinct-key entries coexist.
-#[divan::bench(args = BATCH_SIZES, sample_size = BATCH_SAMPLE_SIZE)]
 fn distinct_keys(bencher: Bencher, caller_count: usize) {
     let group = BenchGroup::default();
     let mut context = bench_context();
-    bencher
-        .counter(ItemsCount::new(caller_count))
-        .bench_local(|| {
-            let gate = Cell::new(false);
-            let mut calls = (0..caller_count)
-                .map(|key| {
-                    let gate = &gate;
-                    Box::pin(group.work(key, move || async move {
-                        wait_until_open(gate).await;
-                        black_box(key)
-                    }))
-                })
-                .collect::<Vec<_>>();
-            for call in &mut calls {
-                poll_pending(call.as_mut(), &mut context);
-            }
+    bencher.bench_local(|| {
+        let gate = Cell::new(false);
+        let mut calls = (0..caller_count)
+            .map(|key| {
+                let gate = &gate;
+                Box::pin(group.work(key, move || async move {
+                    wait_until_open(gate).await;
+                    black_box(key)
+                }))
+            })
+            .collect::<Vec<_>>();
+        for call in &mut calls {
+            poll_pending(call.as_mut(), &mut context);
+        }
 
-            gate.set(true);
-            for mut call in calls {
-                black_box(poll_pinned_ready(call.as_mut(), &mut context));
-            }
-        });
+        gate.set(true);
+        for mut call in calls {
+            black_box(poll_pinned_ready(call.as_mut(), &mut context));
+        }
+    });
 }
 
 // Unique keys isolate shared-table contention from same-key coalescing.
-#[divan::bench(threads = THREAD_COUNTS, sample_size = CONTENDED_SAMPLE_SIZE)]
 fn distributed_leaders(bencher: Bencher) {
     let group = BenchGroup::default();
-    bencher.with_inputs(unique_thread_key).bench_values(|key| {
+    bencher.bench(|| {
+        let key = unique_thread_key();
         let mut context = bench_context();
         black_box(poll_ready(
             group.work(black_box(key), || async move { black_box(key) }),
@@ -89,7 +83,6 @@ fn distributed_leaders(bencher: Bencher) {
     });
 }
 
-#[divan::bench(sample_size = FAST_SAMPLE_SIZE)]
 fn leader_error(bencher: Bencher) {
     let group = BenchGroup::default();
     let mut context = bench_context();
@@ -99,4 +92,15 @@ fn leader_error(bencher: Bencher) {
             &mut context,
         ))
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    primitive!(runner, leader_success, 3_000_000);
+    for &arg in BATCH_SIZES {
+        primitive!(runner, distinct_keys(arg), (2_000_000 / arg).max(1));
+    }
+    for &threads in THREAD_COUNTS {
+        primitive!(runner, distributed_leaders, 1_000_000, threads = threads);
+    }
+    primitive!(runner, leader_error, 3_000_000);
 }

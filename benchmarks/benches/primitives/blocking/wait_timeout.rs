@@ -15,17 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::time::Duration;
 
 use asyncband::blocking::FutureExt;
-use divan::Bencher;
-use divan::black_box;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 
-#[divan::bench]
 fn ready_with_timeout(bencher: Bencher) {
     bencher.bench_local(|| {
         async { black_box(42usize) }
             .wait_timeout(Duration::ZERO)
             .unwrap()
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    primitive!(runner, ready_with_timeout, 20_000_000);
 }

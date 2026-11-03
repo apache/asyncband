@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Hand-polled operation costs. The waker exercises reference counting without task scheduling.
+//! Fixed operation workloads. The waker exercises reference counting without task scheduling.
+
+use benchmarks::harness::Runner;
 
 mod barrier;
 mod blocking;
@@ -39,5 +41,26 @@ mod singleflight;
 mod waitgroup;
 
 fn main() {
-    divan::main();
+    let mut runner = Runner::from_args();
+    barrier::register(&mut runner);
+    blocking::register(&mut runner);
+    broadcast::register(&mut runner);
+    completion::register(&mut runner);
+    condvar::register(&mut runner);
+    event::register(&mut runner);
+    latch::register(&mut runner);
+    mpmc::register(&mut runner);
+    mpsc::register(&mut runner);
+    mutex::register(&mut runner);
+    once::register(&mut runner);
+    once_map::register(&mut runner);
+    oneshot::register(&mut runner);
+    phaser::register(&mut runner);
+    pool::register(&mut runner);
+    rwlock::register(&mut runner);
+    semaphore::register(&mut runner);
+    shutdown::register(&mut runner);
+    singleflight::register(&mut runner);
+    waitgroup::register(&mut runner);
+    runner.finish();
 }

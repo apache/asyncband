@@ -15,28 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
+
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::implementations;
 use benchmarks::support::bench_context;
-use divan::Bencher;
-use divan::black_box;
-use divan::counter::ItemsCount;
 
 use crate::mpsc::adapters::AsyncChannel;
 use crate::mpsc::adapters::Asyncband;
 use crate::mpsc::adapters::BoundedMpsc;
 use crate::mpsc::adapters::Flume;
 use crate::mpsc::adapters::Tokio;
-use crate::mpsc::support::BATCH_MESSAGES;
 use crate::mpsc::support::BOUNDED_CAPACITY;
 use crate::mpsc::support::Bounded;
-use crate::mpsc::support::PARALLEL_TASK_SHAPES;
-use crate::mpsc::support::PRODUCER_COUNTS;
 use crate::mpsc::support::RepeatedBatch;
 use crate::mpsc::support::RepeatedTasks;
-use crate::mpsc::support::TASK_SHAPES;
 use crate::mpsc::support::TaskShape;
 
-// Fixed sample sizes keep cold-start costs from skewing Divan's iteration count.
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume], sample_size = 512)]
 fn try_send_receive<C: BoundedMpsc>(bencher: Bencher) {
     let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
 
@@ -46,7 +42,6 @@ fn try_send_receive<C: BoundedMpsc>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume], sample_size = 256)]
 fn ready_send_receive<C: BoundedMpsc>(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
@@ -57,27 +52,12 @@ fn ready_send_receive<C: BoundedMpsc>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = PRODUCER_COUNTS,
-    sample_count = 50,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn reused_threads<C: BoundedMpsc>(bencher: Bencher, producer_count: usize) {
     let mut batch = RepeatedBatch::<Bounded<C>>::new(producer_count);
     batch.run();
     bencher.bench_local(|| batch.run());
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    consts = [64, 1024],
-    args = TASK_SHAPES,
-    sample_count = 50,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn reused_tasks<C: BoundedMpsc, const CAPACITY: usize>(
     bencher: Bencher,
     TaskShape { producers, workers }: TaskShape,
@@ -87,14 +67,6 @@ fn reused_tasks<C: BoundedMpsc, const CAPACITY: usize>(
     bencher.bench_local(|| batch.run());
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    consts = [64, 1024],
-    args = PARALLEL_TASK_SHAPES,
-    sample_count = 50,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn reused_tasks_inline_1k<C: BoundedMpsc<[u8; 1024]>, const CAPACITY: usize>(
     bencher: Bencher,
     TaskShape { producers, workers }: TaskShape,
@@ -104,43 +76,95 @@ fn reused_tasks_inline_1k<C: BoundedMpsc<[u8; 1024]>, const CAPACITY: usize>(
     bencher.bench_local(|| batch.run());
 }
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume], sample_count = 20, sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES))]
 fn capacity_one_task_handoff<C: BoundedMpsc>(bencher: Bencher) {
     let mut batch = RepeatedTasks::<Bounded<C, 1>>::new(4, 4);
     batch.run();
     bencher.bench_local(|| batch.run());
 }
 
-#[divan::bench(types = [Asyncband, Tokio, AsyncChannel, Flume], sample_size = 2048)]
-fn clone_drop_sender<C: BoundedMpsc>(bencher: Bencher) {
-    let (sender, _receiver) = C::channel(BOUNDED_CAPACITY);
-    bencher.bench_local(|| drop(black_box(sender.clone())));
-}
-
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = [1, 8],
-    sample_count = 50,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
 fn external_receiver<C: BoundedMpsc>(bencher: Bencher, producers: usize) {
     let mut batch = RepeatedTasks::<Bounded<C>>::external_receiver(producers, 4);
     batch.run();
     bencher.bench_local(|| batch.run());
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio, AsyncChannel, Flume],
-    args = [1, 8],
-    sample_count = 50,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
-fn external_receiver_inline<C: BoundedMpsc<[u8; 1024]>>(bencher: Bencher, producers: usize) {
-    let mut batch =
-        RepeatedTasks::<Bounded<C, BOUNDED_CAPACITY, [u8; 1024]>>::external_receiver(producers, 4);
-    batch.run();
-    bencher.bench_local(|| batch.run());
+fn compare_tasks<const CAPACITY: usize>(
+    runner: &mut Runner,
+    producers: usize,
+    workers: usize,
+    rounds: usize,
+) {
+    let executor = if workers == 0 {
+        String::from("current")
+    } else {
+        format!("{workers}w")
+    };
+    let name = format!("mpsc/bounded/tasks-{producers}p1c-cap{CAPACITY}-{executor}");
+    let shape = TaskShape { producers, workers };
+    runner.compare(
+        &name,
+        rounds,
+        implementations!(
+            [Asyncband, Tokio, AsyncChannel, Flume],
+            |C, b| reused_tasks::<C, CAPACITY>(b, shape)
+        ),
+    );
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.compare(
+        "mpsc/bounded/try-roundtrip",
+        30_000_000,
+        implementations!([Asyncband, Tokio, AsyncChannel, Flume], |C, b| {
+            try_send_receive::<C>(b)
+        }),
+    );
+    runner.compare(
+        "mpsc/bounded/ready-roundtrip",
+        24_000_000,
+        implementations!([Asyncband, Tokio, AsyncChannel, Flume], |C, b| {
+            ready_send_receive::<C>(b)
+        }),
+    );
+    runner.compare(
+        "mpsc/bounded/threads-4p1c-cap64",
+        89,
+        implementations!([Asyncband, Tokio, AsyncChannel, Flume], |C, b| {
+            reused_threads::<C>(b, 4)
+        }),
+    );
+    compare_tasks::<64>(runner, 1, 4, 896);
+    compare_tasks::<64>(runner, 4, 4, 320);
+    compare_tasks::<1024>(runner, 1, 4, 430);
+    compare_tasks::<1024>(runner, 4, 4, 320);
+    compare_tasks::<64>(runner, 1, 0, 1_200);
+    compare_tasks::<1024>(runner, 1, 0, 1_200);
+    compare_tasks::<64>(runner, 4, 0, 1_100);
+    runner.compare(
+        "mpsc/bounded/tasks-4p1c-cap64-4w-inline1k",
+        26,
+        implementations!([Asyncband, Tokio, AsyncChannel, Flume], |C, b| {
+            reused_tasks_inline_1k::<C, 64>(
+                b,
+                TaskShape {
+                    producers: 4,
+                    workers: 4,
+                },
+            )
+        }),
+    );
+    runner.compare(
+        "mpsc/bounded/tasks-4p1c-cap1-4w",
+        160,
+        implementations!([Asyncband, Tokio, AsyncChannel, Flume], |C, b| {
+            capacity_one_task_handoff::<C>(b)
+        }),
+    );
+    runner.compare(
+        "mpsc/bounded/external-receiver-1p1c-cap64-4w",
+        128,
+        implementations!([Asyncband, Tokio, AsyncChannel, Flume], |C, b| {
+            external_receiver::<C>(b, 1)
+        }),
+    );
 }

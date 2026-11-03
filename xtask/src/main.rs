@@ -72,13 +72,16 @@ struct CommandBench {
     #[arg(long, help = "Compile benchmarks without running them.")]
     no_run: bool,
 
-    #[arg(long, help = "Select one benchmark target (primitives or ecosystem).")]
+    #[arg(
+        long,
+        help = "Select a target (ecosystem or primitives; default: all)."
+    )]
     bench: Option<String>,
 
     #[arg(
         last = true,
         conflicts_with = "no_run",
-        help = "Arguments passed to Divan."
+        help = "Arguments passed to the fixed-workload benchmark runner (see -- --help)."
     )]
     args: Vec<String>,
 }

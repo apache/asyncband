@@ -15,20 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::pin;
 use std::sync::Arc;
 
 use asyncband::semaphore::Semaphore;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const QUEUE_DEPTHS: &[usize] = &[1, 4, 16];
 
-#[divan::bench]
 fn handoff_permit(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -45,7 +46,6 @@ fn handoff_permit(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn try_acquire_release(bencher: Bencher) {
     let semaphore = Semaphore::new(1);
 
@@ -54,7 +54,6 @@ fn try_acquire_release(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn try_acquire_release_with_spare_permits(bencher: Bencher) {
     let semaphore = Semaphore::new(8);
 
@@ -63,7 +62,6 @@ fn try_acquire_release_with_spare_permits(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn owned_try_acquire_release(bencher: Bencher) {
     let semaphore = Arc::new(Semaphore::new(8));
 
@@ -77,7 +75,6 @@ fn owned_try_acquire_release(bencher: Bencher) {
     });
 }
 
-#[divan::bench(args = QUEUE_DEPTHS)]
 fn queued_owned_burst(bencher: Bencher, queue_depth: usize) {
     const PERMITS: usize = 8;
 
@@ -102,7 +99,6 @@ fn queued_owned_burst(bencher: Bencher, queue_depth: usize) {
     });
 }
 
-#[divan::bench]
 fn cancel_pending_acquire(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -116,7 +112,6 @@ fn cancel_pending_acquire(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn owned_try_acquire_rejected(bencher: Bencher) {
     let semaphore = Arc::new(Semaphore::new(8));
     let held = semaphore
@@ -129,7 +124,6 @@ fn owned_try_acquire_rejected(bencher: Bencher) {
     drop(held);
 }
 
-#[divan::bench(args = QUEUE_DEPTHS)]
 fn cancel_pending_owned_batch(bencher: Bencher, queue_depth: usize) {
     let semaphore = Arc::new(Semaphore::new(0));
     let mut context = bench_context();
@@ -144,4 +138,23 @@ fn cancel_pending_owned_batch(bencher: Bencher, queue_depth: usize) {
         drop(waiters);
         black_box(semaphore.available_permits())
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    primitive!(runner, handoff_permit, 3_000_000);
+    primitive!(runner, try_acquire_release, 30_000_000);
+    primitive!(runner, try_acquire_release_with_spare_permits, 60_000_000);
+    primitive!(runner, owned_try_acquire_release, 48_000_000);
+    for &arg in QUEUE_DEPTHS {
+        primitive!(runner, queued_owned_burst(arg), (4_000_000 / arg).max(1));
+    }
+    primitive!(runner, cancel_pending_acquire, 3_000_000);
+    primitive!(runner, owned_try_acquire_rejected, 96_000_000);
+    for &arg in QUEUE_DEPTHS {
+        primitive!(
+            runner,
+            cancel_pending_owned_batch(arg),
+            (8_000_000 / arg).max(1)
+        );
+    }
 }

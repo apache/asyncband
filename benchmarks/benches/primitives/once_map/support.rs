@@ -24,9 +24,6 @@ use benchmarks::support::poll_ready;
 use benchmarks::support::thread_slot_ticket;
 
 pub const BATCH_SIZES: &[usize] = &[2, 4, 16];
-pub const BATCH_SAMPLE_SIZE: u32 = 64;
-pub const CONTENDED_SAMPLE_SIZE: u32 = 256;
-pub const FAST_SAMPLE_SIZE: u32 = 256;
 pub const HOT_ENTRY_COUNTS: &[usize] = &[64, 1024];
 pub const NONEMPTY_ENTRY_COUNTS: &[usize] = &[1, 64, 1024];
 pub const READY_ENTRY_COUNTS: &[usize] = &[0, 64, 1024];

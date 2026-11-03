@@ -16,17 +16,19 @@
 // under the License.
 
 use std::convert::Infallible;
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::pool::ManageObject;
 use asyncband::pool::ObjectStatus;
 use asyncband::pool::bounded;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
 struct Manager;
 
@@ -47,7 +49,6 @@ impl ManageObject for Manager {
     }
 }
 
-#[divan::bench]
 fn bounded_warm_get_and_return(bencher: Bencher) {
     let pool = bounded::Pool::new(bounded::PoolConfig::new(1), Manager);
     let mut context = bench_context();
@@ -60,7 +61,6 @@ fn bounded_warm_get_and_return(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn bounded_warm_get_and_return_with_spare_capacity(bencher: Bencher) {
     let pool = bounded::Pool::new(bounded::PoolConfig::new(8), Manager);
     let mut context = bench_context();
@@ -73,7 +73,6 @@ fn bounded_warm_get_and_return_with_spare_capacity(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn bounded_contended_handoff(bencher: Bencher) {
     let pool = bounded::Pool::new(bounded::PoolConfig::new(1), Manager);
     let mut context = bench_context();
@@ -91,7 +90,6 @@ fn bounded_contended_handoff(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn cancel_bounded_waiter(bencher: Bencher) {
     let pool = bounded::Pool::new(bounded::PoolConfig::new(1), Manager);
     let mut context = bench_context();
@@ -105,4 +103,15 @@ fn cancel_bounded_waiter(bencher: Bencher) {
         }
         drop(held);
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    primitive!(runner, bounded_warm_get_and_return, 6_000_000);
+    primitive!(
+        runner,
+        bounded_warm_get_and_return_with_spare_capacity,
+        6_000_000
+    );
+    primitive!(runner, bounded_contended_handoff, 3_000_000);
+    primitive!(runner, cancel_bounded_waiter, 3_000_000);
 }

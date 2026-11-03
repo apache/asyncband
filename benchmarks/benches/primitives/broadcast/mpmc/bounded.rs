@@ -15,23 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Restore backlog and permits each iteration so later samples cannot stall on exhausted capacity.
+// Restore backlog and permits each iteration so later rounds cannot stall on exhausted capacity.
 
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::broadcast::mpmc;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
-use benchmarks::support::defer_input_drop;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const RECEIVER_COUNTS: &[usize] = &[1, 4, 16];
 const BLOCKED_SENDER_COUNTS: &[usize] = &[1, 4, 16];
 const CAPACITY: usize = 64;
 
-#[divan::bench]
 fn try_send_and_try_recv(bencher: Bencher) {
     let (tx, mut rx) = mpmc::bounded(CAPACITY);
 
@@ -41,7 +41,6 @@ fn try_send_and_try_recv(bencher: Bencher) {
     });
 }
 
-#[divan::bench(args = RECEIVER_COUNTS)]
 fn try_send_and_drain_fanout(bencher: Bencher, receiver_count: usize) {
     let (tx, rx) = mpmc::bounded(CAPACITY);
     let mut receivers = Vec::with_capacity(receiver_count);
@@ -60,43 +59,37 @@ fn try_send_and_drain_fanout(bencher: Bencher, receiver_count: usize) {
     });
 }
 
-#[divan::bench(args = BLOCKED_SENDER_COUNTS)]
 fn full_channel_sender_handoff_cycle(bencher: Bencher, sender_count: usize) {
     let mut context = bench_context();
+    let (tx, mut rx) = mpmc::bounded(1);
+    tx.try_send(0).unwrap();
 
     // Register every producer on a full channel, complete one `send` future after reclaiming a
     // slot, cancel the remaining futures, and restore the original full backlog. Registration
     // and cancellation are timed as part of this cycle.
-    bencher
-        .with_inputs(|| {
-            let (tx, rx) = mpmc::bounded(1);
-            tx.try_send(0).unwrap();
-            (tx, rx)
-        })
-        .bench_local_refs(|(tx, rx)| {
-            let mut sends = (0..sender_count)
-                .map(|value| Box::pin(tx.send(value)))
-                .collect::<Vec<_>>();
-            for send in &mut sends {
-                poll_pending(send.as_mut(), &mut context);
-            }
+    bencher.bench_local(|| {
+        let mut sends = (0..sender_count)
+            .map(|value| Box::pin(tx.send(value)))
+            .collect::<Vec<_>>();
+        for send in &mut sends {
+            poll_pending(send.as_mut(), &mut context);
+        }
 
-            // Poll pending `send` futures until one publishes into the freed slot.
-            black_box(rx.try_recv().unwrap());
-            for send in &mut sends {
-                if send.as_mut().poll(&mut context).is_ready() {
-                    break;
-                }
+        // Poll pending `send` futures until one publishes into the freed slot.
+        black_box(rx.try_recv().unwrap());
+        for send in &mut sends {
+            if send.as_mut().poll(&mut context).is_ready() {
+                break;
             }
+        }
 
-            // Drain the republished message so the next iteration starts from the same state.
-            black_box(rx.try_recv().unwrap());
-            drop(sends);
-            tx.try_send(0).unwrap();
-        });
+        // Drain the republished message so the next iteration starts from the same state.
+        black_box(rx.try_recv().unwrap());
+        drop(sends);
+        tx.try_send(0).unwrap();
+    });
 }
 
-#[divan::bench]
 fn deliver_to_waiting_receiver(bencher: Bencher) {
     let mut context = bench_context();
     let (tx, mut rx) = mpmc::bounded(CAPACITY);
@@ -109,7 +102,6 @@ fn deliver_to_waiting_receiver(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn send_without_receivers(bencher: Bencher) {
     // With no subscribers, this measures the discard path.
     let (tx, rx) = mpmc::bounded(CAPACITY);
@@ -118,7 +110,6 @@ fn send_without_receivers(bencher: Bencher) {
     bencher.bench_local(|| tx.try_send(black_box(1)));
 }
 
-#[divan::bench]
 fn try_send_when_full(bencher: Bencher) {
     let (tx, _rx) = mpmc::bounded(1);
     tx.try_send(0).unwrap();
@@ -126,7 +117,6 @@ fn try_send_when_full(bencher: Bencher) {
     bencher.bench_local(|| black_box(tx.try_send(black_box(1))).is_err());
 }
 
-#[divan::bench]
 fn cancel_blocked_send(bencher: Bencher) {
     let mut context = bench_context();
     let (tx, _rx) = mpmc::bounded(1);
@@ -138,10 +128,9 @@ fn cancel_blocked_send(bencher: Bencher) {
     });
 }
 
-#[divan::bench(args = [1, 2, 32, 256], sample_size = 64)]
 fn drop_lagging_receiver_wakes_senders(bencher: Bencher, backlog: usize) {
-    bencher
-        .with_inputs(|| {
+    bencher.bench_local(|| {
+        let (slow, fast, sends) = {
             let (sender, mut fast) = mpmc::bounded(backlog);
             let slow = sender.subscribe();
             for value in 0..backlog {
@@ -159,12 +148,39 @@ fn drop_lagging_receiver_wakes_senders(bencher: Bencher, backlog: usize) {
                 poll_pending(send.as_mut(), &mut context);
             }
             (slow, fast, sends)
-        })
-        .bench_local_values(|(slow, fast, sends)| {
-            // The fast subscription stays alive so this measures reclaim, not last-receiver
-            // exit. Preparing the backlog, parking senders, and disposing of
-            // futures are outside timing.
-            drop(slow);
-            defer_input_drop((fast, sends), ())
-        });
+        };
+        // The fast subscription stays alive so this measures reclaim, not last-receiver
+        // exit. Each round also prepares the backlog, parks senders, and disposes of futures.
+        drop(slow);
+        drop((fast, sends));
+    });
+}
+
+pub fn register(runner: &mut Runner) {
+    primitive!(runner, try_send_and_try_recv, 9_000_000);
+    for &arg in RECEIVER_COUNTS {
+        primitive!(
+            runner,
+            try_send_and_drain_fanout(arg),
+            (20_000_000 / arg).max(1)
+        );
+    }
+    for &arg in BLOCKED_SENDER_COUNTS {
+        primitive!(
+            runner,
+            full_channel_sender_handoff_cycle(arg),
+            (2_000_000 / arg).max(1)
+        );
+    }
+    primitive!(runner, deliver_to_waiting_receiver, 6_000_000);
+    primitive!(runner, send_without_receivers, 48_000_000);
+    primitive!(runner, try_send_when_full, 60_000_000);
+    primitive!(runner, cancel_blocked_send, 6_000_000);
+    for &arg in &[1, 2, 32, 256] {
+        primitive!(
+            runner,
+            drop_lagging_receiver_wakes_senders(arg),
+            (2_000_000 / arg).max(1)
+        );
+    }
 }

@@ -18,14 +18,16 @@
 // Drain each iteration to keep retained memory bounded across samples.
 
 use std::fmt;
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::broadcast::mpmc;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-use divan::Bencher;
-use divan::black_box;
 
 const RECEIVER_COUNTS: &[usize] = &[1, 4, 16];
 
@@ -57,7 +59,6 @@ const RECLAIM_FANOUTS: &[Fanout] = &[
 ];
 
 // Two receivers read the shared payload; the second reclaims the slot.
-#[divan::bench]
 fn send_and_try_recv_shared(bencher: Bencher) {
     let (sender, mut first) = mpmc::unbounded();
     let mut second = sender.subscribe();
@@ -75,7 +76,6 @@ fn payload() -> String {
     "x".repeat(64)
 }
 
-#[divan::bench]
 fn send_and_try_recv_string_shared(bencher: Bencher) {
     let (sender, mut first) = mpmc::unbounded();
     let mut second = sender.subscribe();
@@ -86,7 +86,6 @@ fn send_and_try_recv_string_shared(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn send_and_try_recv_string_cloned_sole(bencher: Bencher) {
     let (sender, mut receiver) = mpmc::unbounded();
     bencher.bench_local(|| {
@@ -95,7 +94,6 @@ fn send_and_try_recv_string_cloned_sole(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn send_and_try_recv_string_cloned_fanout(bencher: Bencher) {
     let (sender, mut first) = mpmc::unbounded();
     let mut second = sender.subscribe();
@@ -106,7 +104,6 @@ fn send_and_try_recv_string_cloned_fanout(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn deliver_to_waiting_receiver(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receiver) = mpmc::unbounded();
@@ -121,7 +118,6 @@ fn deliver_to_waiting_receiver(bencher: Bencher) {
     });
 }
 
-#[divan::bench(args = RECEIVER_COUNTS)]
 fn register_and_deliver_fanout(bencher: Bencher, receiver_count: usize) {
     let mut context = bench_context();
 
@@ -147,14 +143,12 @@ fn register_and_deliver_fanout(bencher: Bencher, receiver_count: usize) {
     });
 }
 
-#[divan::bench]
 fn send_without_receivers(bencher: Bencher) {
     let (sender, receiver) = mpmc::unbounded::<usize>();
     drop(receiver);
     bencher.bench_local(|| sender.send(black_box(1)));
 }
 
-#[divan::bench]
 fn try_recv_empty(bencher: Bencher) {
     let (sender, mut receiver) = mpmc::unbounded::<usize>();
     bencher.bench_local(|| black_box(receiver.try_recv()));
@@ -162,7 +156,6 @@ fn try_recv_empty(bencher: Bencher) {
 }
 
 // Compare reclamation with identical historical peaks but different live subscriber counts.
-#[divan::bench(args = RECLAIM_FANOUTS)]
 fn drain_with_receivers(bencher: Bencher, fanout: Fanout) {
     let (sender, receiver) = mpmc::unbounded();
     drop(receiver);
@@ -181,7 +174,6 @@ fn drain_with_receivers(bencher: Bencher, fanout: Fanout) {
     });
 }
 
-#[divan::bench]
 fn cancel_pending(bencher: Bencher) {
     let mut context = bench_context();
 
@@ -193,4 +185,29 @@ fn cancel_pending(bencher: Bencher) {
         }
         black_box((sender, receiver))
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    primitive!(runner, send_and_try_recv_shared, 6_000_000);
+    primitive!(runner, send_and_try_recv_string_shared, 3_000_000);
+    primitive!(runner, send_and_try_recv_string_cloned_sole, 3_000_000);
+    primitive!(runner, send_and_try_recv_string_cloned_fanout, 3_000_000);
+    primitive!(runner, deliver_to_waiting_receiver, 6_000_000);
+    for &arg in RECEIVER_COUNTS {
+        primitive!(
+            runner,
+            register_and_deliver_fanout(arg),
+            (3_000_000 / arg).max(1)
+        );
+    }
+    primitive!(runner, send_without_receivers, 12_000_000);
+    primitive!(runner, try_recv_empty, 60_000_000);
+    for &arg in RECLAIM_FANOUTS {
+        primitive!(
+            runner,
+            drain_with_receivers(arg),
+            (10_000_000 / arg.live).max(1)
+        );
+    }
+    primitive!(runner, cancel_pending, 3_000_000);
 }

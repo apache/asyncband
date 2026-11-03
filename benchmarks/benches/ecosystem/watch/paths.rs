@@ -18,22 +18,20 @@
 // Both adapters return an owned `usize`. The Tokio adapter's `recv` combines `changed` and
 // `borrow_and_update`.
 
-use std::pin::pin;
+use std::hint::black_box;
 
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::implementations;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
 use crate::watch::adapters::Asyncband;
 use crate::watch::adapters::Tokio;
 use crate::watch::adapters::Watch;
 
-const RECEIVER_COUNTS: &[usize] = &[2, 4, 8, 32];
-
-#[divan::bench(types = [Asyncband, Tokio])]
 fn get_current<C: Watch>(bencher: Bencher) {
     let (sender, mut receivers) = C::channel(1);
     let receiver = receivers.pop().unwrap();
@@ -41,17 +39,6 @@ fn get_current<C: Watch>(bencher: Bencher) {
     black_box(sender);
 }
 
-#[divan::bench(types = [Asyncband, Tokio])]
-fn publish_then_snapshot<C: Watch>(bencher: Bencher) {
-    let (sender, mut receivers) = C::channel(1);
-    let receiver = receivers.pop().unwrap();
-    bencher.bench_local(|| {
-        C::send(&sender, black_box(1));
-        black_box(C::get(&receiver))
-    });
-}
-
-#[divan::bench(types = [Asyncband, Tokio])]
 fn publish_then_receive<C: Watch>(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, mut receivers) = C::channel(1);
@@ -62,31 +49,6 @@ fn publish_then_receive<C: Watch>(bencher: Bencher) {
     });
 }
 
-#[divan::bench(types = [Asyncband, Tokio])]
-fn publish_then_observe_version<C: Watch>(bencher: Bencher) {
-    let mut context = bench_context();
-    let (sender, mut receivers) = C::channel(1);
-    let mut receiver = receivers.pop().unwrap();
-    bencher.bench_local(|| {
-        C::send(&sender, black_box(1));
-        poll_ready(C::changed(&mut receiver), &mut context);
-    });
-}
-
-#[divan::bench(types = [Asyncband, Tokio])]
-fn register_publish_observe<C: Watch>(bencher: Bencher) {
-    let mut context = bench_context();
-    let (sender, mut receivers) = C::channel(1);
-    let mut receiver = receivers.pop().unwrap();
-    bencher.bench_local(|| {
-        let mut changed = pin!(C::changed(&mut receiver));
-        poll_pending(changed.as_mut(), &mut context);
-        C::send(&sender, black_box(1));
-        poll_pinned_ready(changed.as_mut(), &mut context);
-    });
-}
-
-#[divan::bench(types = [Asyncband, Tokio], args = RECEIVER_COUNTS)]
 fn register_publish_observe_fanout<C: Watch>(bencher: Bencher, receiver_count: usize) {
     let mut context = bench_context();
     let (sender, mut receivers) = C::channel(receiver_count);
@@ -105,4 +67,25 @@ fn register_publish_observe_fanout<C: Watch>(bencher: Bencher, receiver_count: u
             poll_pinned_ready(future.as_mut(), &mut context);
         }
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    runner.compare(
+        "watch/snapshot",
+        75_000_000,
+        implementations!([Asyncband, Tokio], |C, b| get_current::<C>(b)),
+    );
+    runner.compare(
+        "watch/publish-then-receive",
+        18_000_000,
+        implementations!([Asyncband, Tokio], |C, b| publish_then_receive::<C>(b)),
+    );
+    runner.compare(
+        "watch/notify-4-waiters",
+        1_700_000,
+        implementations!(
+            [Asyncband, Tokio],
+            |C, b| register_publish_observe_fanout::<C>(b, 4)
+        ),
+    );
 }

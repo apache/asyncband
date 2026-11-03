@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use benchmarks::harness::Runner;
+
 mod broadcast;
 mod mpmc;
 mod mpsc;
@@ -23,5 +25,12 @@ mod waitgroup;
 mod watch;
 
 fn main() {
-    divan::main();
+    let mut runner = Runner::from_args();
+    broadcast::register(&mut runner);
+    mpmc::register(&mut runner);
+    mpsc::register(&mut runner);
+    spmc::register(&mut runner);
+    waitgroup::register(&mut runner);
+    watch::register(&mut runner);
+    runner.finish();
 }

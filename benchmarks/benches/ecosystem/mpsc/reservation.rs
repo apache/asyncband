@@ -16,36 +16,30 @@
 // under the License.
 
 use std::future::Future;
+use std::hint::black_box;
 use std::marker::PhantomData;
 
 use asyncband::blocking::FutureExt;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::implementations;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
-use divan::counter::ItemsCount;
 
 use crate::mpsc::adapters::Asyncband;
 use crate::mpsc::adapters::BoundedMpsc;
 use crate::mpsc::adapters::Tokio;
-use crate::mpsc::support::BATCH_MESSAGES;
 use crate::mpsc::support::ConcurrentMpsc;
 use crate::mpsc::support::RepeatedTasks;
-use crate::mpsc::support::TASK_SHAPES;
-use crate::mpsc::support::TaskShape;
 
 trait Reservable: BoundedMpsc {
     type Permit<'a>: Send;
-    fn try_reserve(sender: &Self::Sender) -> Self::Permit<'_>;
     fn reserve(sender: &Self::Sender) -> impl Future<Output = Self::Permit<'_>> + Send;
     fn publish(permit: Self::Permit<'_>, value: usize);
 }
 
 impl Reservable for Asyncband {
     type Permit<'a> = asyncband::mpsc::Permit<'a, usize>;
-    fn try_reserve(sender: &Self::Sender) -> Self::Permit<'_> {
-        sender.try_reserve().unwrap()
-    }
     async fn reserve(sender: &Self::Sender) -> Self::Permit<'_> {
         sender.reserve().await.unwrap()
     }
@@ -56,9 +50,6 @@ impl Reservable for Asyncband {
 
 impl Reservable for Tokio {
     type Permit<'a> = tokio::sync::mpsc::Permit<'a, usize>;
-    fn try_reserve(sender: &Self::Sender) -> Self::Permit<'_> {
-        sender.try_reserve().unwrap()
-    }
     async fn reserve(sender: &Self::Sender) -> Self::Permit<'_> {
         sender.reserve().await.unwrap()
     }
@@ -67,8 +58,6 @@ impl Reservable for Tokio {
     }
 }
 
-// `sample_size` is pinned for the reason documented in `bounded.rs`.
-#[divan::bench(types = [Asyncband, Tokio], sample_size = 512)]
 fn reserve_publish_receive<C: Reservable>(bencher: Bencher) {
     let (sender, mut receiver) = C::channel(64);
     let mut context = bench_context();
@@ -102,33 +91,21 @@ impl<C: Reservable, const CAPACITY: usize> ConcurrentMpsc for Reserved<C, CAPACI
     }
 }
 
-#[divan::bench(
-    types = [Asyncband, Tokio],
-    consts = [64, 1024],
-    args = TASK_SHAPES,
-    sample_count = 50,
-    sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES),
-)]
-fn reused_tasks<C: Reservable, const CAPACITY: usize>(
-    bencher: Bencher,
-    TaskShape { producers, workers }: TaskShape,
-) {
-    let mut batch = RepeatedTasks::<Reserved<C, CAPACITY>>::new(producers, workers);
-    batch.run();
-    bencher.bench_local(|| batch.run());
-}
-
-#[divan::bench(types = [Asyncband, Tokio], sample_count = 20, sample_size = 1,
-    counter = ItemsCount::new(BATCH_MESSAGES))]
 fn capacity_one_task_handoff<C: Reservable>(bencher: Bencher) {
     let mut batch = RepeatedTasks::<Reserved<C, 1>>::new(4, 4);
     batch.run();
     bencher.bench_local(|| batch.run());
 }
 
-#[divan::bench(types = [Asyncband, Tokio], sample_size = 1024)]
-fn cancel_reserved_capacity<C: Reservable>(bencher: Bencher) {
-    let (sender, _receiver) = C::channel(64);
-    bencher.bench_local(|| drop(black_box(C::try_reserve(&sender))));
+pub fn register(runner: &mut Runner) {
+    runner.compare(
+        "mpsc/reservation/reserve-publish-receive",
+        18_000_000,
+        implementations!([Asyncband, Tokio], |C, b| reserve_publish_receive::<C>(b)),
+    );
+    runner.compare(
+        "mpsc/reservation/tasks-4p1c-cap1-4w",
+        170,
+        implementations!([Asyncband, Tokio], |C, b| capacity_one_task_handoff::<C>(b)),
+    );
 }

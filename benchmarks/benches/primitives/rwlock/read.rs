@@ -15,13 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
+
 use asyncband::rwlock::RwLock;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_ready;
-use divan::Bencher;
-use divan::black_box;
 
-#[divan::bench]
 fn eight_reads_then_one_write(bencher: Bencher) {
     const READS_PER_WRITE: usize = 8;
 
@@ -39,7 +41,6 @@ fn eight_reads_then_one_write(bencher: Bencher) {
     });
 }
 
-#[divan::bench]
 fn read_reuse(bencher: Bencher) {
     let lock = RwLock::new(0usize);
     let mut context = bench_context();
@@ -48,4 +49,9 @@ fn read_reuse(bencher: Bencher) {
         let guard = poll_ready(lock.read(), &mut context);
         black_box(*guard)
     });
+}
+
+pub fn register(runner: &mut Runner) {
+    primitive!(runner, eight_reads_then_one_write, 3_000_000);
+    primitive!(runner, read_reuse, 30_000_000);
 }

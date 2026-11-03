@@ -16,4 +16,5 @@
 // under the License.
 
 pub mod channels;
+pub mod harness;
 pub mod support;
