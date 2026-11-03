@@ -134,7 +134,6 @@ impl Semaphore {
             requested_permits: n,
             index: None,
             semaphore: self,
-            done: false,
         }
     }
 
@@ -288,7 +287,6 @@ pub struct Acquire<'a> {
     requested_permits: usize,
     index: Option<WaiterId>,
     semaphore: &'a Semaphore,
-    done: bool,
 }
 
 impl Drop for Acquire<'_> {
@@ -318,12 +316,7 @@ impl Acquire<'_> {
             requested_permits,
             index,
             semaphore,
-            done,
         } = self;
-
-        if *done {
-            return Poll::Ready(());
-        }
 
         let mut old_waker = None;
         match index {
@@ -341,7 +334,6 @@ impl Acquire<'_> {
                 if ready {
                     waiters.remove_unlinked_waiter(*idx);
                     *index = None;
-                    *done = true;
                     return Poll::Ready(());
                 }
             }
@@ -350,7 +342,6 @@ impl Acquire<'_> {
                 let requested = *requested_permits;
 
                 if acquired_or_enqueue(semaphore, requested, Some(index), Some(waker), true) {
-                    *done = true;
                     return Poll::Ready(());
                 }
             }
