@@ -21,6 +21,7 @@ use std::hint::black_box;
 
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::implementations;
 use benchmarks::support::bench_context;
 
 use crate::broadcast::mpmc::adapters::AsyncBroadcast;
@@ -29,8 +30,6 @@ use crate::broadcast::mpmc::adapters::BroadcastMpmc;
 use crate::broadcast::mpmc::adapters::Tokio;
 use crate::broadcast::mpmc::support::ConcurrentSend;
 use crate::broadcast::mpmc::support::Fanout;
-use crate::broadcast::mpmc::support::PRODUCER_COUNTS;
-use crate::broadcast::mpmc::support::RECEIVER_COUNTS;
 use crate::broadcast::mpmc::support::ROUND_TRIP_CAPACITY;
 
 fn try_send_receive<C: BroadcastMpmc>(bencher: Bencher) {
@@ -69,55 +68,33 @@ fn publish_then_parallel_drain<C: BroadcastMpmc>(bencher: Bencher, receiver_coun
 }
 
 pub fn register(runner: &mut Runner) {
-    register_implementation::<Asyncband>(runner, "Asyncband");
-    register_implementation::<Tokio>(runner, "Tokio");
-    register_implementation::<AsyncBroadcast>(runner, "AsyncBroadcast");
-}
-
-fn register_implementation<C>(runner: &mut Runner, implementation: &str)
-where
-    C: BroadcastMpmc,
-{
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::try_send_receive")
+    runner.compare(
+        "broadcast/no-backpressure/try-roundtrip",
+        9_100_000,
+        implementations!(
+            [Asyncband, Tokio, AsyncBroadcast],
+            |C, b| try_send_receive::<C>(b)
         ),
-        12_000_000,
-        1,
-        try_send_receive::<C>,
     );
-
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::ready_send_receive")
-        ),
-        10_000_000,
-        1,
-        ready_send_receive::<C>,
+    runner.compare(
+        "broadcast/no-backpressure/ready-roundtrip",
+        8_000_000,
+        implementations!([Asyncband, Tokio, AsyncBroadcast], |C, b| {
+            ready_send_receive::<C>(b)
+        }),
     );
-
-    for &arg in PRODUCER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{implementation}/{arg}",
-                concat!(module_path!(), "::publish_batch_then_drain")
-            ),
-            1_024,
-            1,
-            |bencher| publish_batch_then_drain::<C>(bencher, arg),
-        );
-    }
-    for &arg in RECEIVER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{implementation}/{arg}",
-                concat!(module_path!(), "::publish_then_parallel_drain")
-            ),
-            640,
-            1,
-            |bencher| publish_then_parallel_drain::<C>(bencher, arg),
-        );
-    }
+    runner.compare(
+        "broadcast/no-backpressure/publish-4p-drain-1r",
+        810,
+        implementations!([Asyncband, Tokio, AsyncBroadcast], |C, b| {
+            publish_batch_then_drain::<C>(b, 4)
+        }),
+    );
+    runner.compare(
+        "broadcast/no-backpressure/drain-4r",
+        500,
+        implementations!([Asyncband, Tokio, AsyncBroadcast], |C, b| {
+            publish_then_parallel_drain::<C>(b, 4)
+        }),
+    );
 }

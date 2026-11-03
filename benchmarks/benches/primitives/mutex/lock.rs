@@ -22,6 +22,7 @@ use std::sync::Arc;
 use asyncband::mutex::Mutex;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -65,21 +66,8 @@ fn queued_handoff_cycle(bencher: Bencher, queue_depth: usize) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::uncontended_reuse"),
-        24_000_000,
-        1,
-        uncontended_reuse,
-    );
+    primitive!(runner, uncontended_reuse, 24_000_000);
     for &arg in QUEUE_DEPTHS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::queued_handoff_cycle")
-            ),
-            (5_000_000 / arg).max(1),
-            1,
-            |bencher| queued_handoff_cycle(bencher, arg),
-        );
+        primitive!(runner, queued_handoff_cycle(arg), (5_000_000 / arg).max(1));
     }
 }

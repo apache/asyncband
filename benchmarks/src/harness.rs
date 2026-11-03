@@ -19,37 +19,61 @@ use std::hint::black_box;
 use std::num::NonZeroUsize;
 use std::sync::Barrier;
 use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 
 use clap::Parser;
 
-#[derive(Parser)]
-#[command(about = "Time fixed workloads in milliseconds.")]
-struct Options {
-    /// Case name substrings; a case must contain all of them.
-    filters: Vec<String>,
+/// Register a primitive by its Rust path, including its input and worker count when present.
+#[macro_export]
+macro_rules! primitive {
+    ($runner:expr, $op:ident $(($arg:ident))?, $rounds:expr $(, threads = $threads:ident)?) => {{
+        let name = concat!(module_path!(), "::", stringify!($op));
+        $(let name = format!("{name}/{}", $arg);)?
+        $(let name = format!("{name}/threads={}", $threads);)?
+        $runner.case(name, $rounds, $crate::primitive!(@threads $($threads)?), |b| $op(b $(, $arg)?));
+    }};
+    (@threads) => { 1 };
+    (@threads $threads:ident) => { $threads };
+}
 
-    /// List matching cases and their work sizes without running them.
+/// Instantiate the same operation and parameters for each adapter. The first is the reference.
+#[macro_export]
+macro_rules! implementations {
+    ([$($implementation:ident),+ $(,)?], |$adapter:ident, $bench:ident| $work:expr) => {
+        &[$((stringify!($implementation), &(|$bench| {
+            type $adapter = $implementation;
+            $work
+        }) as &dyn Fn($crate::harness::Bencher))),+]
+    };
+}
+
+type Implementation<'a> = (&'a str, &'a dyn Fn(Bencher));
+
+#[derive(Parser)]
+#[command(about = "Compare implementations at a fixed amount of work.")]
+struct Options {
+    /// Select scenario names containing all these substrings.
+    filters: Vec<String>,
+    /// List matching scenarios, rounds and implementations without running them.
     #[arg(long, conflicts_with = "test")]
     list: bool,
-
-    /// Exercise each matching case once per worker, without measuring performance.
+    /// Exercise each workload once per worker without timing.
     #[arg(long)]
     test: bool,
-
-    /// Run each workload this many times, printing every elapsed time.
-    #[arg(long, default_value = "1")]
+    /// Number of measured repetitions per implementation.
+    #[arg(long, default_value = "5")]
     repeat: NonZeroUsize,
-
-    /// Multiply the checked-in work sizes by this factor.
-    #[arg(long, default_value = "1", conflicts_with = "rounds")]
-    scale: NonZeroUsize,
-
-    /// Override the total rounds, for sizing a filtered workload.
+    /// Override the scenario's fixed rounds (equally for all implementations).
     #[arg(long)]
     rounds: Option<NonZeroUsize>,
-
-    // Cargo passes this flag to harness-free benchmark executables.
+    /// Run only the scenario's Asyncband reference, e.g. to choose its fixed work size.
+    #[arg(long)]
+    baseline_only: bool,
+    /// Include individual elapsed times in their original order.
+    #[arg(long)]
+    raw: bool,
+    // Cargo passes this flag to harness-free executables.
     #[arg(long = "bench", hide = true)]
     _bench: bool,
 }
@@ -67,6 +91,7 @@ impl Runner {
         }
     }
 
+    /// A primitive workload has a single implementation and may divide rounds among threads.
     pub fn case(
         &mut self,
         name: impl AsRef<str>,
@@ -74,7 +99,21 @@ impl Runner {
         threads: usize,
         workload: impl Fn(Bencher),
     ) {
-        let name = name.as_ref();
+        self.run(name.as_ref(), rounds, threads, &[("Asyncband", &workload)]);
+    }
+
+    /// All adapters for one scenario use the same rounds. The first is its Asyncband reference.
+    pub fn compare(&mut self, name: &str, rounds: usize, implementations: &[Implementation<'_>]) {
+        self.run(name, rounds, 1, implementations);
+    }
+
+    fn run(
+        &mut self,
+        name: &str,
+        rounds: usize,
+        threads: usize,
+        implementations: &[Implementation<'_>],
+    ) {
         if !self
             .options
             .filters
@@ -84,48 +123,98 @@ impl Runner {
             return;
         }
         self.matched += 1;
-        assert!(rounds > 0 && threads > 0);
         let rounds = if self.options.test {
             threads
-        } else if let Some(rounds) = self.options.rounds {
-            rounds.get()
         } else {
-            rounds
-                .checked_mul(self.options.scale.get())
-                .expect("scaled workload is too large")
+            self.options.rounds.map_or(rounds, NonZeroUsize::get)
         };
-        assert!(rounds >= threads, "use at least one round per worker");
+        assert!(
+            threads > 0 && rounds >= threads,
+            "{name}: need at least one round per worker"
+        );
+        assert!(
+            !implementations.is_empty(),
+            "{name}: missing reference implementation"
+        );
+        let implementations = if self.options.baseline_only {
+            &implementations[..1]
+        } else {
+            implementations
+        };
         if self.options.list {
-            println!("{rounds:>10} rounds  {name}");
+            let names = implementations
+                .iter()
+                .map(|(label, _)| *label)
+                .collect::<Vec<_>>();
+            println!("{name}  {rounds} rounds  [{}]", names.join(", "));
             return;
         }
         if self.options.test {
-            workload(Bencher { rounds, threads });
-            println!("ok  {name}");
+            for (label, workload) in implementations {
+                workload(Bencher { rounds, threads });
+                println!("ok  {name} / {label}");
+            }
             return;
         }
-        for repetition in 1..=self.options.repeat.get() {
-            // Time the whole workload, including fixture setup, worker startup and cleanup.
-            // No per-operation clocks, overhead subtraction, or adaptive iteration counts.
-            let start = Instant::now();
-            workload(Bencher { rounds, threads });
-            let elapsed = start.elapsed();
-            println!(
-                "{:>6} ms  {rounds:>10} rounds  {name}  [{repetition}/{}]",
-                elapsed.as_millis(),
-                self.options.repeat,
+
+        let repeat = self.options.repeat.get();
+        let mut samples = vec![Vec::with_capacity(repeat); implementations.len()];
+        for repetition in 0..repeat {
+            // Interleave peers and rotate the first one so any one adapter does not always run
+            // cold.
+            for offset in 0..implementations.len() {
+                let index = (repetition + offset) % implementations.len();
+                let workload = implementations[index].1;
+                let start = Instant::now();
+                workload(Bencher { rounds, threads });
+                samples[index].push(start.elapsed());
+            }
+        }
+        println!(
+            "\n{name}  ({rounds} rounds, {repeat} runs; reference: {})",
+            implementations[0].0
+        );
+        println!(
+            "  {:<16} {:>10} {:>15} {:>9}",
+            "implementation", "median ms", "min..max ms", "vs ref"
+        );
+        let reference = summary(&samples[0]).1;
+        for ((label, _), times) in implementations.iter().zip(&samples) {
+            let (min, median, max) = summary(times);
+            let range = format!("{}..{}", min.as_millis(), max.as_millis());
+            let ratio = if reference.is_zero() {
+                String::from("n/a")
+            } else {
+                format!("{:.2}x", median.as_secs_f64() / reference.as_secs_f64())
+            };
+            print!(
+                "  {label:<16} {:>10} {range:>15} {ratio:>9}",
+                median.as_millis()
             );
+            if self.options.raw {
+                print!(
+                    "  {:?}",
+                    times.iter().map(Duration::as_millis).collect::<Vec<_>>()
+                );
+            }
+            println!();
         }
     }
 
     pub fn finish(self) {
         if self.matched == 0 {
-            eprintln!(
-                "No matching cases. Use --list and select a target with cargo x bench --bench."
-            );
+            eprintln!("No matching scenarios. Use --list for this target.");
             std::process::exit(1);
         }
     }
+}
+
+fn summary(samples: &[Duration]) -> (Duration, Duration, Duration) {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let lo = sorted[(sorted.len() - 1) / 2];
+    let hi = sorted[sorted.len() / 2];
+    (sorted[0], lo + (hi - lo) / 2, sorted[sorted.len() - 1])
 }
 
 /// Executes a fixed total number of rounds; the runner times the enclosing workload.
@@ -169,6 +258,7 @@ impl Bencher {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::cell::RefCell;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -203,6 +293,42 @@ mod tests {
             completed.set(completed.get() + 1);
         });
         assert_eq!(completed.get(), 3);
+    }
+
+    #[test]
+    fn peers_share_work_and_rotate_across_repetitions() {
+        let options = Options::try_parse_from(["bench", "--repeat", "3", "--rounds", "7"]).unwrap();
+        let mut runner = Runner {
+            options,
+            matched: 0,
+        };
+        let order = RefCell::new(Vec::new());
+        let workload = |label, b: Bencher| {
+            let mut n = 0;
+            b.bench_local(|| n += 1);
+            order.borrow_mut().push((label, n));
+        };
+        runner.compare(
+            "roundtrip",
+            100,
+            &[
+                ("ref", &|b| workload('A', b)),
+                ("peer", &|b| workload('B', b)),
+            ],
+        );
+        assert_eq!(
+            order.into_inner(),
+            [('A', 7), ('B', 7), ('B', 7), ('A', 7), ('A', 7), ('B', 7)]
+        );
+    }
+
+    #[test]
+    fn median_keeps_timer_precision_and_range_keeps_the_outlier() {
+        let times = [99, 1, 6, 3].map(Duration::from_millis);
+        assert_eq!(
+            summary(&times),
+            (times[1], Duration::from_micros(4500), times[0])
+        );
     }
 
     #[test]

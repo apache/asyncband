@@ -21,6 +21,7 @@ use std::pin::pin;
 use asyncband::once::Once;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -76,27 +77,9 @@ fn cancel_pending_wait(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::complete_waiter"),
-        3_000_000,
-        1,
-        complete_waiter,
-    );
+    primitive!(runner, complete_waiter, 3_000_000);
     for &arg in WAITER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::complete_waiter_batch")
-            ),
-            (5_000_000 / arg).max(1),
-            1,
-            |bencher| complete_waiter_batch(bencher, arg),
-        );
+        primitive!(runner, complete_waiter_batch(arg), (5_000_000 / arg).max(1));
     }
-    runner.case(
-        concat!(module_path!(), "::cancel_pending_wait"),
-        6_000_000,
-        1,
-        cancel_pending_wait,
-    );
+    primitive!(runner, cancel_pending_wait, 6_000_000);
 }

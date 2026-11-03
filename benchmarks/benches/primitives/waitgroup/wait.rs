@@ -21,6 +21,7 @@ use std::hint::black_box;
 use asyncband::waitgroup::WaitGroup;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -51,14 +52,6 @@ fn complete_waiter_batch(bencher: Bencher, waiter_count: usize) {
 
 pub fn register(runner: &mut Runner) {
     for &arg in WAITER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::complete_waiter_batch")
-            ),
-            (5_000_000 / arg).max(1),
-            1,
-            |bencher| complete_waiter_batch(bencher, arg),
-        );
+        primitive!(runner, complete_waiter_batch(arg), (5_000_000 / arg).max(1));
     }
 }

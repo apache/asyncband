@@ -22,6 +22,7 @@ use std::marker::PhantomData;
 use asyncband::blocking::FutureExt;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::implementations;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_ready;
 
@@ -30,21 +31,15 @@ use crate::mpsc::adapters::BoundedMpsc;
 use crate::mpsc::adapters::Tokio;
 use crate::mpsc::support::ConcurrentMpsc;
 use crate::mpsc::support::RepeatedTasks;
-use crate::mpsc::support::TASK_SHAPES;
-use crate::mpsc::support::TaskShape;
 
 trait Reservable: BoundedMpsc {
     type Permit<'a>: Send;
-    fn try_reserve(sender: &Self::Sender) -> Self::Permit<'_>;
     fn reserve(sender: &Self::Sender) -> impl Future<Output = Self::Permit<'_>> + Send;
     fn publish(permit: Self::Permit<'_>, value: usize);
 }
 
 impl Reservable for Asyncband {
     type Permit<'a> = asyncband::mpsc::Permit<'a, usize>;
-    fn try_reserve(sender: &Self::Sender) -> Self::Permit<'_> {
-        sender.try_reserve().unwrap()
-    }
     async fn reserve(sender: &Self::Sender) -> Self::Permit<'_> {
         sender.reserve().await.unwrap()
     }
@@ -55,9 +50,6 @@ impl Reservable for Asyncband {
 
 impl Reservable for Tokio {
     type Permit<'a> = tokio::sync::mpsc::Permit<'a, usize>;
-    fn try_reserve(sender: &Self::Sender) -> Self::Permit<'_> {
-        sender.try_reserve().unwrap()
-    }
     async fn reserve(sender: &Self::Sender) -> Self::Permit<'_> {
         sender.reserve().await.unwrap()
     }
@@ -99,82 +91,21 @@ impl<C: Reservable, const CAPACITY: usize> ConcurrentMpsc for Reserved<C, CAPACI
     }
 }
 
-fn reused_tasks<C: Reservable, const CAPACITY: usize>(
-    bencher: Bencher,
-    TaskShape { producers, workers }: TaskShape,
-) {
-    let mut batch = RepeatedTasks::<Reserved<C, CAPACITY>>::new(producers, workers);
-    batch.run();
-    bencher.bench_local(|| batch.run());
-}
-
 fn capacity_one_task_handoff<C: Reservable>(bencher: Bencher) {
     let mut batch = RepeatedTasks::<Reserved<C, 1>>::new(4, 4);
     batch.run();
     bencher.bench_local(|| batch.run());
 }
 
-fn cancel_reserved_capacity<C: Reservable>(bencher: Bencher) {
-    let (sender, _receiver) = C::channel(64);
-    bencher.bench_local(|| drop(black_box(C::try_reserve(&sender))));
-}
-
 pub fn register(runner: &mut Runner) {
-    register_implementation::<Asyncband>(runner, "Asyncband");
-    register_implementation::<Tokio>(runner, "Tokio");
-}
-
-fn register_implementation<C>(runner: &mut Runner, implementation: &str)
-where
-    C: Reservable,
-{
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::reserve_publish_receive")
-        ),
-        15_000_000,
-        1,
-        reserve_publish_receive::<C>,
+    runner.compare(
+        "mpsc/reservation/reserve-publish-receive",
+        18_000_000,
+        implementations!([Asyncband, Tokio], |C, b| reserve_publish_receive::<C>(b)),
     );
-
-    for &arg in TASK_SHAPES {
-        runner.case(
-            format!(
-                "{}/{implementation}/64/{arg}",
-                concat!(module_path!(), "::reused_tasks")
-            ),
-            512,
-            1,
-            |bencher| reused_tasks::<C, 64>(bencher, arg),
-        );
-        runner.case(
-            format!(
-                "{}/{implementation}/1024/{arg}",
-                concat!(module_path!(), "::reused_tasks")
-            ),
-            512,
-            1,
-            |bencher| reused_tasks::<C, 1024>(bencher, arg),
-        );
-    }
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::capacity_one_task_handoff")
-        ),
-        128,
-        1,
-        capacity_one_task_handoff::<C>,
-    );
-
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::cancel_reserved_capacity")
-        ),
-        30_000_000,
-        1,
-        cancel_reserved_capacity::<C>,
+    runner.compare(
+        "mpsc/reservation/tasks-4p1c-cap1-4w",
+        170,
+        implementations!([Asyncband, Tokio], |C, b| capacity_one_task_handoff::<C>(b)),
     );
 }

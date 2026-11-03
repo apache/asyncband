@@ -22,6 +22,7 @@ use asyncband::condvar::Condvar;
 use asyncband::mutex::Mutex;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -87,24 +88,9 @@ fn cancel_pending(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::notify_waiter"),
-        3_000_000,
-        1,
-        notify_waiter,
-    );
+    primitive!(runner, notify_waiter, 3_000_000);
     for &arg in WAITER_COUNTS {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::notify_waiter_batch")),
-            (3_000_000 / arg).max(1),
-            1,
-            |bencher| notify_waiter_batch(bencher, arg),
-        );
+        primitive!(runner, notify_waiter_batch(arg), (3_000_000 / arg).max(1));
     }
-    runner.case(
-        concat!(module_path!(), "::cancel_pending"),
-        3_000_000,
-        1,
-        cancel_pending,
-    );
+    primitive!(runner, cancel_pending, 3_000_000);
 }

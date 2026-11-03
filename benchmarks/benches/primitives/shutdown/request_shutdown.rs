@@ -20,6 +20,7 @@ use std::hint::black_box;
 use asyncband::shutdown;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -57,11 +58,6 @@ fn signal_and_join(bencher: Bencher, receiver_count: usize) {
 
 pub fn register(runner: &mut Runner) {
     for &arg in RECEIVER_COUNTS {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::signal_and_join")),
-            (3_000_000 / arg).max(1),
-            1,
-            |bencher| signal_and_join(bencher, arg),
-        );
+        primitive!(runner, signal_and_join(arg), (3_000_000 / arg).max(1));
     }
 }

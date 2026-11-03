@@ -20,6 +20,7 @@ use std::hint::black_box;
 
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -114,41 +115,19 @@ fn initialize_error(bencher: Bencher, ready_entries: usize) {
 
 pub fn register(runner: &mut Runner) {
     for &arg in READY_ENTRY_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::initialize_remove_cycle")
-            ),
-            3_000_000,
-            1,
-            |bencher| initialize_remove_cycle(bencher, arg),
-        );
+        primitive!(runner, initialize_remove_cycle(arg), 3_000_000);
     }
     for &arg in BATCH_SIZES {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::initialize_same_key")),
-            (3_000_000 / arg).max(1),
-            1,
-            |bencher| initialize_same_key(bencher, arg),
-        );
+        primitive!(runner, initialize_same_key(arg), (3_000_000 / arg).max(1));
     }
     for &arg in BATCH_SIZES {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::initialize_distinct_keys")
-            ),
-            (2_000_000 / arg).max(1),
-            1,
-            |bencher| initialize_distinct_keys(bencher, arg),
+        primitive!(
+            runner,
+            initialize_distinct_keys(arg),
+            (2_000_000 / arg).max(1)
         );
     }
     for &arg in READY_ENTRY_COUNTS {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::initialize_error")),
-            3_000_000,
-            1,
-            |bencher| initialize_error(bencher, arg),
-        );
+        primitive!(runner, initialize_error(arg), 3_000_000);
     }
 }

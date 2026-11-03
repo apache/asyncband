@@ -25,6 +25,7 @@ use std::task::Waker;
 use asyncband::event::ManualResetEvent;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -176,78 +177,22 @@ fn set_registered(bencher: Bencher, waiter_count: usize) {
 pub fn register(runner: &mut Runner) {
     for &arg in &[false, true] {
         for &threads in THREAD_COUNTS {
-            runner.case(
-                format!(
-                    "{}/{arg}/threads={threads}",
-                    concat!(module_path!(), "::is_set")
-                ),
-                960_000_000,
-                threads,
-                |bencher| is_set(bencher, arg),
-            );
+            primitive!(runner, is_set(arg), 960_000_000, threads = threads);
         }
     }
     for &threads in THREAD_COUNTS {
-        runner.case(
-            format!(
-                "{}/threads={threads}",
-                concat!(module_path!(), "::wait_already_set")
-            ),
-            240_000_000,
-            threads,
-            wait_already_set,
-        );
+        primitive!(runner, wait_already_set, 240_000_000, threads = threads);
     }
-    runner.case(
-        concat!(module_path!(), "::set_reset_cycle"),
-        24_000_000,
-        1,
-        set_reset_cycle,
-    );
-    runner.case(
-        concat!(module_path!(), "::reused_waiter_handoff"),
-        12_000_000,
-        1,
-        reused_waiter_handoff,
-    );
+    primitive!(runner, set_reset_cycle, 24_000_000);
+    primitive!(runner, reused_waiter_handoff, 12_000_000);
     for &arg in WAITER_COUNTS {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::waiter_fan_out")),
-            (5_000_000 / arg).max(1),
-            1,
-            |bencher| waiter_fan_out(bencher, arg),
-        );
+        primitive!(runner, waiter_fan_out(arg), (5_000_000 / arg).max(1));
     }
-    runner.case(
-        concat!(module_path!(), "::cancel_pending"),
-        6_000_000,
-        1,
-        cancel_pending,
-    );
-    runner.case(
-        concat!(module_path!(), "::cancel_pending_reused"),
-        24_000_000,
-        1,
-        cancel_pending_reused,
-    );
-    runner.case(
-        concat!(module_path!(), "::repoll_pending"),
-        50_000_000,
-        1,
-        repoll_pending,
-    );
-    runner.case(
-        concat!(module_path!(), "::replace_pending_waker"),
-        48_000_000,
-        1,
-        replace_pending_waker,
-    );
+    primitive!(runner, cancel_pending, 6_000_000);
+    primitive!(runner, cancel_pending_reused, 24_000_000);
+    primitive!(runner, repoll_pending, 50_000_000);
+    primitive!(runner, replace_pending_waker, 48_000_000);
     for &arg in &[1, 16, 256] {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::set_registered")),
-            (5_000_000 / arg).max(1),
-            1,
-            |bencher| set_registered(bencher, arg),
-        );
+        primitive!(runner, set_registered(arg), (5_000_000 / arg).max(1));
     }
 }

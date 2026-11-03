@@ -17,16 +17,14 @@
 
 use std::future::Future;
 use std::future::IntoFuture;
-use std::hint::black_box;
 use std::pin::pin;
 
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::implementations;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-
-const WORKER_COUNTS: &[usize] = &[1, 4, 16];
 
 struct Asyncband;
 struct WaitgroupRs;
@@ -107,123 +105,17 @@ fn complete_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
     });
 }
 
-fn ready_empty<C: WaitGroup>(bencher: Bencher) {
-    let mut context = bench_context();
-
-    bencher.bench_local(|| {
-        let mut wait = pin!(C::wait(C::new()));
-        poll_pinned_ready(wait.as_mut(), &mut context);
-    });
-}
-
-fn cancel_pending<C: WaitGroup>(bencher: Bencher) {
-    let mut context = bench_context();
-
-    bencher.bench_local(|| {
-        let group = C::new();
-        let worker = C::worker(&group);
-        {
-            let mut wait = pin!(C::wait(group));
-            poll_pending(wait.as_mut(), &mut context);
-        }
-        drop(worker);
-    });
-}
-
-fn worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
-    bencher.bench_local(|| {
-        let group = C::new();
-        let workers = (0..worker_count)
-            .map(|_| C::worker(&group))
-            .collect::<Vec<_>>();
-        black_box(workers);
-        black_box(group);
-    });
-}
-
-fn nested_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
-    bencher.bench_local(|| {
-        let group = C::new();
-        let worker = C::worker(&group);
-        let workers = (0..worker_count)
-            .map(|_| worker.clone())
-            .collect::<Vec<_>>();
-        black_box(workers);
-        black_box(worker);
-        black_box(group);
-    });
-}
-
 pub fn register(runner: &mut Runner) {
-    register_implementation::<Asyncband>(runner, "Asyncband");
-    register_implementation::<WaitgroupRs>(runner, "WaitgroupRs");
-}
-
-fn register_implementation<C>(runner: &mut Runner, implementation: &str)
-where
-    C: WaitGroup,
-{
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::complete_waiter")
-        ),
-        6_000_000,
-        1,
-        complete_waiter::<C>,
+    runner.compare(
+        "waitgroup/complete-waiter",
+        3_500_000,
+        implementations!([Asyncband, WaitgroupRs], |C, b| complete_waiter::<C>(b)),
     );
-
-    for &arg in WORKER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{implementation}/{arg}",
-                concat!(module_path!(), "::complete_worker_batch")
-            ),
-            (10_000_000 / arg).max(1),
-            1,
-            |bencher| complete_worker_batch::<C>(bencher, arg),
-        );
-    }
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::ready_empty")
-        ),
-        10_000_000,
-        1,
-        ready_empty::<C>,
+    runner.compare(
+        "waitgroup/complete-4-workers",
+        2_600_000,
+        implementations!([Asyncband, WaitgroupRs], |C, b| complete_worker_batch::<C>(
+            b, 4
+        )),
     );
-
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::cancel_pending")
-        ),
-        6_000_000,
-        1,
-        cancel_pending::<C>,
-    );
-
-    for &arg in WORKER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{implementation}/{arg}",
-                concat!(module_path!(), "::worker_batch")
-            ),
-            (10_000_000 / arg).max(1),
-            1,
-            |bencher| worker_batch::<C>(bencher, arg),
-        );
-    }
-    for &arg in WORKER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{implementation}/{arg}",
-                concat!(module_path!(), "::nested_worker_batch")
-            ),
-            (10_000_000 / arg).max(1),
-            1,
-            |bencher| nested_worker_batch::<C>(bencher, arg),
-        );
-    }
 }

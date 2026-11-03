@@ -19,6 +19,7 @@ use std::hint::black_box;
 
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_ready;
 
@@ -44,22 +45,9 @@ fn remove_miss(bencher: Bencher, ready_entries: usize) {
 
 pub fn register(runner: &mut Runner) {
     for &arg in NONEMPTY_ENTRY_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::remove_reinitialize_cycle")
-            ),
-            3_000_000,
-            1,
-            |bencher| remove_reinitialize_cycle(bencher, arg),
-        );
+        primitive!(runner, remove_reinitialize_cycle(arg), 3_000_000);
     }
     for &arg in READY_ENTRY_COUNTS {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::remove_miss")),
-            48_000_000,
-            1,
-            |bencher| remove_miss(bencher, arg),
-        );
+        primitive!(runner, remove_miss(arg), 48_000_000);
     }
 }

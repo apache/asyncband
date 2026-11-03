@@ -25,6 +25,7 @@ use std::thread;
 use asyncband::blocking::FutureExt;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 
 fn ready(bencher: Bencher) {
     bencher.bench_local(|| async { black_box(42usize) }.block_on());
@@ -73,17 +74,7 @@ fn cross_thread_wake(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(concat!(module_path!(), "::ready"), 100_000_000, 1, ready);
-    runner.case(
-        concat!(module_path!(), "::self_wake"),
-        60_000_000,
-        1,
-        self_wake,
-    );
-    runner.case(
-        concat!(module_path!(), "::cross_thread_wake"),
-        60_000,
-        1,
-        cross_thread_wake,
-    );
+    primitive!(runner, ready, 100_000_000);
+    primitive!(runner, self_wake, 60_000_000);
+    primitive!(runner, cross_thread_wake, 60_000);
 }

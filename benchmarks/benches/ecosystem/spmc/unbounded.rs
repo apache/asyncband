@@ -16,16 +16,16 @@
 // under the License.
 
 use benchmarks::channels::adapters::AsyncChannel;
+use benchmarks::channels::adapters::AsyncbandMpmc;
+use benchmarks::channels::adapters::AsyncbandSpmc;
 use benchmarks::channels::adapters::Channel;
 use benchmarks::channels::adapters::Flume;
-use benchmarks::channels::adapters::Mpmc;
-use benchmarks::channels::adapters::Spmc;
 use benchmarks::channels::adapters::Unbounded;
 use benchmarks::channels::runtime;
-use benchmarks::channels::spmc::CONSUMERS;
 use benchmarks::channels::spmc::TaskBatch;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::implementations;
 
 fn task_batch<C, const WORKERS: usize>(bencher: Bencher, consumers: usize)
 where
@@ -39,34 +39,12 @@ where
 }
 
 pub fn register(runner: &mut Runner) {
-    register_implementation::<Spmc>(runner, "Spmc");
-    register_implementation::<Mpmc>(runner, "Mpmc");
-    register_implementation::<AsyncChannel>(runner, "AsyncChannel");
-    register_implementation::<Flume>(runner, "Flume");
-}
-
-fn register_implementation<C>(runner: &mut Runner, implementation: &str)
-where
-    Unbounded<C>: Channel,
-{
-    for &arg in CONSUMERS {
-        runner.case(
-            format!(
-                "{}/{implementation}/0/{arg}",
-                concat!(module_path!(), "::task_batch")
-            ),
-            512,
-            1,
-            |bencher| task_batch::<C, 0>(bencher, arg),
-        );
-        runner.case(
-            format!(
-                "{}/{implementation}/4/{arg}",
-                concat!(module_path!(), "::task_batch")
-            ),
-            512,
-            1,
-            |bencher| task_batch::<C, 4>(bencher, arg),
-        );
-    }
+    runner.compare(
+        "spmc/unbounded/tasks-1p4c-4w",
+        320,
+        implementations!(
+            [AsyncbandSpmc, AsyncbandMpmc, AsyncChannel, Flume],
+            |C, b| task_batch::<C, 4>(b, 4)
+        ),
+    );
 }

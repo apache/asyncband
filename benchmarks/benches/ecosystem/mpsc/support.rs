@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::fmt;
 use std::future::Future;
 use std::hint::black_box;
 use std::marker::PhantomData;
@@ -35,53 +34,12 @@ use tokio::sync::mpsc;
 
 use crate::mpsc::adapters::BoundedMpsc;
 use crate::mpsc::adapters::UnboundedMpsc;
-pub const PRODUCER_COUNTS: &[usize] = &[1, 4];
 
 #[derive(Clone, Copy)]
 pub struct TaskShape {
     pub producers: usize,
     pub workers: usize,
 }
-
-impl fmt::Display for TaskShape {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.workers == 0 {
-            write!(f, "{} producers / current-thread", self.producers)
-        } else {
-            write!(f, "{} producers / {} workers", self.producers, self.workers)
-        }
-    }
-}
-
-pub const TASK_SHAPES: &[TaskShape] = &[
-    TaskShape {
-        producers: 1,
-        workers: 0,
-    },
-    TaskShape {
-        producers: 4,
-        workers: 0,
-    },
-    TaskShape {
-        producers: 1,
-        workers: 4,
-    },
-    TaskShape {
-        producers: 4,
-        workers: 4,
-    },
-];
-
-pub const PARALLEL_TASK_SHAPES: &[TaskShape] = &[
-    TaskShape {
-        producers: 1,
-        workers: 4,
-    },
-    TaskShape {
-        producers: 4,
-        workers: 4,
-    },
-];
 
 pub trait Message: Send + 'static {
     fn new(sequence: usize) -> Self;

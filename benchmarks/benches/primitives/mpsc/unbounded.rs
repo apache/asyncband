@@ -21,6 +21,7 @@ use std::pin::pin;
 use asyncband::mpsc;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -47,16 +48,6 @@ fn reregister_pending_receiver(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::wake_pending_receiver"),
-        15_000_000,
-        1,
-        wake_pending_receiver,
-    );
-    runner.case(
-        concat!(module_path!(), "::reregister_pending_receiver"),
-        40_000_000,
-        1,
-        reregister_pending_receiver,
-    );
+    primitive!(runner, wake_pending_receiver, 15_000_000);
+    primitive!(runner, reregister_pending_receiver, 40_000_000);
 }

@@ -22,6 +22,7 @@ use std::sync::Arc;
 use asyncband::semaphore::Semaphore;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -140,59 +141,20 @@ fn cancel_pending_owned_batch(bencher: Bencher, queue_depth: usize) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::handoff_permit"),
-        3_000_000,
-        1,
-        handoff_permit,
-    );
-    runner.case(
-        concat!(module_path!(), "::try_acquire_release"),
-        30_000_000,
-        1,
-        try_acquire_release,
-    );
-    runner.case(
-        concat!(module_path!(), "::try_acquire_release_with_spare_permits"),
-        60_000_000,
-        1,
-        try_acquire_release_with_spare_permits,
-    );
-    runner.case(
-        concat!(module_path!(), "::owned_try_acquire_release"),
-        48_000_000,
-        1,
-        owned_try_acquire_release,
-    );
+    primitive!(runner, handoff_permit, 3_000_000);
+    primitive!(runner, try_acquire_release, 30_000_000);
+    primitive!(runner, try_acquire_release_with_spare_permits, 60_000_000);
+    primitive!(runner, owned_try_acquire_release, 48_000_000);
     for &arg in QUEUE_DEPTHS {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::queued_owned_burst")),
-            (4_000_000 / arg).max(1),
-            1,
-            |bencher| queued_owned_burst(bencher, arg),
-        );
+        primitive!(runner, queued_owned_burst(arg), (4_000_000 / arg).max(1));
     }
-    runner.case(
-        concat!(module_path!(), "::cancel_pending_acquire"),
-        3_000_000,
-        1,
-        cancel_pending_acquire,
-    );
-    runner.case(
-        concat!(module_path!(), "::owned_try_acquire_rejected"),
-        96_000_000,
-        1,
-        owned_try_acquire_rejected,
-    );
+    primitive!(runner, cancel_pending_acquire, 3_000_000);
+    primitive!(runner, owned_try_acquire_rejected, 96_000_000);
     for &arg in QUEUE_DEPTHS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::cancel_pending_owned_batch")
-            ),
-            (8_000_000 / arg).max(1),
-            1,
-            |bencher| cancel_pending_owned_batch(bencher, arg),
+        primitive!(
+            runner,
+            cancel_pending_owned_batch(arg),
+            (8_000_000 / arg).max(1)
         );
     }
 }

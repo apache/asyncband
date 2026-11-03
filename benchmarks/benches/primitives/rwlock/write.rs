@@ -22,6 +22,7 @@ use std::sync::Arc;
 use asyncband::rwlock::RwLock;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -49,14 +50,10 @@ fn readers_then_queued_writer(bencher: Bencher, reader_count: usize) {
 
 pub fn register(runner: &mut Runner) {
     for &arg in READER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::readers_then_queued_writer")
-            ),
-            (5_000_000 / arg).max(1),
-            1,
-            |bencher| readers_then_queued_writer(bencher, arg),
+        primitive!(
+            runner,
+            readers_then_queued_writer(arg),
+            (5_000_000 / arg).max(1)
         );
     }
 }

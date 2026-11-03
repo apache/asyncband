@@ -64,7 +64,7 @@ jobs:
       - name: Check feature matrix
         run: cargo x check
       - name: Smoke benchmarks
-        run: cargo x bench -- --test
+        run: cargo x bench --bench '*' -- --test
 
   test:
     name: Run tests

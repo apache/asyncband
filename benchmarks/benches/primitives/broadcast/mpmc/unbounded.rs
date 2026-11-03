@@ -18,15 +18,16 @@
 // Drain each iteration to keep retained memory bounded across samples.
 
 use std::fmt;
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::broadcast::mpmc;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
-use benchmarks::harness::Bencher;
-use benchmarks::harness::Runner;
-use std::hint::black_box;
 
 const RECEIVER_COUNTS: &[usize] = &[1, 4, 16];
 
@@ -187,59 +188,26 @@ fn cancel_pending(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::send_and_try_recv_shared"),
-        6_000_000,
-        1,
-        send_and_try_recv_shared,
-    );
-    runner.case(concat!(module_path!(), "::send_and_try_recv_string_shared"), 3_000_000, 1, send_and_try_recv_string_shared);
-    runner.case(concat!(module_path!(), "::send_and_try_recv_string_cloned_sole"), 3_000_000, 1, send_and_try_recv_string_cloned_sole);
-    runner.case(concat!(module_path!(), "::send_and_try_recv_string_cloned_fanout"), 3_000_000, 1, send_and_try_recv_string_cloned_fanout);
-    runner.case(
-        concat!(module_path!(), "::deliver_to_waiting_receiver"),
-        6_000_000,
-        1,
-        deliver_to_waiting_receiver,
-    );
+    primitive!(runner, send_and_try_recv_shared, 6_000_000);
+    primitive!(runner, send_and_try_recv_string_shared, 3_000_000);
+    primitive!(runner, send_and_try_recv_string_cloned_sole, 3_000_000);
+    primitive!(runner, send_and_try_recv_string_cloned_fanout, 3_000_000);
+    primitive!(runner, deliver_to_waiting_receiver, 6_000_000);
     for &arg in RECEIVER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::register_and_deliver_fanout")
-            ),
-            (3_000_000 / arg).max(1),
-            1,
-            |bencher| register_and_deliver_fanout(bencher, arg),
+        primitive!(
+            runner,
+            register_and_deliver_fanout(arg),
+            (3_000_000 / arg).max(1)
         );
     }
-    runner.case(
-        concat!(module_path!(), "::send_without_receivers"),
-        12_000_000,
-        1,
-        send_without_receivers,
-    );
-    runner.case(
-        concat!(module_path!(), "::try_recv_empty"),
-        60_000_000,
-        1,
-        try_recv_empty,
-    );
+    primitive!(runner, send_without_receivers, 12_000_000);
+    primitive!(runner, try_recv_empty, 60_000_000);
     for &arg in RECLAIM_FANOUTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::drain_with_receivers")
-            ),
-            (10_000_000 / arg.live).max(1),
-            1,
-            |bencher| drain_with_receivers(bencher, arg),
+        primitive!(
+            runner,
+            drain_with_receivers(arg),
+            (10_000_000 / arg.live).max(1)
         );
     }
-    runner.case(
-        concat!(module_path!(), "::cancel_pending"),
-        3_000_000,
-        1,
-        cancel_pending,
-    );
+    primitive!(runner, cancel_pending, 3_000_000);
 }

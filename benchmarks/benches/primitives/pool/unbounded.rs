@@ -20,6 +20,7 @@ use std::hint::black_box;
 use asyncband::pool::unbounded;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 
 fn unbounded_warm_try_get_and_return(bencher: Bencher) {
     let pool = unbounded::Pool::<usize>::never_manage(unbounded::PoolConfig::default());
@@ -33,10 +34,5 @@ fn unbounded_warm_try_get_and_return(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::unbounded_warm_try_get_and_return"),
-        9_000_000,
-        1,
-        unbounded_warm_try_get_and_return,
-    );
+    primitive!(runner, unbounded_warm_try_get_and_return, 9_000_000);
 }

@@ -23,6 +23,7 @@ use std::pin::pin;
 use asyncband::broadcast::mpmc;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -156,67 +157,30 @@ fn drop_lagging_receiver_wakes_senders(bencher: Bencher, backlog: usize) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::try_send_and_try_recv"),
-        9_000_000,
-        1,
-        try_send_and_try_recv,
-    );
+    primitive!(runner, try_send_and_try_recv, 9_000_000);
     for &arg in RECEIVER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::try_send_and_drain_fanout")
-            ),
-            (20_000_000 / arg).max(1),
-            1,
-            |bencher| try_send_and_drain_fanout(bencher, arg),
+        primitive!(
+            runner,
+            try_send_and_drain_fanout(arg),
+            (20_000_000 / arg).max(1)
         );
     }
     for &arg in BLOCKED_SENDER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::full_channel_sender_handoff_cycle")
-            ),
-            (2_000_000 / arg).max(1),
-            1,
-            |bencher| full_channel_sender_handoff_cycle(bencher, arg),
+        primitive!(
+            runner,
+            full_channel_sender_handoff_cycle(arg),
+            (2_000_000 / arg).max(1)
         );
     }
-    runner.case(
-        concat!(module_path!(), "::deliver_to_waiting_receiver"),
-        6_000_000,
-        1,
-        deliver_to_waiting_receiver,
-    );
-    runner.case(
-        concat!(module_path!(), "::send_without_receivers"),
-        48_000_000,
-        1,
-        send_without_receivers,
-    );
-    runner.case(
-        concat!(module_path!(), "::try_send_when_full"),
-        60_000_000,
-        1,
-        try_send_when_full,
-    );
-    runner.case(
-        concat!(module_path!(), "::cancel_blocked_send"),
-        6_000_000,
-        1,
-        cancel_blocked_send,
-    );
+    primitive!(runner, deliver_to_waiting_receiver, 6_000_000);
+    primitive!(runner, send_without_receivers, 48_000_000);
+    primitive!(runner, try_send_when_full, 60_000_000);
+    primitive!(runner, cancel_blocked_send, 6_000_000);
     for &arg in &[1, 2, 32, 256] {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::drop_lagging_receiver_wakes_senders")
-            ),
-            (2_000_000 / arg).max(1),
-            1,
-            |bencher| drop_lagging_receiver_wakes_senders(bencher, arg),
+        primitive!(
+            runner,
+            drop_lagging_receiver_wakes_senders(arg),
+            (2_000_000 / arg).max(1)
         );
     }
 }

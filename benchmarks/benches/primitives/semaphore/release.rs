@@ -21,6 +21,7 @@ use std::sync::Arc;
 use asyncband::semaphore::Semaphore;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 
@@ -57,18 +58,8 @@ fn release_to_waiters(bencher: Bencher, waiter_count: usize) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::fulfill_debt_repeatedly"),
-        300_000,
-        1,
-        fulfill_debt_repeatedly,
-    );
+    primitive!(runner, fulfill_debt_repeatedly, 300_000);
     for &arg in &[1, 2, 32, 256] {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::release_to_waiters")),
-            (4_000_000 / arg).max(1),
-            1,
-            |bencher| release_to_waiters(bencher, arg),
-        );
+        primitive!(runner, release_to_waiters(arg), (4_000_000 / arg).max(1));
     }
 }

@@ -21,6 +21,7 @@ use std::pin::pin;
 
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -87,22 +88,13 @@ fn sequential_retries_after_leader_error(bencher: Bencher, caller_count: usize) 
 
 pub fn register(runner: &mut Runner) {
     for &arg in BATCH_SIZES {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::complete_coalesced")),
-            (3_000_000 / arg).max(1),
-            1,
-            |bencher| complete_coalesced(bencher, arg),
-        );
+        primitive!(runner, complete_coalesced(arg), (3_000_000 / arg).max(1));
     }
     for &arg in BATCH_SIZES {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::sequential_retries_after_leader_error")
-            ),
-            (3_000_000 / arg).max(1),
-            1,
-            |bencher| sequential_retries_after_leader_error(bencher, arg),
+        primitive!(
+            runner,
+            sequential_retries_after_leader_error(arg),
+            (3_000_000 / arg).max(1)
         );
     }
 }

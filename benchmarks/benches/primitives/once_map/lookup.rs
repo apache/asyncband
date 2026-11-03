@@ -19,6 +19,7 @@ use std::hint::black_box;
 
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_ready;
 
@@ -77,63 +78,38 @@ fn compute_hit_distributed(bencher: Bencher, ready_entries: usize) {
 
 pub fn register(runner: &mut Runner) {
     for &threads in THREAD_COUNTS {
-        runner.case(
-            format!(
-                "{}/threads={threads}",
-                concat!(module_path!(), "::get_hit_same_key")
-            ),
-            16_000_000,
-            threads,
-            get_hit_same_key,
-        );
+        primitive!(runner, get_hit_same_key, 16_000_000, threads = threads);
     }
     for &arg in HOT_ENTRY_COUNTS {
         for &threads in THREAD_COUNTS {
-            runner.case(
-                format!(
-                    "{}/{arg}/threads={threads}",
-                    concat!(module_path!(), "::get_hit_distributed")
-                ),
+            primitive!(
+                runner,
+                get_hit_distributed(arg),
                 8_000_000,
-                threads,
-                |bencher| get_hit_distributed(bencher, arg),
+                threads = threads
             );
         }
     }
     for &arg in READY_ENTRY_COUNTS {
         for &threads in THREAD_COUNTS {
-            runner.case(
-                format!(
-                    "{}/{arg}/threads={threads}",
-                    concat!(module_path!(), "::get_miss_distributed")
-                ),
+            primitive!(
+                runner,
+                get_miss_distributed(arg),
                 16_000_000,
-                threads,
-                |bencher| get_miss_distributed(bencher, arg),
+                threads = threads
             );
         }
     }
     for &threads in THREAD_COUNTS {
-        runner.case(
-            format!(
-                "{}/threads={threads}",
-                concat!(module_path!(), "::compute_hit_same_key")
-            ),
-            10_000_000,
-            threads,
-            compute_hit_same_key,
-        );
+        primitive!(runner, compute_hit_same_key, 10_000_000, threads = threads);
     }
     for &arg in HOT_ENTRY_COUNTS {
         for &threads in THREAD_COUNTS {
-            runner.case(
-                format!(
-                    "{}/{arg}/threads={threads}",
-                    concat!(module_path!(), "::compute_hit_distributed")
-                ),
+            primitive!(
+                runner,
+                compute_hit_distributed(arg),
                 4_000_000,
-                threads,
-                |bencher| compute_hit_distributed(bencher, arg),
+                threads = threads
             );
         }
     }

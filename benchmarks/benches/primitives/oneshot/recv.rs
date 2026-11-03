@@ -19,10 +19,11 @@ use std::future::IntoFuture;
 use std::pin::pin;
 
 use asyncband::oneshot::channel;
-use benchmarks::support::bench_context;
-use benchmarks::support::poll_pending;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
+use benchmarks::support::bench_context;
+use benchmarks::support::poll_pending;
 
 fn repoll_pending(bencher: Bencher) {
     let mut context = bench_context();
@@ -34,5 +35,5 @@ fn repoll_pending(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(concat!(module_path!(), "::repoll_pending"), 30_000_000, 1, repoll_pending);
+    primitive!(runner, repoll_pending, 140_000_000);
 }

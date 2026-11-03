@@ -20,6 +20,7 @@ use std::hint::black_box;
 use asyncband::mpsc;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -77,25 +78,17 @@ fn cancel_backpressured_senders(bencher: Bencher, sender_count: usize) {
 
 pub fn register(runner: &mut Runner) {
     for &arg in SENDER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::drain_backpressured_senders")
-            ),
-            (5_000_000 / arg).max(1),
-            1,
-            |bencher| drain_backpressured_senders(bencher, arg),
+        primitive!(
+            runner,
+            drain_backpressured_senders(arg),
+            (5_000_000 / arg).max(1)
         );
     }
     for &arg in SENDER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::cancel_backpressured_senders")
-            ),
-            (8_000_000 / arg).max(1),
-            1,
-            |bencher| cancel_backpressured_senders(bencher, arg),
+        primitive!(
+            runner,
+            cancel_backpressured_senders(arg),
+            (8_000_000 / arg).max(1)
         );
     }
 }

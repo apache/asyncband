@@ -16,17 +16,17 @@
 // under the License.
 
 use benchmarks::channels::adapters::AsyncChannel;
+use benchmarks::channels::adapters::AsyncbandMpmc;
 use benchmarks::channels::adapters::Flume;
-use benchmarks::channels::adapters::Mpmc;
 use benchmarks::channels::adapters::Unbounded;
 use benchmarks::channels::adapters::UnboundedMpmc;
-use benchmarks::channels::mpmc::TOPOLOGIES;
 use benchmarks::channels::mpmc::TaskBatch;
 use benchmarks::channels::mpmc::ThreadBatch;
 use benchmarks::channels::mpmc::Topology;
 use benchmarks::channels::runtime;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::implementations;
 
 fn thread_batch<C: UnboundedMpmc>(bencher: Bencher, topology: Topology) {
     bencher.bench_local(|| {
@@ -44,44 +44,32 @@ fn task_batch<C: UnboundedMpmc, const WORKERS: usize>(bencher: Bencher, topology
 }
 
 pub fn register(runner: &mut Runner) {
-    register_implementation::<Mpmc>(runner, "Mpmc");
-    register_implementation::<AsyncChannel>(runner, "AsyncChannel");
-    register_implementation::<Flume>(runner, "Flume");
-}
-
-fn register_implementation<C>(runner: &mut Runner, implementation: &str)
-where
-    C: UnboundedMpmc,
-{
-    for &arg in TOPOLOGIES {
-        runner.case(
-            format!(
-                "{}/{implementation}/{arg}",
-                concat!(module_path!(), "::thread_batch")
-            ),
-            256,
-            1,
-            |bencher| thread_batch::<C>(bencher, arg),
-        );
-    }
-    for &arg in TOPOLOGIES {
-        runner.case(
-            format!(
-                "{}/{implementation}/0/{arg}",
-                concat!(module_path!(), "::task_batch")
-            ),
-            512,
-            1,
-            |bencher| task_batch::<C, 0>(bencher, arg),
-        );
-        runner.case(
-            format!(
-                "{}/{implementation}/4/{arg}",
-                concat!(module_path!(), "::task_batch")
-            ),
-            512,
-            1,
-            |bencher| task_batch::<C, 4>(bencher, arg),
-        );
-    }
+    runner.compare(
+        "mpmc/unbounded/tasks-2p2c-4w",
+        330,
+        implementations!([AsyncbandMpmc, AsyncChannel, Flume], |C, b| task_batch::<
+            C,
+            4,
+        >(
+            b,
+            Topology {
+                producers: 2,
+                consumers: 2
+            }
+        )),
+    );
+    runner.compare(
+        "mpmc/unbounded/threads-2p2c",
+        280,
+        implementations!(
+            [AsyncbandMpmc, AsyncChannel, Flume],
+            |C, b| thread_batch::<C>(
+                b,
+                Topology {
+                    producers: 2,
+                    consumers: 2
+                }
+            )
+        ),
+    );
 }

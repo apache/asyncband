@@ -20,6 +20,7 @@ use std::hint::black_box;
 
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -94,35 +95,12 @@ fn leader_error(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::leader_success"),
-        3_000_000,
-        1,
-        leader_success,
-    );
+    primitive!(runner, leader_success, 3_000_000);
     for &arg in BATCH_SIZES {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::distinct_keys")),
-            (2_000_000 / arg).max(1),
-            1,
-            |bencher| distinct_keys(bencher, arg),
-        );
+        primitive!(runner, distinct_keys(arg), (2_000_000 / arg).max(1));
     }
     for &threads in THREAD_COUNTS {
-        runner.case(
-            format!(
-                "{}/threads={threads}",
-                concat!(module_path!(), "::distributed_leaders")
-            ),
-            1_000_000,
-            threads,
-            distributed_leaders,
-        );
+        primitive!(runner, distributed_leaders, 1_000_000, threads = threads);
     }
-    runner.case(
-        concat!(module_path!(), "::leader_error"),
-        3_000_000,
-        1,
-        leader_error,
-    );
+    primitive!(runner, leader_error, 3_000_000);
 }

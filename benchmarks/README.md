@@ -19,49 +19,39 @@ under the License.
 
 # Benchmarks
 
-These benchmarks follow the approach in [Benchmark In Milliseconds](https://matklad.github.io/2026/10/05/benchmark-milliseconds.html): run a fixed amount of useful work, aim for roughly 300 ms, and repeat it to develop intuition about a change. Work sizes are checked into the source. The runner never adjusts them in response to measured performance.
+[Benchmark In Milliseconds](https://matklad.github.io/2026/10/05/benchmark-milliseconds.html) suggests timing enough useful work to take about 300 ms. Here that target applies to a **reference revision of Asyncband**. Once a scenario has a round count, every implementation and every revision runs that exact workload. A faster peer should take less time.
 
-## Running
-
-Use `cargo x bench` to build and run the release-profile benchmark executables. Select a target and filter cases for a short feedback loop:
+## Compare implementations
 
 ```shell
-# Discover the commands and available workloads.
-cargo x bench --help
-cargo x bench --bench primitives -- --help
 cargo x bench -- --list
-
-# Repeat one primitive workload and inspect every elapsed time.
-cargo x bench --bench primitives -- mutex::lock::uncontended_reuse --repeat 10
-
-# Compare all implementations of the same channel workload.
-cargo x bench --bench ecosystem -- mpsc::bounded::try_send_receive --repeat 10
-
-# Compile only, or exercise every case once per worker without timing.
-cargo x bench --no-run
-cargo x bench -- --test
+cargo x bench -- mpsc/bounded/try-roundtrip --repeat 10 --raw
+cargo x bench -- tasks-1p1c-cap1024 --rounds 320 --repeat 10
 ```
 
-Filters are case-sensitive substrings; multiple filters must all match. Use `--bench primitives` or `--bench ecosystem` with filters, since each executable rejects an empty selection. `--list` shows the resolved round counts without constructing fixtures or starting workers.
+The default `ecosystem` target compares bounded and unbounded MPSC, MPMC and SPMC channels, broadcast, watch, reservation and wait groups. Select a scenario by substring; multiple filters must all match its name. Each scenario declares its reference, adapters, topology and round count together. Each comparison fixes the payload, topology, runtime configuration and observable delivery contract; the adapters perform the equivalent operations on their library. For SPMC the reference is Asyncband's SPMC channel; Asyncband's general MPMC channel is one of the peers.
 
-Every measured row prints the integer elapsed milliseconds, total rounds, case name, and repetition number. The default is one measurement per case; `--repeat 10` prints ten independent runs, including the first. There is no hidden warm-up run, averaging, outlier removal, or conversion to a per-operation time.
+Each table reports a median and the full minimum-to-maximum range in integer milliseconds. The ratio is the implementation's median elapsed time divided by the reference's median, before rounding: `0.80x` means 20% less elapsed time for the same work. The default is five runs per implementation. The runner interleaves implementations and rotates which one runs first. It keeps the first measurement and every outlier; `--raw` includes the individual times in measurement order.
 
-## Work and timing boundaries
+The clock starts before constructing the fixture and stops after cleanup, including joining workers. Each repetition builds fresh state. Some scenarios reuse channels or workers across rounds: the MPSC task cases also run one priming batch inside the timed interval. A task round transfers 16,384 messages for MPSC, MPMC and SPMC, or publishes 4,096 values to every participating broadcast subscriber. A round in `try-roundtrip` is one send and one receive. Scheduled MPSC comparisons use the same Tokio runtime for all adapters; single-threaded ready operations do not measure task scheduling. Lossless bounded broadcast excludes Tokio's overwrite-on-full channel; the no-backpressure comparison gives bounded peers room for the entire workload so no values are lost.
 
-`primitives` exercises operation cycles with controlled polling and reference-counted wakers. It covers ready paths, registration, handoff, cancellation, fan-in and fan-out; selected cases also exercise shared state from multiple OS threads. Hand-polled cases include waker bookkeeping but do not model executor scheduling.
+MPSC task scenarios include both one and four producers, small and large buffers, and current-thread controls. Use the reported range to decide whether an apparent difference is reproducible. To compare *different* scenarios, set the same round count where their work units are equivalent; independently sized rows are not a throughput ranking.
 
-`ecosystem` compares equivalent workloads across Asyncband and other libraries. It includes hand-polled paths, message batches on threads or Tokio tasks, bounded backpressure, retained backlogs, payload sizes, and notification fan-out. Existing semantic differences remain explicit: for example, Tokio broadcast does not participate in lossless bounded backpressure cases.
+## Set and preserve a baseline
 
-A round is one invocation of the case's operation closure. It may transfer one message, complete a group of waiters, or run a batch of messages. Channel batches use the message counts in their support modules. The `threads=N` variants divide the total rounds among N workers and start them at a barrier; they share the same fixture and do the same total work at every thread count. Other concurrency settings are part of the case name and describe the workers inside each round.
+1. Choose the scenario and a fixed reference revision. For the ecosystem workloads in this revision, the reference library is Asyncband at `c37b1a4`.
+2. Run only the reference, for example `cargo x bench -- mpsc/bounded/try-roundtrip --baseline-only --rounds 30000000 --repeat 5`. Pick a convenient fixed count that puts the reference median in the hundreds of milliseconds, typically near 300 ms. Check the range as well: retuning a noisy scenario does not eliminate its variability.
+3. Put that count in the scenario registration and run all implementations. Neither peers nor later revisions are calibrated independently. Compare the same scenario, work size, toolchain and machine; a change from 300 to 240 ms is a 20% reduction in elapsed time.
+4. If the work size, an input or a timing boundary changes, rerun both sides under the new definition. Treat it as a new baseline. There is no automatic calibration or elapsed-time performance assertion in CI.
 
-The clock surrounds the entire workload function, from fixture construction to cleanup. Outputs are consumed and dropped each round. Reusable fixtures survive across rounds, while cases that need fresh state construct and dispose of it inside the loop. Channel workloads that prime reusable workers or storage do so once inside this measured interval. Setup, teardown, allocation, key generation, coordination, and correctness checks are not separately subtracted. This makes the result a workload cost; it does not isolate the nanosecond cost of the operation in the function name.
+## Diagnose Asyncband primitives
 
-Each repetition recreates the workload's fixture. Repeated rounds must return it to a usable state: drain messages, release permits, finish workers, and keep retained memory bounded. The smoke mode keeps each case's topology and inner message batch intact while reducing its outer loop to one round per worker.
+```shell
+cargo x bench --bench primitives -- --list
+cargo x bench --bench primitives -- mutex::lock::uncontended_reuse --repeat 10
+cargo x bench --bench primitives -- rwlock::upgradable --repeat 5
+cargo x bench --bench '*' --no-run
+cargo x bench --bench '*' -- --test
+```
 
-## Sizing and comparing
-
-Choose round counts that put representative cases in the hundreds of milliseconds on a development machine. Treat 300 ms as a sizing guide, not a deadline or an assertion: implementations, contention, hardware, and schedulers differ. A result below 10 ms needs more work before small differences are useful; a result above a second usually needs fewer rounds for convenient iteration.
-
-Use `--rounds N` to try a different fixed count on a filtered workload, or `--scale N` to multiply the checked-in counts. These options do not change message capacities, payloads, or topology. Copy a useful count into the case's registration when changing the workload definition. Keep it identical for all implementations of the same case and parameter set; never calibrate each implementation or revision independently to the same elapsed time.
-
-Compare the same workload definitions, parameters, round counts, toolchain, and machine. Run without competing builds or benchmarks, repeat a narrow selection, and inspect the spread before attributing a difference to the code. Changing a workload or its timing boundary establishes a new baseline; these results are not directly comparable with the former Divan per-operation measurements. The full matrix is useful for coverage, while a filtered set is the normal optimization workflow.
+The `primitives` target measures Asyncband-only operation cycles for focused before/after comparisons, including ready paths, queued handoffs, wake registration, cancellation, fan-out, and contended tables. Hand-polled cases use a reference-counted waker and exercise bookkeeping without executor scheduling. For `threads=N` cases the workers share a fixture, start at a barrier, and divide a fixed total number of rounds, including the remainder. Smoke mode runs one outer round per worker, preserving inner message batches, topology and correctness checks without making timing claims.

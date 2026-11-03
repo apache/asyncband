@@ -25,8 +25,6 @@ use tokio::task::JoinSet;
 use crate::channels::BATCH_MESSAGES;
 use crate::channels::adapters::Channel;
 
-pub const CONSUMERS: &[usize] = &[1, 2, 4, 8];
-
 pub struct TaskBatch {
     start: Arc<Barrier>,
     tasks: JoinSet<(usize, usize)>,

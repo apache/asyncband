@@ -20,6 +20,7 @@ use std::hint::black_box;
 use asyncband::rwlock::RwLock;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_ready;
 
@@ -51,16 +52,6 @@ fn read_reuse(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::eight_reads_then_one_write"),
-        3_000_000,
-        1,
-        eight_reads_then_one_write,
-    );
-    runner.case(
-        concat!(module_path!(), "::read_reuse"),
-        30_000_000,
-        1,
-        read_reuse,
-    );
+    primitive!(runner, eight_reads_then_one_write, 3_000_000);
+    primitive!(runner, read_reuse, 30_000_000);
 }

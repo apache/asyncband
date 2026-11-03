@@ -21,6 +21,7 @@ use std::pin::pin;
 use asyncband::mpmc;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -63,28 +64,8 @@ fn repoll_pending_receiver(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::send_then_try_recv"),
-        30_000_000,
-        1,
-        send_then_try_recv,
-    );
-    runner.case(
-        concat!(module_path!(), "::send_then_recv"),
-        24_000_000,
-        1,
-        send_then_recv,
-    );
-    runner.case(
-        concat!(module_path!(), "::wake_pending_receiver"),
-        9_000_000,
-        1,
-        wake_pending_receiver,
-    );
-    runner.case(
-        concat!(module_path!(), "::repoll_pending_receiver"),
-        40_000_000,
-        1,
-        repoll_pending_receiver,
-    );
+    primitive!(runner, send_then_try_recv, 30_000_000);
+    primitive!(runner, send_then_recv, 24_000_000);
+    primitive!(runner, wake_pending_receiver, 9_000_000);
+    primitive!(runner, repoll_pending_receiver, 40_000_000);
 }

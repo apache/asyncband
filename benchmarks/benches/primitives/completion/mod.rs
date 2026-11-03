@@ -21,6 +21,7 @@ use std::pin::pin;
 use asyncband::completion;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -107,51 +108,13 @@ fn cancel_pending(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::ready_wait"),
-        100_000_000,
-        1,
-        ready_wait,
-    );
-    runner.case(
-        concat!(module_path!(), "::complete_then_wait"),
-        6_000_000,
-        1,
-        complete_then_wait,
-    );
-    runner.case(
-        concat!(module_path!(), "::notify_pending"),
-        3_000_000,
-        1,
-        notify_pending,
-    );
+    primitive!(runner, ready_wait, 100_000_000);
+    primitive!(runner, complete_then_wait, 6_000_000);
+    primitive!(runner, notify_pending, 3_000_000);
     for &arg in OBSERVER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::notify_pending_fanout")
-            ),
-            (5_000_000 / arg).max(1),
-            1,
-            |bencher| notify_pending_fanout(bencher, arg),
-        );
+        primitive!(runner, notify_pending_fanout(arg), (5_000_000 / arg).max(1));
     }
-    runner.case(
-        concat!(module_path!(), "::abandoned_wait"),
-        96_000_000,
-        1,
-        abandoned_wait,
-    );
-    runner.case(
-        concat!(module_path!(), "::repoll_pending"),
-        50_000_000,
-        1,
-        repoll_pending,
-    );
-    runner.case(
-        concat!(module_path!(), "::cancel_pending"),
-        24_000_000,
-        1,
-        cancel_pending,
-    );
+    primitive!(runner, abandoned_wait, 96_000_000);
+    primitive!(runner, repoll_pending, 50_000_000);
+    primitive!(runner, cancel_pending, 24_000_000);
 }

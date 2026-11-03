@@ -21,6 +21,7 @@ use std::hint::black_box;
 use asyncband::once::OnceCell;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -73,21 +74,12 @@ fn initialize_cell_waiter_batch(bencher: Bencher, waiter_count: usize) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::initialize_cell"),
-        6_000_000,
-        1,
-        initialize_cell,
-    );
+    primitive!(runner, initialize_cell, 6_000_000);
     for &arg in WAITER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::initialize_cell_waiter_batch")
-            ),
-            (4_000_000 / arg).max(1),
-            1,
-            |bencher| initialize_cell_waiter_batch(bencher, arg),
+        primitive!(
+            runner,
+            initialize_cell_waiter_batch(arg),
+            (4_000_000 / arg).max(1)
         );
     }
 }

@@ -21,6 +21,7 @@ use std::pin::pin;
 use asyncband::mpmc;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -56,22 +57,7 @@ fn wake_blocked_sender(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::try_send_then_try_recv"),
-        30_000_000,
-        1,
-        try_send_then_try_recv,
-    );
-    runner.case(
-        concat!(module_path!(), "::send_then_recv"),
-        24_000_000,
-        1,
-        send_then_recv,
-    );
-    runner.case(
-        concat!(module_path!(), "::wake_blocked_sender"),
-        9_000_000,
-        1,
-        wake_blocked_sender,
-    );
+    primitive!(runner, try_send_then_try_recv, 30_000_000);
+    primitive!(runner, send_then_recv, 24_000_000);
+    primitive!(runner, wake_blocked_sender, 9_000_000);
 }

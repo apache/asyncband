@@ -24,6 +24,7 @@ use asyncband::pool::ObjectStatus;
 use asyncband::pool::bounded;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -105,31 +106,12 @@ fn cancel_bounded_waiter(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::bounded_warm_get_and_return"),
-        6_000_000,
-        1,
-        bounded_warm_get_and_return,
-    );
-    runner.case(
-        concat!(
-            module_path!(),
-            "::bounded_warm_get_and_return_with_spare_capacity"
-        ),
-        6_000_000,
-        1,
+    primitive!(runner, bounded_warm_get_and_return, 6_000_000);
+    primitive!(
+        runner,
         bounded_warm_get_and_return_with_spare_capacity,
+        6_000_000
     );
-    runner.case(
-        concat!(module_path!(), "::bounded_contended_handoff"),
-        3_000_000,
-        1,
-        bounded_contended_handoff,
-    );
-    runner.case(
-        concat!(module_path!(), "::cancel_bounded_waiter"),
-        3_000_000,
-        1,
-        cancel_bounded_waiter,
-    );
+    primitive!(runner, bounded_contended_handoff, 3_000_000);
+    primitive!(runner, cancel_bounded_waiter, 3_000_000);
 }

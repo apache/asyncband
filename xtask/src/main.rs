@@ -72,7 +72,10 @@ struct CommandBench {
     #[arg(long, help = "Compile benchmarks without running them.")]
     no_run: bool,
 
-    #[arg(long, help = "Select one benchmark target (primitives or ecosystem).")]
+    #[arg(
+        long,
+        help = "Select a target: ecosystem (default), primitives, or * for both."
+    )]
     bench: Option<String>,
 
     #[arg(
@@ -398,7 +401,7 @@ fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> StdComm
         "--workspace",
         "--all-features",
         "--bench",
-        bench.unwrap_or("*"),
+        bench.unwrap_or("ecosystem"),
     ]);
     if no_run {
         cmd.arg("--no-run");

@@ -15,17 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::pin::pin;
 
 use asyncband::rwlock::RwLockUpgradableReadGuard;
 use asyncband::rwlock::UpgradableRwLock;
+use benchmarks::harness::Bencher;
+use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
-use benchmarks::harness::Bencher;
-use benchmarks::harness::Runner;
-use std::hint::black_box;
 
 const READER_COUNTS: &[usize] = &[1, 4, 16];
 
@@ -135,12 +136,14 @@ fn readers_then_queued_upgrade(bencher: Bencher, reader_count: usize) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(concat!(module_path!(), "::read_reuse"), 10_000_000, 1, read_reuse);
-    runner.case(concat!(module_path!(), "::write_reuse"), 10_000_000, 1, write_reuse);
-    runner.case(concat!(module_path!(), "::eight_reads_then_one_write"), 2_000_000, 1, eight_reads_then_one_write);
-    runner.case(concat!(module_path!(), "::upgradable_read_reuse"), 10_000_000, 1, upgradable_read_reuse);
-    runner.case(concat!(module_path!(), "::upgradable_read_then_upgrade"), 10_000_000, 1, upgradable_read_then_upgrade);
-    runner.case(concat!(module_path!(), "::upgradable_read_then_try_upgrade"), 10_000_000, 1, upgradable_read_then_try_upgrade);
-    runner.case(concat!(module_path!(), "::upgradable_read_then_downgrade"), 10_000_000, 1, upgradable_read_then_downgrade);
-    for &readers in READER_COUNTS {runner.case(format!("{}::readers_then_queued_upgrade/{readers}", module_path!()), 1_000_000, 1, |bench| readers_then_queued_upgrade(bench, readers));}
+    primitive!(runner, read_reuse, 29_000_000);
+    primitive!(runner, write_reuse, 10_000_000);
+    primitive!(runner, eight_reads_then_one_write, 2_600_000);
+    primitive!(runner, upgradable_read_reuse, 15_000_000);
+    primitive!(runner, upgradable_read_then_upgrade, 8_300_000);
+    primitive!(runner, upgradable_read_then_try_upgrade, 10_000_000);
+    primitive!(runner, upgradable_read_then_downgrade, 15_000_000);
+    for &readers in READER_COUNTS {
+        primitive!(runner, readers_then_queued_upgrade(readers), 1_000_000);
+    }
 }

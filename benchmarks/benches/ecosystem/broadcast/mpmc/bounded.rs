@@ -22,6 +22,7 @@ use std::hint::black_box;
 use benchmarks::channels::runtime;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::implementations;
 use benchmarks::support::bench_context;
 use tokio::runtime::Builder;
 
@@ -29,7 +30,6 @@ use crate::broadcast::mpmc::adapters::AsyncBroadcast;
 use crate::broadcast::mpmc::adapters::Asyncband;
 use crate::broadcast::mpmc::adapters::BoundedBroadcastMpmc;
 use crate::broadcast::mpmc::support::BACKPRESSURE_SHAPE;
-use crate::broadcast::mpmc::support::BOUNDED_SHAPES;
 use crate::broadcast::mpmc::support::BoundedConcurrent;
 use crate::broadcast::mpmc::support::BoundedShape;
 use crate::broadcast::mpmc::support::BoundedTasks;
@@ -85,63 +85,47 @@ fn capacity_one_task_handoff<C: BoundedBroadcastMpmc>(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    register_implementation::<Asyncband>(runner, "Asyncband");
-    register_implementation::<AsyncBroadcast>(runner, "AsyncBroadcast");
-}
-
-fn register_implementation<C>(runner: &mut Runner, implementation: &str)
-where
-    C: BoundedBroadcastMpmc,
-{
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::try_send_receive")
-        ),
-        9_000_000,
-        1,
-        try_send_receive::<C>,
+    runner.compare(
+        "broadcast/bounded/try-roundtrip",
+        9_300_000,
+        implementations!([Asyncband, AsyncBroadcast], |C, b| try_send_receive::<C>(b)),
     );
-
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::ready_send_receive")
-        ),
-        10_000_000,
-        1,
-        ready_send_receive::<C>,
+    runner.compare(
+        "broadcast/bounded/ready-roundtrip",
+        8_800_000,
+        implementations!([Asyncband, AsyncBroadcast], |C, b| ready_send_receive::<C>(
+            b
+        )),
     );
-
-    for &arg in BOUNDED_SHAPES {
-        runner.case(
-            format!(
-                "{}/{implementation}/{arg}",
-                concat!(module_path!(), "::thread_batch")
-            ),
-            128,
-            1,
-            |bencher| thread_batch::<C>(bencher, arg),
-        );
-    }
-    for &arg in BOUNDED_SHAPES {
-        runner.case(
-            format!(
-                "{}/{implementation}/{arg}",
-                concat!(module_path!(), "::task_batch")
-            ),
-            320,
-            1,
-            |bencher| task_batch::<C>(bencher, arg),
-        );
-    }
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::capacity_one_task_handoff")
-        ),
-        80,
-        1,
-        capacity_one_task_handoff::<C>,
+    runner.compare(
+        "broadcast/bounded/tasks-4p4r-cap1",
+        150,
+        implementations!([Asyncband, AsyncBroadcast], |C, b| {
+            capacity_one_task_handoff::<C>(b)
+        }),
+    );
+    runner.compare(
+        "broadcast/bounded/tasks-4p4r-cap64",
+        210,
+        implementations!([Asyncband, AsyncBroadcast], |C, b| task_batch::<C>(
+            b,
+            BoundedShape {
+                capacity: 64,
+                producers: 4,
+                receivers: 4
+            }
+        )),
+    );
+    runner.compare(
+        "broadcast/bounded/threads-4p4r-cap64",
+        59,
+        implementations!([Asyncband, AsyncBroadcast], |C, b| thread_batch::<C>(
+            b,
+            BoundedShape {
+                capacity: 64,
+                producers: 4,
+                receivers: 4
+            }
+        )),
     );
 }

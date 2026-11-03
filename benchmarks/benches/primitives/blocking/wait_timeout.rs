@@ -21,6 +21,7 @@ use std::time::Duration;
 use asyncband::blocking::FutureExt;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 
 fn ready_with_timeout(bencher: Bencher) {
     bencher.bench_local(|| {
@@ -31,10 +32,5 @@ fn ready_with_timeout(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::ready_with_timeout"),
-        20_000_000,
-        1,
-        ready_with_timeout,
-    );
+    primitive!(runner, ready_with_timeout, 20_000_000);
 }

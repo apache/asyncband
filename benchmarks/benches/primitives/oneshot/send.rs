@@ -22,6 +22,7 @@ use std::pin::pin;
 use asyncband::oneshot::channel;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -54,16 +55,6 @@ fn poll_before_send(bencher: Bencher) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::send_before_poll"),
-        15_000_000,
-        1,
-        send_before_poll,
-    );
-    runner.case(
-        concat!(module_path!(), "::poll_before_send"),
-        15_000_000,
-        1,
-        poll_before_send,
-    );
+    primitive!(runner, send_before_poll, 15_000_000);
+    primitive!(runner, poll_before_send, 15_000_000);
 }

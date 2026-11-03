@@ -19,10 +19,10 @@
 // `borrow_and_update`.
 
 use std::hint::black_box;
-use std::pin::pin;
 
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::implementations;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -32,22 +32,11 @@ use crate::watch::adapters::Asyncband;
 use crate::watch::adapters::Tokio;
 use crate::watch::adapters::Watch;
 
-const RECEIVER_COUNTS: &[usize] = &[2, 4, 8, 32];
-
 fn get_current<C: Watch>(bencher: Bencher) {
     let (sender, mut receivers) = C::channel(1);
     let receiver = receivers.pop().unwrap();
     bencher.bench_local(|| black_box(C::get(&receiver)));
     black_box(sender);
-}
-
-fn publish_then_snapshot<C: Watch>(bencher: Bencher) {
-    let (sender, mut receivers) = C::channel(1);
-    let receiver = receivers.pop().unwrap();
-    bencher.bench_local(|| {
-        C::send(&sender, black_box(1));
-        black_box(C::get(&receiver))
-    });
 }
 
 fn publish_then_receive<C: Watch>(bencher: Bencher) {
@@ -57,28 +46,6 @@ fn publish_then_receive<C: Watch>(bencher: Bencher) {
     bencher.bench_local(|| {
         C::send(&sender, black_box(1));
         black_box(poll_ready(C::recv(&mut receiver), &mut context))
-    });
-}
-
-fn publish_then_observe_version<C: Watch>(bencher: Bencher) {
-    let mut context = bench_context();
-    let (sender, mut receivers) = C::channel(1);
-    let mut receiver = receivers.pop().unwrap();
-    bencher.bench_local(|| {
-        C::send(&sender, black_box(1));
-        poll_ready(C::changed(&mut receiver), &mut context);
-    });
-}
-
-fn register_publish_observe<C: Watch>(bencher: Bencher) {
-    let mut context = bench_context();
-    let (sender, mut receivers) = C::channel(1);
-    let mut receiver = receivers.pop().unwrap();
-    bencher.bench_local(|| {
-        let mut changed = pin!(C::changed(&mut receiver));
-        poll_pending(changed.as_mut(), &mut context);
-        C::send(&sender, black_box(1));
-        poll_pinned_ready(changed.as_mut(), &mut context);
     });
 }
 
@@ -103,73 +70,22 @@ fn register_publish_observe_fanout<C: Watch>(bencher: Bencher, receiver_count: u
 }
 
 pub fn register(runner: &mut Runner) {
-    register_implementation::<Asyncband>(runner, "Asyncband");
-    register_implementation::<Tokio>(runner, "Tokio");
-}
-
-fn register_implementation<C>(runner: &mut Runner, implementation: &str)
-where
-    C: Watch,
-{
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::get_current")
-        ),
-        80_000_000,
-        1,
-        get_current::<C>,
+    runner.compare(
+        "watch/snapshot",
+        75_000_000,
+        implementations!([Asyncband, Tokio], |C, b| get_current::<C>(b)),
     );
-
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::publish_then_snapshot")
-        ),
-        15_000_000,
-        1,
-        publish_then_snapshot::<C>,
+    runner.compare(
+        "watch/publish-then-receive",
+        18_000_000,
+        implementations!([Asyncband, Tokio], |C, b| publish_then_receive::<C>(b)),
     );
-
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::publish_then_receive")
+    runner.compare(
+        "watch/notify-4-waiters",
+        1_700_000,
+        implementations!(
+            [Asyncband, Tokio],
+            |C, b| register_publish_observe_fanout::<C>(b, 4)
         ),
-        9_000_000,
-        1,
-        publish_then_receive::<C>,
     );
-
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::publish_then_observe_version")
-        ),
-        12_000_000,
-        1,
-        publish_then_observe_version::<C>,
-    );
-
-    runner.case(
-        format!(
-            "{}/{implementation}",
-            concat!(module_path!(), "::register_publish_observe")
-        ),
-        6_000_000,
-        1,
-        register_publish_observe::<C>,
-    );
-
-    for &arg in RECEIVER_COUNTS {
-        runner.case(
-            format!(
-                "{}/{implementation}/{arg}",
-                concat!(module_path!(), "::register_publish_observe_fanout")
-            ),
-            (5_000_000 / arg).max(1),
-            1,
-            |bencher| register_publish_observe_fanout::<C>(bencher, arg),
-        );
-    }
 }

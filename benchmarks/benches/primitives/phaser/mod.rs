@@ -21,6 +21,7 @@ use std::pin::pin;
 use asyncband::phaser::Phaser;
 use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -112,60 +113,23 @@ fn register_individually(bencher: Bencher, parties: usize) {
 }
 
 pub fn register(runner: &mut Runner) {
-    runner.case(
-        concat!(module_path!(), "::ready_wait"),
-        50_000_000,
-        1,
-        ready_wait,
-    );
+    primitive!(runner, ready_wait, 50_000_000);
     for &arg in PARTICIPANT_COUNTS {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::arrive_then_wait")),
-            (20_000_000 / arg).max(1),
-            1,
-            |bencher| arrive_then_wait(bencher, arg),
-        );
+        primitive!(runner, arrive_then_wait(arg), (20_000_000 / arg).max(1));
     }
     for &arg in PARTICIPANT_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::reused_phase_handoff")
-            ),
-            (8_000_000 / arg).max(1),
-            1,
-            |bencher| reused_phase_handoff(bencher, arg),
-        );
+        primitive!(runner, reused_phase_handoff(arg), (8_000_000 / arg).max(1));
     }
-    runner.case(
-        concat!(module_path!(), "::repoll_pending"),
-        50_000_000,
-        1,
-        repoll_pending,
-    );
-    runner.case(
-        concat!(module_path!(), "::cancel_pending"),
-        24_000_000,
-        1,
-        cancel_pending,
-    );
+    primitive!(runner, repoll_pending, 50_000_000);
+    primitive!(runner, cancel_pending, 24_000_000);
     for &arg in PARTICIPANT_COUNTS {
-        runner.case(
-            format!("{}/{arg}", concat!(module_path!(), "::register_batch")),
-            (20_000_000 / arg).max(1),
-            1,
-            |bencher| register_batch(bencher, arg),
-        );
+        primitive!(runner, register_batch(arg), (20_000_000 / arg).max(1));
     }
     for &arg in PARTICIPANT_COUNTS {
-        runner.case(
-            format!(
-                "{}/{arg}",
-                concat!(module_path!(), "::register_individually")
-            ),
-            (16_000_000 / arg).max(1),
-            1,
-            |bencher| register_individually(bencher, arg),
+        primitive!(
+            runner,
+            register_individually(arg),
+            (16_000_000 / arg).max(1)
         );
     }
 }
