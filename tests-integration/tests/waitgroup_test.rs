@@ -298,3 +298,23 @@ fn final_worker_and_cancelled_observer_release_their_registration() {
     assert!(counter.count() <= 1);
     assert_eq!(Arc::strong_count(&counter), 1);
 }
+
+#[test]
+fn waking_can_drop_the_last_observer_during_completion() {
+    use std::sync::Mutex;
+
+    let group = WaitGroup::new();
+    let worker = group.clone();
+    let observer = Arc::new(Mutex::new(Some(Box::pin(group.into_future()))));
+    let waker = tests_integration::waker_on_wake({
+        let observer = observer.clone();
+        move || drop(observer.lock().unwrap().take().unwrap())
+    });
+    let mut guard = observer.lock().unwrap();
+    assert!(tests_integration::poll_with(guard.as_mut().unwrap().as_mut(), &waker).is_pending());
+    drop(guard);
+    drop(waker);
+
+    drop(worker);
+    assert!(observer.lock().unwrap().is_none());
+}
