@@ -41,6 +41,7 @@ All notable changes to this project will be documented in this file.
 ### Improvements
 
 * Reduce the cost of polling a pending oneshot receive again from the same task, which now keeps its registered waker instead of cloning and dropping it.
+* Reduce the state kept by futures waiting for a `Mutex`, `RwLock`, `Semaphore`, `Once`, or `OnceCell`, making lock and permit acquisition futures smaller.
 
 ## v0.7.4 (2026-10-25)
 

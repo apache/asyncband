@@ -128,19 +128,8 @@ impl Semaphore {
         acquired_or_enqueue(self, n, None, None, false);
     }
 
-    /// Acquires `n` permits from the semaphore.
-    pub async fn acquire(&self, n: usize) {
-        let fut = Acquire {
-            requested_permits: n,
-            index: None,
-            semaphore: self,
-            done: false,
-        };
-        fut.await
-    }
-
-    /// Returns a future that is resolved when acquired `n` permits from the semaphore.
-    pub fn poll_acquire(&self, n: usize) -> Acquire<'_> {
+    /// Returns a future that acquires `n` permits from the semaphore.
+    pub fn acquire(&self, n: usize) -> Acquire<'_> {
         Acquire {
             requested_permits: n,
             index: None,
@@ -294,6 +283,7 @@ impl Semaphore {
 }
 
 #[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Acquire<'a> {
     requested_permits: usize,
     index: Option<WaiterId>,
@@ -517,7 +507,7 @@ mod tests {
         let semaphore = Semaphore::new(0);
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
         let waker = Waker::from(counter.clone());
-        let mut acquire = semaphore.poll_acquire(2);
+        let mut acquire = semaphore.acquire(2);
         assert!(acquire.poll_once(&waker).is_pending());
 
         semaphore.release(3);
@@ -558,7 +548,7 @@ mod tests {
         let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
         let waker = Waker::from(counter.clone());
         assert!(semaphore.try_acquire(1));
-        let mut acquire = semaphore.poll_acquire(1);
+        let mut acquire = semaphore.acquire(1);
         assert!(acquire.poll_once(&waker).is_pending());
 
         semaphore.release_with_lock(1);
@@ -583,7 +573,7 @@ mod tests {
             .map(|counter| Waker::from(counter.clone()))
             .collect::<Vec<_>>();
         let mut acquires = (0..WAITER_COUNT)
-            .map(|_| semaphore.poll_acquire(1))
+            .map(|_| semaphore.acquire(1))
             .collect::<Vec<_>>();
 
         for (acquire, waker) in acquires.iter_mut().zip(&wakers) {

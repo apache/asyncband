@@ -342,7 +342,7 @@ impl<T> BoundedSender<T> {
                     };
 
                     if poll.is_ready() {
-                        self.acquire = self.sender.shared.tx_permits.poll_acquire(1);
+                        self.acquire = self.sender.shared.tx_permits.acquire(1);
                     } else {
                         self.value = Some(msg);
                         return Poll::Pending;
@@ -354,7 +354,7 @@ impl<T> BoundedSender<T> {
         // Announce this producer before it can recheck capacity, so a concurrent reclaim either
         // sees it here or is seen by that recheck.
         self.shared.blocked_senders.fetch_add(1, Ordering::Release);
-        let acquire = self.shared.tx_permits.poll_acquire(1);
+        let acquire = self.shared.tx_permits.acquire(1);
         let mut send = SendState {
             sender: self,
             acquire,
