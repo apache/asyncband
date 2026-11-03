@@ -26,6 +26,8 @@ use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 
+mod drain;
+
 struct Asyncband;
 struct WaitgroupRs;
 
@@ -105,6 +107,53 @@ fn complete_worker_batch<C: WaitGroup>(bencher: Bencher, worker_count: usize) {
     });
 }
 
+// A parent can discover children after the coordinator has started waiting.
+fn nested_workers<C: WaitGroup>(bencher: Bencher) {
+    let mut context = bench_context();
+    bencher.bench_local(|| {
+        let group = C::new();
+        let parent = C::worker(&group);
+        let mut wait = pin!(C::wait(group));
+        poll_pending(wait.as_mut(), &mut context);
+        let children: [_; 4] = std::array::from_fn(|_| parent.clone());
+        drop(parent);
+        poll_pending(wait.as_mut(), &mut context);
+        drop(children);
+        poll_pinned_ready(wait.as_mut(), &mut context);
+    });
+}
+
+fn wait_after_work<C: WaitGroup>(bencher: Bencher) {
+    let mut context = bench_context();
+    bencher.bench_local(|| {
+        let group = C::new();
+        let worker = C::worker(&group);
+        drop(worker);
+        let mut wait = pin!(C::wait(group));
+        poll_pinned_ready(wait.as_mut(), &mut context);
+    });
+}
+
+fn scheduled_workers<C: WaitGroup>(bencher: Bencher)
+where
+    C::Worker: Send + 'static,
+{
+    let runtime = benchmarks::channels::runtime(4);
+    bencher.bench_local(|| {
+        runtime.block_on(async {
+            let group = C::new();
+            let tasks: [_; 4] = std::array::from_fn(|_| {
+                let worker = C::worker(&group);
+                tokio::spawn(async move { drop(worker) })
+            });
+            C::wait(group).await;
+            for task in tasks {
+                task.await.unwrap();
+            }
+        })
+    });
+}
+
 pub fn register(runner: &mut Runner) {
     runner.compare(
         "waitgroup/complete-waiter",
@@ -118,4 +167,20 @@ pub fn register(runner: &mut Runner) {
             b, 4
         )),
     );
+    runner.compare(
+        "waitgroup/wait-after-work",
+        5_500_000,
+        implementations!([Asyncband, WaitgroupRs], |C, b| wait_after_work::<C>(b)),
+    );
+    runner.compare(
+        "waitgroup/nested-4-workers",
+        3_000_000,
+        implementations!([Asyncband, WaitgroupRs], |C, b| nested_workers::<C>(b)),
+    );
+    runner.compare(
+        "waitgroup/tasks-4-workers-4w",
+        25_000,
+        implementations!([Asyncband, WaitgroupRs], |C, b| scheduled_workers::<C>(b)),
+    );
+    drain::register(runner);
 }
