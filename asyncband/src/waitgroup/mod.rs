@@ -26,6 +26,10 @@
 //! remaining handle is awaited or dropped. Existing handles may register more participants by
 //! cloning until the group completes; completion is one-shot.
 //!
+//! A coordinator can hand a clone to each worker, let workers drop their handles when done,
+//! and await its own handle. To share completion with independent observers, convert a handle
+//! into a [`Wait`] once and clone that future. Cloning the group itself adds more work.
+//!
 //! Completion acquires the state published before every participant completed, so work performed
 //! by those participants is visible after the wait returns.
 //!
@@ -45,7 +49,7 @@
 //!     let participant = group.clone();
 //!     tasks.push(tokio::spawn(async move {
 //!         do_work().await;
-//!         participant.await;
+//!         drop(participant);
 //!     }));
 //! }
 //!
@@ -59,88 +63,112 @@
 use std::fmt;
 use std::future::Future;
 use std::future::IntoFuture;
-use std::mem;
+use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::internal::mutex::Mutex;
-use crate::internal::wakerset::WakerSet;
-use crate::internal::wakerset::WakerToken;
+use crate::waitgroup::waiters::Registration;
+use crate::waitgroup::waiters::Waiters;
 
-#[derive(Debug)]
+mod waiters;
+
 struct State {
-    // Wait futures also own the state allocation, so Arc's strong count cannot represent handles.
-    // Zero is terminal: after it is published, no new handle or waiter can be registered.
+    // Participants hold one collective observer count until completion has detached the wakers.
+    // The remaining observer counts belong to individual Wait futures.
     handles: AtomicUsize,
-    waiters: Mutex<WakerSet>,
+    observers: AtomicUsize,
+    waiters: Waiters,
 }
 
 impl State {
     fn new() -> Self {
         Self {
             handles: AtomicUsize::new(1),
-            waiters: Mutex::new(WakerSet::new()),
+            observers: AtomicUsize::new(1),
+            waiters: Waiters::default(),
         }
     }
 
+    #[inline]
     fn register_handle(&self) {
         // The borrowed source handle keeps the count above zero. Registration publishes no data,
         // so it does not need to synchronize with completion.
-        self.handles.fetch_add(1, Ordering::Relaxed);
+        if self.handles.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
+            std::process::abort();
+        }
     }
 
-    fn release_handle(&self) {
+    #[inline]
+    fn release_handle(&self) -> bool {
         // Every decrement is an RMW in the release sequence. A waiter that acquires zero therefore
         // observes work published before every preceding handle release.
-        let previous = self.handles.fetch_sub(1, Ordering::Release);
+        let previous = self.handles.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(previous > 0, "a live handle must own one count");
         if previous != 1 {
-            return;
+            return false;
         }
 
-        let wakers = mem::take(&mut *self.waiters.lock());
-        wakers.wake_all();
+        self.waiters.wake_all();
+        true
     }
 
-    fn poll_wait(&self, token: &mut Option<WakerToken>, cx: &mut Context<'_>) -> Poll<()> {
+    #[inline]
+    fn poll_wait(&self, token: &mut Registration, cx: &mut Context<'_>) -> Poll<()> {
         if self.handles.load(Ordering::Acquire) == 0 {
-            *token = None;
+            *token = Registration::Set(None);
             return Poll::Ready(());
         }
 
-        let mut waiters = self.waiters.lock();
-        if self.handles.load(Ordering::Acquire) == 0 {
-            *token = None;
-            return Poll::Ready(());
-        }
-
-        let retired_waker = waiters.register(token, cx.waker());
-        drop(waiters);
-        drop(retired_waker);
-        Poll::Pending
+        self.waiters.register(token, cx.waker())
     }
 
-    fn unregister(&self, token: &mut Option<WakerToken>) {
-        if token.is_none() {
-            return;
+    #[inline]
+    fn unregister(&self, token: &mut Registration) {
+        if !matches!(token, Registration::Set(None)) && self.handles.load(Ordering::Acquire) != 0 {
+            self.waiters.unregister(token);
         }
+    }
+}
 
-        let mut waiters = self.waiters.lock();
-        // Reaching zero is terminal, so the zero transition either owns this waker or has already
-        // taken it. Unlike reusable waker sets, no epoch is needed to disambiguate a later
-        // registration.
-        if self.handles.load(Ordering::Acquire) == 0 {
-            *token = None;
-            return;
+// One observer reference anchors the allocation until the last participant has notified waiters.
+// Each Wait owns an independent observer reference. The participant count keeps the anchor alive
+// across registration and notification. A Shared pointer is only copied while its owner keeps a
+// count alive.
+#[derive(Clone, Copy)]
+struct Shared(NonNull<State>);
+
+// SAFETY: all shared access goes through State, which is Send + Sync.
+unsafe impl Send for Shared {}
+unsafe impl Sync for Shared {}
+
+impl Deref for Shared {
+    type Target = State;
+    #[inline]
+    fn deref(&self) -> &State {
+        // SAFETY: each caller holds a participant or an observer count.
+        unsafe { self.0.as_ref() }
+    }
+}
+
+impl Shared {
+    #[inline]
+    fn observe(self) -> Self {
+        if self.observers.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
+            std::process::abort();
         }
+        self
+    }
 
-        let removed_waker = waiters.unregister(token);
-        drop(waiters);
-        drop(removed_waker);
+    #[inline]
+    fn release_observer(self) {
+        if self.observers.fetch_sub(1, Ordering::AcqRel) == 1 {
+            // SAFETY: all observers and the collective participant anchor have been released.
+            unsafe { drop(Box::from_raw(self.0.as_ptr())) };
+        }
     }
 }
 
@@ -148,9 +176,8 @@ impl State {
 ///
 /// See the [module level documentation](self) for more.
 pub struct WaitGroup {
-    // Keeping this optional lets `into_future` transfer the allocation to `Wait` without an
-    // otherwise redundant Arc increment/decrement pair. The option retains Arc's pointer niche.
-    state: Option<Arc<State>>,
+    // All participants share one reference to the allocation.
+    state: Shared,
 }
 
 impl fmt::Debug for WaitGroup {
@@ -175,9 +202,10 @@ impl WaitGroup {
     ///
     /// let wg = WaitGroup::new();
     /// ```
+    #[inline]
     pub fn new() -> Self {
         Self {
-            state: Some(Arc::new(State::new())),
+            state: Shared(NonNull::from(Box::leak(Box::new(State::new())))),
         }
     }
 }
@@ -187,23 +215,18 @@ impl Clone for WaitGroup {
     ///
     /// The group completes after every participant has completed, either by awaiting or dropping
     /// its handle.
+    #[inline]
     fn clone(&self) -> Self {
-        let state = self
-            .state
-            .as_ref()
-            .expect("a live WaitGroup owns its state")
-            .clone();
-        // Every handle owns one strong reference, while Wait observers may own additional ones.
-        // Arc's own overflow guard therefore fires before this equally wide counter can wrap.
-        state.register_handle();
-        Self { state: Some(state) }
+        self.state.register_handle();
+        Self { state: self.state }
     }
 }
 
 impl Drop for WaitGroup {
+    #[inline]
     fn drop(&mut self) {
-        if let Some(state) = self.state.take() {
-            state.release_handle();
+        if self.state.release_handle() {
+            self.state.release_observer();
         }
     }
 }
@@ -213,10 +236,14 @@ impl IntoFuture for WaitGroup {
     type IntoFuture = Wait;
 
     /// Marks this participant complete and waits for every other participant to complete.
-    fn into_future(mut self) -> Self::IntoFuture {
-        let state = self.state.take().expect("a live WaitGroup owns its state");
-        state.release_handle();
-        Wait { token: None, state }
+    #[inline]
+    fn into_future(self) -> Self::IntoFuture {
+        let state = self.state.observe();
+        drop(self);
+        Wait {
+            token: Registration::Set(None),
+            state,
+        }
     }
 }
 
@@ -228,18 +255,19 @@ impl IntoFuture for WaitGroup {
 /// affected.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Wait {
-    token: Option<WakerToken>,
-    state: Arc<State>,
+    token: Registration,
+    state: Shared,
 }
 
 impl Clone for Wait {
     /// Creates a new future that observes the same group completion.
     ///
     /// This does not register another participant.
+    #[inline]
     fn clone(&self) -> Self {
         Wait {
-            token: None,
-            state: self.state.clone(),
+            token: Registration::Set(None),
+            state: self.state.observe(),
         }
     }
 }
@@ -253,6 +281,7 @@ impl fmt::Debug for Wait {
 impl Future for Wait {
     type Output = ();
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self { token, state } = self.get_mut();
         state.poll_wait(token, cx)
@@ -260,7 +289,9 @@ impl Future for Wait {
 }
 
 impl Drop for Wait {
+    #[inline]
     fn drop(&mut self) {
         self.state.unregister(&mut self.token);
+        self.state.release_observer();
     }
 }
