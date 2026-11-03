@@ -21,15 +21,22 @@ under the License.
 
 [Benchmark In Milliseconds](https://matklad.github.io/2026/10/05/benchmark-milliseconds.html) suggests timing enough useful work to take about 300 ms. Here that target applies to a **reference revision of Asyncband**. Once a scenario has a round count, every implementation and every revision runs that exact workload. A faster peer should take less time.
 
+`cargo x bench` runs both the `ecosystem` and `primitives` targets by default. To compile or smoke-test both:
+
+```shell
+cargo x bench --no-run
+cargo x bench -- --test
+```
+
 ## Compare implementations
 
 ```shell
-cargo x bench -- --list
-cargo x bench -- mpsc/bounded/try-roundtrip --repeat 10 --raw
-cargo x bench -- tasks-1p1c-cap1024 --rounds 320 --repeat 10
+cargo x bench --bench ecosystem -- --list
+cargo x bench --bench ecosystem -- mpsc/bounded/try-roundtrip --repeat 10 --raw
+cargo x bench --bench ecosystem -- tasks-1p1c-cap1024 --rounds 320 --repeat 10
 ```
 
-The default `ecosystem` target compares bounded and unbounded MPSC, MPMC and SPMC channels, broadcast, watch, reservation and wait groups. Select a scenario by substring; multiple filters must all match its name. Each scenario declares its reference, adapters, topology and round count together. Each comparison fixes the payload, topology, runtime configuration and observable delivery contract; the adapters perform the equivalent operations on their library. For SPMC the reference is Asyncband's SPMC channel; Asyncband's general MPMC channel is one of the peers.
+The `ecosystem` target compares bounded and unbounded MPSC, MPMC and SPMC channels, broadcast, watch, reservation and wait groups. Select a target before filtering by scenario name: each executable checks its own matches. Filters are substrings and a scenario must match all of them. Each scenario declares its reference, adapters, topology and round count together. Each comparison fixes the payload, topology, runtime configuration and observable delivery contract; the adapters perform the equivalent operations on their library. For SPMC the reference is Asyncband's SPMC channel; Asyncband's general MPMC channel is one of the peers.
 
 Each table reports a median and the full minimum-to-maximum range in integer milliseconds. The ratio is the implementation's median elapsed time divided by the reference's median, before rounding: `0.80x` means 20% less elapsed time for the same work. The default is five runs per implementation. The runner interleaves implementations and rotates which one runs first. It keeps the first measurement and every outlier; `--raw` includes the individual times in measurement order.
 
@@ -40,7 +47,7 @@ MPSC task scenarios include both one and four producers, small and large buffers
 ## Set and preserve a baseline
 
 1. Choose the scenario and a fixed reference revision. For the ecosystem workloads in this revision, the reference library is Asyncband at `c37b1a4`.
-2. Run only the reference, for example `cargo x bench -- mpsc/bounded/try-roundtrip --baseline-only --rounds 30000000 --repeat 5`. Pick a convenient fixed count that puts the reference median in the hundreds of milliseconds, typically near 300 ms. Check the range as well: retuning a noisy scenario does not eliminate its variability.
+2. Run only the reference, for example `cargo x bench --bench ecosystem -- mpsc/bounded/try-roundtrip --baseline-only --rounds 30000000 --repeat 5`. Pick a convenient fixed count that puts the reference median in the hundreds of milliseconds, typically near 300 ms. Check the range as well: retuning a noisy scenario does not eliminate its variability.
 3. Put that count in the scenario registration and run all implementations. Neither peers nor later revisions are calibrated independently. Compare the same scenario, work size, toolchain and machine; a change from 300 to 240 ms is a 20% reduction in elapsed time.
 4. If the work size, an input or a timing boundary changes, rerun both sides under the new definition. Treat it as a new baseline. There is no automatic calibration or elapsed-time performance assertion in CI.
 
@@ -50,8 +57,6 @@ MPSC task scenarios include both one and four producers, small and large buffers
 cargo x bench --bench primitives -- --list
 cargo x bench --bench primitives -- mutex::lock::uncontended_reuse --repeat 10
 cargo x bench --bench primitives -- rwlock::upgradable --repeat 5
-cargo x bench --bench '*' --no-run
-cargo x bench --bench '*' -- --test
 ```
 
 The `primitives` target measures Asyncband-only operation cycles for focused before/after comparisons, including ready paths, queued handoffs, wake registration, cancellation, fan-out, and contended tables. Hand-polled cases use a reference-counted waker and exercise bookkeeping without executor scheduling. For `threads=N` cases the workers share a fixture, start at a barrier, and divide a fixed total number of rounds, including the remainder. Smoke mode runs one outer round per worker, preserving inner message batches, topology and correctness checks without making timing claims.

@@ -74,7 +74,7 @@ struct CommandBench {
 
     #[arg(
         long,
-        help = "Select a target: ecosystem (default), primitives, or * for both."
+        help = "Select a target (ecosystem or primitives; default: all)."
     )]
     bench: Option<String>,
 
@@ -401,7 +401,7 @@ fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> StdComm
         "--workspace",
         "--all-features",
         "--bench",
-        bench.unwrap_or("ecosystem"),
+        bench.unwrap_or("*"),
     ]);
     if no_run {
         cmd.arg("--no-run");
