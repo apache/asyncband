@@ -94,29 +94,6 @@ impl State {
     }
 
     #[inline]
-    fn register_handle(&self) {
-        // The borrowed source handle keeps the count above zero. Registration publishes no data,
-        // so it does not need to synchronize with completion.
-        if self.handles.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
-            std::process::abort();
-        }
-    }
-
-    #[inline]
-    fn release_handle(&self) -> bool {
-        // Every decrement is an RMW in the release sequence. A waiter that acquires zero therefore
-        // observes work published before every preceding handle release.
-        let previous = self.handles.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(previous > 0, "a live handle must own one count");
-        if previous != 1 {
-            return false;
-        }
-
-        self.waiters.wake_all();
-        true
-    }
-
-    #[inline]
     fn poll_wait(&self, token: &mut Registration, cx: &mut Context<'_>) -> Poll<()> {
         if self.handles.load(Ordering::Acquire) == 0 {
             *token = Registration::Set(None);
@@ -136,9 +113,7 @@ impl State {
 
 // One observer reference anchors the allocation until the last participant has notified waiters.
 // Each Wait owns an independent observer reference. The participant count keeps the anchor alive
-// across registration and notification. A Shared pointer is only copied while its owner keeps a
-// count alive.
-#[derive(Clone, Copy)]
+// across registration and notification. Duplicating this pointer requires acquiring a count.
 struct Shared(NonNull<State>);
 
 // SAFETY: all shared access goes through State, which is Send + Sync.
@@ -156,15 +131,41 @@ impl Deref for Shared {
 
 impl Shared {
     #[inline]
-    fn observe(self) -> Self {
-        if self.observers.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
+    fn register_handle(&self) -> Self {
+        // Borrowing a participant keeps the count above zero. Registration publishes no data.
+        if self.handles.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
             std::process::abort();
         }
-        self
+        Self(self.0)
     }
 
     #[inline]
-    fn release_observer(self) {
+    fn release_handle(&mut self) {
+        // The last participant acquires the preceding releases before notifying observers.
+        let previous = self.handles.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "a live handle must own one count");
+        if previous == 1 {
+            self.finish();
+        }
+    }
+
+    // Keep notification and reclamation off the nonfinal participant drop path.
+    #[inline(never)]
+    fn finish(&mut self) {
+        self.waiters.wake_all();
+        self.release_observer();
+    }
+
+    #[inline]
+    fn observe(&self) -> Self {
+        if self.observers.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
+            std::process::abort();
+        }
+        Self(self.0)
+    }
+
+    #[inline]
+    fn release_observer(&mut self) {
         if self.observers.fetch_sub(1, Ordering::AcqRel) == 1 {
             // SAFETY: all observers and the collective participant anchor have been released.
             unsafe { drop(Box::from_raw(self.0.as_ptr())) };
@@ -217,17 +218,16 @@ impl Clone for WaitGroup {
     /// its handle.
     #[inline]
     fn clone(&self) -> Self {
-        self.state.register_handle();
-        Self { state: self.state }
+        Self {
+            state: self.state.register_handle(),
+        }
     }
 }
 
 impl Drop for WaitGroup {
     #[inline]
     fn drop(&mut self) {
-        if self.state.release_handle() {
-            self.state.release_observer();
-        }
+        self.state.release_handle();
     }
 }
 
