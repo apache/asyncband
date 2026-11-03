@@ -23,6 +23,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Improvements
+
+* Reduce the cost of creating and dropping wait group participants and notifying a single registered waiter.
+
 ## v0.8.0
 
 ### Breaking changes

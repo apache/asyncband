@@ -24,6 +24,7 @@ use asyncband::waitgroup::WaitGroup;
 use tests_integration::WakeCounter;
 use tests_integration::poll_once;
 
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn waits_for_all_worker_handles() {
     let wg = WaitGroup::new();
@@ -138,4 +139,162 @@ fn repolling_replaces_the_registered_waker() {
 
     assert_eq!(first.count(), 0);
     assert_eq!(second.count(), 1);
+}
+
+#[test]
+fn cancelled_slots_can_be_reused_while_other_observers_are_registered() {
+    let wg = WaitGroup::new();
+    let worker = wg.clone();
+    let observer = wg.into_future();
+    let mut first = Box::pin(observer.clone());
+    let mut extra = Box::pin(observer.clone());
+    let mut survivor = Box::pin(observer.clone());
+    let (old, old_count) = WakeCounter::new();
+    let (live, live_count) = WakeCounter::new();
+    let (replaced, replaced_count) = WakeCounter::new();
+
+    assert!(tests_integration::poll_with(first.as_mut(), &old).is_pending());
+    assert!(tests_integration::poll_with(extra.as_mut(), &old).is_pending());
+    assert!(tests_integration::poll_with(survivor.as_mut(), &replaced).is_pending());
+    drop(first);
+    drop(extra);
+
+    let mut first = Box::pin(observer.clone());
+    let mut extra = Box::pin(observer);
+    for waiter in [&mut first, &mut extra, &mut survivor] {
+        assert!(tests_integration::poll_with(waiter.as_mut(), &live).is_pending());
+    }
+    drop(worker);
+    assert_eq!(old_count.count(), 0);
+    assert_eq!(replaced_count.count(), 0);
+    assert_eq!(live_count.count(), 3);
+    for waiter in [&mut first, &mut extra, &mut survivor] {
+        assert!(poll_once(waiter.as_mut()).is_ready());
+    }
+}
+
+#[test]
+fn concurrent_registration_acquires_every_participants_work() {
+    use std::sync::Barrier;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::thread;
+
+    let group = WaitGroup::new();
+    let start = Barrier::new(6);
+    let writes = [const { AtomicBool::new(false) }; 3];
+    let (waker, _) = WakeCounter::new();
+    thread::scope(|scope| {
+        for write in &writes {
+            let worker = group.clone();
+            let start = &start;
+            scope.spawn(move || {
+                start.wait();
+                write.store(true, Ordering::Relaxed);
+                drop(worker);
+            });
+        }
+        let observer = group.into_future();
+        for _ in 0..2 {
+            let mut wait = Box::pin(observer.clone());
+            let start = &start;
+            let writes = &writes;
+            let waker = &waker;
+            scope.spawn(move || {
+                start.wait();
+                while tests_integration::poll_with(wait.as_mut(), waker).is_pending() {
+                    thread::yield_now();
+                }
+                assert!(writes.iter().all(|v| v.load(Ordering::Relaxed)));
+            });
+        }
+        let mut wait = Box::pin(observer);
+        assert!(tests_integration::poll_with(wait.as_mut(), &waker).is_pending());
+        start.wait();
+        drop(wait);
+    });
+}
+
+#[test]
+fn racing_completion_notifies_a_poll_that_returns_pending() {
+    use std::sync::Barrier;
+    use std::thread;
+
+    let group = WaitGroup::new();
+    let worker = group.clone();
+    let mut wait = Box::pin(group.into_future());
+    let start = Barrier::new(2);
+    let (waker, counter) = WakeCounter::new();
+    let result = thread::scope(|scope| {
+        scope.spawn(|| {
+            start.wait();
+            drop(worker);
+        });
+        start.wait();
+        tests_integration::poll_with(wait.as_mut(), &waker)
+    });
+    if result.is_pending() {
+        assert_eq!(counter.count(), 1);
+    }
+    assert!(poll_once(wait.as_mut()).is_ready());
+}
+
+#[test]
+fn wait_group_and_observers_preserve_unwind_safety() {
+    fn assert_traits<T: std::panic::UnwindSafe + std::panic::RefUnwindSafe>() {}
+    assert_traits::<WaitGroup>();
+    assert_traits::<asyncband::waitgroup::Wait>();
+}
+
+#[test]
+fn retiring_a_registration_can_complete_the_group() {
+    for replace in [false, true] {
+        for use_overflow in [false, true] {
+            tests_integration::assert_completes_without_deadlock(move || {
+                let group = WaitGroup::new();
+                let worker = group.clone();
+                let observer = group.into_future();
+                let mut other = pin!(observer.clone());
+                if use_overflow {
+                    assert!(poll_once(other.as_mut()).is_pending());
+                }
+                let mut wait = Box::pin(observer);
+                let retired = tests_integration::waker_on_drop(move || drop(worker));
+                assert!(tests_integration::poll_with(wait.as_mut(), &retired).is_pending());
+                drop(retired);
+                if replace {
+                    let (next, counter) = WakeCounter::new();
+                    assert!(tests_integration::poll_with(wait.as_mut(), &next).is_pending());
+                    assert_eq!(counter.count(), 1);
+                }
+                drop(wait);
+                assert!(poll_once(other.as_mut()).is_ready());
+            });
+        }
+    }
+}
+
+#[test]
+fn final_worker_and_cancelled_observer_release_their_registration() {
+    use std::sync::Barrier;
+    use std::thread;
+
+    let group = WaitGroup::new();
+    let worker = group.clone();
+    let mut wait = Box::pin(group.into_future());
+    let (waker, counter) = WakeCounter::new();
+    assert!(tests_integration::poll_with(wait.as_mut(), &waker).is_pending());
+    drop(waker);
+
+    let start = Barrier::new(2);
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            start.wait();
+            drop(worker);
+        });
+        start.wait();
+        drop(wait);
+    });
+    assert!(counter.count() <= 1);
+    assert_eq!(Arc::strong_count(&counter), 1);
 }
