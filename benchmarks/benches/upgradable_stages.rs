@@ -16,12 +16,15 @@
 // under the License.
 
 use std::hint::black_box;
+use std::pin::pin;
 use std::time::Duration;
 use std::time::Instant;
 
 use asyncband::rwlock::RwLockUpgradableReadGuard;
 use asyncband::rwlock::UpgradableRwLock;
 use benchmarks::support::bench_context;
+use benchmarks::support::poll_pending;
+use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
 use clap::Parser;
 
@@ -32,13 +35,21 @@ struct Options {
     rounds: usize,
     #[arg(long, default_value_t = 10)]
     repeat: usize,
+    #[arg(long)]
+    test: bool,
     #[arg(long = "bench", hide = true)]
     _bench: bool,
 }
 
+const READER_COUNTS: &[usize] = &[1, 4, 16];
+
 struct Results {
     acquisition: Vec<Duration>,
     promotion: Vec<Duration>,
+    acquisition_with_reader: Vec<Duration>,
+    promotion_with_readers: Vec<Vec<Duration>>,
+    promotion_with_waiting_writer: Vec<Duration>,
+    acquisition_after_waiting_writer: Vec<Duration>,
 }
 
 fn measure(rounds: usize, repeat: usize) -> Results {
@@ -47,11 +58,22 @@ fn measure(rounds: usize, repeat: usize) -> Results {
     let mut results = Results {
         acquisition: Vec::with_capacity(repeat),
         promotion: Vec::with_capacity(repeat),
+        acquisition_with_reader: Vec::with_capacity(repeat),
+        promotion_with_readers: READER_COUNTS
+            .iter()
+            .map(|_| Vec::with_capacity(repeat))
+            .collect(),
+        promotion_with_waiting_writer: Vec::with_capacity(repeat),
+        acquisition_after_waiting_writer: Vec::with_capacity(repeat),
     };
 
     for _ in 0..repeat {
         let mut acquisition = Duration::ZERO;
         let mut promotion = Duration::ZERO;
+        let mut acquisition_with_reader = Duration::ZERO;
+        let mut promotion_with_readers = vec![Duration::ZERO; READER_COUNTS.len()];
+        let mut promotion_with_waiting_writer = Duration::ZERO;
+        let mut acquisition_after_waiting_writer = Duration::ZERO;
 
         for _ in 0..rounds {
             let start = Instant::now();
@@ -64,10 +86,72 @@ fn measure(rounds: usize, repeat: usize) -> Results {
 
             black_box(*writer);
             drop(writer);
+
+            let reader = poll_ready(lock.read(), &mut context);
+            let start = Instant::now();
+            let guard = poll_ready(lock.upgradable_read(), &mut context);
+            acquisition_with_reader += start.elapsed();
+            black_box(*guard);
+            drop(guard);
+            drop(reader);
+
+            for (index, &reader_count) in READER_COUNTS.iter().enumerate() {
+                let guard = poll_ready(lock.upgradable_read(), &mut context);
+                let readers = (0..reader_count)
+                    .map(|_| poll_ready(lock.read(), &mut context))
+                    .collect::<Vec<_>>();
+                let mut upgrade = pin!(RwLockUpgradableReadGuard::upgrade(guard));
+                let start = Instant::now();
+                poll_pending(upgrade.as_mut(), &mut context);
+                drop(readers);
+                let writer = poll_pinned_ready(upgrade.as_mut(), &mut context);
+                promotion_with_readers[index] += start.elapsed();
+                black_box(*writer);
+                drop(writer);
+            }
+
+            let guard = poll_ready(lock.upgradable_read(), &mut context);
+            let mut queued_writer = pin!(lock.write());
+            poll_pending(queued_writer.as_mut(), &mut context);
+            let start = Instant::now();
+            let writer = poll_ready(RwLockUpgradableReadGuard::upgrade(guard), &mut context);
+            promotion_with_waiting_writer += start.elapsed();
+            black_box(*writer);
+            drop(writer);
+            drop(poll_pinned_ready(queued_writer.as_mut(), &mut context));
+
+            let first_guard = poll_ready(lock.upgradable_read(), &mut context);
+            let mut queued_writer = pin!(lock.write());
+            poll_pending(queued_writer.as_mut(), &mut context);
+            let mut queued_upgradable = pin!(lock.upgradable_read());
+            poll_pending(queued_upgradable.as_mut(), &mut context);
+            let start = Instant::now();
+            drop(first_guard);
+            drop(poll_pinned_ready(queued_writer.as_mut(), &mut context));
+            let guard = poll_pinned_ready(queued_upgradable.as_mut(), &mut context);
+            acquisition_after_waiting_writer += start.elapsed();
+            black_box(*guard);
+            drop(guard);
         }
 
         results.acquisition.push(acquisition);
         results.promotion.push(promotion);
+        results
+            .acquisition_with_reader
+            .push(acquisition_with_reader);
+        for (samples, elapsed) in results
+            .promotion_with_readers
+            .iter_mut()
+            .zip(promotion_with_readers)
+        {
+            samples.push(elapsed);
+        }
+        results
+            .promotion_with_waiting_writer
+            .push(promotion_with_waiting_writer);
+        results
+            .acquisition_after_waiting_writer
+            .push(acquisition_after_waiting_writer);
     }
 
     results
@@ -100,6 +184,11 @@ fn report(name: &str, rounds: usize, mut samples: Vec<Duration>) {
 
 fn main() {
     let options = Options::parse();
+    if options.test {
+        let _ = measure(1, 1);
+        println!("ok  upgradable-lock stage benchmark smoke checks");
+        return;
+    }
     assert!(options.rounds > 0, "rounds must be positive");
     assert!(options.repeat > 0, "repeat must be positive");
 
@@ -111,4 +200,26 @@ fn main() {
     println!("The clock reads add measurable overhead; treat these numbers as diagnostic.");
     report("acquisition", options.rounds, results.acquisition);
     report("promotion", options.rounds, results.promotion);
+    report(
+        "acquisition + reader held",
+        options.rounds,
+        results.acquisition_with_reader,
+    );
+    for (&reader_count, samples) in READER_COUNTS.iter().zip(results.promotion_with_readers) {
+        report(
+            &format!("promotion + {reader_count} readers"),
+            options.rounds,
+            samples,
+        );
+    }
+    report(
+        "promotion + writer queued",
+        options.rounds,
+        results.promotion_with_waiting_writer,
+    );
+    report(
+        "acquire behind queued writer",
+        options.rounds,
+        results.acquisition_after_waiting_writer,
+    );
 }
