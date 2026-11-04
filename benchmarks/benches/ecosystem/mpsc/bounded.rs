@@ -29,6 +29,7 @@ use crate::mpsc::adapters::Flume;
 use crate::mpsc::adapters::Tokio;
 use crate::mpsc::support::BOUNDED_CAPACITY;
 use crate::mpsc::support::Bounded;
+use crate::mpsc::support::Message;
 use crate::mpsc::support::RepeatedBatch;
 use crate::mpsc::support::RepeatedTasks;
 use crate::mpsc::support::TaskShape;
@@ -52,6 +53,18 @@ fn ready_send_receive<C: BoundedMpsc>(bencher: Bencher) {
     });
 }
 
+fn ready_payload<C: BoundedMpsc<T>, T: Message>(bencher: Bencher) {
+    let mut context = bench_context();
+    let (sender, mut receiver) = C::channel(BOUNDED_CAPACITY);
+    bencher.bench_local(|| {
+        C::send_ready(&sender, black_box(T::new(0)), &mut context);
+        assert_eq!(
+            black_box(C::recv_ready(&mut receiver, &mut context)).sequence(),
+            0
+        );
+    });
+}
+
 fn reused_threads<C: BoundedMpsc>(bencher: Bencher, producer_count: usize) {
     let mut batch = RepeatedBatch::<Bounded<C>>::new(producer_count);
     batch.run();
@@ -67,11 +80,11 @@ fn reused_tasks<C: BoundedMpsc, const CAPACITY: usize>(
     bencher.bench_local(|| batch.run());
 }
 
-fn reused_tasks_inline_1k<C: BoundedMpsc<[u8; 1024]>, const CAPACITY: usize>(
+fn reused_tasks_payload<C: BoundedMpsc<T>, const CAPACITY: usize, T: Message>(
     bencher: Bencher,
     TaskShape { producers, workers }: TaskShape,
 ) {
-    let mut batch = RepeatedTasks::<Bounded<C, CAPACITY, [u8; 1024]>>::new(producers, workers);
+    let mut batch = RepeatedTasks::<Bounded<C, CAPACITY, T>>::new(producers, workers);
     batch.run();
     bencher.bench_local(|| batch.run());
 }
@@ -127,6 +140,20 @@ pub fn register(runner: &mut Runner) {
         }),
     );
     runner.compare(
+        "mpsc/bounded/ready-roundtrip-inline1k",
+        1_000_000,
+        implementations!([Asyncband, Tokio, AsyncChannel, Flume], |C, b| {
+            ready_payload::<C, [u8; 1024]>(b)
+        }),
+    );
+    runner.compare(
+        "mpsc/bounded/ready-roundtrip-boxed1k",
+        1_000_000,
+        implementations!([Asyncband, Tokio, AsyncChannel, Flume], |C, b| {
+            ready_payload::<C, Box<[u8; 1024]>>(b)
+        }),
+    );
+    runner.compare(
         "mpsc/bounded/threads-4p1c-cap64",
         89,
         implementations!([Asyncband, Tokio, AsyncChannel, Flume], |C, b| {
@@ -144,7 +171,20 @@ pub fn register(runner: &mut Runner) {
         "mpsc/bounded/tasks-4p1c-cap64-4w-inline1k",
         26,
         implementations!([Asyncband, Tokio, AsyncChannel, Flume], |C, b| {
-            reused_tasks_inline_1k::<C, 64>(
+            reused_tasks_payload::<C, 64, [u8; 1024]>(
+                b,
+                TaskShape {
+                    producers: 4,
+                    workers: 4,
+                },
+            )
+        }),
+    );
+    runner.compare(
+        "mpsc/bounded/tasks-4p1c-cap64-4w-boxed1k",
+        26,
+        implementations!([Asyncband, Tokio, AsyncChannel, Flume], |C, b| {
+            reused_tasks_payload::<C, 64, Box<[u8; 1024]>>(
                 b,
                 TaskShape {
                     producers: 4,
