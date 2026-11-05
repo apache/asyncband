@@ -37,6 +37,7 @@ All notable changes to this project will be documented in this file.
 ### Bug fixes
 
 * Prevent `OnceMap` from keeping an empty entry when a computation fails, panics, or is cancelled while a concurrent `get` looks up the same key.
+* Prevent `OnceMap` and `singleflight::Group` from leaking entries or values when a duplicate key's destructor panics, including when the original computation is cancelled during that destructor.
 
 ### Improvements
 

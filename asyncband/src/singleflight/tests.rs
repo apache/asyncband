@@ -16,14 +16,17 @@
 // under the License.
 
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::future::pending;
 use std::future::poll_fn;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
+use std::rc::Rc;
 use std::task::Poll;
 
 use super::*;
+use crate::test_support::KeyWithDrop;
 use crate::test_support::poll_once;
 
 // These tests stay next to the implementation because they inspect private state.
@@ -103,4 +106,49 @@ fn failed_try_work_preserves_entry_for_waiter_retry() {
     assert_eq!(entry_count(&group), 1);
     assert_eq!(poll_once(retry.as_mut()), Poll::Ready(Ok("success")));
     assert_eq!(entry_count(&group), 0);
+}
+
+#[test]
+fn duplicate_key_panic_cleans_up_pending_work() {
+    for fallible in [false, true] {
+        for cancel_during_drop in [false, true] {
+            let group = Rc::new(Group::<KeyWithDrop, i32>::new());
+            let first_group = Rc::clone(&group);
+            let mut first = Box::pin(async move {
+                first_group
+                    .work(
+                        KeyWithDrop {
+                            key: "key",
+                            on_drop: None,
+                        },
+                        async || pending().await,
+                    )
+                    .await
+            });
+            assert!(poll_once(first.as_mut()).is_pending());
+            let first = Rc::new(RefCell::new(Some(first)));
+            let dropping_first = Rc::clone(&first);
+            let dropping_group = Rc::clone(&group);
+            let key = KeyWithDrop {
+                key: "key",
+                on_drop: Some(Box::new(move || {
+                    assert_eq!(entry_count(&dropping_group), 1);
+                    if cancel_during_drop {
+                        drop(dropping_first.borrow_mut().take());
+                    }
+                    panic!("duplicate key destructor");
+                })),
+            };
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                if fallible {
+                    let _ = poll_once(pin!(group.try_work(key, async || Ok::<_, ()>(1))));
+                } else {
+                    let _ = poll_once(pin!(group.work(key, async || 1)));
+                }
+            }));
+            assert!(result.is_err());
+            drop(first.borrow_mut().take());
+            assert_eq!(entry_count(&group), 0);
+        }
+    }
 }
