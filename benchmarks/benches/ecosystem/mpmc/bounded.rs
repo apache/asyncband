@@ -16,10 +16,13 @@
 // under the License.
 
 use benchmarks::channels::BOUNDED_CAPACITY;
+use benchmarks::channels::adapters::AsyncBoundedMpmc;
 use benchmarks::channels::adapters::AsyncChannel;
 use benchmarks::channels::adapters::AsyncbandMpmc;
+use benchmarks::channels::adapters::AsyncbandMpmcReserve;
 use benchmarks::channels::adapters::Bounded;
 use benchmarks::channels::adapters::BoundedMpmc;
+use benchmarks::channels::adapters::Crossbeam;
 use benchmarks::channels::adapters::Flume;
 use benchmarks::channels::mpmc::TaskBatch;
 use benchmarks::channels::mpmc::ThreadBatch;
@@ -29,14 +32,28 @@ use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
 use benchmarks::implementations;
 
-fn thread_batch<C: BoundedMpmc>(bencher: Bencher, topology: Topology) {
+const TWO_BY_TWO: Topology = Topology {
+    producers: 2,
+    consumers: 2,
+};
+
+fn thread_batch<C: BoundedMpmc>(bencher: Bencher, capacity: usize, topology: Topology) {
     bencher.bench_local(|| {
-        let mut batch = ThreadBatch::new_bounded::<C>(BOUNDED_CAPACITY, topology);
+        let mut batch = ThreadBatch::new_bounded::<C>(capacity, topology);
         batch.run()
     });
 }
 
-fn task_batch<C: BoundedMpmc, const WORKERS: usize>(bencher: Bencher, topology: Topology) {
+/// Endpoints spin on the nonblocking operations, so this measures queue contention without
+/// parking or wakeups.
+fn spin_batch<C: BoundedMpmc>(bencher: Bencher, topology: Topology) {
+    bencher.bench_local(|| {
+        let mut batch = ThreadBatch::new_bounded_spinning::<C>(BOUNDED_CAPACITY, topology);
+        batch.run()
+    });
+}
+
+fn task_batch<C: AsyncBoundedMpmc, const WORKERS: usize>(bencher: Bencher, topology: Topology) {
     let runtime = runtime(WORKERS);
     bencher.bench_local(|| {
         let mut batch = TaskBatch::new::<Bounded<C>>(&runtime, topology);
@@ -48,29 +65,53 @@ pub fn register(runner: &mut Runner) {
     runner.compare(
         "mpmc/bounded/tasks-2p2c-cap64-4w",
         270,
-        implementations!([AsyncbandMpmc, AsyncChannel, Flume], |C, b| task_batch::<
-            C,
-            4,
-        >(
-            b,
-            Topology {
-                producers: 2,
-                consumers: 2
-            }
-        )),
+        implementations!(
+            [AsyncbandMpmc, AsyncbandMpmcReserve, AsyncChannel, Flume],
+            |C, b| task_batch::<C, 4>(b, TWO_BY_TWO)
+        ),
     );
     runner.compare(
         "mpmc/bounded/threads-2p2c-cap64",
         120,
         implementations!(
-            [AsyncbandMpmc, AsyncChannel, Flume],
-            |C, b| thread_batch::<C>(
-                b,
-                Topology {
-                    producers: 2,
-                    consumers: 2
-                }
-            )
+            [
+                AsyncbandMpmc,
+                AsyncbandMpmcReserve,
+                AsyncChannel,
+                Flume,
+                Crossbeam
+            ],
+            |C, b| thread_batch::<C>(b, BOUNDED_CAPACITY, TWO_BY_TWO)
         ),
+    );
+    // One producer wakes a parked consumer for most messages.
+    runner.compare(
+        "mpmc/bounded/threads-1p8c-cap64",
+        27,
+        implementations!([AsyncbandMpmc, AsyncChannel, Flume, Crossbeam], |C, b| {
+            thread_batch::<C>(
+                b,
+                BOUNDED_CAPACITY,
+                Topology {
+                    producers: 1,
+                    consumers: 8,
+                },
+            )
+        }),
+    );
+    // Every send waits for a receiver to free the only slot.
+    runner.compare(
+        "mpmc/bounded/threads-2p2c-cap1",
+        4,
+        implementations!([AsyncbandMpmc, AsyncChannel, Flume, Crossbeam], |C, b| {
+            thread_batch::<C>(b, 1, TWO_BY_TWO)
+        }),
+    );
+    runner.compare(
+        "mpmc/bounded/spin-2p2c-cap64",
+        100,
+        implementations!([AsyncbandMpmc, AsyncChannel, Flume, Crossbeam], |C, b| {
+            spin_batch::<C>(b, TWO_BY_TWO)
+        }),
     );
 }

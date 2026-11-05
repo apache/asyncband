@@ -416,6 +416,22 @@ the following copyright notice:
 
   Copyright 2014-2020 The Rust Project Developers
 
+Portions of asyncband/src/internal/cache_padded.rs are adapted from
+crossbeam-utils 0.8.23. Portions of the slot-stamp algorithm and backoff helper
+in asyncband/src/mpmc/ring.rs are adapted from crossbeam-channel 0.5.17 and
+crossbeam-utils 0.8.23. Both are taken from the following exact revision and
+source paths:
+
+  https://github.com/crossbeam-rs/crossbeam/blob/2920c984290229ab4e0ca0452ef09e48a82063f3/crossbeam-utils/src/cache_padded.rs
+  https://github.com/crossbeam-rs/crossbeam/blob/2920c984290229ab4e0ca0452ef09e48a82063f3/crossbeam-utils/src/backoff.rs
+  https://github.com/crossbeam-rs/crossbeam/blob/2920c984290229ab4e0ca0452ef09e48a82063f3/crossbeam-channel/src/flavors/array.rs
+
+Crossbeam is licensed under Apache-2.0 or MIT. Apache Asyncband uses the
+Apache-2.0 option for the incorporated portions. The upstream project carries
+the following copyright notice:
+
+  Copyright (c) 2019 The Crossbeam Project Developers
+
 Portions of the following files are ported from Fastpool 1.1.1. Each local path
 is followed by its upstream source path or paths:
 

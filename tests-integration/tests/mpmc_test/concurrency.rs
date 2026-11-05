@@ -16,8 +16,10 @@
 // under the License.
 
 use std::ops::Range;
+use std::thread;
 use std::time::Duration;
 
+use asyncband::blocking::FutureExt;
 use asyncband::mpmc;
 use tokio::task::JoinHandle;
 
@@ -104,4 +106,73 @@ async fn unbounded_values_are_delivered_exactly_once_under_contention() {
     drop(sender);
 
     assert_delivered_exactly_once(receiver, producers).await;
+}
+
+/// Runs three producer and three consumer threads through a two-slot queue and asserts that every
+/// value arrived exactly once.
+///
+/// Two slots keep every slot wrapping while senders wait for grants and receivers for values.
+fn assert_threads_deliver_exactly_once(
+    values_per_thread: usize,
+    send: fn(&mpmc::BoundedSender<usize>, usize),
+) {
+    const THREADS: usize = 3;
+
+    let (sender, receiver) = mpmc::bounded(2);
+    let mut received = thread::scope(|scope| {
+        for producer in 0..THREADS {
+            let sender = sender.clone();
+            scope.spawn(move || {
+                let first = producer * values_per_thread;
+                for value in first..first + values_per_thread {
+                    send(&sender, value);
+                }
+            });
+        }
+        drop(sender);
+        let consumers = (0..THREADS)
+            .map(|_| {
+                let receiver = receiver.clone();
+                scope.spawn(move || {
+                    let mut values = vec![];
+                    while let Ok(value) = receiver.recv().block_on() {
+                        values.push(value);
+                    }
+                    values
+                })
+            })
+            .collect::<Vec<_>>();
+        drop(receiver);
+        consumers
+            .into_iter()
+            .flat_map(|consumer| consumer.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    received.sort_unstable();
+    assert_eq!(
+        received,
+        (0..THREADS * values_per_thread).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn bounded_blocked_threads_deliver_exactly_once_through_a_small_ring() {
+    let values_per_thread = if cfg!(miri) { 16 } else { 4096 };
+    assert_threads_deliver_exactly_once(values_per_thread, |sender, value| {
+        sender.send(value).block_on().unwrap();
+    });
+}
+
+#[test]
+fn bounded_threads_releasing_unused_permits_deliver_exactly_once() {
+    // Dropping permits while other senders wait passes their capacity along the wait queue.
+    let values_per_thread = if cfg!(miri) { 12 } else { 4096 };
+    assert_threads_deliver_exactly_once(values_per_thread, |sender, value| match value % 3 {
+        0 => sender.send(value).block_on().unwrap(),
+        1 => sender.reserve().block_on().unwrap().send(value).unwrap(),
+        _ => {
+            drop(sender.reserve().block_on().unwrap());
+            sender.send(value).block_on().unwrap();
+        }
+    });
 }

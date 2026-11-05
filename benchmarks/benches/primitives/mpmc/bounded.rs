@@ -44,6 +44,30 @@ fn send_then_recv(bencher: Bencher) {
     });
 }
 
+fn try_reserve_then_send(bencher: Bencher) {
+    let (sender, receiver) = mpmc::bounded(1);
+    bencher.bench_local(|| {
+        sender
+            .try_reserve()
+            .unwrap()
+            .send(black_box(1usize))
+            .unwrap();
+        black_box(receiver.try_recv().unwrap())
+    });
+}
+
+fn reserve_then_send(bencher: Bencher) {
+    let mut context = bench_context();
+    let (sender, receiver) = mpmc::bounded(1);
+    bencher.bench_local(|| {
+        poll_ready(sender.reserve(), &mut context)
+            .unwrap()
+            .send(black_box(1usize))
+            .unwrap();
+        black_box(receiver.try_recv().unwrap())
+    });
+}
+
 fn wake_blocked_sender(bencher: Bencher) {
     let mut context = bench_context();
     let (sender, receiver) = mpmc::bounded(1);
@@ -59,5 +83,7 @@ fn wake_blocked_sender(bencher: Bencher) {
 pub fn register(runner: &mut Runner) {
     primitive!(runner, try_send_then_try_recv, 30_000_000);
     primitive!(runner, send_then_recv, 24_000_000);
+    primitive!(runner, try_reserve_then_send, 22_000_000);
+    primitive!(runner, reserve_then_send, 20_000_000);
     primitive!(runner, wake_blocked_sender, 9_000_000);
 }
