@@ -59,4 +59,6 @@ Keep each Markdown prose paragraph and list item on one source line. Format Mark
 
 ## Pull Requests
 
+Asyncband does not assign or reserve issues. Do not ask maintainers to assign an issue to you. Anyone can submit a pull request directly for review.
+
 Format pull request titles according to `.github/semantic.yml` and keep the description concise. Use a `Summary` section for routine changes and add `Design Notes` only when the design needs explanation.
