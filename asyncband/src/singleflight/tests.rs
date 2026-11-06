@@ -146,7 +146,10 @@ fn duplicate_key_panic_cleans_up_pending_work() {
                     let _ = poll_once(pin!(group.work(key, async || 1)));
                 }
             }));
-            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap_err().downcast_ref::<&str>(),
+                Some(&"duplicate key destructor")
+            );
             drop(first.borrow_mut().take());
             assert_eq!(entry_count(&group), 0);
         }

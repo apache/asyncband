@@ -208,7 +208,10 @@ fn duplicate_key_panic_cleans_up_pending_compute() {
                     let _ = poll_once(pin!(map.compute(key, async || 1)));
                 }
             }));
-            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap_err().downcast_ref::<&str>(),
+                Some(&"duplicate key destructor")
+            );
             drop(first.borrow_mut().take());
             assert_eq!(map.len(), 0);
         }
@@ -247,7 +250,10 @@ fn duplicate_key_panic_drops_cached_value_clone() {
                 let _ = poll_once(pin!(map.compute(key, async || Arc::clone(&value))));
             }
         }));
-        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().downcast_ref::<&str>(),
+            Some(&"duplicate key destructor")
+        );
         assert_eq!(map.len(), 0);
         assert_eq!(Arc::strong_count(&value), 1);
     }
