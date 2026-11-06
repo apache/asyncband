@@ -104,6 +104,7 @@ dependencies = [
  "async-channel",
  "asyncband",
  "clap",
+ "crossbeam-channel",
  "flume",
  "tokio",
  "waitgroup",
@@ -251,6 +252,15 @@ dependencies = [
  "serde_json",
  "time",
  "url",
+]
+
+[[package]]
+name = "crossbeam-channel"
+version = "0.5.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]

@@ -15,9 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint;
 use std::hint::black_box;
 use std::sync::Arc;
 use std::sync::Barrier;
+use std::task::Poll;
 use std::thread;
 use std::thread::JoinHandle;
 
@@ -119,6 +121,13 @@ impl ThreadBatch {
         Self::new(sender, receiver, topology, C::send, C::recv)
     }
 
+    /// Uses only nonblocking operations, so endpoints spin instead of parking. This isolates queue
+    /// contention from wakeup costs.
+    pub fn new_bounded_spinning<C: BoundedMpmc>(capacity: usize, topology: Topology) -> Self {
+        let (sender, receiver) = C::channel(capacity);
+        Self::new(sender, receiver, topology, spin_send::<C>, spin_recv::<C>)
+    }
+
     pub fn new_unbounded<C: UnboundedMpmc>(topology: Topology) -> Self {
         let (sender, receiver) = C::channel();
         Self::new(sender, receiver, topology, C::send, C::recv)
@@ -190,5 +199,33 @@ impl ThreadBatch {
         assert_eq!(count, BATCH_MESSAGES);
         assert_eq!(checksum, BATCH_MESSAGES * (BATCH_MESSAGES - 1) / 2);
         black_box((count, checksum))
+    }
+}
+
+fn spin_send<C: BoundedMpmc>(sender: &C::Sender, mut value: usize) {
+    let mut spins = 0u32;
+    while let Err(returned) = C::try_send(sender, value) {
+        value = returned;
+        backoff(&mut spins);
+    }
+}
+
+fn spin_recv<C: BoundedMpmc>(receiver: &C::Receiver) -> Option<usize> {
+    let mut spins = 0u32;
+    loop {
+        match C::try_recv(receiver) {
+            Poll::Ready(value) => return value,
+            Poll::Pending => backoff(&mut spins),
+        }
+    }
+}
+
+/// Spins briefly, then yields, so oversubscribed runs still let the other side progress.
+fn backoff(spins: &mut u32) {
+    if *spins < 64 {
+        hint::spin_loop();
+        *spins += 1;
+    } else {
+        thread::yield_now();
     }
 }
