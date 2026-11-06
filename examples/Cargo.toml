@@ -29,6 +29,7 @@ asyncband = { workspace = true, features = [
   "lazy-cell",
   "once-cell",
   "phaser",
+  "pool",
   "shutdown",
   "watch",
 ] }
@@ -42,6 +43,11 @@ tokio = { workspace = true, features = [
 
 [lints]
 workspace = true
+
+[[example]]
+name = "pool_recycling"
+path = "src/pool_recycling.rs"
+test = true
 
 [[example]]
 name = "coalesced_worker"
