@@ -71,12 +71,16 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    fn get_or_insert(&self, key: K) -> Arc<Entry<K, V>> {
+    fn get_or_insert(&self, key: K) -> WorkCleanupGuard<'_, K, V, S> {
         let hash = self.hasher.hash_one(&key);
         let mut entries = self.entries.lock();
-        // Drop duplicate keys after unlocking: their destructors may reenter the group.
         if let Some(entry) = entries.find(hash, |entry| entry.key.eq(&key)) {
-            return entry.clone();
+            let entry = Arc::clone(entry);
+            drop(entries);
+            let guard = WorkCleanupGuard::new(self, entry);
+            // Establish cleanup before a duplicate key can unwind or reenter the group.
+            drop(key);
+            return guard;
         }
 
         let entry = Arc::new(Entry {
@@ -85,7 +89,8 @@ where
             cell: OnceCell::new(),
         });
         entries.insert_unique(hash, entry.clone(), |entry| entry.hash);
-        entry
+        drop(entries);
+        WorkCleanupGuard::new(self, entry)
     }
 
     fn remove<Q>(&self, key: &Q)
@@ -157,9 +162,7 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    fn new(group: &'a Group<K, V, S>, key: K) -> Self {
-        let entry = group.get_or_insert(key);
-
+    fn new(group: &'a Group<K, V, S>, entry: Arc<Entry<K, V>>) -> Self {
         Self {
             group,
             entry: Some(entry),
@@ -285,7 +288,7 @@ where
     where
         F: AsyncFnOnce() -> V,
     {
-        let guard = WorkCleanupGuard::new(self, key);
+        let guard = self.get_or_insert(key);
         let entry = guard.entry();
         let result = entry
             .cell
@@ -355,7 +358,7 @@ where
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        let guard = WorkCleanupGuard::new(self, key);
+        let guard = self.get_or_insert(key);
         let entry = guard.entry();
         let result = entry
             .cell
