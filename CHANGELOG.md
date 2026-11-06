@@ -30,7 +30,7 @@ All notable changes to this project will be documented in this file.
 
 ### Notable changes
 
-* Bounded MPMC queues now panic when created with a capacity greater than 2,097,151.
+* Bounded MPMC queues now panic when created with a capacity greater than 2,097,151; use `mpmc::unbounded` for larger buffers.
 
 ### New features
 
