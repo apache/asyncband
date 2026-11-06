@@ -49,6 +49,11 @@ pub struct Semaphore {
     /// successfully updates the available count. Releases that observe this flag skip the
     /// lock-free attempt. This is a performance hint; stale reads do not affect correctness.
     contention_detected: AtomicBool,
+    /// Indicates whether any waiters might be enqueued in `waiters`.
+    ///
+    /// This atomic flag provides a fast check for uncontended releases (e.g. `release_with_lock`
+    /// when dropping a mutex guard) to avoid acquiring the `waiters` lock if the queue is empty.
+    has_waiters: AtomicBool,
     waiters: Mutex<WaitList<WaitNode>>,
 }
 
@@ -66,6 +71,7 @@ impl Semaphore {
         Self {
             available_permits: AtomicUsize::new(permits),
             contention_detected: AtomicBool::new(false),
+            has_waiters: AtomicBool::new(false),
             waiters: Mutex::new(WaitList::new()),
         }
     }
@@ -170,9 +176,28 @@ impl Semaphore {
     /// to skip the speculative attempt in [`release`](Self::release).
     /// This method also works when permits are available.
     pub fn release_with_lock(&self, n: usize) {
-        if n != 0 {
-            self.distribute_permits(n, self.waiters.lock());
+        if n == 0 {
+            return;
         }
+
+        // Fast path for uncontended release: if no waiters have been enqueued,
+        // attempt to atomically make the permits available directly.
+        if !self.has_waiters.load(Ordering::Acquire) {
+            let available = self.available_permits.load(Ordering::Relaxed);
+            if self.try_update_permits(available, n).is_ok() {
+                // If has_waiters is still false, no waiter could have enqueued without
+                // either observing available permits or taking the queue lock.
+                if !self.has_waiters.load(Ordering::Acquire) {
+                    return;
+                }
+                // If a waiter raced and set has_waiters, fall through to distribute_permits
+                // with 0 extra permits so any newly enqueued waiter is serviced.
+                self.distribute_permits(0, self.waiters.lock());
+                return;
+            }
+        }
+
+        self.distribute_permits(n, self.waiters.lock());
     }
 
     /// Releases `n` permits only if the queue contains waiters when locked.
@@ -271,6 +296,10 @@ impl Semaphore {
                 remaining = 0;
             }
 
+            if waiters.is_empty() {
+                self.has_waiters.store(false, Ordering::Release);
+            }
+
             drop(waiters);
             batch.wake_all();
             if remaining == 0 {
@@ -300,6 +329,9 @@ impl Drop for Acquire<'_> {
                 true
             });
             let waiter = waiters.remove_unlinked_waiter(index);
+            if waiters.is_empty() {
+                self.semaphore.has_waiters.store(false, Ordering::Release);
+            }
             if acquired > 0 {
                 self.semaphore.distribute_permits(acquired, waiters);
             } else {
@@ -333,6 +365,9 @@ impl Acquire<'_> {
                 };
                 if ready {
                     waiters.remove_unlinked_waiter(*idx);
+                    if waiters.is_empty() {
+                        semaphore.has_waiters.store(false, Ordering::Release);
+                    }
                     *index = None;
                     return Poll::Ready(());
                 }
@@ -427,6 +462,7 @@ fn acquired_or_enqueue(
         } else {
             waiters.push_front(node)
         };
+        sem.has_waiters.store(true, Ordering::Release);
         if let Some(index) = index {
             assert!(
                 index.replace(id).is_none(),
