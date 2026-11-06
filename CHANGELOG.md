@@ -40,6 +40,7 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
+* Reduce intermediate payload copies in bounded MPSC sends and receives, especially for large inline messages.
 * Reduce the cost of polling a pending oneshot receive again from the same task, which now keeps its registered waker instead of cloning and dropping it.
 * Reduce the state kept by futures waiting for a `Mutex`, `RwLock`, `Semaphore`, `Once`, `OnceCell`, or bounded broadcast capacity, making lock, permit acquisition, and bounded broadcast send futures smaller.
 
