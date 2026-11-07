@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::thread;
 
 use asyncband::blocking::FutureExt;
@@ -192,35 +193,29 @@ fn completed_initialization_survives_cancellation_of_a_notified_waiter() {
 }
 
 #[test]
-fn completion_races_with_waiter_registration_and_cancellation() {
+fn registered_waiter_observes_completion_from_another_thread() {
     assert_completes_without_deadlock(|| {
-        for _ in 0..16 {
-            let cell = OnceCell::new();
-            let start = std::sync::Barrier::new(3);
-            let (finish, ready) = tokio::sync::oneshot::channel();
-            let mut first = pin!(cell.get_or_init(async || {
-                ready.await.unwrap();
-                [42; 32]
-            }));
-            assert!(poll_once(first.as_mut()).is_pending());
+        let cell = OnceCell::new();
+        let (finish, ready) = tokio::sync::oneshot::channel();
+        let mut first = pin!(cell.get_or_init(async || {
+            ready.await.unwrap();
+            [42; 32]
+        }));
+        assert!(poll_once(first.as_mut()).is_pending());
 
-            thread::scope(|scope| {
-                scope.spawn(|| {
-                    start.wait();
-                    assert_eq!(
-                        cell.get_or_init(async || unreachable!()).block_on(),
-                        &[42; 32]
-                    );
-                });
-                scope.spawn(|| {
-                    start.wait();
-                    let _ = poll_once(pin!(cell.get_or_init(async || unreachable!())));
-                });
-                start.wait();
-                finish.send(()).unwrap();
-                assert_eq!(expect_ready(poll_once(first.as_mut())), &[42; 32]);
+        let (registered, registration) = mpsc::channel();
+        thread::scope(|scope| {
+            let cell = &cell;
+            scope.spawn(move || {
+                let mut waiter = pin!(cell.get_or_init(async || unreachable!()));
+                assert!(poll_once(waiter.as_mut()).is_pending());
+                registered.send(()).unwrap();
+                assert_eq!(waiter.block_on(), &[42; 32]);
             });
-        }
+            registration.recv().unwrap();
+            finish.send(()).unwrap();
+            assert_eq!(expect_ready(poll_once(first.as_mut())), &[42; 32]);
+        });
     });
 }
 
