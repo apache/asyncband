@@ -16,13 +16,20 @@
 // under the License.
 
 use std::future::pending;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::thread;
 
+use asyncband::blocking::FutureExt;
 use asyncband::once::OnceCell;
+use tests_integration::WakeCounter;
+use tests_integration::assert_completes_without_deadlock;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
+use tests_integration::poll_with;
 use tokio::sync::Barrier;
 
 struct DropFlag(Arc<AtomicBool>);
@@ -64,7 +71,7 @@ async fn concurrent_callers_publish_one_value() {
             *cell
                 .get_or_init(async || {
                     attempts.fetch_add(1, Ordering::SeqCst);
-                    value
+                    [value; 32]
                 })
                 .await
         }));
@@ -72,6 +79,7 @@ async fn concurrent_callers_publish_one_value() {
 
     start.wait().await;
     let expected = tasks.remove(0).await.unwrap();
+    assert_eq!(expected, [expected[0]; 32]);
     for task in tasks {
         assert_eq!(task.await.unwrap(), expected);
     }
@@ -87,6 +95,145 @@ async fn cancelled_initialization_can_be_retried() {
     drop(first);
 
     assert_eq!(*cell.get_or_init(async || 2).await, 2);
+}
+
+#[test]
+fn cancelling_a_partial_waiter_does_not_start_another_initializer() {
+    let cell = OnceCell::new();
+    let mut first = Box::pin(cell.get_or_init(async || pending::<u8>().await));
+    let mut cancelled = Box::pin(cell.get_or_init(async || unreachable!()));
+    let mut next = pin!(cell.get_or_init(async || 2));
+    let (waker, wakes) = WakeCounter::new();
+
+    assert!(poll_once(first.as_mut()).is_pending());
+    // This waiter holds the spare permit, but still cannot initialize the cell.
+    assert!(poll_once(cancelled.as_mut()).is_pending());
+    assert!(poll_with(next.as_mut(), &waker).is_pending());
+    drop(cancelled);
+    assert_eq!(wakes.count(), 0);
+    assert!(poll_with(next.as_mut(), &waker).is_pending());
+    assert_eq!(cell.get(), None);
+
+    drop(first);
+    assert_eq!(wakes.count(), 1);
+    assert_eq!(expect_ready(poll_with(next.as_mut(), &waker)), &2);
+}
+
+#[test]
+fn cancelling_a_granted_waiter_passes_initialization_to_the_next() {
+    let cell = OnceCell::new();
+    let mut first = Box::pin(cell.get_or_init(async || pending::<u8>().await));
+    let mut cancelled = Box::pin(cell.get_or_init(async || unreachable!()));
+    let mut next = pin!(cell.get_or_init(async || 3));
+    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
+    let (next_waker, next_wakes) = WakeCounter::new();
+
+    assert!(poll_once(first.as_mut()).is_pending());
+    assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
+    assert!(poll_with(next.as_mut(), &next_waker).is_pending());
+    drop(first);
+    assert_eq!(cancelled_wakes.count(), 1);
+    assert_eq!(next_wakes.count(), 0);
+
+    drop(cancelled);
+    assert_eq!(next_wakes.count(), 1);
+    assert_eq!(expect_ready(poll_with(next.as_mut(), &next_waker)), &3);
+}
+
+#[test]
+fn failed_initialization_wakes_a_registered_retry() {
+    let cell = OnceCell::new();
+    let (finish, ready) = tokio::sync::oneshot::channel();
+    let mut first = pin!(cell.get_or_try_init(async || {
+        ready.await.unwrap();
+        Err::<u8, _>("not ready")
+    }));
+    let mut next = pin!(cell.get_or_init(async || 2));
+    let (waker, wakes) = WakeCounter::new();
+
+    assert!(poll_once(first.as_mut()).is_pending());
+    assert!(poll_with(next.as_mut(), &waker).is_pending());
+    finish.send(()).unwrap();
+    assert_eq!(expect_ready(poll_once(first.as_mut())), Err("not ready"));
+    assert_eq!(wakes.count(), 1);
+    assert_eq!(expect_ready(poll_with(next.as_mut(), &waker)), &2);
+}
+
+#[test]
+fn completed_initialization_survives_cancellation_of_a_notified_waiter() {
+    let cell = OnceCell::new();
+    let (finish, ready) = tokio::sync::oneshot::channel();
+    let mut first = pin!(cell.get_or_init(async || {
+        ready.await.unwrap();
+        [42; 32]
+    }));
+    let mut cancelled = Box::pin(cell.get_or_init(async || unreachable!()));
+    let mut next = pin!(cell.get_or_init(async || unreachable!()));
+    let (old_waker, old_wakes) = WakeCounter::new();
+    let (waker, wakes) = WakeCounter::new();
+
+    assert!(poll_once(first.as_mut()).is_pending());
+    assert!(poll_once(cancelled.as_mut()).is_pending());
+    assert!(poll_with(next.as_mut(), &old_waker).is_pending());
+    assert!(poll_with(next.as_mut(), &waker).is_pending());
+    finish.send(()).unwrap();
+    assert_eq!(expect_ready(poll_once(first.as_mut())), &[42; 32]);
+    assert_eq!(wakes.count(), 0);
+
+    drop(cancelled);
+    assert_eq!(old_wakes.count(), 0);
+    assert_eq!(wakes.count(), 1);
+    assert_eq!(expect_ready(poll_with(next.as_mut(), &waker)), &[42; 32]);
+    assert_eq!(cell.get(), Some(&[42; 32]));
+    assert_eq!(
+        expect_ready(poll_once(pin!(cell.get_or_init(async || unreachable!())))),
+        &[42; 32]
+    );
+}
+
+#[test]
+fn completion_races_with_waiter_registration_and_cancellation() {
+    assert_completes_without_deadlock(|| {
+        for _ in 0..16 {
+            let cell = OnceCell::new();
+            let start = std::sync::Barrier::new(3);
+            let (finish, ready) = tokio::sync::oneshot::channel();
+            let mut first = pin!(cell.get_or_init(async || {
+                ready.await.unwrap();
+                [42; 32]
+            }));
+            assert!(poll_once(first.as_mut()).is_pending());
+
+            thread::scope(|scope| {
+                scope.spawn(|| {
+                    start.wait();
+                    assert_eq!(
+                        cell.get_or_init(async || unreachable!()).block_on(),
+                        &[42; 32]
+                    );
+                });
+                scope.spawn(|| {
+                    start.wait();
+                    let _ = poll_once(pin!(cell.get_or_init(async || unreachable!())));
+                });
+                start.wait();
+                finish.send(()).unwrap();
+                assert_eq!(expect_ready(poll_once(first.as_mut())), &[42; 32]);
+            });
+        }
+    });
+}
+
+#[test]
+fn taking_the_value_allows_reinitialization() {
+    let mut cell = OnceCell::from_value(0);
+    for value in 0..3 {
+        assert_eq!(cell.take(), Some(value));
+        assert_eq!(
+            expect_ready(poll_once(pin!(cell.get_or_init(async || value + 1)))),
+            &(value + 1)
+        );
+    }
 }
 
 #[tokio::test]
