@@ -57,6 +57,9 @@ use crate::internal::mutex::Mutex;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
+#[cfg(test)]
+mod tests;
+
 /// A synchronization primitive for multiple tasks that need to wait for each other.
 ///
 /// See the [module level documentation](self) for more.
@@ -68,8 +71,20 @@ pub struct Barrier {
 
 struct BarrierState {
     arrived: u32,
-    generation: usize,
+    /// Identifies the generation that is still collecting arrivals.
+    generation: u64,
     waiters: WakerSet,
+}
+
+impl BarrierState {
+    /// Returns whether the generation a waiter joined has completed.
+    ///
+    /// The counter wraps, so this compares identity rather than order. A woken waiter would take
+    /// its generation for the current one again only if a full `u64` cycle of generations completed
+    /// before it was polled or dropped.
+    fn is_completed(&self, generation: u64) -> bool {
+        self.generation != generation
+    }
 }
 
 impl fmt::Debug for BarrierState {
@@ -186,7 +201,7 @@ impl Barrier {
             // the state lock, then wake the detached followers after releasing it.
             if state.arrived == self.n {
                 state.arrived = 0;
-                state.generation += 1;
+                state.generation = state.generation.wrapping_add(1);
                 let mut wakers = state.waiters.take_all();
                 drop(state);
                 wakers.wake_all();
@@ -212,7 +227,7 @@ impl Barrier {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 struct BarrierWait<'a> {
     token: Option<WakerToken>,
-    generation: usize,
+    generation: u64,
     barrier: &'a Barrier,
 }
 
@@ -235,7 +250,7 @@ impl Future for BarrierWait<'_> {
         } = self.get_mut();
 
         let mut state = barrier.state.lock();
-        if *generation < state.generation {
+        if state.is_completed(*generation) {
             // Completion advances the generation and detaches its old waiters under this same lock,
             // so no registration represented by this token remains in the waker set.
             *token = None;
@@ -256,7 +271,7 @@ impl Drop for BarrierWait<'_> {
         }
 
         let mut state = self.barrier.state.lock();
-        if self.generation != state.generation {
+        if state.is_completed(self.generation) {
             // Advancing the generation detached this registration before making the new generation
             // visible under the same lock.
             self.token = None;

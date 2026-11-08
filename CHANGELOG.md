@@ -38,6 +38,7 @@ All notable changes to this project will be documented in this file.
 
 * Prevent `OnceMap` from keeping an empty entry when a computation fails, panics, or is cancelled while a concurrent `get` looks up the same key.
 * Prevent `OnceMap` and `singleflight::Group` from leaking entries or values when a duplicate key's destructor panics, including when the original computation is cancelled during that destructor.
+* Fix `Barrier` on 32-bit targets after 2^32 completed generations, where debug builds panicked and stopped releasing waiters, and release builds could panic or make a waiter miss its wakeup.
 
 ### Improvements
 
