@@ -164,17 +164,6 @@ impl Semaphore {
         self.distribute_permits(n, self.waiters.lock());
     }
 
-    /// Releases `n` permits by acquiring the queue lock directly.
-    ///
-    /// Use this when no permits can be available, as when a mutex guard holds its only permit,
-    /// to skip the speculative attempt in [`release`](Self::release).
-    /// This method also works when permits are available.
-    pub fn release_with_lock(&self, n: usize) {
-        if n != 0 {
-            self.distribute_permits(n, self.waiters.lock());
-        }
-    }
-
     /// Releases `n` permits only if the queue contains waiters when locked.
     #[cfg(feature = "broadcast")]
     pub fn release_if_waiters(&self, n: usize) {
@@ -531,24 +520,6 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(semaphore.available_permits(), usize::MAX);
         assert!(semaphore.waiters.lock().is_empty());
-    }
-
-    #[test]
-    fn release_with_lock_hands_permits_to_waiters() {
-        let semaphore = Semaphore::new(1);
-        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-        let waker = Waker::from(counter.clone());
-        assert!(semaphore.try_acquire(1));
-        let mut acquire = semaphore.acquire(1);
-        assert!(acquire.poll_once(&waker).is_pending());
-
-        semaphore.release_with_lock(1);
-        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
-        assert_eq!(semaphore.available_permits(), 0);
-        assert!(acquire.poll_once(&waker).is_ready());
-
-        semaphore.release_with_lock(1);
-        assert_eq!(semaphore.available_permits(), 1);
     }
 
     #[test]

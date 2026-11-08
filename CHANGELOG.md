@@ -46,6 +46,7 @@ All notable changes to this project will be documented in this file.
 
 * Reduce intermediate payload copies in bounded MPSC receives, especially for large inline messages.
 * Transfer reclaimed broadcast head messages directly to receivers, avoiding an extra payload `Arc` clone and unnecessary blocked-sender bookkeeping.
+* Reduce the cost of acquiring and releasing an uncontended `Mutex` by avoiding its internal wait-queue lock.
 * Reduce the cost of initializing an uncontended `OnceCell` by avoiding its internal wait-queue lock.
 * Reduce the cost of polling a pending oneshot receive again from the same task, which now keeps its registered waker instead of cloning and dropping it.
 * Reduce the state kept by futures waiting for a `Mutex`, `RwLock`, `Semaphore`, `Once`, `OnceCell`, or bounded broadcast capacity, making lock, permit acquisition, and bounded broadcast send futures smaller.
