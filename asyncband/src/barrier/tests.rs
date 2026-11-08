@@ -38,42 +38,29 @@ fn poll_wait(wait: Pin<&mut impl Future<Output = BarrierWaitResult>>, waker: &Wa
 }
 
 #[test]
-fn a_woken_follower_completes_across_generation_wraparound() {
-    let barrier = Barrier::new(2);
-    barrier.state.lock().generation = u64::MAX;
-    let noop = Waker::noop();
-    let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-    let waker = Waker::from(counter.clone());
+fn a_woken_follower_across_wraparound_preserves_the_next_generation() {
+    for poll_before_drop in [false, true] {
+        let barrier = Barrier::new(2);
+        barrier.state.lock().generation = u64::MAX;
+        let noop = Waker::noop();
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(counter.clone());
 
-    let mut old = pin!(barrier.wait());
-    assert_eq!(poll_wait(old.as_mut(), noop), Poll::Pending);
-    assert_eq!(poll_wait(pin!(barrier.wait()), noop), Poll::Ready(true));
+        let mut old = Box::pin(barrier.wait());
+        assert_eq!(poll_wait(old.as_mut(), noop), Poll::Pending);
+        assert_eq!(poll_wait(pin!(barrier.wait()), noop), Poll::Ready(true));
 
-    // The next generation reuses the slot the old follower registered in.
-    let mut next = pin!(barrier.wait());
-    assert_eq!(poll_wait(next.as_mut(), &waker), Poll::Pending);
+        // The next generation reuses the slot the old follower registered in.
+        let mut next = pin!(barrier.wait());
+        assert_eq!(poll_wait(next.as_mut(), &waker), Poll::Pending);
 
-    assert_eq!(poll_wait(old.as_mut(), noop), Poll::Ready(false));
-    assert_eq!(poll_wait(pin!(barrier.wait()), noop), Poll::Ready(true));
-    assert_eq!(counter.0.load(Ordering::Relaxed), 1);
-}
+        if poll_before_drop {
+            assert_eq!(poll_wait(old.as_mut(), noop), Poll::Ready(false));
+        }
+        drop(old);
 
-#[test]
-fn dropping_a_woken_follower_across_wraparound_keeps_the_next_generation_registered() {
-    let barrier = Barrier::new(2);
-    barrier.state.lock().generation = u64::MAX;
-    let noop = Waker::noop();
-    let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-    let waker = Waker::from(counter.clone());
-
-    let mut old = Box::pin(barrier.wait());
-    assert_eq!(poll_wait(old.as_mut(), noop), Poll::Pending);
-    assert_eq!(poll_wait(pin!(barrier.wait()), noop), Poll::Ready(true));
-
-    let mut next = pin!(barrier.wait());
-    assert_eq!(poll_wait(next.as_mut(), &waker), Poll::Pending);
-    drop(old);
-
-    assert_eq!(poll_wait(pin!(barrier.wait()), noop), Poll::Ready(true));
-    assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+        assert_eq!(poll_wait(pin!(barrier.wait()), noop), Poll::Ready(true));
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+        assert_eq!(poll_wait(next.as_mut(), &waker), Poll::Ready(false));
+    }
 }

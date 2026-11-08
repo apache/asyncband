@@ -71,20 +71,11 @@ pub struct Barrier {
 
 struct BarrierState {
     arrived: u32,
-    /// Identifies the generation that is still collecting arrivals.
+    // Identifies the generation collecting arrivals. Compare identity, not order: the counter
+    // wraps, and woken waiters may remain unpolled while later generations complete. Using u64
+    // keeps an old waiter from matching again unless it survives a full 2^64-generation cycle.
     generation: u64,
     waiters: WakerSet,
-}
-
-impl BarrierState {
-    /// Returns whether the generation a waiter joined has completed.
-    ///
-    /// The counter wraps, so this compares identity rather than order. A woken waiter would take
-    /// its generation for the current one again only if a full `u64` cycle of generations completed
-    /// before it was polled or dropped.
-    fn is_completed(&self, generation: u64) -> bool {
-        self.generation != generation
-    }
 }
 
 impl fmt::Debug for BarrierState {
@@ -163,6 +154,7 @@ impl Barrier {
     ///
     /// The barrier holds the current task until all `n` participants have arrived. The final
     /// participant is designated as the leader for this generation.
+    /// The next generation can begin before all released waiters have resumed execution.
     ///
     /// # Cancel safety
     ///
@@ -240,7 +232,7 @@ impl Future for BarrierWait<'_> {
                 return Poll::Ready(BarrierWaitResult(true));
             }
             this.generation = state.generation;
-        } else if state.is_completed(this.generation) {
+        } else if state.generation != this.generation {
             // Completion advances the generation and detaches its old waiters under this same lock,
             // so no registration represented by this token remains in the waker set.
             this.token = None;
@@ -261,7 +253,7 @@ impl Drop for BarrierWait<'_> {
         }
 
         let mut state = self.barrier.state.lock();
-        if state.is_completed(self.generation) {
+        if state.generation != self.generation {
             // Advancing the generation detached this registration before making the new generation
             // visible under the same lock.
             self.token = None;
