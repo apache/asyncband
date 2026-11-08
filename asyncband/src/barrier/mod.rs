@@ -57,6 +57,9 @@ use crate::internal::mutex::Mutex;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
+#[cfg(test)]
+mod tests;
+
 /// A synchronization primitive for multiple tasks that need to wait for each other.
 ///
 /// See the [module level documentation](self) for more.
@@ -68,7 +71,10 @@ pub struct Barrier {
 
 struct BarrierState {
     arrived: u32,
-    generation: usize,
+    // Identifies the generation collecting arrivals. Compare identity, not order: the counter
+    // wraps, and woken waiters may remain unpolled while later generations complete. Using u64
+    // keeps an old waiter from matching again unless it survives a full 2^64-generation cycle.
+    generation: u64,
     waiters: WakerSet,
 }
 
@@ -177,43 +183,24 @@ impl Barrier {
     /// # }
     /// ```
     pub async fn wait(&self) -> BarrierWaitResult {
-        let generation = {
-            let mut state = self.state.lock();
-            let generation = state.generation;
-            state.arrived += 1;
-
-            // The final arrival completes this generation. Advance the generation while holding
-            // the state lock, then wake the detached followers after releasing it.
-            if state.arrived == self.n {
-                state.arrived = 0;
-                state.generation += 1;
-                let mut wakers = state.waiters.take_all();
-                drop(state);
-                wakers.wake_all();
-                return BarrierWaitResult(true);
-            }
-
-            generation
-        };
-
-        let fut = BarrierWait {
-            token: None,
-            generation,
+        BarrierWait {
             barrier: self,
-        };
-        fut.await;
-        BarrierWaitResult(false)
+            generation: 0,
+            token: None,
+        }
+        .await
     }
 }
 
-/// A future returned by [`Barrier::wait()`].
-///
-/// This future will complete when all tasks have reached the barrier point.
+/// The future awaited by [`Barrier::wait()`]. Its first poll records the arrival.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 struct BarrierWait<'a> {
-    token: Option<WakerToken>,
-    generation: usize,
     barrier: &'a Barrier,
+    /// The generation joined by the first poll, meaningful while `token` is set.
+    generation: u64,
+    /// The follower's registration. `None` also means not yet arrived, so this must not be polled
+    /// after `Ready`, which the `async fn` in [`Barrier::wait`] guarantees.
+    token: Option<WakerToken>,
 }
 
 impl fmt::Debug for BarrierWait<'_> {
@@ -225,24 +212,33 @@ impl fmt::Debug for BarrierWait<'_> {
 }
 
 impl Future for BarrierWait<'_> {
-    type Output = ();
+    type Output = BarrierWaitResult;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self {
-            token,
-            generation,
-            barrier,
-        } = self.get_mut();
+        let this = self.get_mut();
+        let mut state = this.barrier.state.lock();
 
-        let mut state = barrier.state.lock();
-        if *generation < state.generation {
+        if this.token.is_none() {
+            state.arrived += 1;
+            // The final arrival completes this generation. Advance the generation while holding
+            // the state lock, then wake the detached followers after releasing it.
+            if state.arrived == this.barrier.n {
+                state.arrived = 0;
+                state.generation = state.generation.wrapping_add(1);
+                let mut wakers = state.waiters.take_all();
+                drop(state);
+                wakers.wake_all();
+                return Poll::Ready(BarrierWaitResult(true));
+            }
+            this.generation = state.generation;
+        } else if state.generation != this.generation {
             // Completion advances the generation and detaches its old waiters under this same lock,
             // so no registration represented by this token remains in the waker set.
-            *token = None;
-            return Poll::Ready(());
+            this.token = None;
+            return Poll::Ready(BarrierWaitResult(false));
         }
 
-        let retired_waker = state.waiters.register(token, cx.waker());
+        let retired_waker = state.waiters.register(&mut this.token, cx.waker());
         drop(state);
         drop(retired_waker);
         Poll::Pending
@@ -256,7 +252,7 @@ impl Drop for BarrierWait<'_> {
         }
 
         let mut state = self.barrier.state.lock();
-        if self.generation != state.generation {
+        if state.generation != self.generation {
             // Advancing the generation detached this registration before making the new generation
             // visible under the same lock.
             self.token = None;
