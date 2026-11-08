@@ -154,7 +154,6 @@ impl Barrier {
     ///
     /// The barrier holds the current task until all `n` participants have arrived. The final
     /// participant is designated as the leader for this generation.
-    /// The next generation can begin before all released waiters have resumed execution.
     ///
     /// # Cancel safety
     ///
