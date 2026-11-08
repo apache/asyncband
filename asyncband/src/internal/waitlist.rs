@@ -23,7 +23,45 @@ use crate::internal::arena::SlotId;
 pub struct WaitList<T> {
     head: Option<WaiterId>,
     tail: Option<WaiterId>,
-    nodes: Arena<Node<T>>,
+    nodes: Nodes<T>,
+}
+
+/// Node storage that stays inline until two nodes must exist at once.
+///
+/// The inline node occupies the ID an empty arena issues first, so it moves into the arena under
+/// the ID its owner already holds. The arena is then retained for reuse. Sharing storage between
+/// the variants keeps an idle list close to the size of the arena alone.
+#[derive(Debug)]
+enum Nodes<T> {
+    Inline(Option<Node<T>>),
+    Arena(Arena<Node<T>>),
+}
+
+impl<T> Nodes<T> {
+    #[inline]
+    fn insert(&mut self, node: Node<T>) -> SlotId {
+        match self {
+            Self::Inline(slot @ None) => {
+                *slot = Some(node);
+                SlotId::FIRST
+            }
+            Self::Inline(slot) => {
+                let first = slot.take().expect("occupied inline node must exist");
+                self.move_to_arena(first, node)
+            }
+            Self::Arena(nodes) => nodes.insert(node),
+        }
+    }
+
+    #[cold]
+    fn move_to_arena(&mut self, first: Node<T>, node: Node<T>) -> SlotId {
+        let mut nodes = Arena::new();
+        let first_id = nodes.insert(first);
+        debug_assert_eq!(first_id, SlotId::FIRST);
+        let id = nodes.insert(node);
+        *self = Self::Arena(nodes);
+        id
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,7 +95,7 @@ impl<T> WaitList<T> {
         Self {
             head: None,
             tail: None,
-            nodes: Arena::new(),
+            nodes: Nodes::Inline(None),
         }
     }
 
@@ -155,19 +193,37 @@ impl<T> WaitList<T> {
             self.node(id).links.is_none(),
             "waiter must be unlinked before removal"
         );
-        self.nodes.remove(id.slot()).value
+        match &mut self.nodes {
+            Nodes::Inline(node) => node
+                .take()
+                .expect("waiter id must refer to an occupied node"),
+            Nodes::Arena(nodes) => nodes.remove(id.slot()),
+        }
+        .value
     }
 
+    #[inline]
     fn node(&self, id: WaiterId) -> &Node<T> {
-        self.nodes
-            .get(id.slot())
-            .expect("waiter id must refer to an occupied node")
+        match &self.nodes {
+            Nodes::Inline(node) => {
+                debug_assert_eq!(id.slot(), SlotId::FIRST);
+                node.as_ref()
+            }
+            Nodes::Arena(nodes) => nodes.get(id.slot()),
+        }
+        .expect("waiter id must refer to an occupied node")
     }
 
+    #[inline]
     fn node_mut(&mut self, id: WaiterId) -> &mut Node<T> {
-        self.nodes
-            .get_mut(id.slot())
-            .expect("waiter id must refer to an occupied node")
+        match &mut self.nodes {
+            Nodes::Inline(node) => {
+                debug_assert_eq!(id.slot(), SlotId::FIRST);
+                node.as_mut()
+            }
+            Nodes::Arena(nodes) => nodes.get_mut(id.slot()),
+        }
+        .expect("waiter id must refer to an occupied node")
     }
 
     fn linked_node_mut(&mut self, id: WaiterId) -> &mut Links {
@@ -179,7 +235,10 @@ impl<T> WaitList<T> {
 
     #[cfg(test)]
     pub fn occupied_len(&self) -> usize {
-        self.nodes.len()
+        match &self.nodes {
+            Nodes::Inline(node) => usize::from(node.is_some()),
+            Nodes::Arena(nodes) => nodes.len(),
+        }
     }
 }
 
@@ -252,5 +311,82 @@ mod tests {
             waiters.remove_unlinked_waiter(id);
         }
         assert!(waiters.is_empty());
+    }
+
+    #[test]
+    fn a_lone_waiter_stays_inline_across_reuse() {
+        let mut waiters = WaitList::new();
+
+        for value in 0..3 {
+            let id = waiters.push_back(value);
+            assert!(matches!(waiters.nodes, Nodes::Inline(Some(_))));
+            assert_eq!(waiters.unlink_first_waiter(|_| true).unwrap().0, id);
+            assert_eq!(waiters.remove_unlinked_waiter(id), value);
+        }
+        assert!(matches!(waiters.nodes, Nodes::Inline(None)));
+    }
+
+    #[test]
+    fn a_second_waiter_moves_the_first_to_the_arena_under_its_id() {
+        let mut waiters = WaitList::new();
+        let first = waiters.push_back(1);
+        let second = waiters.push_back(2);
+        assert!(matches!(waiters.nodes, Nodes::Arena(_)));
+
+        assert_eq!(*waiters.waiter_mut(first), 1);
+        assert_eq!(*waiters.waiter_mut(second), 2);
+        for expected in [(first, 1), (second, 2)] {
+            let (id, value) = waiters.unlink_first_waiter(|_| true).unwrap();
+            assert_eq!((id, *value), expected);
+            waiters.remove_unlinked_waiter(id);
+        }
+        assert!(waiters.is_empty());
+    }
+
+    #[test]
+    fn push_front_orders_a_new_head_before_the_inline_waiter() {
+        let mut waiters = WaitList::new();
+        let inline = waiters.push_back(2);
+        let head = waiters.push_front(1);
+
+        for expected in [(head, 1), (inline, 2)] {
+            let (id, value) = waiters.unlink_first_waiter(|_| true).unwrap();
+            assert_eq!((id, *value), expected);
+            waiters.remove_unlinked_waiter(id);
+        }
+        assert!(waiters.is_empty());
+    }
+
+    #[test]
+    fn a_detached_inline_waiter_stays_detached_when_moved() {
+        let mut waiters = WaitList::new();
+        let first = waiters.push_back(1);
+        assert_eq!(waiters.unlink_first_waiter(|_| true).unwrap().0, first);
+        assert!(waiters.is_empty());
+
+        let second = waiters.push_back(2);
+        assert_eq!(waiters.occupied_len(), 2);
+        assert_eq!(*waiters.waiter_mut(first), 1);
+        assert_eq!(waiters.remove_unlinked_waiter(first), 1);
+
+        assert_eq!(waiters.unlink_first_waiter(|_| true).unwrap().0, second);
+        assert!(waiters.is_empty());
+        assert_eq!(waiters.remove_unlinked_waiter(second), 2);
+        assert_eq!(waiters.occupied_len(), 0);
+    }
+
+    #[test]
+    fn the_arena_is_retained_after_the_queue_drains() {
+        let mut waiters = WaitList::new();
+        waiters.push_back(1);
+        waiters.push_back(2);
+        while let Some((id, _)) = waiters.unlink_first_waiter(|_| true) {
+            waiters.remove_unlinked_waiter(id);
+        }
+        assert!(matches!(waiters.nodes, Nodes::Arena(_)));
+
+        let id = waiters.push_back(3);
+        assert!(matches!(waiters.nodes, Nodes::Arena(_)));
+        assert_eq!(*waiters.waiter_mut(id), 3);
     }
 }

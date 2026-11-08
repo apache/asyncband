@@ -46,6 +46,22 @@ fn handoff_permit(bencher: Bencher) {
     });
 }
 
+fn reused_handoff_permit(bencher: Bencher) {
+    let mut context = bench_context();
+    let semaphore = Semaphore::new(0);
+
+    bencher.bench_local(|| {
+        let mut acquire = pin!(semaphore.acquire(black_box(1)));
+        poll_pending(acquire.as_mut(), &mut context);
+
+        semaphore.release(black_box(1));
+        let permit = poll_pinned_ready(acquire.as_mut(), &mut context);
+        permit.forget();
+
+        black_box(semaphore.available_permits())
+    });
+}
+
 fn try_acquire_release(bencher: Bencher) {
     let semaphore = Semaphore::new(1);
 
@@ -142,6 +158,7 @@ fn cancel_pending_owned_batch(bencher: Bencher, queue_depth: usize) {
 
 pub fn register(runner: &mut Runner) {
     primitive!(runner, handoff_permit, 3_000_000);
+    primitive!(runner, reused_handoff_permit, 10_000_000);
     primitive!(runner, try_acquire_release, 30_000_000);
     primitive!(runner, try_acquire_release_with_spare_permits, 60_000_000);
     primitive!(runner, owned_try_acquire_release, 48_000_000);

@@ -31,6 +31,7 @@ use std::thread;
 use asyncband::blocking::FutureExt;
 use asyncband::semaphore::Semaphore;
 use tests_integration::WakeCounter;
+use tests_integration::assert_completes_without_deadlock;
 use tests_integration::expect_ready;
 use tests_integration::poll_with;
 
@@ -204,6 +205,136 @@ fn cancellation_restores_permits_before_dropping_waker() {
     drop(waker);
     drop(acquire);
     assert_eq!(Arc::strong_count(&semaphore), 1);
+}
+
+#[test]
+fn queued_acquires_keep_their_order_as_the_queue_grows() {
+    let semaphore = Semaphore::new(0);
+    let mut first = pin!(semaphore.acquire(2));
+    let mut second = pin!(semaphore.acquire(1));
+    let (first_waker, first_wakes) = WakeCounter::new();
+    let (second_waker, second_wakes) = WakeCounter::new();
+
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+
+    // The head of the queue takes a partial grant, so the later single-permit waiter stays queued.
+    semaphore.release(1);
+    assert_eq!((first_wakes.count(), second_wakes.count()), (0, 0));
+
+    semaphore.release(1);
+    assert_eq!((first_wakes.count(), second_wakes.count()), (1, 0));
+    expect_ready(poll_with(first.as_mut(), &first_waker)).forget();
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+
+    semaphore.release(1);
+    assert_eq!(second_wakes.count(), 1);
+    expect_ready(poll_with(second.as_mut(), &second_waker)).forget();
+    assert_eq!(semaphore.available_permits(), 0);
+}
+
+#[test]
+fn cancelling_a_partly_granted_first_waiter_passes_its_permits_on() {
+    let semaphore = Semaphore::new(0);
+    let mut first = Box::pin(semaphore.acquire(2));
+    let mut second = pin!(semaphore.acquire(1));
+    let (waker, wakes) = WakeCounter::new();
+
+    assert!(poll_with(first.as_mut(), Waker::noop()).is_pending());
+    assert!(poll_with(second.as_mut(), &waker).is_pending());
+    semaphore.release(1);
+    assert_eq!(wakes.count(), 0);
+
+    drop(first);
+    assert_eq!(wakes.count(), 1);
+    expect_ready(poll_with(second.as_mut(), &waker)).forget();
+    assert_eq!(semaphore.available_permits(), 0);
+}
+
+#[test]
+fn cancelling_a_fully_granted_lone_waiter_returns_its_permits() {
+    let semaphore = Semaphore::new(0);
+    let mut first = Box::pin(semaphore.acquire(2));
+    let (waker, wakes) = WakeCounter::new();
+
+    assert!(poll_with(first.as_mut(), &waker).is_pending());
+    semaphore.release(2);
+    assert_eq!(wakes.take(), 1);
+    assert_eq!(semaphore.available_permits(), 0);
+
+    drop(first);
+    assert_eq!(semaphore.available_permits(), 2);
+
+    // The cancelled waiter's slot is free for the next one.
+    let mut next = pin!(semaphore.acquire(3));
+    assert!(poll_with(next.as_mut(), &waker).is_pending());
+    assert_eq!(semaphore.available_permits(), 0);
+    semaphore.release(1);
+    assert_eq!(wakes.count(), 1);
+    expect_ready(poll_with(next.as_mut(), &waker)).forget();
+}
+
+#[test]
+fn a_granted_first_waiter_keeps_its_permit_when_the_queue_grows() {
+    let semaphore = Semaphore::new(0);
+    let mut first = pin!(semaphore.acquire(1));
+    let mut second = pin!(semaphore.acquire(1));
+    let (first_waker, first_wakes) = WakeCounter::new();
+    let (second_waker, second_wakes) = WakeCounter::new();
+
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+    semaphore.release(1);
+    assert_eq!(first_wakes.count(), 1);
+
+    // The second waiter arrives while the granted first node has not been collected yet.
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+    let permit = expect_ready(poll_with(first.as_mut(), &first_waker));
+    assert_eq!(second_wakes.count(), 0);
+
+    drop(permit);
+    assert_eq!(second_wakes.count(), 1);
+    expect_ready(poll_with(second.as_mut(), &second_waker)).forget();
+    assert_eq!(semaphore.available_permits(), 0);
+}
+
+#[test]
+fn a_first_waiter_repolled_after_the_queue_grows_uses_its_latest_waker() {
+    let semaphore = Semaphore::new(0);
+    let mut first = pin!(semaphore.acquire(1));
+    let mut second = pin!(semaphore.acquire(1));
+    let (old_waker, old_wakes) = WakeCounter::new();
+    let (new_waker, new_wakes) = WakeCounter::new();
+
+    assert!(poll_with(first.as_mut(), &old_waker).is_pending());
+    assert!(poll_with(second.as_mut(), Waker::noop()).is_pending());
+    assert!(poll_with(first.as_mut(), &new_waker).is_pending());
+
+    semaphore.release(1);
+    assert_eq!((old_wakes.count(), new_wakes.count()), (0, 1));
+    expect_ready(poll_with(first.as_mut(), &new_waker)).forget();
+}
+
+#[test]
+fn concurrent_first_waiters_on_a_fresh_semaphore_do_not_miss_a_wakeup() {
+    const ROUNDS: usize = if cfg!(miri) { 8 } else { 500 };
+
+    assert_completes_without_deadlock(|| {
+        for _ in 0..ROUNDS {
+            let semaphore = Semaphore::new(0);
+            let start = Barrier::new(3);
+            thread::scope(|scope| {
+                for _ in 0..2 {
+                    scope.spawn(|| {
+                        start.wait();
+                        semaphore.acquire(1).block_on().forget();
+                    });
+                }
+                start.wait();
+                semaphore.release(2);
+            });
+            assert_eq!(semaphore.available_permits(), 0);
+        }
+    });
 }
 
 #[test]

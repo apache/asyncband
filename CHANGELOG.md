@@ -45,6 +45,7 @@ All notable changes to this project will be documented in this file.
 * Reduce the cost of initializing an uncontended `OnceCell` by avoiding its internal wait-queue lock.
 * Reduce the cost of polling a pending oneshot receive again from the same task, which now keeps its registered waker instead of cloning and dropping it.
 * Reduce the state kept by futures waiting for a `Mutex`, `RwLock`, `Semaphore`, `Once`, `OnceCell`, or bounded broadcast capacity, making lock, permit acquisition, and bounded broadcast send futures smaller.
+* Avoid allocating wait-queue storage while only one task at a time waits on a `Semaphore`, `Mutex`, `RwLock`, `Condvar`, event, or MPSC, MPMC, or SPMC channel, which makes the first wait on a new primitive cheaper.
 * Reduce the cost of `Barrier::wait` for participants that are not the last to arrive, which now record their arrival and register for wakeup under one lock acquisition instead of two.
 
 ## v0.7.4 (2026-10-25)

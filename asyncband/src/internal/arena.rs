@@ -29,6 +29,9 @@ use std::num::NonZeroUsize;
 pub struct SlotId(NonZeroUsize);
 
 impl SlotId {
+    /// The ID an empty arena issues for its first inserted value.
+    pub const FIRST: Self = Self(NonZeroUsize::MIN);
+
     fn from_index(index: usize) -> Self {
         // `Slot<T>` is non-zero-sized, so a Vec of slots cannot reach `usize::MAX` elements.
         let encoded = index
