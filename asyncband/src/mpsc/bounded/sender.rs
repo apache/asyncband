@@ -86,23 +86,11 @@ impl<T> BoundedSender<T> {
     /// unavailable, or [`reserve`](Self::reserve) to wait for capacity before constructing the
     /// message.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
-        // Keep the payload here when full instead of returning it through TrySendError.
-        {
-            let mut state = self.shared.lock();
-            match state.acquire() {
-                Ok(()) => {
-                    state.queue.push_back(value);
-                    let wake = state.recv_waker.take();
-                    drop(state);
-                    if let Some(waker) = wake {
-                        waker.wake();
-                    }
-                    return Ok(());
-                }
-                Err(TrySendError::Disconnected(())) => return Err(SendError::new(value)),
-                Err(TrySendError::Full(())) => {}
-            }
-        }
+        let value = match self.try_send(value) {
+            Ok(()) => return Ok(()),
+            Err(TrySendError::Disconnected(value)) => return Err(SendError::new(value)),
+            Err(TrySendError::Full(value)) => value,
+        };
         match self.reserve().await {
             Ok(permit) => permit.send(value),
             Err(_) => Err(SendError::new(value)),
