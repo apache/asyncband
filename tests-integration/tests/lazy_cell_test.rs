@@ -20,14 +20,24 @@ use std::future::Ready;
 use std::future::pending;
 use std::future::poll_fn;
 use std::future::ready;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::task::Poll;
+use std::thread;
 
+use asyncband::blocking::FutureExt;
 use asyncband::once::LazyCell;
+use tests_integration::WakeCounter;
+use tests_integration::assert_completes_without_deadlock;
+use tests_integration::expect_ready;
+use tests_integration::poll_once;
+use tests_integration::poll_with;
 use tokio::sync::Notify;
 
 struct DropPanic;
@@ -447,4 +457,137 @@ async fn cancellation_preserves_inline_initialization_future() {
     resume.notify_one();
     assert_eq!(*LazyCell::force_pin(lazy.as_ref()).await, 42);
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn queued_caller_resumes_the_same_future_after_the_driver_is_cancelled() {
+    let starts = Cell::new(0);
+    let (finish, ready) = tokio::sync::oneshot::channel();
+    let lazy = pin!(LazyCell::new({
+        let starts = &starts;
+        async move || {
+            starts.set(starts.get() + 1);
+            ready.await.unwrap();
+            42
+        }
+    }));
+    let mut driver = Box::pin(LazyCell::force_pin(lazy.as_ref()));
+    let mut queued = pin!(LazyCell::force_pin(lazy.as_ref()));
+    let (waker, wakes) = WakeCounter::new();
+
+    assert!(poll_once(driver.as_mut()).is_pending());
+    assert!(poll_with(queued.as_mut(), &waker).is_pending());
+    drop(driver);
+    assert_eq!(wakes.take(), 1);
+
+    assert!(poll_with(queued.as_mut(), &waker).is_pending());
+    finish.send(()).unwrap();
+    assert_eq!(wakes.take(), 1);
+    assert_eq!(expect_ready(poll_with(queued.as_mut(), &waker)), &42);
+    assert_eq!(starts.get(), 1);
+}
+
+#[test]
+fn queued_caller_observes_poison_after_the_driver_panics() {
+    let (finish, ready) = tokio::sync::oneshot::channel::<()>();
+    let lazy = pin!(LazyCell::new(async move || -> u8 {
+        ready.await.unwrap();
+        panic!("initializer panic");
+    }));
+    let mut driver = pin!(LazyCell::force_pin(lazy.as_ref()));
+    let mut queued = pin!(LazyCell::force_pin(lazy.as_ref()));
+    let (waker, wakes) = WakeCounter::new();
+
+    assert!(poll_once(driver.as_mut()).is_pending());
+    assert!(poll_with(queued.as_mut(), &waker).is_pending());
+    finish.send(()).unwrap();
+    let panic = catch_unwind(AssertUnwindSafe(|| poll_once(driver.as_mut()))).unwrap_err();
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"initializer panic"));
+    assert_eq!(wakes.count(), 1);
+
+    let panic = catch_unwind(AssertUnwindSafe(|| poll_with(queued.as_mut(), &waker))).unwrap_err();
+    assert_eq!(
+        panic.downcast_ref::<&str>(),
+        Some(&"LazyCell instance has previously been poisoned")
+    );
+    assert_eq!(LazyCell::get(&lazy), None);
+}
+
+#[test]
+fn cancelling_a_partial_waiter_does_not_start_another_driver() {
+    let (finish, ready) = tokio::sync::oneshot::channel();
+    let lazy = pin!(LazyCell::from_future(async move {
+        ready.await.unwrap();
+        2
+    }));
+    let mut driver = Box::pin(LazyCell::force_pin(lazy.as_ref()));
+    let mut cancelled = Box::pin(LazyCell::force_pin(lazy.as_ref()));
+    let mut next = pin!(LazyCell::force_pin(lazy.as_ref()));
+    let (waker, wakes) = WakeCounter::new();
+
+    assert!(poll_once(driver.as_mut()).is_pending());
+    // This waiter holds the spare permit, but still cannot drive the attempt.
+    assert!(poll_once(cancelled.as_mut()).is_pending());
+    assert!(poll_with(next.as_mut(), &waker).is_pending());
+    drop(cancelled);
+    assert_eq!(wakes.count(), 0);
+    assert!(poll_with(next.as_mut(), &waker).is_pending());
+
+    drop(driver);
+    assert_eq!(wakes.take(), 1);
+    finish.send(()).unwrap();
+    assert_eq!(expect_ready(poll_with(next.as_mut(), &waker)), &2);
+}
+
+#[test]
+fn cancelling_a_granted_waiter_passes_the_attempt_to_the_next() {
+    let (finish, ready) = tokio::sync::oneshot::channel();
+    let lazy = pin!(LazyCell::from_future(async move {
+        ready.await.unwrap();
+        3
+    }));
+    let mut driver = Box::pin(LazyCell::force_pin(lazy.as_ref()));
+    let mut cancelled = Box::pin(LazyCell::force_pin(lazy.as_ref()));
+    let mut next = pin!(LazyCell::force_pin(lazy.as_ref()));
+    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
+    let (next_waker, next_wakes) = WakeCounter::new();
+
+    assert!(poll_once(driver.as_mut()).is_pending());
+    assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
+    assert!(poll_with(next.as_mut(), &next_waker).is_pending());
+    drop(driver);
+    assert_eq!(cancelled_wakes.count(), 1);
+    assert_eq!(next_wakes.count(), 0);
+
+    drop(cancelled);
+    assert_eq!(next_wakes.take(), 1);
+    finish.send(()).unwrap();
+    assert_eq!(expect_ready(poll_with(next.as_mut(), &next_waker)), &3);
+}
+
+#[test]
+fn queued_caller_observes_completion_from_another_thread() {
+    assert_completes_without_deadlock(|| {
+        let (finish, ready) = tokio::sync::oneshot::channel();
+        let lazy = pin!(LazyCell::new(async move || {
+            ready.await.unwrap();
+            [42; 32]
+        }));
+        let lazy = lazy.as_ref();
+        let mut driver = pin!(LazyCell::force_pin(lazy));
+        assert!(poll_once(driver.as_mut()).is_pending());
+
+        let (registered, registration) = mpsc::channel();
+        thread::scope(|scope| {
+            scope.spawn(move || {
+                let mut waiter = pin!(LazyCell::force_pin(lazy));
+                assert!(poll_once(waiter.as_mut()).is_pending());
+                registered.send(()).unwrap();
+                assert_eq!(waiter.block_on(), &[42; 32]);
+            });
+            registration.recv().unwrap();
+            finish.send(()).unwrap();
+            assert_eq!(expect_ready(poll_once(driver.as_mut())), &[42; 32]);
+        });
+    });
 }
