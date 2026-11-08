@@ -15,12 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod force;
 mod get_or_init;
 mod wait;
 
 use benchmarks::harness::Runner;
 
 pub fn register(runner: &mut Runner) {
+    force::register(runner);
     get_or_init::register(runner);
     wait::register(runner);
 }

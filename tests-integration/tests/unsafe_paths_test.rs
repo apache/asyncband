@@ -213,3 +213,16 @@ fn lazy_cell_resumes_a_pinned_attempt_in_place() {
     let mut force = pin!(LazyCell::force_pin(lazy.as_ref()));
     assert_eq!(poll_once(force.as_mut()), Poll::Ready(&42));
 }
+
+#[test]
+fn lazy_cell_hands_a_pinned_attempt_to_a_queued_caller() {
+    let lazy = LazyCell::from_future(AddressSensitiveFuture::new());
+    let lazy = pin!(lazy);
+    let mut driver = Box::pin(LazyCell::force_pin(lazy.as_ref()));
+    let mut queued = pin!(LazyCell::force_pin(lazy.as_ref()));
+
+    assert!(poll_once(driver.as_mut()).is_pending());
+    assert!(poll_once(queued.as_mut()).is_pending());
+    drop(driver);
+    assert_eq!(poll_once(queued.as_mut()), Poll::Ready(&42));
+}

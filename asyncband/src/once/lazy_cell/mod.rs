@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::UnsafeCell;
 use std::fmt;
 use std::future::Future;
 use std::future::Pending;
@@ -28,8 +29,13 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread;
 
+use crate::internal::semaphore::Semaphore;
 use crate::internal::value_cell::ValueCell;
-use crate::mutex::Mutex;
+
+// Each forcing caller takes two of three permits, so only one can drive the attempt at a time. The
+// spare permit lets an uncontended release avoid locking the semaphore's wait queue.
+const PERMITS: usize = 3;
+const DRIVER_PERMITS: usize = 2;
 
 /// A thread-safe value initialized by a stored asynchronous function on first access.
 ///
@@ -111,9 +117,15 @@ use crate::mutex::Mutex;
 /// ```
 pub struct LazyCell<T, Fut, F = fn() -> Fut> {
     value: ValueCell<T>,
-    state: Mutex<State<F, Fut>>,
+    // Shared access to `state` requires the driver permits.
+    semaphore: Semaphore,
+    state: UnsafeCell<State<F, Fut>>,
     poisoned: AtomicBool,
 }
+
+// SAFETY: Shared access to the initializer state is serialized by the driver permits, so the state
+// only needs to be sendable, as with a mutex. The value is shared once initialized.
+unsafe impl<T: Send + Sync, Fut: Send, F: Send> Sync for LazyCell<T, Fut, F> {}
 
 // Keep mutually exclusive phases in an enum so an inline future shares storage with its
 // initializer instead of making the cell large enough to hold both at once.
@@ -162,7 +174,8 @@ impl<T, Fut, F> LazyCell<T, Fut, F> {
     {
         Self {
             value: ValueCell::new(),
-            state: Mutex::new(State::Initializer(Some(initializer))),
+            semaphore: Semaphore::new(PERMITS),
+            state: UnsafeCell::new(State::Initializer(Some(initializer))),
             poisoned: AtomicBool::new(false),
         }
     }
@@ -286,18 +299,20 @@ where
         }
         this_ref.assert_unpoisoned();
 
-        let mut state = this_ref.state.lock().await;
+        this_ref.semaphore.acquire(DRIVER_PERMITS).await;
+        let _permits = DriverPermits(&this_ref.semaphore);
         if let Some(value) = Self::get(this_ref) {
             return value;
         }
         this_ref.assert_unpoisoned();
 
-        // SAFETY: `this` remains pinned for the duration of the returned future. The state is
-        // stored in that cell, and a mutex guard never relocates its protected value.
-        let state = unsafe { Pin::new_unchecked(&mut *state) };
+        // SAFETY: The driver permits give this caller exclusive access to the state until they are
+        // released. `this` remains pinned for the duration of the returned future, and the state is
+        // stored inline in that cell.
+        let state = unsafe { Pin::new_unchecked(&mut *this_ref.state.get()) };
         let value = drive_pinned_attempt(state, &this_ref.poisoned).await;
 
-        // SAFETY: The state mutex serializes initialization, and the double check above verified
+        // SAFETY: The driver permits serialize initialization, and the double check above verified
         // that the value was not initialized by another caller.
         unsafe { this_ref.value.set(value) }
     }
@@ -426,7 +441,8 @@ where
     pub fn from_future(future: Fut) -> Self {
         Self {
             value: ValueCell::new(),
-            state: Mutex::new(State::Attempt(future)),
+            semaphore: Semaphore::new(PERMITS),
+            state: UnsafeCell::new(State::Attempt(future)),
             poisoned: AtomicBool::new(false),
         }
     }
@@ -439,7 +455,8 @@ impl<T> LazyCell<T, Pending<T>> {
     pub const fn from_value(value: T) -> Self {
         Self {
             value: ValueCell::from_value(value),
-            state: Mutex::new(State::Complete),
+            semaphore: Semaphore::new(PERMITS),
+            state: UnsafeCell::new(State::Complete),
             poisoned: AtomicBool::new(false),
         }
     }
@@ -463,6 +480,15 @@ impl<T: UnwindSafe, Fut: UnwindSafe, F: UnwindSafe> UnwindSafe for LazyCell<T, F
 impl<T: RefUnwindSafe + UnwindSafe, Fut: UnwindSafe, F: UnwindSafe> RefUnwindSafe
     for LazyCell<T, Fut, F>
 {
+}
+
+// Returns the driver permits when forcing completes, is cancelled, or unwinds.
+struct DriverPermits<'a>(&'a Semaphore);
+
+impl Drop for DriverPermits<'_> {
+    fn drop(&mut self) {
+        self.0.release(DRIVER_PERMITS);
+    }
 }
 
 struct PoisonOnPanic<'a>(&'a AtomicBool);
