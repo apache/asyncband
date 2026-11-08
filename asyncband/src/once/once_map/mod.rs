@@ -38,9 +38,13 @@ struct Entry<K, V> {
     cell: OnceCell<V>,
 }
 
-enum Lookup<K, V> {
+enum Lookup<'a, K, V, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
     Ready(V),
-    Pending(Arc<Entry<K, V>>),
+    Pending(ComputeCleanupGuard<'a, K, V, S>),
 }
 
 /// A hash map that runs computation only once for each key and stores the result.
@@ -75,39 +79,38 @@ where
     K: Eq + Hash,
     S: BuildHasher,
 {
-    fn get_or_insert(&self, key: K) -> Lookup<K, V>
+    fn get_or_insert(&self, key: K) -> Lookup<'_, K, V, S>
     where
         V: Clone,
     {
         let hash = self.hasher.hash_one(&key);
-        let entry = {
-            let mut entries = self.entries.lock();
-            if let Some(entry) = entries
-                .find(hash, |entry| entry.key.eq(&key))
-                .map(Arc::clone)
-            {
-                entry
-            } else {
-                let entry = Arc::new(Entry {
-                    hash,
-                    key,
-                    cell: OnceCell::new(),
-                });
-                entries.insert_unique(hash, Arc::clone(&entry), |entry| entry.hash);
-                entry
-            }
-        };
+        let mut entries = self.entries.lock();
+        if let Some(entry) = entries.find(hash, |entry| entry.key.eq(&key)) {
+            let entry = Arc::clone(entry);
+            drop(entries);
+            let lookup = self.classify(entry);
+            // Own the value or cleanup guard before a duplicate key can unwind or reenter.
+            drop(key);
+            return lookup;
+        }
 
-        Self::classify(entry)
+        let entry = Arc::new(Entry {
+            hash,
+            key,
+            cell: OnceCell::new(),
+        });
+        entries.insert_unique(hash, Arc::clone(&entry), |entry| entry.hash);
+        drop(entries);
+        self.classify(entry)
     }
 
-    fn classify(entry: Arc<Entry<K, V>>) -> Lookup<K, V>
+    fn classify(&self, entry: Arc<Entry<K, V>>) -> Lookup<'_, K, V, S>
     where
         V: Clone,
     {
         match entry.cell.get().cloned() {
             Some(value) => Lookup::Ready(value),
-            None => Lookup::Pending(entry),
+            None => Lookup::Pending(ComputeCleanupGuard::new(self, entry)),
         }
     }
 
@@ -309,12 +312,11 @@ where
     where
         F: AsyncFnOnce() -> V,
     {
-        let entry = match self.get_or_insert(key) {
+        let guard = match self.get_or_insert(key) {
             Lookup::Ready(value) => return value,
-            Lookup::Pending(entry) => entry,
+            Lookup::Pending(guard) => guard,
         };
 
-        let guard = ComputeCleanupGuard::new(self, entry);
         let result = guard.entry().cell.get_or_init(func).await.clone();
         guard.dismiss();
         result
@@ -336,12 +338,11 @@ where
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        let entry = match self.get_or_insert(key) {
+        let guard = match self.get_or_insert(key) {
             Lookup::Ready(value) => return Ok(value),
-            Lookup::Pending(entry) => entry,
+            Lookup::Pending(guard) => guard,
         };
 
-        let guard = ComputeCleanupGuard::new(self, entry);
         let result = guard.entry().cell.get_or_try_init(func).await?.clone();
         guard.dismiss();
         Ok(result)

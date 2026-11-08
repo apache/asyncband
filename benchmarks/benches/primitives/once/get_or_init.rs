@@ -43,6 +43,19 @@ fn initialize_cell(bencher: Bencher) {
     });
 }
 
+fn initialized_cell(bencher: Bencher) {
+    let mut context = bench_context();
+    let cell = OnceCell::from_value(1usize);
+
+    bencher.bench_local(|| {
+        let value = poll_ready(
+            black_box(&cell).get_or_init(|| async { unreachable!() }),
+            &mut context,
+        );
+        black_box(*value)
+    });
+}
+
 fn initialize_cell_waiter_batch(bencher: Bencher, waiter_count: usize) {
     let mut context = bench_context();
 
@@ -75,6 +88,7 @@ fn initialize_cell_waiter_batch(bencher: Bencher, waiter_count: usize) {
 
 pub fn register(runner: &mut Runner) {
     primitive!(runner, initialize_cell, 6_000_000);
+    primitive!(runner, initialized_cell, 30_000_000);
     for &arg in WAITER_COUNTS {
         primitive!(
             runner,

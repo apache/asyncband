@@ -37,12 +37,16 @@ All notable changes to this project will be documented in this file.
 ### Bug fixes
 
 * Prevent `OnceMap` from keeping an empty entry when a computation fails, panics, or is cancelled while a concurrent `get` looks up the same key.
+* Prevent `OnceMap` and `singleflight::Group` from leaking entries or values when a duplicate key's destructor panics, including when the original computation is cancelled during that destructor.
+* Fix `Barrier` on 32-bit targets after 2^32 completed generations, where debug builds panicked and stopped releasing waiters, and release builds could panic or make a waiter miss its wakeup.
 
 ### Improvements
 
 * Reduce intermediate payload copies in bounded MPSC sends and receives, especially for large inline messages.
+* Reduce the cost of initializing an uncontended `OnceCell` by avoiding its internal wait-queue lock.
 * Reduce the cost of polling a pending oneshot receive again from the same task, which now keeps its registered waker instead of cloning and dropping it.
 * Reduce the state kept by futures waiting for a `Mutex`, `RwLock`, `Semaphore`, `Once`, `OnceCell`, or bounded broadcast capacity, making lock, permit acquisition, and bounded broadcast send futures smaller.
+* Reduce the cost of `Barrier::wait` for participants that are not the last to arrive, which now record their arrival and register for wakeup under one lock acquisition instead of two.
 
 ## v0.7.4 (2026-10-25)
 
