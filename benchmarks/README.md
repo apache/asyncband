@@ -28,6 +28,8 @@ cargo x bench --no-run
 cargo x bench -- --test
 ```
 
+The `upgradable_stages` target is selected explicitly so it does not interfere with the default benchmark listing. CI smoke-tests it in a separate command.
+
 ## Compare implementations
 
 ```shell
@@ -63,4 +65,4 @@ The `primitives` target measures Asyncband-only operation cycles for focused bef
 
 For an upgradable-lock breakdown, run `cargo x bench --bench upgradable_stages`. It reports uncontended acquisition and promotion separately on one reused lock, then measures acquisition while an ordinary reader is held. It also measures promotion with 1, 4, and 16 readers held, promotion while a writer waits behind the reservation, and a later upgradable acquisition queued behind a writer.
 
-For the promotion-with-readers cases, the benchmark queues the upgrade before dropping the readers; those times include releasing the guards and the resulting wake/handoff. The promotion-with-writer case checks that an upgrade holding the reservation completes before the queued writer. The later acquisition includes the writer's handoff. This target manually polls futures with the benchmark's non-scheduling waker, so its timings exclude executor scheduling. Clock reads add measurable overhead, so treat all results as diagnostic and compare runs made with the same toolchain and machine. `cargo x bench --bench upgradable_stages -- --test` runs a single smoke pass without reporting measurements, as in CI. Use `upgradable_read_then_upgrade` in the `primitives` target for the uninstrumented uncontended whole-cycle measurement.
+For the promotion-with-readers cases, the benchmark queues the upgrade before dropping the readers; those times include releasing the guards and the resulting wake/handoff. The reader vector is allocated before the timed loop and reused; clearing it drops the guards without freeing its backing allocation in the timed interval. The promotion-with-writer case checks that an upgrade holding the reservation completes before the queued writer. The later acquisition includes the writer's handoff. This target manually polls futures with the benchmark's non-scheduling waker, so its timings exclude executor scheduling. Each run reports an empty timing interval using the same clock reads; measured values remain unadjusted and should be treated as diagnostic. Compare runs made with the same toolchain and machine. `cargo x bench --bench upgradable_stages -- --test` runs a single smoke pass without reporting measurements, as in CI. Use `upgradable_read_then_upgrade` in the `primitives` target for the uninstrumented uncontended whole-cycle measurement.

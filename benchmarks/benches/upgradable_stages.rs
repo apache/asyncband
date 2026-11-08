@@ -44,6 +44,7 @@ struct Options {
 const READER_COUNTS: &[usize] = &[1, 4, 16];
 
 struct Results {
+    empty_interval: Vec<Duration>,
     acquisition: Vec<Duration>,
     promotion: Vec<Duration>,
     acquisition_with_reader: Vec<Duration>,
@@ -56,6 +57,7 @@ fn measure(rounds: usize, repeat: usize) -> Results {
     let lock = UpgradableRwLock::new(0usize);
     let mut context = bench_context();
     let mut results = Results {
+        empty_interval: Vec::with_capacity(repeat),
         acquisition: Vec::with_capacity(repeat),
         promotion: Vec::with_capacity(repeat),
         acquisition_with_reader: Vec::with_capacity(repeat),
@@ -66,8 +68,10 @@ fn measure(rounds: usize, repeat: usize) -> Results {
         promotion_with_waiting_writer: Vec::with_capacity(repeat),
         acquisition_after_waiting_writer: Vec::with_capacity(repeat),
     };
+    let mut readers = Vec::with_capacity(*READER_COUNTS.last().unwrap());
 
     for _ in 0..repeat {
+        let mut empty_interval = Duration::ZERO;
         let mut acquisition = Duration::ZERO;
         let mut promotion = Duration::ZERO;
         let mut acquisition_with_reader = Duration::ZERO;
@@ -76,6 +80,9 @@ fn measure(rounds: usize, repeat: usize) -> Results {
         let mut acquisition_after_waiting_writer = Duration::ZERO;
 
         for _ in 0..rounds {
+            let start = Instant::now();
+            empty_interval += start.elapsed();
+
             let start = Instant::now();
             let guard = poll_ready(lock.upgradable_read(), &mut context);
             acquisition += start.elapsed();
@@ -97,13 +104,13 @@ fn measure(rounds: usize, repeat: usize) -> Results {
 
             for (index, &reader_count) in READER_COUNTS.iter().enumerate() {
                 let guard = poll_ready(lock.upgradable_read(), &mut context);
-                let readers = (0..reader_count)
-                    .map(|_| poll_ready(lock.read(), &mut context))
-                    .collect::<Vec<_>>();
+                for _ in 0..reader_count {
+                    readers.push(poll_ready(lock.read(), &mut context));
+                }
                 let mut upgrade = pin!(RwLockUpgradableReadGuard::upgrade(guard));
                 let start = Instant::now();
                 poll_pending(upgrade.as_mut(), &mut context);
-                drop(readers);
+                readers.clear();
                 let writer = poll_pinned_ready(upgrade.as_mut(), &mut context);
                 promotion_with_readers[index] += start.elapsed();
                 black_box(*writer);
@@ -134,6 +141,7 @@ fn measure(rounds: usize, repeat: usize) -> Results {
             drop(guard);
         }
 
+        results.empty_interval.push(empty_interval);
         results.acquisition.push(acquisition);
         results.promotion.push(promotion);
         results
@@ -169,16 +177,17 @@ fn report(name: &str, rounds: usize, mut samples: Vec<Duration>) {
     let minimum = samples.first().unwrap();
     let maximum = samples.last().unwrap();
     let ns_per_round = median.as_nanos() as f64 / rounds as f64;
+    let runs = samples
+        .iter()
+        .map(|sample| format!("{:.3}", sample.as_secs_f64() * 1_000.0))
+        .collect::<Vec<_>>()
+        .join(", ");
 
     println!(
-        "{name:<24} median {:>8.2} ns/round  ({:.2}..{:.2} ms; runs: {:?})",
+        "{name:<24} median {:>8.2} ns/round  ({:.2}..{:.2} ms; runs (ms): [{runs}])",
         ns_per_round,
         minimum.as_secs_f64() * 1_000.0,
         maximum.as_secs_f64() * 1_000.0,
-        samples
-            .iter()
-            .map(|sample| sample.as_millis())
-            .collect::<Vec<_>>(),
     );
 }
 
@@ -198,6 +207,14 @@ fn main() {
         options.rounds, options.repeat
     );
     println!("The clock reads add measurable overhead; treat these numbers as diagnostic.");
+    println!(
+        "The empty interval uses the same clock reads and is reported without subtracting it."
+    );
+    report(
+        "empty timing interval",
+        options.rounds,
+        results.empty_interval,
+    );
     report("acquisition", options.rounds, results.acquisition);
     report("promotion", options.rounds, results.promotion);
     report(
