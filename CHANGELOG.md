@@ -28,6 +28,10 @@ All notable changes to this project will be documented in this file.
 * Return shared messages from `broadcast::mpmc` receivers: `recv` and `try_recv` now yield `Arc<T>`, and `bounded` and `unbounded` no longer require `T: Clone`. Shared receives also share the payload's interior mutable state. To preserve the previous owning-receive behavior, use the new `recv_cloned` and `try_recv_cloned`, which follow `T`'s `Clone` semantics and still move the payload out instead of cloning it when nothing else still refers to the message. Callers that sent `Arc<T>` only to avoid cloning can send `T` directly. A retained `Arc<T>` keeps its payload alive after the message leaves the backlog, so a bounded channel's capacity limits retained messages rather than memory.
 * Remove `MappedRwLockWriteGuard::downgrade` and `OwnedMappedRwLockWriteGuard::downgrade`, which could cause undefined behavior when the mapped component is reachable by other readers through interior mutability. To keep shared access to a component, downgrade the original write guard first and then map it with `RwLockReadGuard::map` or `OwnedRwLockReadGuard::map`.
 
+### Notable changes
+
+* Bounded MPMC queues now panic when created with a capacity greater than 2,097,151; use `mpmc::unbounded` for larger buffers.
+
 ### New features
 
 * Add `rwlock::UpgradableRwLock` with a single upgradable reader, atomic upgrade and downgrade, and cancellation that releases a pending upgrade's guard; writers and upgradable readers share a FIFO reservation while ordinary readers use the data-permit queue.
@@ -44,6 +48,7 @@ All notable changes to this project will be documented in this file.
 * Reduce the cost of initializing an uncontended `OnceCell` by avoiding its internal wait-queue lock.
 * Reduce the cost of polling a pending oneshot receive again from the same task, which now keeps its registered waker instead of cloning and dropping it.
 * Reduce the state kept by futures waiting for a `Mutex`, `RwLock`, `Semaphore`, `Once`, `OnceCell`, or bounded broadcast capacity, making lock, permit acquisition, and bounded broadcast send futures smaller.
+* Bounded MPMC sends, receives, and reservations no longer take a lock unless a sender or receiver is waiting, which speeds up contended workloads on threads and async runtimes. Creating a bounded queue now allocates storage for its full capacity, and handoffs where every send waits for a receiver, such as through a capacity-1 queue, are slightly slower. On targets without 64-bit atomics, bounded queues protect their cursors with locks, which can be slower than before.
 
 ## v0.7.4 (2026-10-25)
 
