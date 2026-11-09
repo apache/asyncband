@@ -168,6 +168,12 @@ impl<T> Arena<T> {
         self.len
     }
 
+    /// Returns the number of heap-allocated slots; used by tests to pin the inline fast path.
+    #[cfg(test)]
+    pub fn vector_len(&self) -> usize {
+        self.slots.len()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -267,6 +273,9 @@ mod tests {
         let mut arena = Arena::new();
         let id = arena.insert("only");
 
+        // The vector-only implementation this test pins against would allocate here already.
+        assert_eq!(arena.vector_len(), 0);
+
         assert_eq!(id, SlotId::from_index(0));
         assert_eq!(arena.get(id), Some(&"only"));
         assert_eq!(arena.len(), 1);
@@ -278,6 +287,7 @@ mod tests {
         // Slot 0 is handed out again while the vector is still empty.
         let again = arena.insert("again");
         assert_eq!(again, id);
+        assert_eq!(arena.vector_len(), 0);
     }
 
     #[test]

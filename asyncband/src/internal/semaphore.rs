@@ -583,4 +583,87 @@ mod tests {
         }
         assert_eq!(semaphore.waiters.lock().occupied_len(), 0);
     }
+
+    /// Counts this thread's allocations other than the 64-byte pthread-mutex boxing.
+    ///
+    /// The pthread-backed `std::sync::Mutex` heap-boxes itself on its first lock; on futex-backed
+    /// targets the same path allocates nothing. Filtering that one size makes the counter stable
+    /// across platforms while still catching any allocation introduced by waiter registration.
+    mod allocation_counting {
+        use std::alloc::GlobalAlloc;
+        use std::alloc::Layout;
+        use std::alloc::System;
+        use std::cell::Cell;
+
+        thread_local! {
+            static NON_BOXING_ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+        }
+
+        pub(super) fn count_since_reset() -> u64 {
+            NON_BOXING_ALLOCATIONS.with(Cell::get)
+        }
+
+        pub(super) fn reset() {
+            NON_BOXING_ALLOCATIONS.with(|count| count.set(0));
+        }
+
+        pub struct Counting;
+
+        unsafe impl GlobalAlloc for Counting {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                let size = layout.size();
+                NON_BOXING_ALLOCATIONS.with(|count| {
+                    if size != 64 {
+                        count.set(count.get() + 1);
+                    }
+                });
+                unsafe { System.alloc(layout) }
+            }
+
+            unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+                let size = layout.size();
+                NON_BOXING_ALLOCATIONS.with(|count| {
+                    if size != 64 {
+                        count.set(count.get() + 1);
+                    }
+                });
+                unsafe { System.alloc_zeroed(layout) }
+            }
+
+            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+                NON_BOXING_ALLOCATIONS.with(|count| {
+                    if new_size != 64 {
+                        count.set(count.get() + 1);
+                    }
+                });
+                unsafe { System.realloc(ptr, layout, new_size) }
+            }
+
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                unsafe { System.dealloc(ptr, layout) }
+            }
+        }
+
+        #[global_allocator]
+        static GLOBAL_COUNTING: Counting = Counting;
+    }
+
+    #[test]
+    fn first_registration_allocates_nothing_beyond_the_mutex_boxing() {
+        let semaphore = Semaphore::new(0);
+
+        allocation_counting::reset();
+        {
+            let mut acquire = semaphore.acquire(1);
+            assert!(acquire.poll_once(Waker::noop()).is_pending());
+            // Dropping the future takes the cancellation path: unlink, remove, and reuse the
+            // waiter slot must not allocate either.
+        }
+        let count = allocation_counting::count_since_reset();
+
+        assert_eq!(
+            count, 0,
+            "registering, cancelling, and removing the first waiter must not allocate"
+        );
+    }
 }
