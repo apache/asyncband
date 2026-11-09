@@ -159,7 +159,7 @@ The policy is that the minimum Rust version required to use this crate can be in
 
 ## Security
 
-Report suspected vulnerabilities privately to [security@apache.org](mailto:security@apache.org). See the [security policy](SECURITY.md) for reporting details and the [security threat model](SECURITY-THREAT-MODEL.md) for the library's security boundary and application responsibilities.
+Report suspected vulnerabilities privately to [security@apache.org](mailto:security@apache.org), with "Asyncband" in the subject. Follow the [ASF vulnerability reporting process](https://security.apache.org/report/).
 
 ## License and Trademarks
 

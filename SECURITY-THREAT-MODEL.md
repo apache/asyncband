@@ -19,7 +19,13 @@ under the License.
 
 # Security Threat Model
 
-This model describes the security boundary of Apache Asyncband (Incubating), including its synchronization primitives, channels, initialization and work-coalescing utilities, object pools, and blocking adapter. Use it alongside the affected version's API documentation when assessing a report. The [security policy](SECURITY.md) defines the private reporting and disclosure process.
+This model describes the security boundary of Apache Asyncband (Incubating), including its synchronization primitives, channels, initialization and work-coalescing utilities, object pools, and blocking adapter. Use it alongside the affected version's API documentation when assessing a report.
+
+## Reporting a vulnerability
+
+Follow the [ASF vulnerability reporting process](https://security.apache.org/report/). Report suspected Asyncband vulnerabilities privately to [security@apache.org](mailto:security@apache.org), with "Asyncband" in the subject. Include the affected version, Cargo features, Rust version, target platform, executor if relevant, and a minimal reproducer describing the concurrent operations or cancellation sequence. Explain the observed behavior and potential impact; a working exploit is not required.
+
+Do not disclose a suspected vulnerability in a public issue, pull request, GitHub Discussion, or the development mailing list before private assessment. The Asyncband PPMC coordinates investigation and fixes with the reporter and the Apache Security Team under the [ASF vulnerability handling process](https://www.apache.org/security/committers.html). Ordinary bugs and feature requests belong in the [public issue tracker](https://github.com/apache/asyncband/issues).
 
 ## System and trust boundary
 
