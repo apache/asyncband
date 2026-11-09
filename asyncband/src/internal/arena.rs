@@ -53,8 +53,15 @@ impl fmt::Debug for SlotId {
 /// The occupied length equals the number of `Occupied` slots. Every `Vacant` slot appears exactly
 /// once in the singly linked vacant list starting at `vacant_head`. Removing a value makes its slot
 /// ID available for immediate reuse.
+///
+/// The first occupant lives in the inline `first` slot, so registering a lone waiter never
+/// allocates. The second registration spills `first` into the slot vector, which then follows the
+/// rules above for the arena's remaining lifetime. Every arena therefore carries one inline value
+/// of `T` in exchange for an allocation-free first registration.
 #[derive(Debug)]
 pub struct Arena<T> {
+    /// The occupant of slot 0 until the vector first becomes non-empty; `None` afterwards.
+    first: Option<T>,
     slots: Vec<Slot<T>>,
     /// The head of the vacant list, or `None` when every slot is occupied.
     vacant_head: Option<SlotId>,
@@ -70,6 +77,7 @@ enum Slot<T> {
 impl<T> Arena<T> {
     pub const fn new() -> Self {
         Self {
+            first: None,
             slots: vec![],
             vacant_head: None,
             len: 0,
@@ -78,6 +86,7 @@ impl<T> Arena<T> {
 
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
+            first: None,
             slots: Vec::with_capacity(capacity),
             vacant_head: None,
             len: 0,
@@ -98,6 +107,21 @@ impl<T> Arena<T> {
             };
             *slot = Slot::Occupied(value);
             id
+        } else if self.slots.is_empty() {
+            match self.first.take() {
+                None => {
+                    self.first = Some(value);
+                    SlotId::from_index(0)
+                }
+                Some(first) => {
+                    // Spill the inline slot into the vector so slot 0 keeps its ID, then append
+                    // the new value as slot 1.
+                    self.slots.push(Slot::Occupied(first));
+                    let id = SlotId::from_index(self.slots.len());
+                    self.slots.push(Slot::Occupied(value));
+                    id
+                }
+            }
         } else {
             let id = SlotId::from_index(self.slots.len());
             self.slots.push(Slot::Occupied(value));
@@ -108,18 +132,35 @@ impl<T> Arena<T> {
         id
     }
 
-    pub fn get(&self, id: SlotId) -> Option<&T> {
-        match self.slots.get(id.index()) {
+    /// Returns the value at `index`, looking through the inline slot while the vector is empty.
+    fn slot_ref(&self, index: usize) -> Option<&T> {
+        if index == 0 && self.slots.is_empty() {
+            return self.first.as_ref();
+        }
+        match self.slots.get(index) {
             Some(Slot::Occupied(value)) => Some(value),
             Some(Slot::Vacant { .. }) | None => None,
         }
     }
 
-    pub fn get_mut(&mut self, id: SlotId) -> Option<&mut T> {
-        match self.slots.get_mut(id.index()) {
+    /// Returns the value at `index` mutably, looking through the inline slot while the vector is
+    /// empty.
+    fn slot_mut(&mut self, index: usize) -> Option<&mut T> {
+        if index == 0 && self.slots.is_empty() {
+            return self.first.as_mut();
+        }
+        match self.slots.get_mut(index) {
             Some(Slot::Occupied(value)) => Some(value),
             Some(Slot::Vacant { .. }) | None => None,
         }
+    }
+
+    pub fn get(&self, id: SlotId) -> Option<&T> {
+        self.slot_ref(id.index())
+    }
+
+    pub fn get_mut(&mut self, id: SlotId) -> Option<&mut T> {
+        self.slot_mut(id.index())
     }
 
     #[cfg(test)]
@@ -140,6 +181,13 @@ impl<T> Arena<T> {
     #[track_caller]
     pub fn remove(&mut self, id: SlotId) -> T {
         let index = id.index();
+        if index == 0 && self.slots.is_empty() {
+            // The inline slot never joins the vacant list: while the vector is empty, slot 0 is
+            // the only ID that ever existed, so reuse goes through `first` directly.
+            let value = self.first.take().expect("arena slot ID must be occupied");
+            self.len -= 1;
+            return value;
+        }
         let slot = self
             .slots
             .get_mut(index)
@@ -168,12 +216,13 @@ impl<T> Arena<T> {
     pub fn take_all<C: FromIterator<T>>(&mut self) -> C {
         self.vacant_head = None;
         self.len = 0;
-        self.slots
-            .drain(..)
-            .filter_map(|slot| match slot {
+        self.first
+            .take()
+            .into_iter()
+            .chain(self.slots.drain(..).filter_map(|slot| match slot {
                 Slot::Occupied(value) => Some(value),
                 Slot::Vacant { .. } => None,
-            })
+            }))
             .collect()
     }
 
@@ -182,10 +231,11 @@ impl<T> Arena<T> {
     /// The returned iterator owns the backing allocation and releases it when dropped.
     #[inline]
     pub fn into_iter(self) -> impl Iterator<Item = T> {
-        self.slots.into_iter().filter_map(|slot| match slot {
+        let slots = self.slots.into_iter().filter_map(|slot| match slot {
             Slot::Occupied(value) => Some(value),
             Slot::Vacant { .. } => None,
-        })
+        });
+        self.first.into_iter().chain(slots)
     }
 }
 
@@ -210,6 +260,60 @@ mod tests {
         assert_eq!(replacement, first);
         assert_eq!(arena.get(replacement), Some(&"replacement"));
         assert_eq!(arena.get(second), Some(&"second"));
+    }
+
+    #[test]
+    fn lone_waiter_uses_the_inline_slot() {
+        let mut arena = Arena::new();
+        let id = arena.insert("only");
+
+        assert_eq!(id, SlotId::from_index(0));
+        assert_eq!(arena.get(id), Some(&"only"));
+        assert_eq!(arena.len(), 1);
+
+        assert_eq!(arena.remove(id), "only");
+        assert!(arena.is_empty());
+        assert_eq!(arena.get(id), None);
+
+        // Slot 0 is handed out again while the vector is still empty.
+        let again = arena.insert("again");
+        assert_eq!(again, id);
+    }
+
+    #[test]
+    fn spill_preserves_ids_and_values() {
+        let mut arena = Arena::new();
+        let first = arena.insert(1);
+        let second = arena.insert(2);
+        let third = arena.insert(3);
+
+        assert_eq!(first, SlotId::from_index(0));
+        assert_eq!(
+            (arena.get(first), arena.get(second), arena.get(third)),
+            (Some(&1), Some(&2), Some(&3))
+        );
+
+        // Removing the spilled slot 0 returns it to the vacant list, not to the inline slot.
+        assert_eq!(arena.remove(first), 1);
+        let replacement = arena.insert(10);
+        assert_eq!(replacement, first);
+        assert_eq!(arena.get(replacement), Some(&10));
+        assert_eq!(arena.get(third), Some(&3));
+    }
+
+    #[test]
+    fn take_all_starts_from_the_inline_slot_again() {
+        let mut arena = Arena::new();
+        arena.insert(1);
+        arena.insert(2);
+
+        assert_eq!(arena.take_all::<Vec<_>>(), vec![1, 2]);
+        assert!(arena.is_empty());
+
+        // The arena is back to pre-spill mode: the next insert goes to the inline slot.
+        let id = arena.insert(3);
+        assert_eq!(id, SlotId::from_index(0));
+        assert_eq!(arena.get(id), Some(&3));
     }
 
     #[test]

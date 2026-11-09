@@ -42,6 +42,7 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
+* Reduce the cost of registering the first waiter on a `Semaphore`, `Condvar`, `ManualResetEvent`, `AutoResetEvent`, or bounded MPMC channel: the waiter arena keeps its first slot inline and only allocates from the second concurrent waiter, removing one allocation from every fresh-queue registration.
 * Reduce intermediate payload copies in bounded MPSC receives, especially for large inline messages.
 * Reduce the cost of initializing an uncontended `OnceCell` by avoiding its internal wait-queue lock.
 * Reduce the cost of polling a pending oneshot receive again from the same task, which now keeps its registered waker instead of cloning and dropping it.
