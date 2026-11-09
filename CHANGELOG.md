@@ -23,6 +23,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## v0.8.0
+
 ### Breaking changes
 
 * Return shared messages from `broadcast::mpmc` receivers: `recv` and `try_recv` now yield `Arc<T>`, and `bounded` and `unbounded` no longer require `T: Clone`. Shared receives also share the payload's interior mutable state. To preserve the previous owning-receive behavior, use the new `recv_cloned` and `try_recv_cloned`, which follow `T`'s `Clone` semantics and still move the payload out instead of cloning it when nothing else still refers to the message. Callers that sent `Arc<T>` only to avoid cloning can send `T` directly. A retained `Arc<T>` keeps its payload alive after the message leaves the backlog, so a bounded channel's capacity limits retained messages rather than memory.
@@ -43,6 +45,7 @@ All notable changes to this project will be documented in this file.
 ### Improvements
 
 * Reduce intermediate payload copies in bounded MPSC receives, especially for large inline messages.
+* Transfer reclaimed broadcast head messages directly to receivers, avoiding an extra payload `Arc` clone and unnecessary blocked-sender bookkeeping.
 * Reduce the cost of initializing an uncontended `OnceCell` by avoiding its internal wait-queue lock.
 * Reduce the cost of polling a pending oneshot receive again from the same task, which now keeps its registered waker instead of cloning and dropping it.
 * Reduce the state kept by futures waiting for a `Mutex`, `RwLock`, `Semaphore`, `Once`, `OnceCell`, or bounded broadcast capacity, making lock, permit acquisition, and bounded broadcast send futures smaller.
