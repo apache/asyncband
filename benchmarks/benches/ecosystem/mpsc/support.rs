@@ -70,6 +70,16 @@ impl Message for [u8; 1024] {
     }
 }
 
+impl Message for Box<[u8; 1024]> {
+    fn new(sequence: usize) -> Self {
+        Box::new(<[u8; 1024] as Message>::new(sequence))
+    }
+
+    fn sequence(self) -> usize {
+        <[u8; 1024] as Message>::sequence(*self)
+    }
+}
+
 pub trait ConcurrentMpsc: Send + Sync + 'static {
     type Message: Message;
     type Sender: Clone + Send + Sync + 'static;

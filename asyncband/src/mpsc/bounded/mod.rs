@@ -24,7 +24,6 @@ use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
-use crate::mpsc::TryRecvError;
 use crate::mpsc::TrySendError;
 
 mod receiver;
@@ -105,16 +104,6 @@ impl<T> State<T> {
         }
         self.available += 1;
         None
-    }
-
-    fn pop(&mut self) -> Result<(T, Option<Waker>), TryRecvError> {
-        if let Some(value) = self.queue.pop_front() {
-            Ok((value, self.release()))
-        } else if self.senders == 0 {
-            Err(TryRecvError::Disconnected)
-        } else {
-            Err(TryRecvError::Empty)
-        }
     }
 }
 
