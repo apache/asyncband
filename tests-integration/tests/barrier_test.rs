@@ -73,6 +73,7 @@ fn dropping_a_woken_wait_keeps_the_next_generation_registered() {
 
     let mut next_leader = spawn(b.wait());
     assert!(assert_ready!(next_leader.poll()).is_leader());
+    assert!(next.is_woken());
     assert!(!assert_ready!(next.poll()).is_leader());
 }
 

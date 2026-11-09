@@ -24,3 +24,46 @@ use std::task::Waker;
 pub fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(Waker::noop()))
 }
+
+#[cfg(any(feature = "once-map", feature = "singleflight"))]
+pub use self::key_with_drop::KeyWithDrop;
+
+#[cfg(any(feature = "once-map", feature = "singleflight"))]
+mod key_with_drop {
+    use std::borrow::Borrow;
+    use std::hash::Hash;
+    use std::hash::Hasher;
+
+    pub struct KeyWithDrop {
+        pub key: &'static str,
+        pub on_drop: Option<Box<dyn FnOnce()>>,
+    }
+
+    impl PartialEq for KeyWithDrop {
+        fn eq(&self, other: &Self) -> bool {
+            self.key == other.key
+        }
+    }
+
+    impl Eq for KeyWithDrop {}
+
+    impl Hash for KeyWithDrop {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.key.hash(state);
+        }
+    }
+
+    impl Borrow<str> for KeyWithDrop {
+        fn borrow(&self) -> &str {
+            self.key
+        }
+    }
+
+    impl Drop for KeyWithDrop {
+        fn drop(&mut self) {
+            if let Some(on_drop) = self.on_drop.take() {
+                on_drop();
+            }
+        }
+    }
+}

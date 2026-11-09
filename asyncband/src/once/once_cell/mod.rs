@@ -59,6 +59,8 @@ use crate::semaphore::SemaphorePermit;
 /// ```
 pub struct OnceCell<T> {
     value: ValueCell<T>,
+    // Each initializer takes two of three permits, so only one can run at a time. The spare
+    // permit lets an uncontended release avoid locking the semaphore's wait queue.
     semaphore: Semaphore,
 }
 
@@ -73,7 +75,7 @@ impl<T> OnceCell<T> {
     pub const fn new() -> Self {
         Self {
             value: ValueCell::new(),
-            semaphore: Semaphore::new(1),
+            semaphore: Semaphore::new(3),
         }
     }
 
@@ -81,7 +83,7 @@ impl<T> OnceCell<T> {
     pub const fn from_value(value: T) -> Self {
         Self {
             value: ValueCell::from_value(value),
-            semaphore: Semaphore::new(1),
+            semaphore: Semaphore::new(3),
         }
     }
 
@@ -158,7 +160,7 @@ impl<T> OnceCell<T> {
             return Ok(v);
         }
 
-        let permit = self.semaphore.acquire(1).await;
+        let permit = self.semaphore.acquire(2).await;
 
         if let Some(v) = self.get() {
             // double-checked: another task initialized the value
@@ -381,7 +383,7 @@ impl<T> OnceCell<T> {
     }
 
     fn set_value(&self, value: T, _permit: SemaphorePermit<'_>) -> &T {
-        // SAFETY: Holding the only semaphore permit serializes initialization.
+        // SAFETY: Holding two of the three semaphore permits serializes initialization.
         unsafe { self.value.set(value) }
     }
 
