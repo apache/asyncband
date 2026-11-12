@@ -92,6 +92,11 @@ pub trait ManageObject: Send + Sync {
     /// Returns `Ok(())` if the object is recyclable. On error, the pool detaches the object and
     /// retries checkout with another idle object or creates a replacement. The error is discarded
     /// rather than returned by `Pool::get`; record any needed diagnostics in this implementation.
+    ///
+    /// This check runs when checking out an idle object, not when creating or returning one.
+    /// It may inspect local state or await I/O, such as a network ping. For diagnostics,
+    /// intentional retirement, and cleanup before return, see the [pool module
+    /// documentation](crate::pool#recycling-diagnostics-and-check-timing).
     fn is_recyclable(
         &self,
         o: &mut Self::Object,
