@@ -76,7 +76,6 @@ pub(crate) mod value_cell;
     feature = "phaser",
     feature = "rwlock",
     feature = "semaphore",
-    feature = "waitgroup",
     feature = "watch",
 ))]
 // Some primitives use only shared access, leaving `Mutex::get_mut` unused.

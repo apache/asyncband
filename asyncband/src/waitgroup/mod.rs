@@ -17,157 +17,273 @@
 
 //! Coordinate completion across a dynamically sized group of participants.
 //!
-//! A [`WaitGroup`] starts with one participant. Cloning its handle registers another participant.
-//! Awaiting a handle marks that participant complete and waits until every other participant has
-//! completed. Dropping a handle marks its participant complete without waiting.
+//! A [`WaitGroup`] starts with one participant. Cloning a handle registers another participant,
+//! dropping a handle marks its participant complete without waiting, and awaiting a handle marks
+//! its participant complete before waiting for every other participant to complete.
 //!
-//! Participants are symmetric: any number of them may wait for the same completion. A waiting
-//! participant no longer keeps the group pending, and all waiters are notified when the last
-//! remaining handle is awaited or dropped. Existing handles may register more participants by
-//! cloning until the group completes; completion is one-shot.
+//! Participants are symmetric: workers can drop their handles when done while a coordinator awaits
+//! its own handle, or multiple participants can each await completion. Converting a handle into
+//! [`Wait`] marks that participant complete immediately, and cloning [`Wait`] creates additional
+//! observers without registering new participants. Existing handles may register more participants
+//! until the last live handle completes; completion is one-shot.
 //!
-//! A coordinator can hand a clone to each worker, let workers drop their handles when done,
-//! and await its own handle. To share completion with independent observers, convert a handle
-//! into a [`Wait`] once and clone that future. Cloning the group itself adds more work.
-//!
-//! Completion acquires the state published before every participant completed, so work performed
-//! by those participants is visible after the wait returns.
+//! Completion acquires the state published before every participant completed, so writes performed
+//! before each handle completed are visible after [`Wait`] completes.
 //!
 //! # Examples
 //!
 //! ```
 //! # #[tokio::main]
 //! # async fn main() {
+//! use std::sync::Arc;
+//! use std::sync::atomic::AtomicBool;
+//! use std::sync::atomic::Ordering;
+//!
 //! use asyncband::waitgroup::WaitGroup;
 //!
-//! async fn do_work() {}
-//!
 //! let group = WaitGroup::new();
-//! let mut tasks = vec![];
+//! let completed = Arc::new([const { AtomicBool::new(false) }; 3]);
 //!
-//! for _ in 0..3 {
+//! for slot in 0..3 {
 //!     let participant = group.clone();
-//!     tasks.push(tokio::spawn(async move {
-//!         do_work().await;
+//!     let completed = completed.clone();
+//!     tokio::spawn(async move {
+//!         completed[slot].store(true, Ordering::Relaxed);
 //!         drop(participant);
-//!     }));
+//!     });
 //! }
 //!
 //! group.await;
-//! for task in tasks {
-//!     task.await.unwrap();
-//! }
+//! assert!(completed.iter().all(|done| done.load(Ordering::Relaxed)));
 //! # }
 //! ```
 
 use std::fmt;
 use std::future::Future;
 use std::future::IntoFuture;
+use std::marker::PhantomData;
+use std::mem;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::ptr::NonNull;
+use std::sync::PoisonError;
+use std::sync::RwLock;
+use std::sync::RwLockWriteGuard;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
-use crate::waitgroup::waiters::Registration;
-use crate::waitgroup::waiters::Waiters;
+use crate::internal::register_waker;
+use crate::internal::wakerset::WakerSet;
+use crate::internal::wakerset::WakerToken;
 
-mod waiters;
+#[derive(Default)]
+enum Registration {
+    #[default]
+    Unregistered,
+    Inline,
+    Overflow(WakerToken),
+}
+
+#[derive(Default)]
+struct Waiters {
+    inline: Option<Waker>,
+    overflow: Option<Box<WakerSet>>,
+}
+
+impl Waiters {
+    #[inline]
+    #[must_use = "drop the replaced waker after releasing the waiter lock"]
+    fn register(&mut self, registration: &mut Registration, waker: &Waker) -> Option<Waker> {
+        match registration {
+            Registration::Unregistered if self.inline.is_none() => {
+                self.inline = Some(waker.clone());
+                *registration = Registration::Inline;
+                None
+            }
+            Registration::Unregistered => {
+                let token = self.overflow.get_or_insert_default().insert(waker);
+                *registration = Registration::Overflow(token);
+                None
+            }
+            Registration::Inline => {
+                debug_assert!(
+                    self.inline.is_some(),
+                    "inline registration must occupy the inline waker slot"
+                );
+                register_waker(&mut self.inline, waker)
+            }
+            Registration::Overflow(token) => self
+                .overflow
+                .as_mut()
+                .expect("overflow registration must have an allocated waker set")
+                .update(token, waker),
+        }
+    }
+
+    #[inline]
+    #[must_use = "drop the removed waker after releasing the waiter lock"]
+    fn unregister(&mut self, registration: &mut Registration) -> Option<Waker> {
+        match mem::take(registration) {
+            Registration::Unregistered => None,
+            Registration::Inline => self.inline.take(),
+            Registration::Overflow(token) => Some(
+                self.overflow
+                    .as_mut()
+                    .expect("overflow registration must have an allocated waker set")
+                    .remove(token),
+            ),
+        }
+    }
+
+    #[inline]
+    fn wake_all(self) {
+        if let Some(waker) = self.inline {
+            waker.wake();
+        }
+        if let Some(overflow) = self.overflow {
+            overflow.wake_all();
+        }
+    }
+}
 
 struct State {
-    // Participants hold one collective observer count until completion has detached the wakers.
-    // The remaining observer counts belong to individual Wait futures.
-    handles: AtomicUsize,
-    observers: AtomicUsize,
-    waiters: Waiters,
+    // Live `WaitGroup` handles share one collective reference in `refs` until the last participant
+    // finishes notifying waiters; each `Wait` future owns an additional reference in `refs`.
+    participants: AtomicUsize,
+    refs: AtomicUsize,
+    // Waiter mutations always acquire exclusive access, but `std::sync::RwLock` keeps uncontended
+    // lock state inline on Darwin where `std::sync::Mutex` boxes a `pthread_mutex_t` on first
+    // lock.
+    waiters: RwLock<Waiters>,
 }
 
 impl State {
-    fn new() -> Self {
-        Self {
-            handles: AtomicUsize::new(1),
-            observers: AtomicUsize::new(1),
-            waiters: Waiters::default(),
-        }
+    fn lock_waiters(&self) -> RwLockWriteGuard<'_, Waiters> {
+        self.waiters.write().unwrap_or_else(PoisonError::into_inner)
     }
 
     #[inline]
-    fn poll_wait(&self, token: &mut Registration, cx: &mut Context<'_>) -> Poll<()> {
-        if self.handles.load(Ordering::Acquire) == 0 {
-            *token = Registration::Set(None);
+    fn poll_wait(&self, registration: &mut Registration, cx: &mut Context<'_>) -> Poll<()> {
+        if self.participants.load(Ordering::Acquire) == 0 {
+            *registration = Registration::Unregistered;
             return Poll::Ready(());
         }
 
-        self.waiters.register(token, cx.waker(), &self.handles)
+        self.register_wait(registration, cx.waker())
+    }
+
+    fn register_wait(&self, registration: &mut Registration, waker: &Waker) -> Poll<()> {
+        let mut waiters = self.lock_waiters();
+        // `finish` detaches waiters under this same lock after storing zero, so either it wakes our
+        // registration or we observe zero here and complete immediately.
+        if self.participants.load(Ordering::Acquire) == 0 {
+            *registration = Registration::Unregistered;
+            return Poll::Ready(());
+        }
+
+        let retired_waker = waiters.register(registration, waker);
+        drop(waiters);
+        drop(retired_waker);
+        Poll::Pending
     }
 
     #[inline]
-    fn unregister(&self, token: &mut Registration) {
-        if !matches!(token, Registration::Set(None)) && self.handles.load(Ordering::Acquire) != 0 {
-            self.waiters.unregister(token, &self.handles);
+    fn unregister(&self, registration: &mut Registration) {
+        if matches!(registration, Registration::Unregistered) {
+            return;
         }
+        if self.participants.load(Ordering::Acquire) == 0 {
+            *registration = Registration::Unregistered;
+            return;
+        }
+
+        self.unregister_slow(registration);
+    }
+
+    fn unregister_slow(&self, registration: &mut Registration) {
+        let mut waiters = self.lock_waiters();
+        if self.participants.load(Ordering::Acquire) == 0 {
+            *registration = Registration::Unregistered;
+            return;
+        }
+
+        let removed_waker = waiters.unregister(registration);
+        drop(waiters);
+        drop(removed_waker);
     }
 }
 
-// One observer reference anchors the allocation until the last participant has notified waiters.
-// Each Wait owns an independent observer reference. The participant count keeps the anchor alive
-// across registration and notification. Duplicating this pointer requires acquiring a count.
-struct Shared(NonNull<State>);
+struct Shared(NonNull<State>, PhantomData<State>);
 
-// SAFETY: all shared access goes through State, which is Send + Sync.
+// SAFETY: Shared state is synchronized through atomics and `RwLock<Waiters>`, and `State: Send +
+// Sync`.
 unsafe impl Send for Shared {}
 unsafe impl Sync for Shared {}
 
 impl Deref for Shared {
     type Target = State;
+
     #[inline]
     fn deref(&self) -> &State {
-        // SAFETY: each caller holds a participant or an observer count.
+        // SAFETY: Every `Shared` owns either a participant count (anchoring the collective ref)
+        // or an observer ref in `State::refs`.
         unsafe { self.0.as_ref() }
     }
 }
 
 impl Shared {
-    #[inline]
-    fn register_handle(&self) -> Self {
-        // Borrowing a participant keeps the count above zero. Registration publishes no data.
-        if self.handles.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
-            std::process::abort();
-        }
-        Self(self.0)
+    fn new() -> Self {
+        let state = Box::new(State {
+            participants: AtomicUsize::new(1),
+            refs: AtomicUsize::new(1),
+            waiters: RwLock::new(Waiters::default()),
+        });
+        Self(NonNull::from(Box::leak(state)), PhantomData)
     }
 
     #[inline]
-    fn release_handle(&mut self) {
-        // The last participant acquires the preceding releases before notifying observers.
-        let previous = self.handles.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(previous > 0, "a live handle must own one count");
+    fn clone_participant(&self) -> Self {
+        // Borrowing a live participant keeps `participants` above zero. Registration publishes no
+        // caller data; abort before wrapping `isize::MAX`.
+        if self.participants.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
+            std::process::abort();
+        }
+        Self(self.0, PhantomData)
+    }
+
+    #[inline]
+    fn release_participant(&mut self) {
+        // The last participant acquires all preceding releases before waking waiters.
+        let previous = self.participants.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "a live WaitGroup must own one participant");
         if previous == 1 {
             self.finish();
         }
     }
 
-    // Keep notification and reclamation off the nonfinal participant drop path.
+    // Keep notification and reclamation off the inline non-final participant drop path.
     #[inline(never)]
     fn finish(&mut self) {
-        self.waiters.wake_all();
-        self.release_observer();
+        let waiters = mem::take(&mut *self.lock_waiters());
+        waiters.wake_all();
+        self.release_ref();
     }
 
     #[inline]
-    fn observe(&self) -> Self {
-        if self.observers.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
+    fn clone_ref(&self) -> Self {
+        if self.refs.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
             std::process::abort();
         }
-        Self(self.0)
+        Self(self.0, PhantomData)
     }
 
     #[inline]
-    fn release_observer(&mut self) {
-        if self.observers.fetch_sub(1, Ordering::AcqRel) == 1 {
-            // SAFETY: all observers and the collective participant anchor have been released.
+    fn release_ref(&mut self) {
+        if self.refs.fetch_sub(1, Ordering::AcqRel) == 1 {
+            // SAFETY: All observer references and the collective participant reference have ended.
             unsafe { drop(Box::from_raw(self.0.as_ptr())) };
         }
     }
@@ -177,7 +293,7 @@ impl Shared {
 ///
 /// See the [module level documentation](self) for more.
 pub struct WaitGroup {
-    // All participants share one reference to the allocation.
+    // All live participants share one collective reference in `State::refs`.
     state: Shared,
 }
 
@@ -206,7 +322,7 @@ impl WaitGroup {
     #[inline]
     pub fn new() -> Self {
         Self {
-            state: Shared(NonNull::from(Box::leak(Box::new(State::new())))),
+            state: Shared::new(),
         }
     }
 }
@@ -219,7 +335,7 @@ impl Clone for WaitGroup {
     #[inline]
     fn clone(&self) -> Self {
         Self {
-            state: self.state.register_handle(),
+            state: self.state.clone_participant(),
         }
     }
 }
@@ -227,7 +343,7 @@ impl Clone for WaitGroup {
 impl Drop for WaitGroup {
     #[inline]
     fn drop(&mut self) {
-        self.state.release_handle();
+        self.state.release_participant();
     }
 }
 
@@ -243,10 +359,10 @@ impl IntoFuture for WaitGroup {
     /// not undo that completion; see [`Wait`] for observer cancellation.
     #[inline]
     fn into_future(self) -> Self::IntoFuture {
-        let state = self.state.observe();
+        let state = self.state.clone_ref();
         drop(self);
         Wait {
-            token: Registration::Set(None),
+            registration: Registration::Unregistered,
             state,
         }
     }
@@ -263,7 +379,7 @@ impl IntoFuture for WaitGroup {
 /// and other observers are unaffected.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Wait {
-    token: Registration,
+    registration: Registration,
     state: Shared,
 }
 
@@ -278,8 +394,8 @@ impl Clone for Wait {
     #[inline]
     fn clone(&self) -> Self {
         Wait {
-            token: Registration::Set(None),
-            state: self.state.observe(),
+            registration: Registration::Unregistered,
+            state: self.state.clone_ref(),
         }
     }
 }
@@ -295,15 +411,18 @@ impl Future for Wait {
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self { token, state } = self.get_mut();
-        state.poll_wait(token, cx)
+        let Self {
+            registration,
+            state,
+        } = self.get_mut();
+        state.poll_wait(registration, cx)
     }
 }
 
 impl Drop for Wait {
     #[inline]
     fn drop(&mut self) {
-        self.state.unregister(&mut self.token);
-        self.state.release_observer();
+        self.state.unregister(&mut self.registration);
+        self.state.release_ref();
     }
 }

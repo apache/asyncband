@@ -25,7 +25,7 @@ All notable changes to this project will be documented in this file.
 
 ### Improvements
 
-* Reduce the cost of creating and dropping wait group participants and notifying a single registered waiter.
+* Reduce `WaitGroup` completion overhead by sharing allocation ownership across participants and storing the first pending observer's waker inline.
 
 ## v0.8.0
 
