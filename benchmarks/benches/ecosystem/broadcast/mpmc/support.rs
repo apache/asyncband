@@ -44,7 +44,7 @@ pub const BACKPRESSURE_SHAPE: BoundedShape = BoundedShape {
     receivers: 4,
 };
 
-fn recv<C: BroadcastMpmc>(receiver: &mut C::Receiver) -> usize {
+pub fn recv<C: BroadcastMpmc>(receiver: &mut C::Receiver) -> usize {
     C::try_recv(receiver).expect("the published benchmark batch must be ready")
 }
 

@@ -28,9 +28,12 @@ use crate::broadcast::mpmc::adapters::AsyncBroadcast;
 use crate::broadcast::mpmc::adapters::Asyncband;
 use crate::broadcast::mpmc::adapters::BroadcastMpmc;
 use crate::broadcast::mpmc::adapters::Tokio;
+use crate::broadcast::mpmc::adapters::TokioArc;
+use crate::broadcast::mpmc::support::BATCH_MESSAGES;
 use crate::broadcast::mpmc::support::ConcurrentSend;
 use crate::broadcast::mpmc::support::Fanout;
 use crate::broadcast::mpmc::support::ROUND_TRIP_CAPACITY;
+use crate::broadcast::mpmc::support::recv;
 
 fn try_send_receive<C: BroadcastMpmc>(bencher: Bencher) {
     let (sender, mut receivers) = C::channel(ROUND_TRIP_CAPACITY, 1);
@@ -67,34 +70,66 @@ fn publish_then_parallel_drain<C: BroadcastMpmc>(bencher: Bencher, receiver_coun
     });
 }
 
+// Without worker threads, the cost of each read is measured apart from contention between readers.
+fn publish_then_sequential_drain<C: BroadcastMpmc>(bencher: Bencher, receiver_count: usize) {
+    let (sender, mut receivers) = C::channel(BATCH_MESSAGES, receiver_count);
+
+    bencher.bench_local(|| {
+        for value in 0..BATCH_MESSAGES {
+            C::send(&sender, black_box(value));
+        }
+
+        let mut checksum = 0usize;
+        for receiver in &mut receivers {
+            for _ in 0..BATCH_MESSAGES {
+                checksum = checksum.wrapping_add(recv::<C>(receiver));
+            }
+        }
+        black_box(checksum)
+    });
+}
+
 pub fn register(runner: &mut Runner) {
     runner.compare(
         "broadcast/no-backpressure/try-roundtrip",
         9_100_000,
-        implementations!(
-            [Asyncband, Tokio, AsyncBroadcast],
-            |C, b| try_send_receive::<C>(b)
-        ),
+        implementations!([Asyncband, Tokio, TokioArc, AsyncBroadcast], |C, b| {
+            try_send_receive::<C>(b)
+        }),
     );
     runner.compare(
         "broadcast/no-backpressure/ready-roundtrip",
         8_000_000,
-        implementations!([Asyncband, Tokio, AsyncBroadcast], |C, b| {
+        implementations!([Asyncband, Tokio, TokioArc, AsyncBroadcast], |C, b| {
             ready_send_receive::<C>(b)
         }),
     );
     runner.compare(
         "broadcast/no-backpressure/publish-4p-drain-1r",
         810,
-        implementations!([Asyncband, Tokio, AsyncBroadcast], |C, b| {
+        implementations!([Asyncband, Tokio, TokioArc, AsyncBroadcast], |C, b| {
             publish_batch_then_drain::<C>(b, 4)
+        }),
+    );
+    runner.compare(
+        "broadcast/no-backpressure/drain-1r",
+        2_100,
+        implementations!([Asyncband, Tokio, TokioArc, AsyncBroadcast], |C, b| {
+            publish_then_parallel_drain::<C>(b, 1)
         }),
     );
     runner.compare(
         "broadcast/no-backpressure/drain-4r",
         500,
-        implementations!([Asyncband, Tokio, AsyncBroadcast], |C, b| {
+        implementations!([Asyncband, Tokio, TokioArc, AsyncBroadcast], |C, b| {
             publish_then_parallel_drain::<C>(b, 4)
+        }),
+    );
+    runner.compare(
+        "broadcast/no-backpressure/sequential-drain-4r",
+        1_600,
+        implementations!([Asyncband, Tokio, TokioArc, AsyncBroadcast], |C, b| {
+            publish_then_sequential_drain::<C>(b, 4)
         }),
     );
 }
