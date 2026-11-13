@@ -39,17 +39,17 @@
 //! use asyncband::condvar::Condvar;
 //! use asyncband::mutex::Mutex;
 //!
-//! let pair = Arc::new((Mutex::new(false), Condvar::new()));
-//! let notifier_pair = pair.clone();
+//! let state = Arc::new((Mutex::new(false), Condvar::new()));
+//! let notifier_state = state.clone();
 //!
 //! let notifier = tokio::spawn(async move {
-//!     let (lock, cvar) = &*notifier_pair;
+//!     let (lock, cvar) = &*notifier_state;
 //!     let mut ready = lock.lock().await;
 //!     *ready = true;
 //!     cvar.notify_one();
 //! });
 //!
-//! let (lock, cvar) = &*pair;
+//! let (lock, cvar) = &*state;
 //! let ready = cvar.wait_while(lock.lock().await, |ready| !*ready).await;
 //! assert!(*ready);
 //! drop(ready);
@@ -210,9 +210,11 @@ impl Condvar {
         guard
     }
 
-    /// Yields the current task until this condition variable receives a notification and the
-    /// provided condition becomes false. Spurious wake-ups are ignored and this function will only
-    /// return once the condition has been met.
+    /// Waits on this condition variable while `condition` returns `true`, returning the guard once
+    /// `condition` evaluates to `false`.
+    ///
+    /// `condition` is checked under the lock before waiting and after every wakeup; if it is
+    /// already `false` on entry, this method returns immediately without waiting.
     ///
     /// ```
     /// # #[tokio::main]
@@ -222,17 +224,17 @@ impl Condvar {
     /// use asyncband::condvar::Condvar;
     /// use asyncband::mutex::Mutex;
     ///
-    /// let pair = Arc::new((Mutex::new(false), Condvar::new()));
-    /// let pair_clone = pair.clone();
+    /// let state = Arc::new((Mutex::new(false), Condvar::new()));
+    /// let state_clone = state.clone();
     ///
     /// let notifier = tokio::spawn(async move {
-    ///     let (lock, cvar) = &*pair_clone;
+    ///     let (lock, cvar) = &*state_clone;
     ///     let mut started = lock.lock().await;
     ///     *started = true;
     ///     cvar.notify_one();
     /// });
     ///
-    /// let (lock, cvar) = &*pair;
+    /// let (lock, cvar) = &*state;
     /// let guard = cvar
     ///     .wait_while(lock.lock().await, |started| !*started)
     ///     .await;
@@ -260,9 +262,11 @@ impl Condvar {
         guard
     }
 
-    /// Yields the current task until this condition variable receives a notification and the
-    /// provided condition becomes false. Spurious wake-ups are ignored and this function will only
-    /// return once the condition has been met.
+    /// Waits on this condition variable while `condition` returns `true`, returning the owned
+    /// guard once `condition` evaluates to `false`.
+    ///
+    /// `condition` is checked under the lock before waiting and after every wakeup; if it is
+    /// already `false` on entry, this method returns immediately without waiting.
     ///
     /// ```
     /// # #[tokio::main]
@@ -272,17 +276,17 @@ impl Condvar {
     /// use asyncband::condvar::Condvar;
     /// use asyncband::mutex::Mutex;
     ///
-    /// let pair = (Arc::new(Mutex::new(false)), Arc::new(Condvar::new()));
-    /// let pair_clone = pair.clone();
+    /// let state = (Arc::new(Mutex::new(false)), Arc::new(Condvar::new()));
+    /// let state_clone = state.clone();
     ///
     /// let notifier = tokio::spawn(async move {
-    ///     let (lock, cvar) = pair_clone;
+    ///     let (lock, cvar) = state_clone;
     ///     let mut started = lock.lock_owned().await;
     ///     *started = true;
     ///     cvar.notify_one();
     /// });
     ///
-    /// let (lock, cvar) = pair;
+    /// let (lock, cvar) = state;
     /// let guard = cvar
     ///     .wait_while_owned(lock.lock_owned().await, |started| !*started)
     ///     .await;

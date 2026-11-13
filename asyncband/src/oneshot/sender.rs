@@ -40,7 +40,7 @@ use crate::oneshot::Receiver;
 use crate::oneshot::deallocate_empty_channel;
 use crate::oneshot::drop_message_and_deallocate_channel;
 
-/// Sends a value to the associated [`Receiver`].
+/// The sending half of a [`oneshot`](crate::oneshot) channel.
 pub struct Sender<T> {
     channel_ptr: NonNull<Channel<T>>,
 }
@@ -55,8 +55,8 @@ unsafe impl<T: Send> Send for Sender<T> {}
 unsafe impl<T: Sync> Sync for Sender<T> {}
 
 impl<T> Sender<T> {
-    /// Attempts to send a value on this channel, returning an error containing the message if it
-    /// could not be sent.
+    /// Delivers `message` to the paired [`Receiver`], or returns it in [`SendError`] if the
+    /// receiver has already been dropped.
     pub fn send(self, message: T) -> Result<(), SendError<T>> {
         // `send` takes over endpoint cleanup, so `Sender::drop` must not run afterward.
         let sender = ManuallyDrop::new(self);
@@ -125,12 +125,10 @@ impl<T> Sender<T> {
         }
     }
 
-    /// Returns `true` if the channel is disconnected.
+    /// Reports whether the paired [`Receiver`] has already been dropped.
     ///
-    /// This occurs when the receiver is dropped.
-    ///
-    /// If `true` is returned, a future call to [`send`](Sender::send) is guaranteed to return an
-    /// error.
+    /// When this returns `true`, a later call to [`send`](Sender::send) is guaranteed to fail with
+    /// [`SendError`]. A `false` result does not prevent the receiver from dropping concurrently.
     pub fn is_disconnected(&self) -> bool {
         // SAFETY: The channel exists on the heap for the entire duration of this method, and we
         // only ever acquire shared references to it. Dropping the receiver does not immediately

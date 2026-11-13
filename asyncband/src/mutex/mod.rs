@@ -132,9 +132,9 @@ impl<T> Mutex<T> {
     /// ```
     /// use asyncband::mutex::Mutex;
     ///
-    /// let mutex = Mutex::new(1);
-    /// let n = mutex.into_inner();
-    /// assert_eq!(n, 1);
+    /// let protected = Mutex::new(String::from("ready"));
+    /// let value = protected.into_inner();
+    /// assert_eq!(value, "ready");
     /// ```
     pub fn into_inner(self) -> T {
         self.c.into_inner()
@@ -155,10 +155,11 @@ impl<T: ?Sized> Mutex<T> {
     /// # async fn main() {
     /// use asyncband::mutex::Mutex;
     ///
-    /// let mutex = Mutex::new(1);
+    /// let entries = Mutex::new(vec![10]);
     ///
-    /// let mut n = mutex.lock().await;
-    /// *n = 2;
+    /// let mut guard = entries.lock().await;
+    /// guard.push(20);
+    /// assert_eq!(*guard, [10, 20]);
     /// # }
     /// ```
     pub async fn lock(&self) -> MutexGuard<'_, T> {
@@ -173,10 +174,13 @@ impl<T: ?Sized> Mutex<T> {
     /// ```
     /// use asyncband::mutex::Mutex;
     ///
-    /// let mutex = Mutex::new(1);
-    /// let mut guard = mutex.try_lock().expect("mutex is locked");
-    /// *guard += 1;
-    /// assert_eq!(2, *guard);
+    /// let count = Mutex::new(5);
+    /// {
+    ///     let mut guard = count.try_lock().unwrap();
+    ///     *guard += 3;
+    ///     assert!(count.try_lock().is_none());
+    /// }
+    /// assert_eq!(count.into_inner(), 8);
     /// ```
     pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
         if self.s.try_acquire(1) {
@@ -205,10 +209,17 @@ impl<T: ?Sized> Mutex<T> {
     ///
     /// use asyncband::mutex::Mutex;
     ///
-    /// let mutex = Arc::new(Mutex::new(1));
+    /// let shared = Arc::new(Mutex::new(String::from("init")));
+    /// let worker_shared = shared.clone();
     ///
-    /// let mut n = mutex.clone().lock_owned().await;
-    /// *n = 2;
+    /// tokio::spawn(async move {
+    ///     let mut guard = worker_shared.lock_owned().await;
+    ///     guard.push_str("-done");
+    /// })
+    /// .await
+    /// .unwrap();
+    ///
+    /// assert_eq!(shared.lock().await.as_str(), "init-done");
     /// # }
     /// ```
     pub async fn lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T> {
@@ -227,10 +238,12 @@ impl<T: ?Sized> Mutex<T> {
     ///
     /// use asyncband::mutex::Mutex;
     ///
-    /// let mutex = Arc::new(Mutex::new(1));
-    /// let mut guard = mutex.clone().try_lock_owned().expect("mutex is locked");
-    /// *guard += 1;
-    /// assert_eq!(2, *guard);
+    /// let shared = Arc::new(Mutex::new(vec!["a"]));
+    /// let mut guard = shared.clone().try_lock_owned().unwrap();
+    /// guard.push("b");
+    /// assert!(shared.clone().try_lock_owned().is_none());
+    /// drop(guard);
+    /// assert_eq!(shared.try_lock_owned().unwrap().len(), 2);
     /// ```
     pub fn try_lock_owned(self: Arc<Self>) -> Option<OwnedMutexGuard<T>> {
         if self.s.try_acquire(1) {
@@ -251,9 +264,9 @@ impl<T: ?Sized> Mutex<T> {
     /// ```
     /// use asyncband::mutex::Mutex;
     ///
-    /// let mut mutex = Mutex::new(1);
-    /// let n = mutex.get_mut();
-    /// *n = 2;
+    /// let mut protected = Mutex::new(String::from("draft"));
+    /// protected.get_mut().push_str("-final");
+    /// assert_eq!(protected.into_inner(), "draft-final");
     /// ```
     pub fn get_mut(&mut self) -> &mut T {
         self.c.get_mut()

@@ -131,17 +131,16 @@ impl Once {
         self.done.try_wait().is_ok()
     }
 
-    /// Calls the given async closure if this is the first time `call_once` has been called
-    /// on this `Once` instance.
+    /// Runs `init` if this `Once` has not yet completed an initialization.
     ///
-    /// If another task is currently running the closure, this call will wait for that task
-    /// to complete.
+    /// Concurrent callers arriving while `init` is in progress wait until it finishes. Only one
+    /// caller can succeed; once an execution returns normally, every current and future call
+    /// completes immediately without running `init` again.
     ///
-    /// If the provided operation is cancelled, the initialization attempt is cancelled. If there
-    /// are other tasks waiting, one of them will start another attempt.
-    ///
-    /// Calling `call_once` recursively on the same `Once` from its initializer deadlocks because
-    /// the inner call waits for the outer call to finish.
+    /// If the active attempt panics or its future is dropped before completing, the `Once`
+    /// stays uncompleted and a queued caller starts a fresh attempt. Calling `call_once`
+    /// recursively on the same `Once` from inside `init` deadlocks while waiting for the outer
+    /// call to finish.
     ///
     /// # Examples
     ///

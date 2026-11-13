@@ -124,7 +124,7 @@ enum State<F, Fut> {
 }
 
 impl<T, Fut, F> LazyCell<T, Fut, F> {
-    /// Creates a new lazy value with the given asynchronous initializer.
+    /// Creates an uninitialized cell that runs `initializer` on first forced access.
     ///
     /// The initializer is not called until the first forcing future is polled. Its returned future
     /// is stored as-is; this method never boxes it.
@@ -167,7 +167,7 @@ impl<T, Fut, F> LazyCell<T, Fut, F> {
         }
     }
 
-    /// Returns a reference to the value if initialized.
+    /// Returns a shared reference to the initialized value, if available.
     ///
     /// This method never starts initialization or waits for an active attempt. It returns `None`
     /// when the cell is uninitialized, initializing, or poisoned.
@@ -175,7 +175,7 @@ impl<T, Fut, F> LazyCell<T, Fut, F> {
         this.value.get()
     }
 
-    /// Returns a mutable reference to the value if initialized.
+    /// Returns an exclusive reference to the initialized value, if available.
     ///
     /// This method never starts initialization. It returns `None` when the cell is uninitialized
     /// or poisoned.

@@ -43,10 +43,10 @@ use crate::oneshot::Sender;
 use crate::oneshot::deallocate_empty_channel;
 use crate::oneshot::drop_message_and_deallocate_channel;
 
-/// Receives a value from the associated [`Sender`].
+/// The receiving half of a [`oneshot`](crate::oneshot) channel.
 ///
-/// Awaiting converts this receiver into a [`Recv`] future. Dropping either the receiver or its
-/// future disconnects the channel and discards any unread message.
+/// Awaiting converts this receiver into a [`Recv`] future linked to the paired [`Sender`]. Dropping
+/// either the receiver or its future disconnects the channel and discards any unread message.
 ///
 /// To keep a pending operation alive when another branch wins, call [`Receiver::into_future`]
 /// before selecting and borrow the resulting future as `&mut Recv`. The receiver itself does not
@@ -82,12 +82,10 @@ impl<T> IntoFuture for Receiver<T> {
 }
 
 impl<T> Receiver<T> {
-    /// Returns `true` if the channel is disconnected.
+    /// Reports whether the channel can never yield a message because the paired [`Sender`] was
+    /// dropped without sending, or because the message was already extracted.
     ///
-    /// This occurs when the associated [`Sender`] is dropped without sending a message, or after
-    /// the message is received.
-    ///
-    /// If `true` is returned, any subsequent attempt to receive the message will return an error.
+    /// Once this returns `true`, subsequent attempts to receive fail.
     pub fn is_disconnected(&self) -> bool {
         // SAFETY: The existence of `self` guarantees that the receiver is still alive. If the
         // sender was dropped, it observed the live receiver and left allocation cleanup to it, so
@@ -198,8 +196,8 @@ impl<T> Drop for Receiver<T> {
     }
 }
 
-/// A future that receives a value from the associated [`Sender`], or returns [`RecvError`] if the
-/// sender is dropped without sending.
+/// Future produced by awaiting a [`Receiver`], resolving to the message from [`Sender`] or
+/// [`RecvError`] if the sender dropped without sending.
 ///
 /// Created by [`Receiver::into_future`], this future owns the receiving endpoint. Dropping it
 /// disconnects the channel and discards any unread message.
