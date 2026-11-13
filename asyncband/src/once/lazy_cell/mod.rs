@@ -161,7 +161,7 @@ impl<T, Fut, F> LazyCell<T, Fut, F> {
         Fut: Future<Output = T>,
     {
         Self {
-            value: ValueCell::new(),
+            value: ValueCell::empty(),
             state: Mutex::new(State::Initializer(Some(initializer))),
             poisoned: AtomicBool::new(false),
         }
@@ -299,7 +299,7 @@ where
 
         // SAFETY: The state mutex serializes initialization, and the double check above verified
         // that the value was not initialized by another caller.
-        unsafe { this_ref.value.set(value) }
+        unsafe { this_ref.value.publish(value) }
     }
 
     /// Initializes a pinned cell and returns mutable access to its value.
@@ -328,7 +328,7 @@ where
         // SAFETY: We do not move the structurally pinned future through this reference. The stored
         // value is not structurally pinned and may be accessed normally.
         let this: &'a mut Self = unsafe { Pin::get_unchecked_mut(this) };
-        if this.value.is_initialized_mut() {
+        if this.value.has_value_mut() {
             return this
                 .value
                 .get_mut()
@@ -341,7 +341,7 @@ where
         // SAFETY: Exclusive access to the pinned cell pins its state in place for this call.
         let state = unsafe { Pin::new_unchecked(this.state.get_mut()) };
         let value = drive_pinned_attempt(state, &this.poisoned).await;
-        this.value.set_mut(value)
+        this.value.write_mut(value)
     }
 }
 
@@ -425,7 +425,7 @@ where
     /// before forcing it when `Fut` is not `Unpin`.
     pub fn from_future(future: Fut) -> Self {
         Self {
-            value: ValueCell::new(),
+            value: ValueCell::empty(),
             state: Mutex::new(State::Attempt(future)),
             poisoned: AtomicBool::new(false),
         }
@@ -438,7 +438,7 @@ impl<T> LazyCell<T, Pending<T>> {
     /// Creates a new `LazyCell` that already contains `value`.
     pub const fn from_value(value: T) -> Self {
         Self {
-            value: ValueCell::from_value(value),
+            value: ValueCell::with_value(value),
             state: Mutex::new(State::Complete),
             poisoned: AtomicBool::new(false),
         }

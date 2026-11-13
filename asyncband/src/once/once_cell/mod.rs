@@ -19,8 +19,8 @@
 // Copyright (c) Tokio Contributors
 // The Tokio-derived portions remain licensed under the MIT License.
 // Asyncband substantially changed the synchronization model: initialization does not close the
-// semaphore, the cell can be emptied and initialized again, and value storage is delegated to a
-// reusable ValueCell shared with LazyCell.
+// semaphore, the cell can be emptied and initialized again, and value storage is delegated to
+// Asyncband's own ValueCell shared with LazyCell.
 // Upstream source:
 // https://github.com/tokio-rs/tokio/blob/3911cb8523f190142f61c64b66881c07c0d3e7be/tokio/src/sync/once_cell.rs
 
@@ -74,7 +74,7 @@ impl<T> OnceCell<T> {
     /// Creates a new empty `OnceCell`.
     pub const fn new() -> Self {
         Self {
-            value: ValueCell::new(),
+            value: ValueCell::empty(),
             semaphore: Semaphore::new(3),
         }
     }
@@ -82,7 +82,7 @@ impl<T> OnceCell<T> {
     /// Creates a new `OnceCell` initialized with the provided value.
     pub const fn from_value(value: T) -> Self {
         Self {
-            value: ValueCell::from_value(value),
+            value: ValueCell::with_value(value),
             semaphore: Semaphore::new(3),
         }
     }
@@ -92,12 +92,7 @@ impl<T> OnceCell<T> {
     // not need the internal helper.
     #[allow(dead_code)]
     pub(crate) fn initialized(&self) -> bool {
-        self.value.is_initialized()
-    }
-
-    /// Returns whether the cell contains a value.
-    pub(crate) fn initialized_mut(&mut self) -> bool {
-        self.value.is_initialized_mut()
+        self.value.is_published()
     }
 
     /// Returns the stored value.
@@ -246,7 +241,7 @@ impl<T> OnceCell<T> {
     {
         // Workaround if let Some(v) = self.get_mut() { return Ok(v); }
         // @see https://github.com/rust-lang/rust/issues/51545
-        if self.initialized_mut() {
+        if self.value.has_value_mut() {
             return Ok(self
                 .value
                 .get_mut()
@@ -384,11 +379,11 @@ impl<T> OnceCell<T> {
 
     fn set_value(&self, value: T, _permit: SemaphorePermit<'_>) -> &T {
         // SAFETY: Holding two of the three semaphore permits serializes initialization.
-        unsafe { self.value.set(value) }
+        unsafe { self.value.publish(value) }
     }
 
     fn set_value_mut(&mut self, value: T) -> &mut T {
-        self.value.set_mut(value)
+        self.value.write_mut(value)
     }
 }
 
