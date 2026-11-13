@@ -84,7 +84,7 @@ impl<T> BoundedSender<T> {
     ///
     /// Returns [`SendError`] containing the unsent value if all receivers have been dropped.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending `send` future releases its waiting resources before dropping `value`,
     /// without sending it or retaining capacity. Use [`reserve`](Self::reserve) to wait for
@@ -104,7 +104,7 @@ impl<T> BoundedSender<T> {
     /// Returns `SendError(())` if all receivers have been dropped. A successful reservation
     /// can still fail to send if disconnection happens before [`Permit::send`].
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending `reserve` future releases its place in the wait queue. If it was already
     /// granted capacity, that capacity passes to the next waiter or becomes available again.
@@ -218,7 +218,7 @@ impl<T> BoundedReceiver<T> {
     /// Returns [`RecvError::Disconnected`] once all senders have been dropped and the queue is
     /// empty.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future does not remove a value from the queue or prevent another receiver
     /// from receiving it.

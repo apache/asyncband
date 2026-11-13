@@ -27,23 +27,34 @@
 //! # #[tokio::main]
 //! # async fn main() {
 //! use std::sync::Arc;
+//! use std::sync::atomic::AtomicUsize;
+//! use std::sync::atomic::Ordering;
 //!
 //! use asyncband::barrier::Barrier;
 //!
 //! let barrier = Arc::new(Barrier::new(3));
-//! let mut tasks = vec![];
+//! let stage = Arc::new([const { AtomicUsize::new(0) }; 3]);
+//! let mut workers = Vec::with_capacity(3);
 //!
-//! for _ in 0..3 {
+//! for slot in 0..3 {
 //!     let barrier = barrier.clone();
-//!     let task = tokio::spawn(async move { barrier.wait().await.is_leader() });
-//!     tasks.push(task);
+//!     let stage = stage.clone();
+//!     workers.push(tokio::spawn(async move {
+//!         stage[slot].store(slot + 1, Ordering::Release);
+//!         let result = barrier.wait().await;
+//!         let sum: usize = stage.iter().map(|v| v.load(Ordering::Acquire)).sum();
+//!         assert_eq!(sum, 6);
+//!         result.is_leader()
+//!     }));
 //! }
 //!
-//! let mut leaders = 0;
-//! for task in tasks {
-//!     leaders += usize::from(task.await.unwrap());
+//! let mut leader_count = 0;
+//! for worker in workers {
+//!     if worker.await.unwrap() {
+//!         leader_count += 1;
+//!     }
 //! }
-//! assert_eq!(leaders, 1);
+//! assert_eq!(leader_count, 1);
 //! # }
 //! ```
 
@@ -60,7 +71,7 @@ use crate::internal::wakerset::WakerToken;
 #[cfg(test)]
 mod tests;
 
-/// A synchronization primitive for multiple tasks that need to wait for each other.
+/// A reusable rendezvous point that releases tasks in fixed-size generations.
 ///
 /// See the [module level documentation](self) for more.
 #[derive(Debug)]
@@ -150,29 +161,29 @@ impl Barrier {
         }
     }
 
-    /// Waits for all tasks to reach this point.
+    /// Arrives at the barrier and waits until all `n` participants in the current generation have
+    /// arrived.
     ///
-    /// The barrier holds the current task until all `n` participants have arrived. The final
-    /// participant is designated as the leader for this generation.
+    /// The final participant to arrive completes the generation, wakes the waiting participants,
+    /// and is designated as that generation's leader.
     ///
     /// # Returns
     ///
     /// Returns a [`BarrierWaitResult`] identifying whether this call completed the generation
     /// and was selected as its leader.
     ///
-    /// # Cancel safety
-    ///
-    /// This method is not cancellation safe.
+    /// # Cancellation
     ///
     /// An arrival is recorded when the future returned by `wait` is first polled. Once recorded,
     /// the arrival is not retracted if that future is dropped before the barrier completes.
     /// Cancellation therefore stops that caller from observing completion, but it does not make the
     /// caller leave the current barrier generation.
     ///
-    /// Calling `wait` again after canceling a pending call records another arrival. Repeatedly
-    /// canceling and retrying can therefore cause a generation to complete with fewer than `n` live
-    /// wait futures. Callers that need to keep waiting after another operation completes first
-    /// should retain and continue polling the same `wait` future instead of creating a new one.
+    /// Calling `wait` again after cancelling a pending call records another arrival. Repeatedly
+    /// cancelling and retrying can therefore cause a generation to complete with fewer than `n`
+    /// live wait futures. Callers that need to keep waiting after another operation completes
+    /// first should retain and continue polling the same `wait` future instead of creating a
+    /// new one.
     ///
     /// # Examples
     ///

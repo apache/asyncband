@@ -75,7 +75,7 @@ impl<T> BoundedSender<T> {
     ///
     /// Returns [`SendError`] containing the unsent value if all receivers have been dropped.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending `send` future removes its waiter and drops `value`. A future that has
     /// returned `Pending` has not sent the value. Cancellation releases the exclusive sender borrow
@@ -136,7 +136,7 @@ impl<T> BoundedReceiver<T> {
     ///
     /// Returns [`RecvError::Disconnected`] once the sender has been dropped and the queue is empty.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future does not remove a value from the queue or prevent another receiver
     /// from receiving it.

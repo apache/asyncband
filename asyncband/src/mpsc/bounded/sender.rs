@@ -80,7 +80,7 @@ impl<T> BoundedSender<T> {
     ///
     /// Returns [`SendError`] containing the unsent value if the receiver has been dropped.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending `send` future loses its place waiting for capacity and drops `value`;
     /// a future that has returned `Pending` has not sent the message. Use
@@ -110,7 +110,7 @@ impl<T> BoundedSender<T> {
     /// Returns `SendError(())` if the receiver has been dropped. A successful reservation
     /// can still fail to send if disconnection happens before [`Permit::send`].
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending `reserve` future loses its place in the wait queue. If capacity has
     /// already been granted, it is released to the next waiter or made available to a new sender.

@@ -40,7 +40,7 @@ pub fn from_access<T: ?Sized>(access: WriteAccess<&RwLock<T>>) -> RwLockWriteGua
 impl<T: ?Sized> RwLock<T> {
     /// Waits for exclusive access and returns a guard borrowing this lock.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future removes the request and returns any permits already assigned to
     /// it. Retrying joins the back of the queue.

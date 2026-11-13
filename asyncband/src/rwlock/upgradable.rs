@@ -128,7 +128,7 @@ impl<T: ?Sized> UpgradableRwLock<T> {
     ///
     /// Writers and upgrades already queued for data permits must finish first.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Cancellation releases any assigned permit and loses the request's queue position.
     pub async fn read(&self) -> RwLockReadGuard<'_, T> {
@@ -144,7 +144,7 @@ impl<T: ?Sized> UpgradableRwLock<T> {
     ///
     /// See [ordering](Self#ordering) for how ordinary readers may pass this request.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Cancellation releases the reservation and any assigned permits and loses both queue
     /// positions.
@@ -173,7 +173,7 @@ impl<T: ?Sized> UpgradableRwLock<T> {
     /// The returned guard excludes other upgradable readers and reserves priority over later
     /// writers. Ordinary readers can coexist with it.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Cancellation releases the reservation and any assigned permit and loses both queue
     /// positions.
@@ -267,7 +267,7 @@ impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
     /// The reservation prevents writers from queuing ahead of this upgrade. Ordinary readers
     /// already ahead in the data-permit queue may finish first; later readers cannot pass it.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// This consumes the guard. Dropping the future releases the original reader slot, any
     /// partially or fully assigned upgrade permits, and the reservation. This also holds if the

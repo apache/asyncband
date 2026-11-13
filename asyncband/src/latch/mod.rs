@@ -161,7 +161,7 @@ impl Latch {
 
     /// Waits until the countdown reaches zero.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future unregisters only this wait. It does not change the countdown or
     /// affect other waiters.
@@ -190,7 +190,7 @@ impl Latch {
     ///
     /// The future keeps the latch alive without borrowing the caller's handle.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future unregisters only this wait and releases its `Arc`. It does not
     /// change the countdown or affect other waiters.

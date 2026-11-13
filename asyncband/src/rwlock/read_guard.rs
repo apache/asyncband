@@ -36,7 +36,7 @@ impl<T: ?Sized> RwLock<T> {
     /// An earlier queued writer must finish first. See [queue ordering](crate::rwlock) before
     /// acquiring recursively.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future removes the request and returns any permits already assigned to
     /// it. Retrying joins the back of the queue.

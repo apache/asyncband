@@ -91,7 +91,7 @@ pub trait ManageObject: Send + Sync {
     /// Returns an implementation-defined error when an object cannot be created. Pool checkout
     /// and replenishment propagate this error to their caller.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// The pool may drop this future when checkout or replenishment is cancelled. Implementations
     /// must arrange cleanup of resources owned by an unfinished creation attempt.
@@ -105,7 +105,7 @@ pub trait ManageObject: Send + Sync {
     /// detaches the object and retries checkout; it does not return this error to the caller.
     /// Record any required diagnostics in this implementation.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// The pool may drop this future when checkout is cancelled. Mutations already made to `o`
     /// are not rolled back. [`RecycleCancelledStrategy`] determines whether the object is detached

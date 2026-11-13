@@ -272,11 +272,10 @@ impl<T> UnboundedReceiver<T> {
     /// Returns [`RecvError::Disconnected`] once all senders have been dropped and this
     /// receiver has consumed its remaining messages.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Dropping a pending `recv` future leaves this receiver's cursor unchanged. A subsequent
-    /// `recv` future can still return the same next value, so these futures may safely be raced
-    /// with other futures in a selection construct.
+    /// Dropping a pending future leaves this receiver's cursor unchanged, so a subsequent receive
+    /// observes the same next value.
     ///
     /// # Examples
     ///
@@ -309,11 +308,10 @@ impl<T> UnboundedReceiver<T> {
     /// Returns [`RecvError::Disconnected`] once all senders have been dropped and this
     /// receiver has consumed its remaining messages.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Dropping a pending `recv_cloned` future leaves this receiver's cursor unchanged. A
-    /// subsequent receive can still return the same next value, so these futures may safely be
-    /// raced with other futures in a selection construct.
+    /// Dropping a pending future leaves this receiver's cursor unchanged, so a subsequent receive
+    /// observes the same next value.
     ///
     /// # Panics
     ///
@@ -405,8 +403,7 @@ impl<T> UnboundedReceiver<T> {
         Ok(common::take_msg(received))
     }
 
-    /// Re-subscribes to the channel, returning a new receiver that starts receiving messages from
-    /// the *current* tail of the channel.
+    /// Creates a new subscription positioned after all values already published to the channel.
     ///
     /// The new receiver skips this receiver's unread backlog. The original receiver remains at its
     /// current position and continues retaining those values until it consumes them or is dropped.

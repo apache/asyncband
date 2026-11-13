@@ -92,7 +92,9 @@ pub fn new() -> (Shutdown, ShutdownGuard) {
 
 /// A future that requests shutdown and waits for all completion guards to be dropped.
 ///
-/// # Cancel safety
+/// See the [module level documentation](self) for more.
+///
+/// # Cancellation
 ///
 /// The first poll requests shutdown. Dropping an unpolled future does not request it; dropping
 /// a pending future after its first poll does not withdraw the request or drop completion
@@ -123,8 +125,6 @@ pub fn new() -> (Shutdown, ShutdownGuard) {
 /// worker.await.unwrap();
 /// # }
 /// ```
-///
-/// See the [module level documentation](self) for more.
 #[must_use = "shutdown is not requested unless this handle is polled or request_shutdown is called"]
 #[derive(Debug, Clone)]
 pub struct Shutdown {
@@ -189,7 +189,7 @@ impl ShutdownGuard {
 
     /// Waits until shutdown is requested.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future removes only this wait. It does not request shutdown, clear an
     /// existing request, or drop the handle borrowed by this call.
@@ -201,7 +201,7 @@ impl ShutdownGuard {
     ///
     /// The future retains the request state but does not keep shutdown completion pending.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping the future removes only this wait. It does not request shutdown or clear an
     /// existing request.
@@ -226,7 +226,7 @@ impl ShutdownWatch {
 
     /// Waits until shutdown is requested.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future removes only this wait. It does not request shutdown, clear an
     /// existing request, or drop the handle borrowed by this call.
@@ -238,7 +238,7 @@ impl ShutdownWatch {
     ///
     /// The future retains the request state but does not keep shutdown completion pending.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping the future removes only this wait. It does not request shutdown or clear an
     /// existing request.

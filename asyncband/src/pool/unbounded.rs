@@ -23,8 +23,7 @@
 //! [`sync.Pool`](https://pkg.go.dev/sync#Pool).
 //!
 //! To configure a factory for creating objects when the pool is empty, like `sync.Pool`'s `New`,
-//! you can create the unbounded pool via [`Pool::new`](Pool::new) with an
-//! implementation of [`ManageObject`].
+//! pass a [`ManageObject`] implementation to [`Pool::new`](Pool::new).
 //!
 //! ## Examples
 //!
@@ -278,15 +277,15 @@ impl<T: Send> Pool<T> {
     /// Retrieves an [`Object`] from this [`Pool`], or creates a new one with the passed-in async
     /// closure, if the pool is empty.
     ///
-    /// This method only exists for [`NeverManageObject`] pools. If you provide a custom
-    /// [`ManageObject`] implementation, you should use [`Pool::get`] instead, and it will call
-    /// [`ManageObject::create`] to create a new object if the pool is empty.
+    /// This method only exists for [`NeverManageObject`] pools. Pools configured with a
+    /// [`ManageObject`] implementation use [`Pool::get`] instead, which calls
+    /// [`ManageObject::create`] when no idle object is available.
     ///
     /// # Errors
     ///
     /// Returns the error from `f` if creation fails. No object is added to the pool on error.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Cancelling while the provided future is pending leaves the pool unchanged.
     pub async fn get_or_create<E, F>(self: &Arc<Self>, f: F) -> Result<Object<T>, E>
@@ -331,7 +330,7 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// Returns errors from [`ManageObject::create`]. A failed creation does not add an object to
     /// the pool.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Cancelling during creation drops the creation future without adding an object. Objects
     /// already detached by failed recycling checks stay detached. Cancelling while

@@ -303,7 +303,7 @@ where
     /// cached until removed. Removing an in-flight entry detaches it: existing callers still
     /// receive its result, but that result is not cached in the map.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a caller that is waiting for a result does not cancel the active computation.
     /// Dropping the caller executing `func` drops that attempt; another caller on the entry may
@@ -345,7 +345,7 @@ where
     /// Returns an error from this call's `func` only to this caller. Errors are not stored or
     /// shared; another caller waiting on the entry may run its own `func`.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a caller that is waiting for a result does not cancel the active computation.
     /// Dropping the caller executing `func` drops that attempt; another caller on the entry may
@@ -386,14 +386,11 @@ where
         self.get_value(key)
     }
 
-    /// Removes the given key from the map.
+    /// Evicts `key` from the map without cloning any stored value.
     ///
-    /// If you need to get the value that has been removed, use the [`remove`] method instead.
-    ///
-    /// An in-flight computation is detached but continues for callers that already joined it; its
-    /// result is not stored in the map.
-    ///
-    /// [`remove`]: Self::remove
+    /// Detaching an in-flight entry leaves callers that already joined that attempt unaffected,
+    /// while preventing its result from being stored in the map and allowing later calls to start
+    /// fresh work. Use [`remove`](Self::remove) when a clone of a completed value is needed.
     pub fn discard<Q>(&self, key: &Q)
     where
         K: Borrow<Q>,
@@ -402,16 +399,12 @@ where
         drop(self.remove_entry(key));
     }
 
-    /// Removes the given key from the map and returns a *clone* of its completed value.
+    /// Evicts `key` from the map, returning a clone of its value if computation had completed.
     ///
-    /// If you do not need to get the value that has been removed, use the [`discard`] method
-    /// instead.
-    ///
-    /// Returns `None` when the key is absent or its computation is still in flight. An in-flight
-    /// computation is detached but continues for callers that already joined it; its result is not
-    /// stored in the map.
-    ///
-    /// [`discard`]: Self::discard
+    /// Returns `None` when `key` is absent or its computation is still in flight. Detaching an
+    /// in-flight entry leaves callers that already joined that attempt unaffected while preventing
+    /// its result from being stored in the map. Use [`discard`](Self::discard) to evict an entry
+    /// without cloning its value.
     pub fn remove<Q>(&self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,

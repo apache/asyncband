@@ -310,7 +310,7 @@ impl<T> Receiver<T> {
     /// Returns [`RecvError::Disconnected`] when all senders have been dropped and no unseen
     /// version remains.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future leaves the observed version unchanged. A later call can still
     /// observe the latest unseen version.
@@ -337,7 +337,7 @@ impl<T> Receiver<T> {
     /// Returns [`RecvError::Disconnected`] when all senders have been dropped and no unseen
     /// version remains.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future leaves the observed version unchanged. A later call can still
     /// observe the latest unseen version.

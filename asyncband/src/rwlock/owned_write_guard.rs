@@ -38,7 +38,7 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// Ordering follows [`Self::write`].
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future removes the request and returns any permits already assigned to
     /// it. Retrying joins the back of the queue. The future also releases its owned `Arc`.

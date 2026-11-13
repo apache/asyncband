@@ -98,7 +98,7 @@ pub trait FutureExt: IntoFuture {
     /// Returns `Some(output)` if the future completes, or `None` when the timeout is observed
     /// while the future is pending.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// On timeout, the supplied future is dropped. Its own cancellation contract determines which
     /// effects remain. Passing a mutable reference to a retained future allows that future to be

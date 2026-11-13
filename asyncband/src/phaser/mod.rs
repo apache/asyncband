@@ -296,8 +296,7 @@ impl Phaser {
     /// participants; yielded handles keep their registrations. The iterator owns a shared handle
     /// and does not borrow this phaser.
     ///
-    /// On an open phaser, a zero-sized batch does nothing. Collect this iterator into a collection
-    /// of your choice.
+    /// On an open phaser, a zero-sized batch does nothing.
     ///
     /// # Errors
     ///
@@ -344,7 +343,7 @@ impl Phaser {
     /// Returns [`Closed`] if the observed phase is still current when the phaser closes. A phase
     /// completed before closure remains successful.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future unregisters only this wait. It does not record an arrival or
     /// change the phase; the same observation can be retried.
@@ -475,7 +474,7 @@ impl PhaserParticipant {
     /// Returns [`Closed`] if the phaser closes before this call can record an arrival or before
     /// its pending phase completes. A phase completed before closure remains successful.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// An unpolled call has no effect. Once polled, arrival is committed. Cancelling preserves
     /// the pending observation, so retrying this method waits for the same phase without

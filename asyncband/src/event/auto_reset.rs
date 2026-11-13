@@ -163,7 +163,7 @@ impl AutoResetEvent {
     /// Merely creating this future neither reserves a signal nor registers the wait.
     /// Signals assigned to other waits cannot be consumed by this wait.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping this future before it returns `Ready` removes its registration. If a signal was
     /// assigned to it, that signal is passed to another registered wait or stored for a future
@@ -181,7 +181,7 @@ impl AutoResetEvent {
     ///
     /// The future keeps the event alive without borrowing the caller's handle.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Cancellation has the same signal semantics as [`wait`](Self::wait) and releases the
     /// future's `Arc`.

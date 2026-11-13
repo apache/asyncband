@@ -186,7 +186,7 @@ impl<T> Completion<T> {
     /// Returns [`Abandoned`] if the completer is dropped before providing a value. Abandonment
     /// remains distinct from any error stored inside `T`.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future unregisters only this wait. It does not affect this observer,
     /// other waiters, or the eventual result.

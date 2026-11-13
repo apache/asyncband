@@ -24,7 +24,7 @@ use crate::internal::countdown::CountdownState;
 use crate::internal::wakerset::WakerToken;
 use crate::semaphore::Semaphore;
 
-/// A synchronization primitive which can be used to run a one-time async initialization.
+/// Coordinates a one-time asynchronous initialization step.
 ///
 /// Unlike [`std::sync::Once`], this type waits asynchronously rather than blocking a thread. The
 /// provided closure produces a future, and successful completion prevents later calls from running
@@ -50,28 +50,20 @@ use crate::semaphore::Semaphore;
 ///
 /// use asyncband::once::Once;
 ///
-/// static ONCE: Once = Once::new();
-/// static COUNTER: AtomicUsize = AtomicUsize::new(0);
+/// let once = Once::new();
+/// let calls = AtomicUsize::new(0);
 ///
-/// let handle1 = tokio::spawn(async {
-///     ONCE.call_once(async || {
-///         COUNTER.fetch_add(1, Ordering::SeqCst);
-///     })
-///     .await;
-/// });
+/// tokio::join!(
+///     once.call_once(async || {
+///         calls.fetch_add(1, Ordering::SeqCst);
+///     }),
+///     once.call_once(async || {
+///         calls.fetch_add(1, Ordering::SeqCst);
+///     }),
+/// );
 ///
-/// let handle2 = tokio::spawn(async {
-///     ONCE.call_once(async || {
-///         COUNTER.fetch_add(1, Ordering::SeqCst);
-///     })
-///     .await;
-/// });
-///
-/// handle1.await.unwrap();
-/// handle2.await.unwrap();
-///
-/// // The counter is incremented only once, even though two tasks called `call_once`.
-/// assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
+/// assert!(once.is_completed());
+/// assert_eq!(calls.load(Ordering::SeqCst), 1);
 /// # }
 /// ```
 pub struct Once {
@@ -109,7 +101,7 @@ impl Once {
         }
     }
 
-    /// Returns `true` if some `call_once` has completed successfully.
+    /// Reports whether an initializer passed to [`call_once`](Self::call_once) has completed.
     ///
     /// # Examples
     ///
@@ -136,7 +128,7 @@ impl Once {
     /// One caller runs its initializer while others wait. After an initializer completes normally,
     /// all current and future calls return without running another initializer.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending call that is waiting does not interrupt the active initializer. Dropping
     /// the call running `f` cancels that attempt and allows a waiting or later caller to run its
@@ -157,14 +149,24 @@ impl Once {
     /// ```
     /// # #[tokio::main]
     /// # async fn main() {
+    /// use std::sync::atomic::AtomicUsize;
+    /// use std::sync::atomic::Ordering;
+    ///
     /// use asyncband::once::Once;
     ///
-    /// static ONCE: Once = Once::new();
+    /// let once = Once::new();
+    /// let state = AtomicUsize::new(0);
     ///
-    /// ONCE.call_once(async || {
-    ///     println!("Do some one-time async thing.");
+    /// once.call_once(async || {
+    ///     state.store(1, Ordering::Relaxed);
     /// })
     /// .await;
+    /// once.call_once(async || {
+    ///     state.store(2, Ordering::Relaxed);
+    /// })
+    /// .await;
+    ///
+    /// assert_eq!(state.load(Ordering::Relaxed), 1);
     /// # }
     /// ```
     pub async fn call_once<F>(&self, f: F)
@@ -196,7 +198,7 @@ impl Once {
     ///
     /// This call does not start initialization.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future unregisters only this wait. It does not cancel initialization,
     /// change the completed state, or affect other waiters.

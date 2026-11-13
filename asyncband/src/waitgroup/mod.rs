@@ -214,7 +214,7 @@ impl IntoFuture for WaitGroup {
 
     /// Marks this participant complete and returns a future observing group completion.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Conversion marks this participant complete immediately. Dropping the returned future does
     /// not undo that completion; see [`Wait`] for observer cancellation.
@@ -230,7 +230,7 @@ impl IntoFuture for WaitGroup {
 /// Converting a [`WaitGroup`] into this future immediately marks that participant complete,
 /// even before the future is polled. Cloning `Wait` adds an observer without a participant.
 ///
-/// # Cancel safety
+/// # Cancellation
 ///
 /// Dropping a pending future unregisters only that observer. The participant remains complete
 /// and other observers are unaffected.
@@ -245,7 +245,7 @@ impl Clone for Wait {
     ///
     /// This does not register another participant.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping the returned future unregisters only that observer; see [`Wait`].
     fn clone(&self) -> Self {

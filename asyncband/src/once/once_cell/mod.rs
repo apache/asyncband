@@ -116,7 +116,7 @@ impl<T> OnceCell<T> {
     /// Concurrent callers wait for the active initializer. Once it publishes a value, all callers
     /// receive a reference to that value without running their own initializer.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending call while it waits leaves the active initializer running. If this call
     /// is running the initializer, cancellation drops that initializer and leaves the cell empty;
@@ -155,7 +155,7 @@ impl<T> OnceCell<T> {
     /// Returns the error from this call's initializer without storing a value. The error is not
     /// shared with waiting callers, which may make their own attempts.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending call while it waits leaves the active initializer running. If this call
     /// is running the initializer, cancellation drops that initializer and leaves the cell empty;
@@ -194,7 +194,7 @@ impl<T> OnceCell<T> {
     ///
     /// The exclusive borrow prevents concurrent initialization.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending call drops its initializer and leaves the cell empty. A later call can
     /// start a new attempt; effects already performed by the initializer are not rolled back.
@@ -237,7 +237,7 @@ impl<T> OnceCell<T> {
     ///
     /// Returns the initializer's error and leaves the cell empty.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending call drops its initializer and leaves the cell empty. A later call can
     /// start a new attempt; effects already performed by the initializer are not rolled back.
@@ -295,7 +295,7 @@ impl<T> OnceCell<T> {
     /// initializer publishes a value while this call waits. The error contains a reference to the
     /// stored value and the unused input. The stored value is unchanged.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future drops `value` without storing it. It does not cancel another
     /// caller's initialization.
@@ -330,7 +330,7 @@ impl<T> OnceCell<T> {
     /// Returns `Err(value)` if the cell is already initialized, including when another initializer
     /// publishes a value while this call waits. The stored value is unchanged.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future drops `value` without storing it. It does not cancel another
     /// caller's initialization.

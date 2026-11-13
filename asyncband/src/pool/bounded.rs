@@ -220,7 +220,7 @@ impl<M: ManageObject> Pool<M> {
     /// Returns an error from [`ManageObject::create`]. Objects created before the failure remain
     /// in the pool.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Cancelling this operation releases all reserved capacity. Objects created before
     /// cancellation remain idle in the pool; the in-progress [`ManageObject::create`] future is
@@ -280,7 +280,7 @@ impl<M: ManageObject> Pool<M> {
     /// Returns errors from [`ManageObject::create`]. A failed creation does not add an object to
     /// the pool.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Cancelling while waiting for capacity or creating a new object restores the reserved pool
     /// capacity and drops any in-progress creation future. Retrying does not retain a place in

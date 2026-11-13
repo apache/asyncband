@@ -202,7 +202,7 @@ where
     /// [`force_pin`](Self::force_pin) for an inline future that is not `Unpin`.
     /// Concurrent callers wait while one caller drives the initializer.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending call preserves the initialization future in the cell. A later caller
     /// resumes that same future instead of invoking the initializer again. Already performed
@@ -241,7 +241,7 @@ where
     /// [`force_pin_mut`](Self::force_pin_mut) for an inline future that is not `Unpin`.
     /// The exclusive borrow prevents another caller from driving initialization.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending call preserves the initialization future in the cell. A later caller
     /// resumes that same future instead of invoking the initializer again. Already performed
@@ -280,7 +280,7 @@ where
     /// not [`Unpin`].
     /// Concurrent callers wait while one caller drives the initializer.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending call preserves the initialization future in the cell. A later caller
     /// resumes that same future instead of invoking the initializer again. Already performed
@@ -337,7 +337,7 @@ where
     /// not [`Unpin`].
     /// The exclusive borrow prevents another caller from driving initialization.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending call preserves the initialization future in the cell. A later caller
     /// resumes that same future instead of invoking the initializer again. Already performed

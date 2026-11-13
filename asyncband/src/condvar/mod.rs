@@ -170,7 +170,7 @@ impl Condvar {
     /// Unlike the standard library equivalent, this function does not check at runtime that the
     /// same mutex is always used with this condition variable.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping the future releases any guard it owns and removes this wait; the original guard
     /// is not returned to the caller. If the task was selected by [`notify_one`](Self::notify_one)
@@ -197,7 +197,7 @@ impl Condvar {
     /// The wait is registered before the mutex is released. The returned owned guard holds the
     /// mutex again; the caller must recheck its predicate as with [`wait`](Self::wait).
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping the future releases any guard it owns without returning it to the caller.
     /// Notifications are transferred to another current waiter under the same conditions as
@@ -223,7 +223,7 @@ impl Condvar {
     /// `condition` is checked under the lock before waiting and after every wakeup; if it is
     /// already `false` on entry, this method returns immediately without waiting.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Each wait iteration has the same cancellation semantics as [`wait`](Self::wait). Cancelling
     /// drops the mutex guard; mutations already made by `condition` are not rolled back.
@@ -282,7 +282,7 @@ impl Condvar {
     /// `condition` is checked under the lock before waiting and after every wakeup; if it is
     /// already `false` on entry, this method returns immediately without waiting.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Each wait iteration has the same cancellation semantics as
     /// [`wait_owned`](Self::wait_owned). Cancelling drops the owned mutex guard; mutations already

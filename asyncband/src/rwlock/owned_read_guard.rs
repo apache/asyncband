@@ -37,7 +37,7 @@ impl<T: ?Sized> RwLock<T> {
     /// Ordering follows [`Self::read`]. The guard keeps the lock alive without borrowing the
     /// caller's `Arc`.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future removes the request and returns any permits already assigned to
     /// it. Retrying joins the back of the queue. The future also releases its owned `Arc`.

@@ -53,7 +53,7 @@ use std::sync::Arc;
 
 use crate::internal::semaphore;
 
-/// An async counting semaphore for controlling access to a set of resources.
+/// Asynchronous counting semaphore that bounds concurrent access with permits.
 ///
 /// See the [module level documentation](self) for more.
 #[derive(Debug)]
@@ -62,14 +62,15 @@ pub struct Semaphore {
 }
 
 impl Semaphore {
-    /// Creates a new semaphore with the given number of permits.
+    /// Creates a semaphore initialized with `permits` available permits.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Semaphore::new(5); // Creates a semaphore with 5 permits
+    /// let sem = Semaphore::new(5);
+    /// assert_eq!(sem.available_permits(), 5);
     /// ```
     pub const fn new(permits: usize) -> Self {
         Self {
@@ -77,7 +78,7 @@ impl Semaphore {
         }
     }
 
-    /// Returns the current number of permits available.
+    /// Returns an instantaneous count of unacquired permits currently available.
     ///
     /// # Examples
     ///
@@ -146,7 +147,11 @@ impl Semaphore {
         self.s.reduce_permits(n);
     }
 
-    /// Adds `permits` new permits to the semaphore.
+    /// Returns `permits` permits to the semaphore.
+    ///
+    /// Released permits first repay any unpaid deficit recorded by
+    /// [`reduce_permits`](Self::reduce_permits); remaining permits wake queued acquisitions or
+    /// increase [`available_permits`](Self::available_permits).
     ///
     /// # Panics
     ///
@@ -158,7 +163,7 @@ impl Semaphore {
     /// use asyncband::semaphore::Semaphore;
     ///
     /// let sem = Semaphore::new(0);
-    /// sem.release(2); // Adds 2 permits
+    /// sem.release(2);
     /// assert_eq!(sem.available_permits(), 2);
     /// ```
     pub fn release(&self, permits: usize) {
@@ -201,7 +206,7 @@ impl Semaphore {
     /// Pending acquisitions are served in queue order. A larger request can hold up smaller
     /// requests behind it until enough permits become available.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future removes the request and returns any permits already assigned to
     /// it. Retrying joins the back of the queue.
@@ -274,7 +279,7 @@ impl Semaphore {
     /// Pending acquisitions are served in queue order. A larger request can hold up smaller
     /// requests behind it until enough permits become available.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future removes the request and returns any permits already assigned to
     /// it. Retrying joins the back of the queue. The future also releases its owned `Arc`.

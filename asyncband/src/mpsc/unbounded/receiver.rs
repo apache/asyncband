@@ -124,7 +124,7 @@ impl<T> UnboundedReceiver<T> {
     /// Returns [`RecvError::Disconnected`] once all senders have been dropped and the queue is
     /// empty.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping a pending future does not remove a value from the queue. A later call on this
     /// receiver can still receive the next value.
