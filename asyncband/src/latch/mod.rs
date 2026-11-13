@@ -136,9 +136,12 @@ impl Latch {
         }
     }
 
-    /// Attempts to wait for the latch count to reach zero without blocking.
+    /// Checks whether the countdown has reached zero without waiting.
     ///
-    /// Returns `Ok(())` if the latch is complete, or `Err(count)` with the current nonzero count.
+    /// # Errors
+    ///
+    /// Returns `Err(count)` with the observed nonzero count if the latch is not complete. The
+    /// count may decrease immediately after this observation.
     ///
     /// # Examples
     ///
@@ -156,10 +159,12 @@ impl Latch {
         self.state.try_wait()
     }
 
-    /// Returns a future that will complete when the latch count reaches zero.
+    /// Waits until the countdown reaches zero.
     ///
-    /// This method is cancel safe. Dropping a pending wait does not change the countdown or affect
-    /// other waiters.
+    /// # Cancel safety
+    ///
+    /// Dropping a pending future unregisters only this wait. It does not change the countdown or
+    /// affect other waiters.
     ///
     /// # Examples
     ///
@@ -181,10 +186,14 @@ impl Latch {
         fut.await
     }
 
-    /// Returns a future that will complete when the latch count reaches zero.
+    /// Waits until the countdown reaches zero while owning this [`Arc`].
     ///
-    /// The latch must be wrapped in an [`Arc`] to call this method. The future owns that `Arc`, so
-    /// it can be moved into a spawned task. Like [`wait`](Self::wait), this method is cancel safe.
+    /// The future keeps the latch alive without borrowing the caller's handle.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending future unregisters only this wait and releases its `Arc`. It does not
+    /// change the countdown or affect other waiters.
     ///
     /// # Examples
     ///

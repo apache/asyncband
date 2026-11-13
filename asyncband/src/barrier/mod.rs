@@ -155,6 +155,11 @@ impl Barrier {
     /// The barrier holds the current task until all `n` participants have arrived. The final
     /// participant is designated as the leader for this generation.
     ///
+    /// # Returns
+    ///
+    /// Returns a [`BarrierWaitResult`] identifying whether this call completed the generation
+    /// and was selected as its leader.
+    ///
     /// # Cancel safety
     ///
     /// This method is not cancellation safe.
@@ -168,8 +173,6 @@ impl Barrier {
     /// canceling and retrying can therefore cause a generation to complete with fewer than `n` live
     /// wait futures. Callers that need to keep waiting after another operation completes first
     /// should retain and continue polling the same `wait` future instead of creating a new one.
-    ///
-    /// Returns a [`BarrierWaitResult`] that identifies whether this participant is the leader.
     ///
     /// # Examples
     ///

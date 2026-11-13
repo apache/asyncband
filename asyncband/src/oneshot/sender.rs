@@ -55,8 +55,11 @@ unsafe impl<T: Send> Send for Sender<T> {}
 unsafe impl<T: Sync> Sync for Sender<T> {}
 
 impl<T> Sender<T> {
-    /// Delivers `message` to the paired [`Receiver`], or returns it in [`SendError`] if the
-    /// receiver has already been dropped.
+    /// Sends `message` to the paired [`Receiver`], consuming this sender.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError`] containing the unsent message if the receiver has been dropped.
     pub fn send(self, message: T) -> Result<(), SendError<T>> {
         // `send` takes over endpoint cleanup, so `Sender::drop` must not run afterward.
         let sender = ManuallyDrop::new(self);
@@ -226,7 +229,7 @@ unsafe impl<T: Send> Send for SendError<T> {}
 unsafe impl<T: Sync> Sync for SendError<T> {}
 
 impl<T> SendError<T> {
-    /// Get a reference to the message that failed to be sent.
+    /// Returns a reference to the message that failed to be sent.
     pub fn as_inner(&self) -> &T {
         // SAFETY: SendError exclusively owns the allocation and its initialized message.
         unsafe { self.channel_ptr.as_ref().message() }

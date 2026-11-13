@@ -118,10 +118,13 @@ impl<T> fmt::Debug for Completer<T> {
 }
 
 impl<T> Completer<T> {
-    /// Completes the primitive with `value` and wakes all pending observers.
+    /// Publishes `value` and wakes all pending observers.
     ///
-    /// Returns `value` if all observers were already dropped. A successful completion does not
-    /// guarantee that an observer will remain alive long enough to read the value.
+    /// Success does not guarantee that an observer remains alive long enough to read the value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(value)` if all observers have already been dropped.
     pub fn complete(mut self, value: T) -> Result<(), T> {
         let Some(shared) = self.shared.upgrade() else {
             return Err(value);
@@ -178,11 +181,15 @@ impl<T> fmt::Debug for Completion<T> {
 impl<T> Completion<T> {
     /// Waits for the shared value and returns a reference to it.
     ///
+    /// # Errors
+    ///
     /// Returns [`Abandoned`] if the completer is dropped before providing a value. Abandonment
     /// remains distinct from any error stored inside `T`.
     ///
-    /// This method is cancel safe. Dropping one pending wait unregisters only that call and does
-    /// not affect this observer, another wait, or the eventual result.
+    /// # Cancel safety
+    ///
+    /// Dropping a pending future unregisters only this wait. It does not affect this observer,
+    /// other waiters, or the eventual result.
     pub async fn wait(&self) -> Result<&T, Abandoned> {
         Wait {
             shared: &self.shared,

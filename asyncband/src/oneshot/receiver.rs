@@ -45,8 +45,12 @@ use crate::oneshot::drop_message_and_deallocate_channel;
 
 /// The receiving half of a [`oneshot`](crate::oneshot) channel.
 ///
-/// Awaiting converts this receiver into a [`Recv`] future linked to the paired [`Sender`]. Dropping
-/// either the receiver or its future disconnects the channel and discards any unread message.
+/// Awaiting converts this receiver into a [`Recv`] future linked to the paired [`Sender`].
+///
+/// # Cancel safety
+///
+/// Dropping either the receiver or its future disconnects the channel and discards any unread
+/// message.
 ///
 /// To keep a pending operation alive when another branch wins, call [`Receiver::into_future`]
 /// before selecting and borrow the resulting future as `&mut Recv`. The receiver itself does not
@@ -73,6 +77,17 @@ impl<T> IntoFuture for Receiver<T> {
 
     type IntoFuture = Recv<T>;
 
+    /// Converts this receiver into a future that owns the receiving endpoint.
+    ///
+    /// # Errors
+    ///
+    /// The future reports [`RecvError::Disconnected`] if the sender drops without sending or
+    /// the message was already taken. See [`Recv`].
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future disconnects the channel and discards any unread message,
+    /// even before its first poll. Retain and borrow the future to keep waiting after selection.
     fn into_future(self) -> Self::IntoFuture {
         // `Recv` takes over receiver-side cleanup, so `Receiver::drop` must not run afterward.
         let receiver = ManuallyDrop::new(self);
@@ -115,16 +130,15 @@ impl<T> Receiver<T> {
         matches!(channel.state.load(Ordering::Relaxed), MESSAGE)
     }
 
-    /// Checks if there is a message in the channel without blocking. Returns:
+    /// Takes the message if it is available, without waiting.
     ///
-    /// * `Ok(message)` if there was a message in the channel.
-    /// * `Err(TryRecvError::Empty)` if the [`Sender`] is alive, but has not yet sent a message.
-    /// * `Err(TryRecvError::Disconnected)` if the [`Sender`] was dropped before sending anything or
-    ///   if the message has already been extracted by a previous `try_recv` call.
+    /// A successful receive consumes the only message. Later receives report disconnection.
     ///
-    /// If a message is returned, the channel is disconnected and any subsequent attempt to receive
-    /// a message will return an error: [`TryRecvError::Disconnected`] for `try_recv`, or
-    /// [`RecvError::Disconnected`] when awaiting the receiver.
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Empty`] if the sender is alive but has not sent a message.
+    /// Returns [`TryRecvError::Disconnected`] if the sender dropped without sending or the
+    /// message was already taken.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         // SAFETY: The channel will not be freed while this method is still running.
         let channel = unsafe { self.channel_ptr.as_ref() };
@@ -196,14 +210,21 @@ impl<T> Drop for Receiver<T> {
     }
 }
 
-/// Future produced by awaiting a [`Receiver`], resolving to the message from [`Sender`] or
-/// [`RecvError`] if the sender dropped without sending.
+/// A future that receives the channel's only message.
 ///
-/// Created by [`Receiver::into_future`], this future owns the receiving endpoint. Dropping it
-/// disconnects the channel and discards any unread message.
+/// Created by [`Receiver::into_future`], this future owns the receiving endpoint. A completed
+/// future must not be polled again.
 ///
-/// Select on `&mut Recv` to keep the pending future alive when another branch wins. A completed
-/// `Recv` future must not be polled again.
+/// # Errors
+///
+/// Resolves to [`RecvError::Disconnected`] if the sender drops without sending or the
+/// message was already taken before conversion.
+///
+/// # Cancel safety
+///
+/// Dropping this future disconnects the channel and discards any unread message, even if the
+/// future was never polled. To keep the operation alive when another branch wins a selection,
+/// retain the same future and select on `&mut Recv`.
 pub struct Recv<T> {
     channel_ptr: NonNull<Channel<T>>,
 }

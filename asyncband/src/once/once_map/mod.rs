@@ -296,18 +296,29 @@ where
         }
     }
 
-    /// Compute the value for the given key if absent.
+    /// Returns a clone of the stored or newly computed value for `key`.
     ///
-    /// If the value for the key is already being computed by another task, this task will wait for
-    /// the computation to finish and return the result.
+    /// A stored value is returned without invoking `func`. Otherwise, callers for an equivalent
+    /// key share an active computation and receive clones of its successful result. Values are
+    /// cached until removed. Removing an in-flight entry detaches it: existing callers still
+    /// receive its result, but that result is not cached in the map.
     ///
-    /// If the computation is cancelled or panics, another caller waiting for the same key may retry
-    /// it.
+    /// # Cancel safety
+    ///
+    /// Dropping a caller that is waiting for a result does not cancel the active computation.
+    /// Dropping the caller executing `func` drops that attempt; another caller on the entry may
+    /// run its own `func`. Effects already performed by the cancelled attempt are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// A panic in `func` propagates to its caller without publishing a value. Another caller may
+    /// retry the computation.
     ///
     /// # Deadlocks
     ///
-    /// The computation must not call `compute` or `try_compute` for an equivalent key on this map
-    /// because it would wait for its own result. Operations on other keys remain independent.
+    /// The computation must not await `compute` or `try_compute` for an equivalent key on
+    /// the same current entry, because it would wait for its own result. Other keys are
+    /// independent.
     pub async fn compute<F>(&self, key: K, func: F) -> V
     where
         F: AsyncFnOnce() -> V,
@@ -322,18 +333,34 @@ where
         result
     }
 
-    /// Compute the value for the given key if absent.
+    /// Returns a clone of the stored or newly computed value for `key`.
     ///
-    /// If the value for the key is already being computed by another task, this task will wait for
-    /// the computation to finish and return the result.
+    /// A stored value is returned without invoking `func`. Otherwise, callers for an equivalent
+    /// key share an active computation and receive clones of its successful result. Values are
+    /// cached until removed. Removing an in-flight entry detaches it: existing callers still
+    /// receive its result, but that result is not cached in the map.
     ///
-    /// If the computation returns an error, it is returned to that caller and the value is not
-    /// stored. After an error, cancellation, or panic, another caller may retry the computation.
+    /// # Errors
+    ///
+    /// Returns an error from this call's `func` only to this caller. Errors are not stored or
+    /// shared; another caller waiting on the entry may run its own `func`.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a caller that is waiting for a result does not cancel the active computation.
+    /// Dropping the caller executing `func` drops that attempt; another caller on the entry may
+    /// run its own `func`. Effects already performed by the cancelled attempt are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// A panic in `func` propagates to its caller without publishing a value. Another caller may
+    /// retry the computation.
     ///
     /// # Deadlocks
     ///
-    /// The computation must not call `compute` or `try_compute` for an equivalent key on this map
-    /// because it would wait for its own result. Operations on other keys remain independent.
+    /// The computation must not await `compute` or `try_compute` for an equivalent key on
+    /// the same current entry, because it would wait for its own result. Other keys are
+    /// independent.
     pub async fn try_compute<E, F>(&self, key: K, func: F) -> Result<V, E>
     where
         F: AsyncFnOnce() -> Result<V, E>,
@@ -348,7 +375,7 @@ where
         Ok(result)
     }
 
-    /// Gets a clone of the value for the given key without waiting.
+    /// Returns a clone of the value for the given key without waiting.
     ///
     /// Returns `None` when the key is absent or its computation is still in flight.
     pub fn get<Q>(&self, key: &Q) -> Option<V>
@@ -359,7 +386,7 @@ where
         self.get_value(key)
     }
 
-    /// Remove the given key from the map.
+    /// Removes the given key from the map.
     ///
     /// If you need to get the value that has been removed, use the [`remove`] method instead.
     ///

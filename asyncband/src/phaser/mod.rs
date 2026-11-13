@@ -271,10 +271,14 @@ impl Phaser {
         self.state.lock().unarrived
     }
 
-    /// Registers one participant in the current phase, or returns [`Closed`].
+    /// Registers one participant in the current phase.
     ///
     /// Registration racing with advancement joins the phase before or after that advancement.
     /// The returned participant owns a shared handle and does not borrow this one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Closed`] without registering a participant if the phaser is closed.
     ///
     /// # Panics
     ///
@@ -292,8 +296,12 @@ impl Phaser {
     /// participants; yielded handles keep their registrations. The iterator owns a shared handle
     /// and does not borrow this phaser.
     ///
-    /// Returns [`Closed`] without registering anyone if the phaser is closed. On an open phaser,
-    /// a zero-sized batch does nothing. Collect this iterator into a collection of your choice.
+    /// On an open phaser, a zero-sized batch does nothing. Collect this iterator into a collection
+    /// of your choice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Closed`] without registering any participants if the phaser is closed.
     ///
     /// # Panics
     ///
@@ -328,13 +336,18 @@ impl Phaser {
     /// a future target number: a number different from the current phase returns immediately.
     /// It neither registers a participant nor records an arrival.
     ///
+    /// Phase numbers wrap; do not retain an observation across a full `u64` cycle or use a number
+    /// obtained from another phaser.
+    ///
+    /// # Errors
+    ///
     /// Returns [`Closed`] if the observed phase is still current when the phaser closes. A phase
-    /// completed before the phaser was closed remains successful. Phase numbers wrap; do not retain
-    /// an observation across a full `u64` cycle or use a number obtained from another phaser.
+    /// completed before closure remains successful.
     ///
     /// # Cancel safety
     ///
-    /// Cancelling only unregisters this wait's waker. The same observation can be retried.
+    /// Dropping a pending future unregisters only this wait. It does not record an arrival or
+    /// change the phase; the same observation can be retried.
     pub async fn wait(&self, observed: u64) -> Result<u64, Closed> {
         PhaserWait {
             phaser: self,
@@ -428,9 +441,13 @@ impl PhaserParticipant {
 
     /// Records this participant's arrival and remembers that phase for [`wait`](Self::wait).
     ///
-    /// Returns the phase in which arrival was recorded, or [`Closed`] without recording one.
+    /// Returns the phase in which arrival was recorded.
     /// Repeated calls within one phase count only once. After advancement, an explicit new call
     /// arrives in the new phase and replaces any previous pending observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Closed`] without recording an arrival if the phaser is closed.
     pub fn arrive(&mut self) -> Result<u64, Closed> {
         let mut state = self.phaser.state.lock();
         if state.closed {
@@ -453,6 +470,11 @@ impl PhaserParticipant {
     /// already completed. With no pending observation, the first poll arrives in the current
     /// phase. Success consumes the pending observation and returns the new current phase.
     ///
+    /// # Errors
+    ///
+    /// Returns [`Closed`] if the phaser closes before this call can record an arrival or before
+    /// its pending phase completes. A phase completed before closure remains successful.
+    ///
     /// # Cancel safety
     ///
     /// An unpolled call has no effect. Once polled, arrival is committed. Cancelling preserves
@@ -468,11 +490,15 @@ impl PhaserParticipant {
         Ok(next)
     }
 
-    /// Withdraws this participant and returns the phase from which it withdrew, or [`Closed`].
+    /// Withdraws this participant and returns the phase from which it withdrew.
     ///
     /// Any outstanding arrival is discharged without counting an already-arrived participant
     /// twice. This always removes the registration, even if the phaser is closed. The pending
     /// observation is abandoned. Dropping a participant has the same membership effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Closed`] if the phaser is closed. The registration is still removed.
     pub fn deregister(mut self) -> Result<u64, Closed> {
         self.do_deregister()
     }

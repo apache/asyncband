@@ -158,9 +158,12 @@ impl<T> Drop for Sender<T> {
 }
 
 impl<T> Sender<T> {
-    /// Publishes a new current value.
+    /// Publishes `value` as the new current value and notifies receivers.
     ///
-    /// If no receivers remain, the value is returned and the retained value is left unchanged.
+    /// # Errors
+    ///
+    /// Returns [`SendError`] containing `value` if no receivers remain. The retained value is
+    /// unchanged on error.
     ///
     /// # Panics
     ///
@@ -263,9 +266,12 @@ impl<T> Drop for Receiver<T> {
 impl<T> Receiver<T> {
     /// Returns a clone of the current value without marking its version observed.
     ///
-    /// The clone is created while publication is locked. Keep `T::clone` inexpensive and avoid
-    /// reentering this channel from the clone implementation. Use `T = Arc<U>` when the underlying
-    /// state is expensive to clone.
+    /// Use `T = Arc<U>` when the underlying state is expensive to clone.
+    ///
+    /// # Deadlocks
+    ///
+    /// The clone is created while publication is locked. The clone implementation must not reenter
+    /// this channel.
     pub fn get(&self) -> T
     where
         T: Clone,
@@ -275,8 +281,14 @@ impl<T> Receiver<T> {
 
     /// Returns whether a version newer than the last observed version exists.
     ///
-    /// An unseen final version is reported before disconnection, even if all senders have been
-    /// dropped.
+    /// An unseen final version returns `Ok(true)` even after all senders have been dropped.
+    /// `Ok(false)` is a snapshot: a sender may publish a new version immediately afterward.
+    /// This call does not mark a version observed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecvError::Disconnected`] when all senders have been dropped and no unseen
+    /// version remains.
     pub fn has_changed(&self) -> Result<bool, RecvError> {
         let state = self.shared.state.lock();
         if state.version != self.seen {
@@ -288,11 +300,20 @@ impl<T> Receiver<T> {
         }
     }
 
-    /// Waits for a newer version and marks the latest version observed.
+    /// Waits for a newer version and marks it observed.
     ///
-    /// Intermediate updates may be coalesced. This method is cancel safe: until it returns, no
-    /// version is marked observed by the call. Use [`Receiver::recv`] instead when the value is
-    /// needed.
+    /// Intermediate updates may be coalesced. An unseen final version remains available after all
+    /// senders have been dropped. Use [`recv`](Self::recv) when the value is needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecvError::Disconnected`] when all senders have been dropped and no unseen
+    /// version remains.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending future leaves the observed version unchanged. A later call can still
+    /// observe the latest unseen version.
     pub async fn changed(&mut self) -> Result<(), RecvError> {
         let seen = Change {
             shared: &self.shared,
@@ -306,15 +327,29 @@ impl<T> Receiver<T> {
 
     /// Waits for a newer version, returns a clone of its latest value, and marks it observed.
     ///
-    /// Intermediate updates may be coalesced. The returned value and the receiver's observed
-    /// version are updated together, so a concurrent publication cannot cause the returned value
-    /// to be received twice. This method is cancel safe: until it returns, no version is marked
-    /// observed by the call.
+    /// Intermediate updates may be coalesced. An unseen final version remains available after all
+    /// senders have been dropped.
+    /// The returned value and observed version correspond to the same publication. Use `T = Arc<U>`
+    /// when cloning the underlying value is expensive.
     ///
-    /// The clone is created while publication is locked. Keep `T::clone` inexpensive and avoid
-    /// reentering this channel from the clone implementation. Use `T = Arc<U>` when the underlying
-    /// state is expensive to clone. If cloning panics, the version remains unseen and may be
-    /// received by a later call.
+    /// # Errors
+    ///
+    /// Returns [`RecvError::Disconnected`] when all senders have been dropped and no unseen
+    /// version remains.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending future leaves the observed version unchanged. A later call can still
+    /// observe the latest unseen version.
+    ///
+    /// # Panics
+    ///
+    /// If `T::clone` panics, the version remains unseen and may be received by a later call.
+    ///
+    /// # Deadlocks
+    ///
+    /// Cloning runs while publication is locked. The clone implementation must not reenter this
+    /// channel.
     pub async fn recv(&mut self) -> Result<T, RecvError>
     where
         T: Clone,

@@ -146,7 +146,8 @@ impl<T: ?Sized> Mutex<T> {
     ///
     /// # Cancel safety
     ///
-    /// Pending lock requests complete in order. Cancelling this call loses its place among them.
+    /// Dropping a pending future removes this request and releases any assigned permit. A later
+    /// attempt joins the back of the queue. No guard is returned on cancellation.
     ///
     /// # Examples
     ///
@@ -198,7 +199,9 @@ impl<T: ?Sized> Mutex<T> {
     ///
     /// # Cancel safety
     ///
-    /// Pending lock requests complete in order. Cancelling this call loses its place among them.
+    /// Dropping a pending future removes this request and releases any assigned permit. A later
+    /// attempt joins the back of the queue. No guard is returned, and the future releases its owned
+    /// `Arc`.
     ///
     /// # Examples
     ///
@@ -326,6 +329,11 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
     /// The returned guard keeps the same mutex locked. Call this as
     /// `MutexGuard::map(...)` so a method named `map` on `T` remains accessible through deref.
     ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
+    ///
     /// # Examples
     ///
     /// ```
@@ -378,8 +386,18 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
 
     /// Attempts to project this guard to a mutable component of the protected value.
     ///
-    /// The original guard is returned when `f` returns `None`. Call this as
+    /// Call this as
     /// `MutexGuard::filter_map(...)` so a method with the same name on `T` remains accessible.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     ///
     /// # Examples
     ///
@@ -493,6 +511,11 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
     /// The returned guard retains the same `Arc` and keeps the mutex locked. Call this as
     /// `OwnedMutexGuard::map(...)` so a method named `map` on `T` remains accessible through deref.
     ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
+    ///
     /// # Examples
     ///
     /// ```
@@ -543,8 +566,18 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
 
     /// Attempts to project this guard to a mutable component of the protected value.
     ///
-    /// The original guard is returned when `f` returns `None`. Call this as
+    /// Call this as
     /// `OwnedMutexGuard::filter_map(...)` so a method with the same name on `T` remains accessible.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     ///
     /// # Examples
     ///
@@ -692,6 +725,11 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
     /// `MappedMutexGuard::map(...)` so a method named `map` on `T` remains accessible through
     /// deref.
     ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
+    ///
     /// # Examples
     ///
     /// ```
@@ -748,9 +786,19 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
 
     /// Attempts to project an already mapped guard to a deeper mutable component.
     ///
-    /// The original mapped guard is returned when `f` returns `None`. Call this as
+    /// Call this as
     /// `MappedMutexGuard::filter_map(...)` so a method with the same name on `T` remains
     /// accessible.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     ///
     /// # Examples
     ///
@@ -893,6 +941,11 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
     /// `OwnedMappedMutexGuard::map(...)` so a method named `map` on `U` remains accessible through
     /// deref.
     ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
+    ///
     /// # Examples
     ///
     /// ```
@@ -947,9 +1000,19 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
 
     /// Attempts to project an owned mapped guard to a deeper mutable component.
     ///
-    /// The original mapped guard is returned when `f` returns `None`. Call this as
+    /// Call this as
     /// `OwnedMappedMutexGuard::filter_map(...)` so a method with the same name on `U` remains
     /// accessible through deref.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     ///
     /// # Examples
     ///

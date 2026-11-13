@@ -78,9 +78,11 @@ impl<T> Drop for BoundedSender<T> {
 }
 
 impl<T> BoundedSender<T> {
-    /// Sends a value, waiting until capacity is available if the queue is full.
+    /// Sends a value, waiting for capacity when the queue is full.
     ///
-    /// If all receivers have been dropped, the value is returned in [`SendError`].
+    /// # Errors
+    ///
+    /// Returns [`SendError`] containing the unsent value if all receivers have been dropped.
     ///
     /// # Cancel safety
     ///
@@ -91,12 +93,16 @@ impl<T> BoundedSender<T> {
         self.shared.send(value).await
     }
 
-    /// Reserves capacity for one value before constructing it.
+    /// Reserves capacity for one message before the caller supplies its value.
     ///
-    /// A successful reservation returns a [`Permit`]. Dropping it releases capacity. A permit
-    /// reserves space, not message order, and does not keep receivers alive.
+    /// The returned [`Permit`] holds one capacity slot. Dropping it releases that slot;
+    /// [`Permit::send`] publishes a value without waiting for space. Holding a permit does not
+    /// establish message order or keep a receiver alive.
     ///
-    /// Returns `SendError(())` if all receivers have been dropped.
+    /// # Errors
+    ///
+    /// Returns `SendError(())` if all receivers have been dropped. A successful reservation
+    /// can still fail to send if disconnection happens before [`Permit::send`].
     ///
     /// # Cancel safety
     ///
@@ -124,18 +130,27 @@ impl<T> BoundedSender<T> {
         self.shared.reserve().await
     }
 
-    /// Reserves capacity for one value without waiting.
+    /// Reserves capacity for one message without waiting.
     ///
-    /// Returns [`TrySendError::Full`] when all capacity belongs to queued values, held permits,
-    /// or granted waiters, and [`TrySendError::Disconnected`] when all receivers are gone.
+    /// Dropping the returned [`Permit`] releases its capacity. See [`reserve`](Self::reserve)
+    /// for reservation and message ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] if capacity is unavailable, or
+    /// [`TrySendError::Disconnected`] if all receivers have been dropped. Errors carry `()`
+    /// because no message has been supplied.
     pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
         self.shared.try_reserve()
     }
 
-    /// Attempts to send a value without waiting for capacity.
+    /// Sends a value without waiting for capacity.
     ///
-    /// Returns [`TrySendError::Full`] when no unassigned capacity remains and
-    /// [`TrySendError::Disconnected`] when all receivers have been dropped.
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] if capacity is unavailable, or
+    /// [`TrySendError::Disconnected`] if all receivers have been dropped. Both errors contain the
+    /// unsent value; nothing is enqueued on error.
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
         self.shared.try_send(value)
     }
@@ -194,23 +209,30 @@ impl<T> Drop for BoundedReceiver<T> {
 }
 
 impl<T> BoundedReceiver<T> {
-    /// Receives the next available value.
+    /// Waits for and receives the next queued value, freeing one capacity slot.
     ///
-    /// Buffered values remain available after the final sender is dropped. Once they are drained,
-    /// this method returns [`RecvError::Disconnected`].
+    /// Queued values remain receivable after disconnection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecvError::Disconnected`] once all senders have been dropped and the queue is
+    /// empty.
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `recv` future does not consume a value or prevent other receivers from
-    /// receiving it.
+    /// Dropping a pending future does not remove a value from the queue or prevent another receiver
+    /// from receiving it.
     pub async fn recv(&self) -> Result<T, RecvError> {
         self.shared.recv().await
     }
 
-    /// Attempts to receive the next available value without waiting for a message.
+    /// Receives the next queued value without waiting for a message, freeing one capacity slot.
     ///
-    /// Returns [`TryRecvError::Empty`] while the queue is empty and a sender remains, or
-    /// [`TryRecvError::Disconnected`] once the queue is empty and all senders have been dropped.
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Empty`] when the queue is empty but a sender remains.
+    /// Returns [`TryRecvError::Disconnected`] once all senders have been dropped and the queue is
+    /// empty.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         self.shared.try_recv()
     }

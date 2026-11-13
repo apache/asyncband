@@ -131,16 +131,26 @@ impl Once {
         self.done.try_wait().is_ok()
     }
 
-    /// Runs `init` if this `Once` has not yet completed an initialization.
+    /// Runs `f` if initialization has not completed.
     ///
-    /// Concurrent callers arriving while `init` is in progress wait until it finishes. Only one
-    /// caller can succeed; once an execution returns normally, every current and future call
-    /// completes immediately without running `init` again.
+    /// One caller runs its initializer while others wait. After an initializer completes normally,
+    /// all current and future calls return without running another initializer.
     ///
-    /// If the active attempt panics or its future is dropped before completing, the `Once`
-    /// stays uncompleted and a queued caller starts a fresh attempt. Calling `call_once`
-    /// recursively on the same `Once` from inside `init` deadlocks while waiting for the outer
-    /// call to finish.
+    /// # Cancel safety
+    ///
+    /// Dropping a pending call that is waiting does not interrupt the active initializer. Dropping
+    /// the call running `f` cancels that attempt and allows a waiting or later caller to run its
+    /// own initializer. Effects already performed by `f` are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// A panic in `f` propagates to its caller. Initialization remains incomplete and may be
+    /// retried; this primitive is not poisoned.
+    ///
+    /// # Deadlocks
+    ///
+    /// An initializer must not await `call_once` or `wait` on the same `Once`, because completion
+    /// depends on that initializer returning.
     ///
     /// # Examples
     ///
@@ -182,7 +192,14 @@ impl Once {
         self.done.wake_all();
     }
 
-    /// Waits asynchronously until some `call_once` has completed successfully.
+    /// Waits until an initializer passed to [`call_once`](Self::call_once) completes successfully.
+    ///
+    /// This call does not start initialization.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending future unregisters only this wait. It does not cancel initialization,
+    /// change the completed state, or affect other waiters.
     ///
     /// # Examples
     ///

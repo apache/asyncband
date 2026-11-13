@@ -72,11 +72,13 @@ impl<T> UnboundedReceiver<T> {
         }
     }
 
-    /// Attempts to receive the next queued value without waiting for a new message.
+    /// Receives the next queued value without waiting for a message.
     ///
-    /// An empty channel returns [`TryRecvError::Empty`] while at least one sender remains, or
-    /// [`TryRecvError::Disconnected`] after every sender has been dropped and all queued values
-    /// have been consumed.
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Empty`] when the queue is empty but a sender remains.
+    /// Returns [`TryRecvError::Disconnected`] once all senders have been dropped and the queue is
+    /// empty.
     ///
     /// # Examples
     ///
@@ -113,17 +115,19 @@ impl<T> UnboundedReceiver<T> {
         Ok(pop_batch(batch))
     }
 
-    /// Waits for and receives the next value.
+    /// Waits for and receives the next queued value.
     ///
-    /// If no value is queued, this method waits until a sender adds one or the last sender is
-    /// dropped. It returns [`RecvError::Disconnected`] only after all senders are gone and the
-    /// queue has been drained.
+    /// Queued values remain receivable after disconnection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecvError::Disconnected`] once all senders have been dropped and the queue is
+    /// empty.
     ///
     /// # Cancel safety
     ///
-    /// Dropping a pending `recv` future does not remove a message from the channel. A subsequent
-    /// `recv` future can still observe the next queued value, so these futures may safely be raced
-    /// with other futures in a selection construct.
+    /// Dropping a pending future does not remove a value from the queue. A later call on this
+    /// receiver can still receive the next value.
     ///
     /// # Examples
     ///

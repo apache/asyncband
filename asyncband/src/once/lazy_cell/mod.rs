@@ -196,13 +196,27 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = T> + Unpin,
 {
-    /// Initializes the value if needed and returns a reference to it.
+    /// Initializes the cell if needed and returns a reference to its value.
     ///
-    /// This method is available when moving the stored future is safe. A future behind
-    /// `Pin<Box<_>>` is `Unpin` because moving the box does not move its pointee.
+    /// The stored initialization future must be [`Unpin`]. Use a pinned cell and
+    /// [`force_pin`](Self::force_pin) for an inline future that is not `Unpin`.
+    /// Concurrent callers wait while one caller drives the initializer.
     ///
-    /// If another task is initializing the cell, this call waits for that attempt. If the task
-    /// driving initialization is cancelled, a later caller resumes the same future.
+    /// # Cancel safety
+    ///
+    /// Dropping a pending call preserves the initialization future in the cell. A later caller
+    /// resumes that same future instead of invoking the initializer again. Already performed
+    /// effects remain in place; initialization does not continue without a caller polling it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cell is poisoned. A panic while invoking or polling the initializer propagates
+    /// to the caller and poisons the cell; subsequent forcing calls panic as well.
+    ///
+    /// # Deadlocks
+    ///
+    /// The initializer must not await forced access to the same cell, because it would wait for
+    /// its own completion.
     ///
     /// # Examples
     ///
@@ -217,16 +231,26 @@ where
     /// assert_eq!(*LazyCell::force(&lazy).await, 92);
     /// # }
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// Panics if the initializer panics or the cell was previously poisoned. Recursive
-    /// initialization of the same cell deadlocks.
     pub async fn force(this: &Self) -> &T {
         Self::force_pin(Pin::new(this)).await
     }
 
-    /// Initializes the value if needed and returns mutable access to it.
+    /// Initializes the cell if needed and returns mutable access to its value.
+    ///
+    /// The stored initialization future must be [`Unpin`]. Use a pinned cell and
+    /// [`force_pin_mut`](Self::force_pin_mut) for an inline future that is not `Unpin`.
+    /// The exclusive borrow prevents another caller from driving initialization.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending call preserves the initialization future in the cell. A later caller
+    /// resumes that same future instead of invoking the initializer again. Already performed
+    /// effects remain in place; initialization does not continue without a caller polling it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cell is poisoned. A panic while invoking or polling the initializer propagates
+    /// to the caller and poisons the cell; subsequent forcing calls panic as well.
     ///
     /// # Examples
     ///
@@ -240,10 +264,6 @@ where
     /// assert_eq!(LazyCell::get(&lazy).map(String::as_str), Some("ready!"));
     /// # }
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// Panics under the same conditions as [`force`](Self::force).
     pub async fn force_mut(this: &mut Self) -> &mut T {
         Self::force_pin_mut(Pin::new(this)).await
     }
@@ -254,13 +274,27 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = T>,
 {
-    /// Initializes a pinned cell and returns a reference to its value.
+    /// Initializes the pinned cell if needed and returns a reference to its value.
     ///
-    /// Pinning the cell keeps an inline initialization future at a stable address. Cancellation
-    /// leaves that future in the cell so a later caller can resume it.
+    /// Pinning keeps the stored initialization future at a stable address, including when it is
+    /// not [`Unpin`].
+    /// Concurrent callers wait while one caller drives the initializer.
     ///
-    /// Use this method when the stored future is not [`Unpin`]. [`Box::pin`] is one way to pin the
-    /// whole cell; [`Pin::as_ref`] then supplies the `Pin<&Self>` required here.
+    /// # Cancel safety
+    ///
+    /// Dropping a pending call preserves the initialization future in the cell. A later caller
+    /// resumes that same future instead of invoking the initializer again. Already performed
+    /// effects remain in place; initialization does not continue without a caller polling it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cell is poisoned. A panic while invoking or polling the initializer propagates
+    /// to the caller and poisons the cell; subsequent forcing calls panic as well.
+    ///
+    /// # Deadlocks
+    ///
+    /// The initializer must not await forced access to the same cell, because it would wait for
+    /// its own completion.
     ///
     /// # Examples
     ///
@@ -274,11 +308,6 @@ where
     /// assert_eq!(*LazyCell::force_pin(lazy.as_ref()).await, 92);
     /// # }
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// Panics if the initializer panics or the cell was previously poisoned. Recursive
-    /// initialization of the same cell deadlocks.
     pub async fn force_pin<'a>(this: Pin<&'a Self>) -> &'a T {
         let this_ref: &'a Self = Pin::get_ref(this);
         if let Some(value) = Self::get(this_ref) {
@@ -302,10 +331,22 @@ where
         unsafe { this_ref.value.publish(value) }
     }
 
-    /// Initializes a pinned cell and returns mutable access to its value.
+    /// Initializes the pinned cell if needed and returns mutable access to its value.
     ///
-    /// Exclusive access lets this method initialize the cell directly. Calling [`Pin::as_mut`] on
-    /// a pinned box supplies the required `Pin<&mut Self>` without moving the cell.
+    /// Pinning keeps the stored initialization future at a stable address, including when it is
+    /// not [`Unpin`].
+    /// The exclusive borrow prevents another caller from driving initialization.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending call preserves the initialization future in the cell. A later caller
+    /// resumes that same future instead of invoking the initializer again. Already performed
+    /// effects remain in place; initialization does not continue without a caller polling it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cell is poisoned. A panic while invoking or polling the initializer propagates
+    /// to the caller and poisons the cell; subsequent forcing calls panic as well.
     ///
     /// # Examples
     ///
@@ -320,10 +361,6 @@ where
     /// assert_eq!(value, "ready!");
     /// # }
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// Panics under the same conditions as [`force_pin`](Self::force_pin).
     pub async fn force_pin_mut<'a>(this: Pin<&'a mut Self>) -> &'a mut T {
         // SAFETY: We do not move the structurally pinned future through this reference. The stored
         // value is not structurally pinned and may be accessed normally.

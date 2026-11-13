@@ -228,24 +228,28 @@ where
         }
     }
 
-    /// Executes and returns the results of the given function, making sure that only one execution
-    /// is in-flight for a given key at a time.
+    /// Returns a clone of the shared computation's value for `key`.
     ///
-    /// If a duplicate comes in, the duplicate caller waits for the original to complete and
-    /// receives the same results.
+    /// Callers that join the same in-flight entry share its successful result. Once `func`
+    /// completes successfully, the entry is removed so later calls can start new work.
+    /// [`forget`](Self::forget) lets new calls start independently of an existing entry.
     ///
-    /// If the computation is cancelled or panics, another caller waiting for the same key may retry
-    /// it.
+    /// # Cancel safety
     ///
-    /// Once the function completes, the key, if not [`forgotten`], is removed from the group,
-    /// allowing future calls with the same key to execute the function again.
+    /// Dropping a caller that is waiting for a result does not cancel the active computation.
+    /// Dropping the caller executing `func` drops that attempt; another caller on the entry may
+    /// run its own `func`. Effects already performed by the cancelled attempt are not rolled back.
     ///
-    /// [`forgotten`]: Self::forget
+    /// # Panics
+    ///
+    /// A panic in `func` propagates to its caller without publishing a value. Another caller may
+    /// retry the computation.
     ///
     /// # Deadlocks
     ///
-    /// The function must not recursively call `work` or `try_work` for the same current key because
-    /// it would wait for its own result. Work for other keys remains independent.
+    /// The computation must not await `work` or `try_work` for an equivalent key on
+    /// the same current entry, because it would wait for its own result. Other keys are
+    /// independent.
     ///
     /// # Examples
     ///
@@ -303,24 +307,33 @@ where
         result
     }
 
-    /// Executes and returns the results of the given function, making sure that only one execution
-    /// is in-flight for a given key at a time.
+    /// Returns a clone of the shared computation's value for `key`.
     ///
-    /// If a duplicate comes in, the duplicate caller waits for the original to complete and
-    /// receives the same results.
+    /// Callers that join the same in-flight entry share its successful result. Once `func`
+    /// completes successfully, the entry is removed so later calls can start new work.
+    /// [`forget`](Self::forget) lets new calls start independently of an existing entry.
     ///
-    /// If the computation returns an error, it is returned to that caller. After an error,
-    /// cancellation, or panic, another caller may retry the computation.
+    /// # Errors
     ///
-    /// Once the function completes successfully, the key, if not [`forgotten`], is removed from
-    /// the group, allowing future calls with the same key to execute the function again.
+    /// Returns an error from this call's `func` only to this caller. Errors are not stored or
+    /// shared; another caller waiting on the entry may run its own `func`.
     ///
-    /// [`forgotten`]: Self::forget
+    /// # Cancel safety
+    ///
+    /// Dropping a caller that is waiting for a result does not cancel the active computation.
+    /// Dropping the caller executing `func` drops that attempt; another caller on the entry may
+    /// run its own `func`. Effects already performed by the cancelled attempt are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// A panic in `func` propagates to its caller without publishing a value. Another caller may
+    /// retry the computation.
     ///
     /// # Deadlocks
     ///
-    /// The function must not recursively call `work` or `try_work` for the same current key because
-    /// it would wait for its own result. Work for other keys remains independent.
+    /// The computation must not await `work` or `try_work` for an equivalent key on
+    /// the same current entry, because it would wait for its own result. Other keys are
+    /// independent.
     ///
     /// # Examples
     ///

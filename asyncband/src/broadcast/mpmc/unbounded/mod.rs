@@ -267,9 +267,10 @@ impl<T> UnboundedReceiver<T> {
     /// caller that keeps it keeps the payload alive. Use
     /// [`recv_cloned`](UnboundedReceiver::recv_cloned) to take an owned value instead.
     ///
-    /// Values already published for this receiver are returned before disconnection.
-    /// [`RecvError::Disconnected`] is returned only when no sender remains and this receiver's
-    /// backlog is empty.
+    /// # Errors
+    ///
+    /// Returns [`RecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
     ///
     /// # Cancel safety
     ///
@@ -301,18 +302,23 @@ impl<T> UnboundedReceiver<T> {
     ///
     /// The payload is moved out of the channel without cloning when this read reclaims the message
     /// and nothing else still refers to it, such as an `Arc` kept from a shared receive or another
-    /// receiver's clone still in progress. Otherwise it is cloned with the channel unlocked. If
-    /// `T::clone` panics, this receiver has still advanced past the value.
+    /// receiver's clone still in progress. Otherwise it is cloned with the channel unlocked.
     ///
-    /// Values already published for this receiver are returned before disconnection.
-    /// [`RecvError::Disconnected`] is returned only when no sender remains and this receiver's
-    /// backlog is empty.
+    /// # Errors
+    ///
+    /// Returns [`RecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
     ///
     /// # Cancel safety
     ///
     /// Dropping a pending `recv_cloned` future leaves this receiver's cursor unchanged. A
     /// subsequent receive can still return the same next value, so these futures may safely be
     /// raced with other futures in a selection construct.
+    ///
+    /// # Panics
+    ///
+    /// If `T::clone` panics, this receiver has already advanced past the message. Retrying
+    /// receives a later message rather than the one whose clone panicked.
     ///
     /// # Examples
     ///
@@ -340,9 +346,11 @@ impl<T> UnboundedReceiver<T> {
     /// See [`recv`](UnboundedReceiver::recv) for what keeping the `Arc` means, and
     /// [`try_recv_cloned`](UnboundedReceiver::try_recv_cloned) to take an owned value instead.
     ///
-    /// [`TryRecvError::Empty`] means this receiver is currently caught up while a sender remains.
-    /// [`TryRecvError::Disconnected`] means no sender remains and this receiver has drained its
-    /// backlog.
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Empty`] when no message is available but a sender remains.
+    /// Returns [`TryRecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
     ///
     /// # Examples
     ///
@@ -369,9 +377,16 @@ impl<T> UnboundedReceiver<T> {
     /// See [`recv_cloned`](UnboundedReceiver::recv_cloned) for when the payload is moved out
     /// rather than cloned.
     ///
-    /// [`TryRecvError::Empty`] means this receiver is currently caught up while a sender remains.
-    /// [`TryRecvError::Disconnected`] means no sender remains and this receiver has drained its
-    /// backlog.
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Empty`] when no message is available but a sender remains.
+    /// Returns [`TryRecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
+    ///
+    /// # Panics
+    ///
+    /// If `T::clone` panics, this receiver has already advanced past the message. Retrying
+    /// receives a later message rather than the one whose clone panicked.
     ///
     /// # Examples
     ///

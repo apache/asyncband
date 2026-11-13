@@ -68,7 +68,7 @@ use crate::rwlock::write_guard;
 /// queue position. [`upgrade`](RwLockUpgradableReadGuard::upgrade) consumes its guard; cancelling
 /// that future releases the guard as well, including before its first poll.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use asyncband::rwlock::RwLockUpgradableReadGuard;
@@ -284,6 +284,13 @@ impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
     ///
     /// Failure neither consumes additional permits nor reserves a queue position. With a reader
     /// limit of one, this always succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original upgradable guard if exclusive access is unavailable. It retains its
+    /// reader slot and reservation; no additional permits are consumed.
+    ///
+    /// # Examples
     ///
     /// ```
     /// use asyncband::rwlock::RwLockUpgradableReadGuard;

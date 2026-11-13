@@ -268,11 +268,8 @@ impl<T> BoundedSender<T> {
     ///
     /// # Cancel safety
     ///
-    /// This method is cancel safe in the sense that matters for a lossless log: the value is
-    /// either published to every active receiver or not published at all. Publication happens in
-    /// one indivisible step, so cancelling a `send` future cannot leave a reserved but unfilled
-    /// position in the committed order. Dropping the future before publication drops the unsent
-    /// value.
+    /// Dropping a pending future does not publish the value and drops the unsent input. Publication
+    /// is indivisible: it cannot leave a reserved but unfilled position in the message order.
     ///
     /// # Panics
     ///
@@ -363,17 +360,18 @@ impl<T> BoundedSender<T> {
         poll_fn(|cx| send.poll_send(cx)).await
     }
 
-    /// Attempts to broadcast a value to all active receivers without waiting.
+    /// Broadcasts a value to all active receivers without waiting for capacity.
     ///
-    /// # Returns
+    /// If no receivers are active, the value is discarded and this returns `Ok(())`.
     ///
-    /// * `Ok(())`: The value was published, or discarded because no receivers are active.
-    /// * `Err(TrySendError::Full(value))`: The channel already retains `capacity` messages. The
-    ///   value was not published and is returned unchanged.
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] containing the unsent value if the channel has no capacity.
+    /// The value has not been published.
     ///
     /// # Panics
     ///
-    /// Panics if the internal message version counter overflows.
+    /// Panics if the channel's message version counter would overflow.
     ///
     /// # Examples
     ///
@@ -549,11 +547,10 @@ impl<T> BoundedReceiver<T> {
     /// caller that keeps it keeps the payload alive but holds no capacity. Use
     /// [`recv_cloned`](BoundedReceiver::recv_cloned) to take an owned value instead.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// * `Ok(Arc<T>)`: The next message.
-    /// * `Err(RecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
+    /// Returns [`RecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
     ///
     /// # Cancel safety
     ///
@@ -581,20 +578,23 @@ impl<T> BoundedReceiver<T> {
     ///
     /// The payload is moved out of the channel without cloning when this read reclaims the message
     /// and nothing else still refers to it, such as an `Arc` kept from a shared receive or another
-    /// receiver's clone still in progress. Otherwise it is cloned with the channel unlocked. If
-    /// `T::clone` panics, this receiver has still advanced past the value.
+    /// receiver's clone still in progress. Otherwise it is cloned with the channel unlocked.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// * `Ok(T)`: The next message.
-    /// * `Err(RecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
+    /// Returns [`RecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
     ///
     /// # Cancel safety
     ///
     /// Dropping a pending `recv_cloned` future leaves this receiver's cursor unchanged. A
     /// subsequent receive can still return the same next value, so these futures may safely be
     /// raced with other futures in a selection construct.
+    ///
+    /// # Panics
+    ///
+    /// If `T::clone` panics, this receiver has already advanced past the message. Retrying
+    /// receives a later message rather than the one whose clone panicked.
     ///
     /// # Examples
     ///
@@ -622,12 +622,11 @@ impl<T> BoundedReceiver<T> {
     /// See [`recv`](BoundedReceiver::recv) for what keeping the `Arc` means, and
     /// [`try_recv_cloned`](BoundedReceiver::try_recv_cloned) to take an owned value instead.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// * `Ok(Arc<T>)`: The next message.
-    /// * `Err(TryRecvError::Empty)`: No message is currently available.
-    /// * `Err(TryRecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
+    /// Returns [`TryRecvError::Empty`] when no message is available but a sender remains.
+    /// Returns [`TryRecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
     ///
     /// # Examples
     ///
@@ -647,12 +646,16 @@ impl<T> BoundedReceiver<T> {
     /// See [`recv_cloned`](BoundedReceiver::recv_cloned) for when the payload is moved out rather
     /// than cloned.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// * `Ok(T)`: The next message.
-    /// * `Err(TryRecvError::Empty)`: No message is currently available.
-    /// * `Err(TryRecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
+    /// Returns [`TryRecvError::Empty`] when no message is available but a sender remains.
+    /// Returns [`TryRecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
+    ///
+    /// # Panics
+    ///
+    /// If `T::clone` panics, this receiver has already advanced past the message. Retrying
+    /// receives a later message rather than the one whose clone panicked.
     ///
     /// # Examples
     ///

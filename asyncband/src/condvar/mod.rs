@@ -172,8 +172,9 @@ impl Condvar {
     ///
     /// # Cancel safety
     ///
-    /// Cancelling this wait removes it from the current waiters. If the task was selected by
-    /// [`notify_one`](Self::notify_one) but has not yet reacquired the mutex, the notification is
+    /// Dropping the future releases any guard it owns and removes this wait; the original guard
+    /// is not returned to the caller. If the task was selected by [`notify_one`](Self::notify_one)
+    /// but has not yet reacquired the mutex, the notification is
     /// passed to another task that is waiting at that point, if one exists. It is never buffered
     /// for a future waiter.
     pub async fn wait<'a, T: ?Sized>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
@@ -191,10 +192,16 @@ impl Condvar {
         guard
     }
 
-    /// Waits for a notification, atomically releasing and then reacquiring the owned mutex.
+    /// Waits for a notification, releasing and then reacquiring the owned mutex.
     ///
-    /// This has the same notification and cancellation semantics as [`wait`](Self::wait), but
-    /// accepts and returns an owned guard.
+    /// The wait is registered before the mutex is released. The returned owned guard holds the
+    /// mutex again; the caller must recheck its predicate as with [`wait`](Self::wait).
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the future releases any guard it owns without returning it to the caller.
+    /// Notifications are transferred to another current waiter under the same conditions as
+    /// [`wait`](Self::wait); they are never saved for a future waiter.
     pub async fn wait_owned<T: ?Sized>(&self, guard: OwnedMutexGuard<T>) -> OwnedMutexGuard<T> {
         let mutex = mutex::owned_guard_lock(&guard);
         let notify_one_baton = Wait {
@@ -215,6 +222,18 @@ impl Condvar {
     ///
     /// `condition` is checked under the lock before waiting and after every wakeup; if it is
     /// already `false` on entry, this method returns immediately without waiting.
+    ///
+    /// # Cancel safety
+    ///
+    /// Each wait iteration has the same cancellation semantics as [`wait`](Self::wait). Cancelling
+    /// drops the mutex guard; mutations already made by `condition` are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// If `condition` panics, unwinding drops the guard and releases the mutex. Changes already
+    /// made by the predicate are not rolled back.
+    ///
+    /// # Examples
     ///
     /// ```
     /// # #[tokio::main]
@@ -243,11 +262,6 @@ impl Condvar {
     /// notifier.await.unwrap();
     /// # }
     /// ```
-    ///
-    /// # Cancel safety
-    ///
-    /// Each wait iteration has the same cancellation semantics as [`wait`](Self::wait). Cancelling
-    /// drops the mutex guard; mutations already made by `condition` are not rolled back.
     pub async fn wait_while<'a, T: ?Sized, F>(
         &self,
         mut guard: MutexGuard<'a, T>,
@@ -267,6 +281,19 @@ impl Condvar {
     ///
     /// `condition` is checked under the lock before waiting and after every wakeup; if it is
     /// already `false` on entry, this method returns immediately without waiting.
+    ///
+    /// # Cancel safety
+    ///
+    /// Each wait iteration has the same cancellation semantics as
+    /// [`wait_owned`](Self::wait_owned). Cancelling drops the owned mutex guard; mutations already
+    /// made by `condition` are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// If `condition` panics, unwinding drops the guard and releases the mutex. Changes already
+    /// made by the predicate are not rolled back.
+    ///
+    /// # Examples
     ///
     /// ```
     /// # #[tokio::main]
@@ -295,12 +322,6 @@ impl Condvar {
     /// notifier.await.unwrap();
     /// # }
     /// ```
-    ///
-    /// # Cancel safety
-    ///
-    /// Each wait iteration has the same cancellation semantics as
-    /// [`wait_owned`](Self::wait_owned). Cancelling drops the owned mutex guard; mutations already
-    /// made by `condition` are not rolled back.
     pub async fn wait_while_owned<T: ?Sized, F>(
         &self,
         mut guard: OwnedMutexGuard<T>,

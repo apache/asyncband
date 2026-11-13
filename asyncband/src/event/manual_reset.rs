@@ -186,10 +186,14 @@ impl ManualResetEvent {
         .await
     }
 
-    /// Waits without borrowing the event.
+    /// Waits until the event is set while owning this [`Arc`].
     ///
-    /// The future owns the [`Arc`], making it suitable for spawned tasks. Its waiting and
-    /// cancellation semantics match [`wait`](Self::wait).
+    /// The future keeps the event alive without borrowing the caller's handle.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancellation has the same signal semantics as [`wait`](Self::wait) and releases the
+    /// future's `Arc`.
     ///
     /// # Examples
     ///

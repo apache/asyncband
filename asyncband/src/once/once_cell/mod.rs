@@ -111,14 +111,27 @@ impl<T> OnceCell<T> {
         self.value.get_mut()
     }
 
-    /// Returns a reference to the stored value, running `init` if the cell is currently empty.
+    /// Returns a reference to the stored value, initializing the cell with `init` when needed.
     ///
-    /// Concurrent callers share one in-flight initialization: later callers wait for the active
-    /// attempt to complete and receive a reference to its published value. If the active
-    /// initializer panics or its future is dropped before completing, the cell remains empty and a
-    /// waiting caller takes over with its own `init`.
+    /// Concurrent callers wait for the active initializer. Once it publishes a value, all callers
+    /// receive a reference to that value without running their own initializer.
     ///
-    /// Calling this method recursively from inside `init` on the same cell will deadlock.
+    /// # Cancel safety
+    ///
+    /// Dropping a pending call while it waits leaves the active initializer running. If this call
+    /// is running the initializer, cancellation drops that initializer and leaves the cell empty;
+    /// a later caller can start a new attempt. Effects already performed by the initializer are
+    /// not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// An initializer panic propagates to its caller and leaves the cell empty for a later
+    /// attempt. The cell is not poisoned.
+    ///
+    /// # Deadlocks
+    ///
+    /// An initializer must not wait for initialization of the same cell: that would wait for
+    /// its own completion.
     pub async fn get_or_init<F>(&self, init: F) -> &T
     where
         F: AsyncFnOnce() -> T,
@@ -131,13 +144,33 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Returns a reference to the stored value, running a fallible `init` if the cell is empty.
+    /// Returns a reference to the stored value, initializing the cell with a fallible `init` when
+    /// needed.
     ///
-    /// Concurrent callers wait while an initialization attempt is running. When that attempt
-    /// publishes a value, waiting callers receive a reference to it; when it returns `Err`,
-    /// panics, or is cancelled, the cell stays empty and the next queued caller runs its `init`.
+    /// Concurrent callers wait for the active initializer. A published value is shared by all
+    /// callers; an unsuccessful attempt allows another caller to run its own initializer.
     ///
-    /// Calling this method recursively from inside `init` on the same cell will deadlock.
+    /// # Errors
+    ///
+    /// Returns the error from this call's initializer without storing a value. The error is not
+    /// shared with waiting callers, which may make their own attempts.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending call while it waits leaves the active initializer running. If this call
+    /// is running the initializer, cancellation drops that initializer and leaves the cell empty;
+    /// a later caller can start a new attempt. Effects already performed by the initializer are
+    /// not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// An initializer panic propagates to its caller and leaves the cell empty for a later
+    /// attempt. The cell is not poisoned.
+    ///
+    /// # Deadlocks
+    ///
+    /// An initializer must not wait for initialization of the same cell: that would wait for
+    /// its own completion.
     pub async fn get_or_try_init<E, F>(&self, init: F) -> Result<&T, E>
     where
         F: AsyncFnOnce() -> Result<T, E>,
@@ -157,10 +190,19 @@ impl<T> OnceCell<T> {
         Ok(self.set_value(value, permit))
     }
 
-    /// Returns exclusive access to the stored value, running `init` if the cell is empty.
+    /// Returns mutable access to the stored value, running `init` if the cell is empty.
     ///
-    /// Exclusive ownership (`&mut self`) rules out concurrent initialization, so this method runs
-    /// `init` directly when needed without acquiring the semaphore.
+    /// The exclusive borrow prevents concurrent initialization.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending call drops its initializer and leaves the cell empty. A later call can
+    /// start a new attempt; effects already performed by the initializer are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// An initializer panic propagates to its caller and leaves the cell empty for a later
+    /// attempt. The cell is not poisoned.
     ///
     /// # Examples
     ///
@@ -187,11 +229,23 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Returns exclusive access to the stored value, running a fallible `init` if the cell is
-    /// empty.
+    /// Returns mutable access to the stored value, running a fallible `init` if the cell is empty.
     ///
-    /// Exclusive ownership (`&mut self`) rules out concurrent initialization, so this method runs
-    /// `init` directly when needed. Returning an error leaves the cell empty for a later call.
+    /// The exclusive borrow prevents concurrent initialization.
+    ///
+    /// # Errors
+    ///
+    /// Returns the initializer's error and leaves the cell empty.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending call drops its initializer and leaves the cell empty. A later call can
+    /// start a new attempt; effects already performed by the initializer are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// An initializer panic propagates to its caller and leaves the cell empty for a later
+    /// attempt. The cell is not poisoned.
     ///
     /// # Examples
     ///
@@ -231,11 +285,20 @@ impl<T> OnceCell<T> {
         Ok(self.set_value_mut(value))
     }
 
-    /// Stores `value` if the cell is empty and returns a reference to the resulting contents.
+    /// Stores `value` if the cell is empty and returns a reference to it.
     ///
-    /// If another initialization is currently in flight, this call waits until that attempt
-    /// finishes. Returns `Ok(&stored)` when `value` was installed, or `Err((&existing, value))` if
-    /// the cell already held a value.
+    /// Waits for an active initializer before checking whether a value has already been published.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err((existing, value))` if the cell is already initialized, including when another
+    /// initializer publishes a value while this call waits. The error contains a reference to the
+    /// stored value and the unused input. The stored value is unchanged.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending future drops `value` without storing it. It does not cancel another
+    /// caller's initialization.
     ///
     /// # Examples
     ///
@@ -258,10 +321,19 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Stores `value` if the cell is empty, waiting behind any active initialization.
+    /// Stores `value` if the cell is empty.
     ///
-    /// Returns `Ok(())` when `value` was installed, or `Err(value)` if another caller had already
-    /// populated the cell.
+    /// Waits for an active initializer before checking whether a value has already been published.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(value)` if the cell is already initialized, including when another initializer
+    /// publishes a value while this call waits. The stored value is unchanged.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping a pending future drops `value` without storing it. It does not cancel another
+    /// caller's initialization.
     ///
     /// # Examples
     ///

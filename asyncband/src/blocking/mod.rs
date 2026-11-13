@@ -62,7 +62,7 @@ use std::time::Duration;
 
 /// Extension methods for waiting on a future from synchronous code.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use std::time::Duration;
@@ -87,12 +87,22 @@ pub trait FutureExt: IntoFuture {
     /// Blocks the current thread until this future is ready or `timeout` elapses.
     ///
     /// The future is polled before checking the timeout, so an immediately ready future succeeds
-    /// even when `timeout` is zero. Returns [`None`] on timeout and drops the future, cancelling it
-    /// according to that future's cancellation semantics.
+    /// even when `timeout` is zero.
     ///
     /// The timeout cannot interrupt a call to [`Future::poll`]. See the
     /// [`blocking`](crate::blocking) module documentation for other runtime limitations and
     /// executor-thread caveats.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(output)` if the future completes, or `None` when the timeout is observed
+    /// while the future is pending.
+    ///
+    /// # Cancel safety
+    ///
+    /// On timeout, the supplied future is dropped. Its own cancellation contract determines which
+    /// effects remain. Passing a mutable reference to a retained future allows that future to be
+    /// polled again after the timeout.
     fn wait_timeout(self, timeout: Duration) -> Option<Self::Output>
     where
         Self: Sized,

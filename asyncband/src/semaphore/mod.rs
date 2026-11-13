@@ -198,9 +198,13 @@ impl Semaphore {
     /// Dropping the returned [`SemaphorePermit`] returns its permits to this semaphore unless
     /// [`SemaphorePermit::forget`] consumes it first.
     ///
+    /// Pending acquisitions are served in queue order. A larger request can hold up smaller
+    /// requests behind it until enough permits become available.
+    ///
     /// # Cancel safety
     ///
-    /// Pending acquisitions complete in order. Cancelling this call loses its place among them.
+    /// Dropping a pending future removes the request and returns any permits already assigned to
+    /// it. Retrying joins the back of the queue.
     ///
     /// # Examples
     ///
@@ -267,9 +271,13 @@ impl Semaphore {
     /// Dropping the returned [`OwnedSemaphorePermit`] releases both the permits and its reference
     /// to the semaphore unless [`OwnedSemaphorePermit::forget`] consumes it first.
     ///
+    /// Pending acquisitions are served in queue order. A larger request can hold up smaller
+    /// requests behind it until enough permits become available.
+    ///
     /// # Cancel safety
     ///
-    /// Pending acquisitions complete in order. Cancelling this call loses its place among them.
+    /// Dropping a pending future removes the request and returns any permits already assigned to
+    /// it. Retrying joins the back of the queue. The future also releases its owned `Arc`.
     ///
     /// # Examples
     ///

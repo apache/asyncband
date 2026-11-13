@@ -42,8 +42,8 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// # Cancel safety
     ///
-    /// Pending lock requests complete in order. Cancelling this future loses its place among them
-    /// and releases any reserved permits.
+    /// Dropping a pending future removes the request and returns any permits already assigned to
+    /// it. Retrying joins the back of the queue.
     pub async fn write(&self) -> RwLockWriteGuard<'_, T> {
         self.s.acquire(self.max_readers).await;
         RwLockWriteGuard {
@@ -103,9 +103,14 @@ impl<T: ?Sized> DerefMut for RwLockWriteGuard<'_, T> {
 impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
     /// Selects a component while retaining the same lock access.
     ///
-    /// The closure runs while the original guard is held. If it panics, that guard is released.
+    /// The closure runs while the original guard is held.
     /// Call this as `RwLockWriteGuard::map(guard, f)` to avoid shadowing methods of the
     /// value.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     pub fn map<U, F>(mut orig: Self, f: F) -> MappedRwLockWriteGuard<'a, U>
     where
         F: FnOnce(&mut T) -> &mut U,
@@ -115,11 +120,19 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
         MappedRwLockWriteGuard::new(d, orig.access.into_semaphore())
     }
 
-    /// Selects a component, or returns the still-held original guard when the closure returns
-    /// `None`.
+    /// Attempts to select a component while retaining the same lock access.
     ///
-    /// A panic in the closure releases the guard. Call this as
-    /// `RwLockWriteGuard::filter_map(guard, f)`.
+    /// Call this as `RwLockWriteGuard::filter_map(guard, f)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     pub fn filter_map<U, F>(mut orig: Self, f: F) -> Result<MappedRwLockWriteGuard<'a, U>, Self>
     where
         F: FnOnce(&mut T) -> Option<&mut U>,
