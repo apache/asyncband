@@ -39,17 +39,17 @@
 //! use asyncband::condvar::Condvar;
 //! use asyncband::mutex::Mutex;
 //!
-//! let pair = Arc::new((Mutex::new(false), Condvar::new()));
-//! let notifier_pair = pair.clone();
+//! let state = Arc::new((Mutex::new(false), Condvar::new()));
+//! let notifier_state = state.clone();
 //!
 //! let notifier = tokio::spawn(async move {
-//!     let (lock, cvar) = &*notifier_pair;
+//!     let (lock, cvar) = &*notifier_state;
 //!     let mut ready = lock.lock().await;
 //!     *ready = true;
 //!     cvar.notify_one();
 //! });
 //!
-//! let (lock, cvar) = &*pair;
+//! let (lock, cvar) = &*state;
 //! let ready = cvar.wait_while(lock.lock().await, |ready| !*ready).await;
 //! assert!(*ready);
 //! drop(ready);
@@ -170,10 +170,11 @@ impl Condvar {
     /// Unlike the standard library equivalent, this function does not check at runtime that the
     /// same mutex is always used with this condition variable.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Cancelling this wait removes it from the current waiters. If the task was selected by
-    /// [`notify_one`](Self::notify_one) but has not yet reacquired the mutex, the notification is
+    /// Dropping the future releases any guard it owns and removes this wait; the original guard
+    /// is not returned to the caller. If the task was selected by [`notify_one`](Self::notify_one)
+    /// but has not yet reacquired the mutex, the notification is
     /// passed to another task that is waiting at that point, if one exists. It is never buffered
     /// for a future waiter.
     pub async fn wait<'a, T: ?Sized>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
@@ -191,10 +192,16 @@ impl Condvar {
         guard
     }
 
-    /// Waits for a notification, atomically releasing and then reacquiring the owned mutex.
+    /// Waits for a notification, releasing and then reacquiring the owned mutex.
     ///
-    /// This has the same notification and cancellation semantics as [`wait`](Self::wait), but
-    /// accepts and returns an owned guard.
+    /// The wait is registered before the mutex is released. The returned owned guard holds the
+    /// mutex again; the caller must recheck its predicate as with [`wait`](Self::wait).
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping the future releases any guard it owns without returning it to the caller.
+    /// Notifications are transferred to another current waiter under the same conditions as
+    /// [`wait`](Self::wait); they are never saved for a future waiter.
     pub async fn wait_owned<T: ?Sized>(&self, guard: OwnedMutexGuard<T>) -> OwnedMutexGuard<T> {
         let mutex = mutex::owned_guard_lock(&guard);
         let notify_one_baton = Wait {
@@ -210,9 +217,23 @@ impl Condvar {
         guard
     }
 
-    /// Yields the current task until this condition variable receives a notification and the
-    /// provided condition becomes false. Spurious wake-ups are ignored and this function will only
-    /// return once the condition has been met.
+    /// Waits on this condition variable while `condition` returns `true`, returning the guard once
+    /// `condition` evaluates to `false`.
+    ///
+    /// `condition` is checked under the lock before waiting and after every wakeup; if it is
+    /// already `false` on entry, this method returns immediately without waiting.
+    ///
+    /// # Cancellation
+    ///
+    /// Each wait iteration has the same cancellation semantics as [`wait`](Self::wait). Cancelling
+    /// drops the mutex guard; mutations already made by `condition` are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// If `condition` panics, unwinding drops the guard and releases the mutex. Changes already
+    /// made by the predicate are not rolled back.
+    ///
+    /// # Examples
     ///
     /// ```
     /// # #[tokio::main]
@@ -222,17 +243,17 @@ impl Condvar {
     /// use asyncband::condvar::Condvar;
     /// use asyncband::mutex::Mutex;
     ///
-    /// let pair = Arc::new((Mutex::new(false), Condvar::new()));
-    /// let pair_clone = pair.clone();
+    /// let state = Arc::new((Mutex::new(false), Condvar::new()));
+    /// let state_clone = state.clone();
     ///
     /// let notifier = tokio::spawn(async move {
-    ///     let (lock, cvar) = &*pair_clone;
+    ///     let (lock, cvar) = &*state_clone;
     ///     let mut started = lock.lock().await;
     ///     *started = true;
     ///     cvar.notify_one();
     /// });
     ///
-    /// let (lock, cvar) = &*pair;
+    /// let (lock, cvar) = &*state;
     /// let guard = cvar
     ///     .wait_while(lock.lock().await, |started| !*started)
     ///     .await;
@@ -241,11 +262,6 @@ impl Condvar {
     /// notifier.await.unwrap();
     /// # }
     /// ```
-    ///
-    /// # Cancel safety
-    ///
-    /// Each wait iteration has the same cancellation semantics as [`wait`](Self::wait). Cancelling
-    /// drops the mutex guard; mutations already made by `condition` are not rolled back.
     pub async fn wait_while<'a, T: ?Sized, F>(
         &self,
         mut guard: MutexGuard<'a, T>,
@@ -260,9 +276,24 @@ impl Condvar {
         guard
     }
 
-    /// Yields the current task until this condition variable receives a notification and the
-    /// provided condition becomes false. Spurious wake-ups are ignored and this function will only
-    /// return once the condition has been met.
+    /// Waits on this condition variable while `condition` returns `true`, returning the owned
+    /// guard once `condition` evaluates to `false`.
+    ///
+    /// `condition` is checked under the lock before waiting and after every wakeup; if it is
+    /// already `false` on entry, this method returns immediately without waiting.
+    ///
+    /// # Cancellation
+    ///
+    /// Each wait iteration has the same cancellation semantics as
+    /// [`wait_owned`](Self::wait_owned). Cancelling drops the owned mutex guard; mutations already
+    /// made by `condition` are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// If `condition` panics, unwinding drops the guard and releases the mutex. Changes already
+    /// made by the predicate are not rolled back.
+    ///
+    /// # Examples
     ///
     /// ```
     /// # #[tokio::main]
@@ -272,17 +303,17 @@ impl Condvar {
     /// use asyncband::condvar::Condvar;
     /// use asyncband::mutex::Mutex;
     ///
-    /// let pair = (Arc::new(Mutex::new(false)), Arc::new(Condvar::new()));
-    /// let pair_clone = pair.clone();
+    /// let state = (Arc::new(Mutex::new(false)), Arc::new(Condvar::new()));
+    /// let state_clone = state.clone();
     ///
     /// let notifier = tokio::spawn(async move {
-    ///     let (lock, cvar) = pair_clone;
+    ///     let (lock, cvar) = state_clone;
     ///     let mut started = lock.lock_owned().await;
     ///     *started = true;
     ///     cvar.notify_one();
     /// });
     ///
-    /// let (lock, cvar) = pair;
+    /// let (lock, cvar) = state;
     /// let guard = cvar
     ///     .wait_while_owned(lock.lock_owned().await, |started| !*started)
     ///     .await;
@@ -291,12 +322,6 @@ impl Condvar {
     /// notifier.await.unwrap();
     /// # }
     /// ```
-    ///
-    /// # Cancel safety
-    ///
-    /// Each wait iteration has the same cancellation semantics as
-    /// [`wait_owned`](Self::wait_owned). Cancelling drops the owned mutex guard; mutations already
-    /// made by `condition` are not rolled back.
     pub async fn wait_while_owned<T: ?Sized, F>(
         &self,
         mut guard: OwnedMutexGuard<T>,

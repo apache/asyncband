@@ -174,7 +174,7 @@ impl ManualResetEvent {
     /// Merely creating this future does not register the wait. Once a [`set`](Self::set) releases
     /// a registered wait, a later [`reset`](Self::reset) cannot make that wait pending again.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping this future before it returns `Ready` removes its registration. This does not
     /// change the event or affect other waits.
@@ -186,10 +186,14 @@ impl ManualResetEvent {
         .await
     }
 
-    /// Waits without borrowing the event.
+    /// Waits until the event is set while owning this [`Arc`].
     ///
-    /// The future owns the [`Arc`], making it suitable for spawned tasks. Its waiting and
-    /// cancellation semantics match [`wait`](Self::wait).
+    /// The future keeps the event alive without borrowing the caller's handle.
+    ///
+    /// # Cancellation
+    ///
+    /// Cancellation has the same signal semantics as [`wait`](Self::wait) and releases the
+    /// future's `Arc`.
     ///
     /// # Examples
     ///

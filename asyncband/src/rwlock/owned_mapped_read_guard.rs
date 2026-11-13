@@ -90,9 +90,13 @@ impl<T: ?Sized, U: ?Sized> Deref for OwnedMappedRwLockReadGuard<T, U> {
 impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockReadGuard<T, U> {
     /// Selects a component while retaining the same lock access.
     ///
-    /// The closure runs while the original guard is held. If it panics, that guard is released.
+    /// The closure runs while the original guard is held.
     /// Call this as `OwnedMappedRwLockReadGuard::map(guard, f)` to avoid shadowing methods of
     /// the value.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access.
     pub fn map<V, F>(orig: Self, f: F) -> OwnedMappedRwLockReadGuard<T, V>
     where
         F: FnOnce(&U) -> &V,
@@ -102,11 +106,18 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedRwLockReadGuard<T, U> {
         OwnedMappedRwLockReadGuard::new(d, orig.access)
     }
 
-    /// Selects a component, or returns the still-held original guard when the closure returns
-    /// `None`.
+    /// Attempts to select a component while retaining the same lock access.
     ///
-    /// A panic in the closure releases the guard. Call this as
-    /// `OwnedMappedRwLockReadGuard::filter_map(guard, f)`.
+    /// Call this as `OwnedMappedRwLockReadGuard::filter_map(guard, f)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access.
     pub fn filter_map<V, F>(orig: Self, f: F) -> Result<OwnedMappedRwLockReadGuard<T, V>, Self>
     where
         F: FnOnce(&U) -> Option<&V>,

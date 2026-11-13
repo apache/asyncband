@@ -50,6 +50,14 @@ Decision: [#257](https://github.com/apache/asyncband/pull/257).
 
 Keep each Markdown prose paragraph and list item on one source line. Format Markdown tables so their columns and separators align in the source. Keep skill resource links within the skill directory; reference other skills or agents by name and resolve repository paths from the supplied repository root.
 
+Write public API documentation from Asyncband's observable contracts. Start with a short action or query summary, then describe waiting conditions, ordering, ownership, and state changes relevant to callers. Keep implementation details out unless callers need them to use the API correctly.
+
+Use applicable sections in this order: `Returns`, `Errors`, `Cancellation`, `Panics`, `Deadlocks`, and `Examples`. Omit empty or redundant sections. Explain simple return values in the summary or body; reserve `Returns` for nontrivial outcomes, snapshots, or resource ownership. Document `Option::None` and boolean outcomes as return semantics, not errors. For `Result`, use `Errors` to explain failure conditions, returned ownership, and any state changes. Keep examples last and focused on useful behavior rather than mechanically demonstrating syntax.
+
+Document cancellation for public async operations, methods returning futures, and public `Future` or `IntoFuture` types. Explain when effects occur, what dropping a pending future retains or releases, and whether retrying restarts, resumes, or repeats an effect. Distinguish cancellation of active work from cancellation of an observer, and state when caller-owned inputs are dropped or external side effects are not rolled back. Do not use an unqualified cancellation-safety claim in place of these observable guarantees. Owned variants should include a `Cancellation` section and may link to shared semantics while explaining ownership differences.
+
+Put concrete panic conditions and important unwind effects in `Panics`, and recursive acquisition or callback reentrancy hazards in `Deadlocks`. Do not enumerate arbitrary panics in caller-provided code unless their effect on the primitive matters. Apply the same conventions to public trait methods. Preserve existing provenance and license notices independently of documentation rewrites.
+
 ## Changelog
 
 - Update `CHANGELOG.md` for significant user-visible changes by comparing the final behavior with the latest release tag, not by recording the sequence of commits in the current development cycle.

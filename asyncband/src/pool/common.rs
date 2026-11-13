@@ -85,13 +85,32 @@ pub trait ManageObject: Send + Sync {
     type Error: Send;
 
     /// Creates a new object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an implementation-defined error when an object cannot be created. Pool checkout
+    /// and replenishment propagate this error to their caller.
+    ///
+    /// # Cancellation
+    ///
+    /// The pool may drop this future when checkout or replenishment is cancelled. Implementations
+    /// must arrange cleanup of resources owned by an unfinished creation attempt.
     fn create(&self) -> impl Future<Output = Result<Self::Object, Self::Error>> + Send;
 
-    /// Whether the object `o` is recyclable.
+    /// Checks whether `o` can be reused for another checkout, refreshing it if needed.
     ///
-    /// Returns `Ok(())` if the object is recyclable. On error, the pool detaches the object and
-    /// retries checkout with another idle object or creates a replacement. The error is discarded
-    /// rather than returned by `Pool::get`; record any needed diagnostics in this implementation.
+    /// # Errors
+    ///
+    /// Returns an implementation-defined error when the object should not be reused. The pool
+    /// detaches the object and retries checkout; it does not return this error to the caller.
+    /// Record any required diagnostics in this implementation.
+    ///
+    /// # Cancellation
+    ///
+    /// The pool may drop this future when checkout is cancelled. Mutations already made to `o`
+    /// are not rolled back. [`RecycleCancelledStrategy`] determines whether the object is detached
+    /// or returned to the idle queue; returning it requires the object to remain valid after an
+    /// interrupted check.
     fn is_recyclable(
         &self,
         o: &mut Self::Object,

@@ -15,8 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A bounded multi-producer, single-consumer queue for sending values between asynchronous
-//! tasks with backpressure control.
+//! Bounded multi-producer, single-consumer channel with capacity backpressure.
 
 use std::collections::VecDeque;
 use std::sync::Arc;

@@ -23,8 +23,7 @@
 //! [`sync.Pool`](https://pkg.go.dev/sync#Pool).
 //!
 //! To configure a factory for creating objects when the pool is empty, like `sync.Pool`'s `New`,
-//! you can create the unbounded pool via [`Pool::new`](Pool::new) with an
-//! implementation of [`ManageObject`].
+//! pass a [`ManageObject`] implementation to [`Pool::new`](Pool::new).
 //!
 //! ## Examples
 //!
@@ -278,11 +277,15 @@ impl<T: Send> Pool<T> {
     /// Retrieves an [`Object`] from this [`Pool`], or creates a new one with the passed-in async
     /// closure, if the pool is empty.
     ///
-    /// This method only exists for [`NeverManageObject`] pools. If you provide a custom
-    /// [`ManageObject`] implementation, you should use [`Pool::get`] instead, and it will call
-    /// [`ManageObject::create`] to create a new object if the pool is empty.
+    /// This method only exists for [`NeverManageObject`] pools. Pools configured with a
+    /// [`ManageObject`] implementation use [`Pool::get`] instead, which calls
+    /// [`ManageObject::create`] when no idle object is available.
     ///
-    /// # Cancel safety
+    /// # Errors
+    ///
+    /// Returns the error from `f` if creation fails. No object is added to the pool on error.
+    ///
+    /// # Cancellation
     ///
     /// Cancelling while the provided future is pending leaves the pool unchanged.
     pub async fn get_or_create<E, F>(self: &Arc<Self>, f: F) -> Result<Object<T>, E>
@@ -320,12 +323,17 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// If no idle object is available, this method calls [`ManageObject::create`].
     ///
     /// Idle objects are checked with [`ManageObject::is_recyclable`]. A failed check detaches the
-    /// object and retries checkout; its error is discarded. Only errors from
-    /// [`ManageObject::create`] are returned to the caller.
+    /// object and retries checkout; its error is discarded.
     ///
-    /// # Cancel safety
+    /// # Errors
     ///
-    /// Cancelling while creating a new object leaves the pool unchanged. Cancelling while
+    /// Returns errors from [`ManageObject::create`]. A failed creation does not add an object to
+    /// the pool.
+    ///
+    /// # Cancellation
+    ///
+    /// Cancelling during creation drops the creation future without adding an object. Objects
+    /// already detached by failed recycling checks stay detached. Cancelling while
     /// [`ManageObject::is_recyclable`] is checking an idle object follows
     /// [`PoolConfig::recycle_cancelled_strategy`].
     pub async fn get(self: &Arc<Self>) -> Result<Object<T, M>, M::Error> {
@@ -389,6 +397,8 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
 
     /// Extends the pool with the objects of an iterator.
     ///
+    /// # Deadlocks
+    ///
     /// The iterator is consumed while the pool is locked and must not call back into it.
     ///
     /// # Examples
@@ -415,9 +425,19 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
 
     /// Retains idle objects for which `f` returns `true`.
     ///
-    /// Checked-out objects are skipped and may return to the pool later. The predicate runs while
-    /// the pool is locked and must not call back into it; detachment hooks run after the lock is
-    /// released.
+    /// Checked-out objects are skipped and may return to the pool later. Detachment hooks run
+    /// after the lock is released.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of idle objects retained and the removed objects after their detachment
+    /// hooks have run. Checked-out objects are not included in the retained count.
+    ///
+    /// # Deadlocks
+    ///
+    /// The predicate runs while the pool is locked and must not call back into it.
+    ///
+    /// # Examples
     ///
     /// The following example starts a background task that runs every 30 seconds and removes
     /// objects from the pool that have not been used for more than one minute. The task will
