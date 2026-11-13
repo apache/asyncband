@@ -34,7 +34,7 @@ pub enum TrySendError<T> {
 }
 
 impl<T> TrySendError<T> {
-    /// Gets a reference to the message that failed to be sent.
+    /// Returns a reference to the message that failed to be sent.
     pub fn as_inner(&self) -> &T {
         match self {
             TrySendError::Full(msg) => msg,

@@ -210,10 +210,17 @@ impl<M: ManageObject> Pool<M> {
     /// Concurrent calls and checkouts can change the observed idle count while this method is
     /// running, so the target is the best effort rather than a postcondition.
     ///
-    /// Returns the number of objects created. If [`ManageObject::create`] fails, objects created by
-    /// this call before the failure remain in the pool and the error is returned.
+    /// # Returns
     ///
-    /// # Cancel safety
+    /// Returns the number of objects created by this call, which may be less than the requested
+    /// target because of the capacity limit or concurrent checkouts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error from [`ManageObject::create`]. Objects created before the failure remain
+    /// in the pool.
+    ///
+    /// # Cancellation
     ///
     /// Cancelling this operation releases all reserved capacity. Objects created before
     /// cancellation remain idle in the pool; the in-progress [`ManageObject::create`] future is
@@ -266,13 +273,19 @@ impl<M: ManageObject> Pool<M> {
     /// object is returned to or detached from the pool.
     ///
     /// Idle objects are checked with [`ManageObject::is_recyclable`]. A failed check detaches the
-    /// object and retries checkout; its error is discarded. Only errors from
-    /// [`ManageObject::create`] are returned to the caller.
+    /// object and retries checkout; its error is discarded.
     ///
-    /// # Cancel safety
+    /// # Errors
+    ///
+    /// Returns errors from [`ManageObject::create`]. A failed creation does not add an object to
+    /// the pool.
+    ///
+    /// # Cancellation
     ///
     /// Cancelling while waiting for capacity or creating a new object restores the reserved pool
-    /// capacity. Cancelling while [`ManageObject::is_recyclable`] is checking an idle object
+    /// capacity and drops any in-progress creation future. Retrying does not retain a place in
+    /// the capacity queue. Objects already detached by failed recycling checks stay detached.
+    /// Cancelling while [`ManageObject::is_recyclable`] is checking an idle object
     /// follows [`PoolConfig::recycle_cancelled_strategy`].
     pub async fn get(self: &Arc<Self>) -> Result<Object<M>, M::Error> {
         let permit = self.permits.clone().acquire_owned(1).await;
@@ -321,9 +334,19 @@ impl<M: ManageObject> Pool<M> {
 
     /// Retains idle objects for which `f` returns `true`.
     ///
-    /// Checked-out objects are skipped and may return to the pool later. The predicate runs while
-    /// the pool is locked and must not call back into it; detachment hooks run after the lock is
-    /// released.
+    /// Checked-out objects are skipped and may return to the pool later. Detachment hooks run
+    /// after the lock is released.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of idle objects retained and the removed objects after their detachment
+    /// hooks have run. Checked-out objects are not included in the retained count.
+    ///
+    /// # Deadlocks
+    ///
+    /// The predicate runs while the pool is locked and must not call back into it.
+    ///
+    /// # Examples
     ///
     /// The following example starts a background task that runs every 30 seconds and removes
     /// objects from the pool that have not been used for more than one minute. The task will

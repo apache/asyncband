@@ -26,7 +26,7 @@ use std::fmt;
 pub struct SendError<T>(T);
 
 impl<T> SendError<T> {
-    /// Gets a reference to the value that failed to be sent.
+    /// Returns a reference to the value that failed to be sent.
     pub fn as_inner(&self) -> &T {
         &self.0
     }
@@ -65,7 +65,7 @@ pub enum TrySendError<T> {
 }
 
 impl<T> TrySendError<T> {
-    /// Gets a reference to the value that failed to be sent.
+    /// Returns a reference to the value that failed to be sent.
     pub fn as_inner(&self) -> &T {
         match self {
             TrySendError::Full(value) | TrySendError::Disconnected(value) => value,

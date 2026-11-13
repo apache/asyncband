@@ -19,8 +19,8 @@
 // Copyright (c) Tokio Contributors
 // The Tokio-derived portions remain licensed under the MIT License.
 // Asyncband substantially changed the synchronization model: initialization does not close the
-// semaphore, the cell can be emptied and initialized again, and value storage is delegated to a
-// reusable ValueCell shared with LazyCell.
+// semaphore, the cell can be emptied and initialized again, and value storage is delegated to
+// Asyncband's own ValueCell shared with LazyCell.
 // Upstream source:
 // https://github.com/tokio-rs/tokio/blob/3911cb8523f190142f61c64b66881c07c0d3e7be/tokio/src/sync/once_cell.rs
 
@@ -74,7 +74,7 @@ impl<T> OnceCell<T> {
     /// Creates a new empty `OnceCell`.
     pub const fn new() -> Self {
         Self {
-            value: ValueCell::new(),
+            value: ValueCell::empty(),
             semaphore: Semaphore::new(3),
         }
     }
@@ -82,7 +82,7 @@ impl<T> OnceCell<T> {
     /// Creates a new `OnceCell` initialized with the provided value.
     pub const fn from_value(value: T) -> Self {
         Self {
-            value: ValueCell::from_value(value),
+            value: ValueCell::with_value(value),
             semaphore: Semaphore::new(3),
         }
     }
@@ -92,43 +92,46 @@ impl<T> OnceCell<T> {
     // not need the internal helper.
     #[allow(dead_code)]
     pub(crate) fn initialized(&self) -> bool {
-        self.value.is_initialized()
+        self.value.is_published()
     }
 
-    /// Returns whether the cell contains a value.
-    pub(crate) fn initialized_mut(&mut self) -> bool {
-        self.value.is_initialized_mut()
-    }
-
-    /// Returns the stored value.
+    /// Returns a shared reference to the stored value without waiting.
     ///
-    /// Returns `None` if the cell is uninitialized, or being initialized.
-    ///
-    /// This method never blocks.
+    /// Yields [`None`] while the cell is empty, including when another task is in the middle of
+    /// initializing it.
     pub fn get(&self) -> Option<&T> {
         self.value.get()
     }
 
-    /// Returns mutable access to the stored value.
+    /// Returns an exclusive reference to the stored value without blocking or initializing.
     ///
-    /// Returns `None` if the cell is uninitialized.
-    ///
-    /// This method never blocks. Since it borrows the `OnceCell` mutably, it is statically
-    /// guaranteed that no active borrows to the `OnceCell` exist, including from other threads.
+    /// Yields [`None`] when the cell is empty. Because `&mut self` forbids concurrent access, no
+    /// asynchronous initialization can be in flight during this call.
     pub fn get_mut(&mut self) -> Option<&mut T> {
         self.value.get_mut()
     }
 
-    /// Returns the value, initializing an empty cell with the provided asynchronous function.
+    /// Returns a reference to the stored value, initializing the cell with `init` when needed.
     ///
-    /// If some other task is currently working on initializing the `OnceCell`, this call will wait
-    /// for that other task to finish, then return the value that the other task produced.
+    /// Concurrent callers wait for the active initializer. Once it publishes a value, all callers
+    /// receive a reference to that value without running their own initializer.
     ///
-    /// If the provided operation is cancelled, the initialization attempt is cancelled. If there
-    /// are other tasks waiting for the value to be initialized, one of them will start another
-    /// attempt at initializing the value.
+    /// # Cancellation
     ///
-    /// This will deadlock if `init` tries to initialize the cell recursively.
+    /// Dropping a pending call while it waits leaves the active initializer running. If this call
+    /// is running the initializer, cancellation drops that initializer and leaves the cell empty;
+    /// a later caller can start a new attempt. Effects already performed by the initializer are
+    /// not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// An initializer panic propagates to its caller and leaves the cell empty for a later
+    /// attempt. The cell is not poisoned.
+    ///
+    /// # Deadlocks
+    ///
+    /// An initializer must not wait for initialization of the same cell: that would wait for
+    /// its own completion.
     pub async fn get_or_init<F>(&self, init: F) -> &T
     where
         F: AsyncFnOnce() -> T,
@@ -141,17 +144,33 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Returns the value, initializing an empty cell with the provided fallible asynchronous
-    /// function.
+    /// Returns a reference to the stored value, initializing the cell with a fallible `init` when
+    /// needed.
     ///
-    /// If some other task is currently working on initializing the `OnceCell`, this call will wait
-    /// for that other task to finish, then return the value that the other task produced.
+    /// Concurrent callers wait for the active initializer. A published value is shared by all
+    /// callers; an unsuccessful attempt allows another caller to run its own initializer.
     ///
-    /// If the provided operation returns an error, is cancelled or panics, the initialization
-    /// attempt is cancelled. If there are other tasks waiting for the value to be initialized
-    /// one of them will start another attempt at initializing the value.
+    /// # Errors
     ///
-    /// This will deadlock if `init` tries to initialize the cell recursively.
+    /// Returns the error from this call's initializer without storing a value. The error is not
+    /// shared with waiting callers, which may make their own attempts.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping a pending call while it waits leaves the active initializer running. If this call
+    /// is running the initializer, cancellation drops that initializer and leaves the cell empty;
+    /// a later caller can start a new attempt. Effects already performed by the initializer are
+    /// not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// An initializer panic propagates to its caller and leaves the cell empty for a later
+    /// attempt. The cell is not poisoned.
+    ///
+    /// # Deadlocks
+    ///
+    /// An initializer must not wait for initialization of the same cell: that would wait for
+    /// its own completion.
     pub async fn get_or_try_init<E, F>(&self, init: F) -> Result<&T, E>
     where
         F: AsyncFnOnce() -> Result<T, E>,
@@ -163,8 +182,7 @@ impl<T> OnceCell<T> {
         let permit = self.semaphore.acquire(2).await;
 
         if let Some(v) = self.get() {
-            // double-checked: another task initialized the value
-            // while we were waiting for the permit
+            // Another task initialized the cell while we waited for permits.
             return Ok(v);
         }
 
@@ -172,15 +190,19 @@ impl<T> OnceCell<T> {
         Ok(self.set_value(value, permit))
     }
 
-    /// Returns mutable access to the value, initializing an empty cell asynchronously.
+    /// Returns mutable access to the stored value, running `init` if the cell is empty.
     ///
-    /// This method never blocks other tasks because it takes `&mut self`, which guarantees
-    /// exclusive access to the `OnceCell` and thus no concurrent initialization can be in
-    /// progress.
+    /// The exclusive borrow prevents concurrent initialization.
     ///
-    /// If the cell is already initialized, it returns a mutable reference to the existing value.
-    /// Otherwise, it runs `init`, stores the result, and returns a mutable reference to the newly
-    /// initialized value.
+    /// # Cancellation
+    ///
+    /// Dropping a pending call drops its initializer and leaves the cell empty. A later call can
+    /// start a new attempt; effects already performed by the initializer are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// An initializer panic propagates to its caller and leaves the cell empty for a later
+    /// attempt. The cell is not poisoned.
     ///
     /// # Examples
     ///
@@ -189,10 +211,10 @@ impl<T> OnceCell<T> {
     /// # async fn main() {
     /// use asyncband::once::OnceCell;
     ///
-    /// let mut cell: OnceCell<u32> = OnceCell::new();
-    /// let v = cell.get_mut_or_init(|| async { 41 }).await;
-    /// *v += 1;
-    /// assert_eq!(*cell.get().unwrap(), 42);
+    /// let mut slot = OnceCell::new();
+    /// let text = slot.get_mut_or_init(|| async { String::from("abc") }).await;
+    /// text.push('d');
+    /// assert_eq!(slot.get().map(String::as_str), Some("abcd"));
     /// # }
     /// ```
     pub async fn get_mut_or_init<F>(&mut self, init: F) -> &mut T
@@ -207,17 +229,23 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Returns mutable access to the value, initializing an empty cell with a fallible asynchronous
-    /// function.
+    /// Returns mutable access to the stored value, running a fallible `init` if the cell is empty.
     ///
-    /// This method never blocks other tasks because it takes `&mut self`, which guarantees
-    /// exclusive access to the `OnceCell` and thus no concurrent initialization can be in
-    /// progress.
+    /// The exclusive borrow prevents concurrent initialization.
     ///
-    /// If the cell is already initialized, it returns a mutable reference to the existing value.
-    /// Otherwise, it runs `init`. On success, it stores the result and returns a mutable
-    /// reference to the newly initialized value. On error, it returns the error and leaves the
-    /// cell uninitialized.
+    /// # Errors
+    ///
+    /// Returns the initializer's error and leaves the cell empty.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping a pending call drops its initializer and leaves the cell empty. A later call can
+    /// start a new attempt; effects already performed by the initializer are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// An initializer panic propagates to its caller and leaves the cell empty for a later
+    /// attempt. The cell is not poisoned.
     ///
     /// # Examples
     ///
@@ -226,27 +254,27 @@ impl<T> OnceCell<T> {
     /// # async fn main() {
     /// use asyncband::once::OnceCell;
     ///
-    /// let mut cell: OnceCell<u32> = OnceCell::new();
+    /// let mut slot: OnceCell<usize> = OnceCell::new();
     /// assert!(
-    ///     cell.get_mut_or_try_init(|| async { Err(()) })
+    ///     slot.get_mut_or_try_init(|| async { Err("unavailable") })
     ///         .await
     ///         .is_err()
     /// );
-    /// let v = cell
-    ///     .get_mut_or_try_init(|| async { Ok::<_, ()>(10) })
+    ///
+    /// let count = slot
+    ///     .get_mut_or_try_init(|| async { Ok::<_, &str>(7) })
     ///     .await
     ///     .unwrap();
-    /// *v += 5;
-    /// assert_eq!(*cell.get().unwrap(), 15);
+    /// *count *= 3;
+    /// assert_eq!(slot.get(), Some(&21));
     /// # }
     /// ```
     pub async fn get_mut_or_try_init<E, F>(&mut self, init: F) -> Result<&mut T, E>
     where
         F: AsyncFnOnce() -> Result<T, E>,
     {
-        // Workaround if let Some(v) = self.get_mut() { return Ok(v); }
-        // @see https://github.com/rust-lang/rust/issues/51545
-        if self.initialized_mut() {
+        // Check the flag before borrowing so the fallback branch can call `set_value_mut`.
+        if self.value.has_value_mut() {
             return Ok(self
                 .value
                 .get_mut()
@@ -257,35 +285,31 @@ impl<T> OnceCell<T> {
         Ok(self.set_value_mut(value))
     }
 
-    /// Initializes the contents of the cell to `value` if the cell was uninitialized,
-    /// then returns a reference to it.
+    /// Stores `value` if the cell is empty and returns a reference to it.
     ///
-    /// May wait if another task is currently attempting to initialize the cell. The cell is
-    /// guaranteed to contain a value when `try_insert` returns, though not necessarily the
-    /// one provided.
+    /// Waits for an active initializer before checking whether a value has already been published.
     ///
-    /// Returns `Ok(&value)` if the cell was uninitialized and `Err((&current_value, value))`
-    /// if it was already initialized.
+    /// # Errors
+    ///
+    /// Returns `Err((existing, value))` if the cell is already initialized, including when another
+    /// initializer publishes a value while this call waits. The error contains a reference to the
+    /// stored value and the unused input. The stored value is unchanged.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping a pending future drops `value` without storing it. It does not cancel another
+    /// caller's initialization.
     ///
     /// # Examples
     ///
     /// ```
-    /// use asyncband::once::OnceCell;
-    ///
-    /// static CELL: OnceCell<i32> = OnceCell::new();
-    ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// assert!(CELL.get().is_none());
+    /// use asyncband::once::OnceCell;
     ///
-    /// tokio::spawn(async {
-    ///     assert_eq!(CELL.try_insert(92).await, Ok(&92));
-    /// })
-    /// .await
-    /// .unwrap();
-    ///
-    /// assert_eq!(CELL.try_insert(62).await, Err((&92, 62)));
-    /// assert_eq!(CELL.get(), Some(&92));
+    /// let slot = OnceCell::new();
+    /// assert_eq!(slot.try_insert("alpha").await, Ok(&"alpha"));
+    /// assert_eq!(slot.try_insert("beta").await, Err((&"alpha", "beta")));
     /// # }
     /// ```
     pub async fn try_insert(&self, value: T) -> Result<&T, (&T, T)> {
@@ -297,33 +321,40 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Initializes the contents of the cell to `value`.
+    /// Stores `value` if the cell is empty.
     ///
-    /// May wait if another task is currently attempting to initialize the cell. The cell is
-    /// guaranteed to contain a value when `set` returns, though not necessarily the one provided.
+    /// Waits for an active initializer before checking whether a value has already been published.
     ///
-    /// Returns `Ok(())` if the cell was uninitialized and `Err(value)` if the cell was already
-    /// initialized.
+    /// # Errors
+    ///
+    /// Returns `Err(value)` if the cell is already initialized, including when another initializer
+    /// publishes a value while this call waits. The stored value is unchanged.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping a pending future drops `value` without storing it. It does not cancel another
+    /// caller's initialization.
     ///
     /// # Examples
     ///
     /// ```
-    /// use asyncband::once::OnceCell;
-    ///
-    /// static CELL: OnceCell<i32> = OnceCell::new();
-    ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// assert!(CELL.get().is_none());
+    /// use std::sync::Arc;
     ///
-    /// tokio::spawn(async {
-    ///     assert_eq!(CELL.set(92).await, Ok(()));
+    /// use asyncband::once::OnceCell;
+    ///
+    /// let shared = Arc::new(OnceCell::new());
+    /// let first = shared.clone();
+    ///
+    /// tokio::spawn(async move {
+    ///     assert_eq!(first.set("winner").await, Ok(()));
     /// })
     /// .await
     /// .unwrap();
     ///
-    /// assert_eq!(CELL.set(62).await, Err(62));
-    /// assert_eq!(CELL.get(), Some(&92));
+    /// assert_eq!(shared.set("runner-up").await, Err("runner-up"));
+    /// assert_eq!(shared.get(), Some(&"winner"));
     /// # }
     /// ```
     pub async fn set(&self, value: T) -> Result<(), T> {
@@ -333,49 +364,43 @@ impl<T> OnceCell<T> {
         }
     }
 
-    /// Consumes the `OnceCell`, returning the wrapped value. Returns `None` if the cell was
-    /// uninitialized.
+    /// Consumes the cell and extracts its stored value, or [`None`] if empty.
     ///
     /// # Examples
     ///
     /// ```
-    /// use asyncband::once::OnceCell;
-    ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let cell: OnceCell<String> = OnceCell::new();
-    /// assert_eq!(cell.into_inner(), None);
+    /// use asyncband::once::OnceCell;
     ///
-    /// let cell = OnceCell::new();
-    /// cell.set("hello".to_string()).await.unwrap();
-    /// assert_eq!(cell.into_inner(), Some("hello".to_string()));
+    /// let empty: OnceCell<u16> = OnceCell::new();
+    /// assert_eq!(empty.into_inner(), None);
+    ///
+    /// let populated = OnceCell::from_value(2048);
+    /// assert_eq!(populated.into_inner(), Some(2048));
     /// # }
     /// ```
     pub fn into_inner(self) -> Option<T> {
         self.value.into_inner()
     }
 
-    /// Takes the value out of this `OnceCell`, moving it back to an uninitialized state.
+    /// Removes the stored value, leaving the cell empty so a future call can populate it again.
     ///
-    /// Has no effect and returns `None` if the `OnceCell` was uninitialized.
-    ///
-    /// Since this method borrows the `OnceCell` mutably, it is statically guaranteed that
-    /// no active borrows to the `OnceCell` exist, including from other threads.
+    /// Returns [`None`] if the cell held no value.
     ///
     /// # Examples
     ///
     /// ```
-    /// use asyncband::once::OnceCell;
-    ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let mut cell: OnceCell<String> = OnceCell::new();
-    /// assert_eq!(cell.take(), None);
+    /// use asyncband::once::OnceCell;
     ///
-    /// let mut cell = OnceCell::new();
-    /// cell.set("hello".to_string()).await.unwrap();
-    /// assert_eq!(cell.take(), Some("hello".to_string()));
-    /// assert_eq!(cell.get(), None);
+    /// let mut slot = OnceCell::from_value(String::from("cached"));
+    /// assert_eq!(slot.take().as_deref(), Some("cached"));
+    /// assert_eq!(slot.take(), None);
+    ///
+    /// slot.set(String::from("refreshed")).await.unwrap();
+    /// assert_eq!(slot.get().map(String::as_str), Some("refreshed"));
     /// # }
     /// ```
     pub fn take(&mut self) -> Option<T> {
@@ -384,11 +409,11 @@ impl<T> OnceCell<T> {
 
     fn set_value(&self, value: T, _permit: SemaphorePermit<'_>) -> &T {
         // SAFETY: Holding two of the three semaphore permits serializes initialization.
-        unsafe { self.value.set(value) }
+        unsafe { self.value.publish(value) }
     }
 
     fn set_value_mut(&mut self, value: T) -> &mut T {
-        self.value.set_mut(value)
+        self.value.write_mut(value)
     }
 }
 

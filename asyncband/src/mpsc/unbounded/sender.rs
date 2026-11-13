@@ -66,11 +66,13 @@ impl<T> UnboundedSender<T> {
         Self { shared }
     }
 
-    /// Enqueues a message without waiting for capacity.
+    /// Enqueues a value without waiting for capacity.
     ///
-    /// This operation is synchronous because the channel has no capacity limit. If the receiver has
-    /// been dropped, the returned error contains `value`. Success means the message was queued;
-    /// it does not guarantee that the receiver will consume it before being dropped.
+    /// Success does not guarantee that a receiver will consume the value before being dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError`] containing the unsent `value` if the receiver has been dropped.
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
         let waker = {
             let mut state = self.shared.lock();

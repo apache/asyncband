@@ -70,11 +70,13 @@ impl<T> BoundedReceiver<T> {
         Self { shared }
     }
 
-    /// Attempts to receive the next queued value without waiting for a new message.
+    /// Receives the next queued value without waiting for a message, freeing one capacity slot.
     ///
-    /// Receiving a value frees one buffer slot. An empty channel returns [`TryRecvError::Empty`]
-    /// while at least one sender remains, or [`TryRecvError::Disconnected`] after every sender has
-    /// been dropped and all queued values have been consumed.
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Empty`] when the queue is empty but a sender remains.
+    /// Returns [`TryRecvError::Disconnected`] once all senders have been dropped and the queue is
+    /// empty.
     ///
     /// # Examples
     ///
@@ -107,17 +109,19 @@ impl<T> BoundedReceiver<T> {
         Ok(value)
     }
 
-    /// Waits for and receives the next value, freeing one buffer slot.
+    /// Waits for and receives the next queued value, freeing one capacity slot.
     ///
-    /// If no value is queued, this method waits until a sender adds one or the last sender is
-    /// dropped. It returns [`RecvError::Disconnected`] only after all senders are gone and the
-    /// buffer has been drained.
+    /// Queued values remain receivable after disconnection.
     ///
-    /// # Cancel safety
+    /// # Errors
     ///
-    /// Dropping a pending `recv` future does not remove a message from the channel. A subsequent
-    /// `recv` future can still observe the next queued value, so these futures may safely be raced
-    /// with other futures in a selection construct.
+    /// Returns [`RecvError::Disconnected`] once all senders have been dropped and the queue is
+    /// empty.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping a pending future does not remove a value from the queue. A later call on this
+    /// receiver can still receive the next value.
     ///
     /// # Examples
     ///

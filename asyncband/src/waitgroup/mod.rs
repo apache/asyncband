@@ -235,7 +235,12 @@ impl IntoFuture for WaitGroup {
     type Output = ();
     type IntoFuture = Wait;
 
-    /// Marks this participant complete and waits for every other participant to complete.
+    /// Marks this participant complete and returns a future observing group completion.
+    ///
+    /// # Cancellation
+    ///
+    /// Conversion marks this participant complete immediately. Dropping the returned future does
+    /// not undo that completion; see [`Wait`] for observer cancellation.
     #[inline]
     fn into_future(self) -> Self::IntoFuture {
         let state = self.state.observe();
@@ -249,10 +254,13 @@ impl IntoFuture for WaitGroup {
 
 /// A future that completes when every [`WaitGroup`] participant has completed.
 ///
-/// Converting a [`WaitGroup`] into this future marks that handle's participant complete. Cloning a
-/// `Wait` creates another observer without registering a participant. Dropping a pending `Wait`
-/// only unregisters that observer; the participant remains complete and other observers are not
-/// affected.
+/// Converting a [`WaitGroup`] into this future immediately marks that participant complete,
+/// even before the future is polled. Cloning `Wait` adds an observer without a participant.
+///
+/// # Cancellation
+///
+/// Dropping a pending future unregisters only that observer. The participant remains complete
+/// and other observers are unaffected.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Wait {
     token: Registration,
@@ -263,6 +271,10 @@ impl Clone for Wait {
     /// Creates a new future that observes the same group completion.
     ///
     /// This does not register another participant.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping the returned future unregisters only that observer; see [`Wait`].
     #[inline]
     fn clone(&self) -> Self {
         Wait {
