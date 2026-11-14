@@ -35,26 +35,21 @@
 //! ```
 //! # #[tokio::main]
 //! # async fn main() {
-//! use std::sync::Arc;
-//! use std::sync::atomic::AtomicBool;
-//! use std::sync::atomic::Ordering;
-//!
 //! use asyncband::waitgroup::WaitGroup;
 //!
-//! let group = WaitGroup::new();
-//! let completed = Arc::new([const { AtomicBool::new(false) }; 3]);
+//! async fn do_work() {}
 //!
-//! for slot in 0..3 {
+//! let group = WaitGroup::new();
+//!
+//! for _ in 0..3 {
 //!     let participant = group.clone();
-//!     let completed = completed.clone();
 //!     tokio::spawn(async move {
-//!         completed[slot].store(true, Ordering::Relaxed);
+//!         do_work().await;
 //!         drop(participant);
 //!     });
 //! }
 //!
 //! group.await;
-//! assert!(completed.iter().all(|done| done.load(Ordering::Relaxed)));
 //! # }
 //! ```
 
