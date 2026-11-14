@@ -120,7 +120,9 @@ impl<T> Mutex<T> {
     /// let mutex = Mutex::new(5);
     /// ```
     pub const fn new(t: T) -> Self {
-        let s = semaphore::Semaphore::new(1);
+        // Each lock takes two of three permits, so only one can run at a time. The spare
+        // permit lets an uncontended release avoid locking the semaphore's wait queue.
+        let s = semaphore::Semaphore::new(3);
         let c = UnsafeCell::new(t);
         Self { s, c }
     }
@@ -164,7 +166,7 @@ impl<T: ?Sized> Mutex<T> {
     /// # }
     /// ```
     pub async fn lock(&self) -> MutexGuard<'_, T> {
-        self.s.acquire(1).await;
+        self.s.acquire(2).await;
         MutexGuard { lock: self }
     }
 
@@ -184,7 +186,7 @@ impl<T: ?Sized> Mutex<T> {
     /// assert_eq!(count.into_inner(), 8);
     /// ```
     pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
-        if self.s.try_acquire(1) {
+        if self.s.try_acquire(2) {
             let guard = MutexGuard { lock: self };
             Some(guard)
         } else {
@@ -226,7 +228,7 @@ impl<T: ?Sized> Mutex<T> {
     /// # }
     /// ```
     pub async fn lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T> {
-        self.s.acquire(1).await;
+        self.s.acquire(2).await;
         OwnedMutexGuard { lock: self }
     }
 
@@ -249,7 +251,7 @@ impl<T: ?Sized> Mutex<T> {
     /// assert_eq!(shared.try_lock_owned().unwrap().len(), 2);
     /// ```
     pub fn try_lock_owned(self: Arc<Self>) -> Option<OwnedMutexGuard<T>> {
-        if self.s.try_acquire(1) {
+        if self.s.try_acquire(2) {
             let guard = OwnedMutexGuard { lock: self };
             Some(guard)
         } else {
@@ -294,7 +296,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for MutexGuard<'_, T> {}
 
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.s.release_with_lock(1);
+        self.lock.s.release(2);
     }
 }
 
@@ -448,7 +450,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for OwnedMutexGuard<T> {}
 
 impl<T: ?Sized> Drop for OwnedMutexGuard<T> {
     fn drop(&mut self) {
-        self.lock.s.release_with_lock(1);
+        self.lock.s.release(2);
     }
 }
 
@@ -646,7 +648,7 @@ unsafe impl<T: ?Sized + Sync> Sync for MappedMutexGuard<'_, T> {}
 
 impl<T: ?Sized> Drop for MappedMutexGuard<'_, T> {
     fn drop(&mut self) {
-        self.s.release_with_lock(1);
+        self.s.release(2);
     }
 }
 
@@ -839,7 +841,7 @@ unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Send + Sync> Sync for OwnedMapp
 
 impl<T: ?Sized, U: ?Sized> Drop for OwnedMappedMutexGuard<T, U> {
     fn drop(&mut self) {
-        self.lock.s.release_with_lock(1);
+        self.lock.s.release(2);
     }
 }
 
