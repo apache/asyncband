@@ -74,7 +74,7 @@ struct CommandBench {
 
     #[arg(
         long,
-        help = "Select a target (ecosystem or primitives; default: all)."
+        help = "Select a target (ecosystem, primitives, or upgradable_stages; default: ecosystem and primitives)."
     )]
     bench: Option<String>,
 
@@ -400,13 +400,11 @@ fn classify_release_type(baseline: &Version, release: &Version) -> SemverRelease
 
 fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> StdCommand {
     let mut cmd = find_command("cargo");
-    cmd.args([
-        "bench",
-        "--workspace",
-        "--all-features",
-        "--bench",
-        bench.unwrap_or("*"),
-    ]);
+    cmd.args(["bench", "--workspace", "--all-features"]);
+    match bench {
+        Some(bench) => cmd.args(["--bench", bench]),
+        None => cmd.args(["--bench", "ecosystem", "--bench", "primitives"]),
+    };
     if no_run {
         cmd.arg("--no-run");
     }

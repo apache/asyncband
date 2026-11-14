@@ -65,6 +65,8 @@ jobs:
         run: cargo x check
       - name: Smoke benchmarks
         run: cargo x bench -- --test
+      - name: Smoke upgradable-lock stage benchmark
+        run: cargo x bench --bench upgradable_stages -- --test
 
   test:
     name: Run tests
