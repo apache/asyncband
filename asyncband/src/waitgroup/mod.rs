@@ -66,9 +66,6 @@ use std::mem;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::sync::PoisonError;
-use std::sync::RwLock;
-use std::sync::RwLockWriteGuard;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -76,6 +73,7 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::register_waker;
+use crate::internal::rwlock::RwLock;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -161,10 +159,6 @@ struct State {
 }
 
 impl State {
-    fn lock_waiters(&self) -> RwLockWriteGuard<'_, Waiters> {
-        self.waiters.write().unwrap_or_else(PoisonError::into_inner)
-    }
-
     #[inline]
     fn poll_wait(&self, registration: &mut Registration, cx: &mut Context<'_>) -> Poll<()> {
         if self.participants.load(Ordering::Acquire) == 0 {
@@ -176,7 +170,7 @@ impl State {
     }
 
     fn register_wait(&self, registration: &mut Registration, waker: &Waker) -> Poll<()> {
-        let mut waiters = self.lock_waiters();
+        let mut waiters = self.waiters.write();
         // `finish` detaches waiters under this same lock after storing zero, so either it wakes our
         // registration or we observe zero here and complete immediately.
         if self.participants.load(Ordering::Acquire) == 0 {
@@ -204,7 +198,7 @@ impl State {
     }
 
     fn unregister_slow(&self, registration: &mut Registration) {
-        let mut waiters = self.lock_waiters();
+        let mut waiters = self.waiters.write();
         if self.participants.load(Ordering::Acquire) == 0 {
             *registration = Registration::Unregistered;
             return;
@@ -267,7 +261,7 @@ impl Shared {
     // Keep notification and reclamation off the inline non-final participant drop path.
     #[inline(never)]
     fn finish(&mut self) {
-        let waiters = mem::take(&mut *self.lock_waiters());
+        let waiters = mem::take(&mut *self.waiters.write());
         waiters.wake_all();
         self.release_ref();
     }

@@ -82,6 +82,11 @@ pub(crate) mod value_cell;
 #[allow(dead_code)]
 pub(crate) mod mutex;
 
+#[cfg(feature = "waitgroup")]
+// Some primitives use only exclusive access, leaving `read` and `get_mut` unused.
+#[allow(dead_code)]
+pub(crate) mod rwlock;
+
 #[cfg(any(
     feature = "broadcast",
     feature = "mutex",
