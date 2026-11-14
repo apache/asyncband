@@ -340,9 +340,13 @@ impl<T> fmt::Debug for Permit<'_, T> {
 }
 
 impl<T> Permit<'_, T> {
-    /// Enqueues a value using the reserved capacity without waiting for space.
+    /// Publishes a value using this reserved capacity without waiting for space.
     ///
-    /// If the last receiver has been dropped, the error returns ownership of the value.
+    /// This consumes the permit, including when sending fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError`] containing the unsent value if all receivers have been dropped.
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
         let waker = {
             let mut state = self.shared.state.lock();

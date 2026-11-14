@@ -15,8 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! An unbounded multi-producer, single-consumer queue for sending values between asynchronous
-//! tasks.
+//! Unbounded multi-producer, single-consumer channel.
 
 use std::sync::Arc;
 use std::task::Waker;

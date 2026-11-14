@@ -134,9 +134,9 @@ impl<T> Mutex<T> {
     /// ```
     /// use asyncband::mutex::Mutex;
     ///
-    /// let mutex = Mutex::new(1);
-    /// let n = mutex.into_inner();
-    /// assert_eq!(n, 1);
+    /// let protected = Mutex::new(String::from("ready"));
+    /// let value = protected.into_inner();
+    /// assert_eq!(value, "ready");
     /// ```
     pub fn into_inner(self) -> T {
         self.c.into_inner()
@@ -146,9 +146,10 @@ impl<T> Mutex<T> {
 impl<T: ?Sized> Mutex<T> {
     /// Waits for exclusive access and returns a borrowed guard.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Pending lock requests complete in order. Cancelling this call loses its place among them.
+    /// Dropping a pending future removes this request and releases any assigned permit. A later
+    /// attempt joins the back of the queue. No guard is returned on cancellation.
     ///
     /// # Examples
     ///
@@ -157,10 +158,11 @@ impl<T: ?Sized> Mutex<T> {
     /// # async fn main() {
     /// use asyncband::mutex::Mutex;
     ///
-    /// let mutex = Mutex::new(1);
+    /// let entries = Mutex::new(vec![10]);
     ///
-    /// let mut n = mutex.lock().await;
-    /// *n = 2;
+    /// let mut guard = entries.lock().await;
+    /// guard.push(20);
+    /// assert_eq!(*guard, [10, 20]);
     /// # }
     /// ```
     pub async fn lock(&self) -> MutexGuard<'_, T> {
@@ -175,10 +177,13 @@ impl<T: ?Sized> Mutex<T> {
     /// ```
     /// use asyncband::mutex::Mutex;
     ///
-    /// let mutex = Mutex::new(1);
-    /// let mut guard = mutex.try_lock().expect("mutex is locked");
-    /// *guard += 1;
-    /// assert_eq!(2, *guard);
+    /// let count = Mutex::new(5);
+    /// {
+    ///     let mut guard = count.try_lock().unwrap();
+    ///     *guard += 3;
+    ///     assert!(count.try_lock().is_none());
+    /// }
+    /// assert_eq!(count.into_inner(), 8);
     /// ```
     pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
         if self.s.try_acquire(2) {
@@ -194,9 +199,11 @@ impl<T: ?Sized> Mutex<T> {
     /// The owned guard keeps the mutex alive instead of borrowing it, which allows the guard to be
     /// moved wherever a `'static` value is required.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Pending lock requests complete in order. Cancelling this call loses its place among them.
+    /// Dropping a pending future removes this request and releases any assigned permit. A later
+    /// attempt joins the back of the queue. No guard is returned, and the future releases its owned
+    /// `Arc`.
     ///
     /// # Examples
     ///
@@ -207,10 +214,17 @@ impl<T: ?Sized> Mutex<T> {
     ///
     /// use asyncband::mutex::Mutex;
     ///
-    /// let mutex = Arc::new(Mutex::new(1));
+    /// let shared = Arc::new(Mutex::new(String::from("init")));
+    /// let worker_shared = shared.clone();
     ///
-    /// let mut n = mutex.clone().lock_owned().await;
-    /// *n = 2;
+    /// tokio::spawn(async move {
+    ///     let mut guard = worker_shared.lock_owned().await;
+    ///     guard.push_str("-done");
+    /// })
+    /// .await
+    /// .unwrap();
+    ///
+    /// assert_eq!(shared.lock().await.as_str(), "init-done");
     /// # }
     /// ```
     pub async fn lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T> {
@@ -229,10 +243,12 @@ impl<T: ?Sized> Mutex<T> {
     ///
     /// use asyncband::mutex::Mutex;
     ///
-    /// let mutex = Arc::new(Mutex::new(1));
-    /// let mut guard = mutex.clone().try_lock_owned().expect("mutex is locked");
-    /// *guard += 1;
-    /// assert_eq!(2, *guard);
+    /// let shared = Arc::new(Mutex::new(vec!["a"]));
+    /// let mut guard = shared.clone().try_lock_owned().unwrap();
+    /// guard.push("b");
+    /// assert!(shared.clone().try_lock_owned().is_none());
+    /// drop(guard);
+    /// assert_eq!(shared.try_lock_owned().unwrap().len(), 2);
     /// ```
     pub fn try_lock_owned(self: Arc<Self>) -> Option<OwnedMutexGuard<T>> {
         if self.s.try_acquire(2) {
@@ -253,9 +269,9 @@ impl<T: ?Sized> Mutex<T> {
     /// ```
     /// use asyncband::mutex::Mutex;
     ///
-    /// let mut mutex = Mutex::new(1);
-    /// let n = mutex.get_mut();
-    /// *n = 2;
+    /// let mut protected = Mutex::new(String::from("draft"));
+    /// protected.get_mut().push_str("-final");
+    /// assert_eq!(protected.into_inner(), "draft-final");
     /// ```
     pub fn get_mut(&mut self) -> &mut T {
         self.c.get_mut()
@@ -315,6 +331,11 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
     /// The returned guard keeps the same mutex locked. Call this as
     /// `MutexGuard::map(...)` so a method named `map` on `T` remains accessible through deref.
     ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
+    ///
     /// # Examples
     ///
     /// ```
@@ -323,32 +344,23 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
     /// use asyncband::mutex::Mutex;
     /// use asyncband::mutex::MutexGuard;
     ///
-    /// #[derive(Debug)]
-    /// struct User {
-    ///     id: u32,
-    ///     profile: UserProfile,
+    /// struct Account {
+    ///     display_name: String,
+    ///     balance: u64,
     /// }
     ///
-    /// #[derive(Debug)]
-    /// struct UserProfile {
-    ///     email: String,
-    ///     name: String,
+    /// let account = Mutex::new(Account {
+    ///     display_name: "ops".to_owned(),
+    ///     balance: 100,
+    /// });
+    ///
+    /// {
+    ///     let guard = account.lock().await;
+    ///     let mut balance = MutexGuard::map(guard, |acc| &mut acc.balance);
+    ///     *balance += 50;
     /// }
     ///
-    /// let user = User {
-    ///     id: 1,
-    ///     profile: UserProfile {
-    ///         email: "user@example.com".to_owned(),
-    ///         name: "Alice".to_owned(),
-    ///     },
-    /// };
-    ///
-    /// let mutex = Mutex::new(user);
-    /// let guard = mutex.lock().await;
-    ///
-    /// // Map to only access the user's profile, allowing fine-grained locking
-    /// let profile_guard = MutexGuard::map(guard, |user| &mut user.profile);
-    /// assert_eq!(profile_guard.email, "user@example.com");
+    /// assert_eq!(account.lock().await.balance, 150);
     /// # }
     /// ```
     pub fn map<U, F>(mut orig: Self, f: F) -> MappedMutexGuard<'a, U>
@@ -367,45 +379,36 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
 
     /// Attempts to project this guard to a mutable component of the protected value.
     ///
-    /// The original guard is returned when `f` returns `None`. Call this as
-    /// `MutexGuard::filter_map(...)` so a method with the same name on `T` remains accessible.
+    /// Call this as `MutexGuard::filter_map(...)` so a method with the same name on `T` remains
+    /// accessible.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     ///
     /// # Examples
     ///
     /// ```
     /// # #[tokio::main]
     /// # async fn main() {
-    /// use std::collections::HashMap;
+    /// use std::collections::BTreeMap;
     ///
     /// use asyncband::mutex::Mutex;
     /// use asyncband::mutex::MutexGuard;
     ///
-    /// #[derive(Debug)]
-    /// struct Database {
-    ///     users: HashMap<u32, String>,
-    ///     admin_user_id: Option<u32>,
-    /// }
+    /// let routes = Mutex::new(BTreeMap::from([("v1", 8080_u16)]));
+    /// let guard = routes.lock().await;
+    /// let mut port = MutexGuard::filter_map(guard, |map| map.get_mut("v1")).unwrap();
+    /// *port = 8443;
+    /// drop(port);
     ///
-    /// let mut db = Database {
-    ///     users: HashMap::new(),
-    ///     admin_user_id: Some(1),
-    /// };
-    /// db.users.insert(1, "admin@example.com".to_owned());
-    ///
-    /// let mutex = Mutex::new(db);
-    /// let guard = mutex.lock().await;
-    ///
-    /// // Try to map to admin user's email if admin exists
-    /// let admin_email_guard = MutexGuard::filter_map(guard, |db| {
-    ///     if let Some(admin_id) = db.admin_user_id {
-    ///         db.users.get_mut(&admin_id)
-    ///     } else {
-    ///         None
-    ///     }
-    /// })
-    /// .expect("admin user should exist");
-    ///
-    /// assert_eq!(&*admin_email_guard, "admin@example.com");
+    /// assert_eq!(routes.lock().await.get("v1"), Some(&8443));
     /// # }
     /// ```
     pub fn filter_map<U, F>(mut orig: Self, f: F) -> Result<MappedMutexGuard<'a, U>, Self>
@@ -482,6 +485,11 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
     /// The returned guard retains the same `Arc` and keeps the mutex locked. Call this as
     /// `OwnedMutexGuard::map(...)` so a method named `map` on `T` remains accessible through deref.
     ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
+    ///
     /// # Examples
     ///
     /// ```
@@ -492,22 +500,23 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
     /// use asyncband::mutex::Mutex;
     /// use asyncband::mutex::OwnedMutexGuard;
     ///
-    /// struct Config {
-    ///     name: String,
-    ///     value: u32,
+    /// struct Limits {
+    ///     label: &'static str,
+    ///     max_in_flight: usize,
     /// }
     ///
-    /// let config = Config {
-    ///     name: "front size".to_owned(),
-    ///     value: 42,
-    /// };
+    /// let limits = Arc::new(Mutex::new(Limits {
+    ///     label: "ingress",
+    ///     max_in_flight: 32,
+    /// }));
     ///
-    /// let mutex = Arc::new(Mutex::new(config));
-    /// let guard = mutex.clone().lock_owned().await;
+    /// {
+    ///     let guard = limits.clone().lock_owned().await;
+    ///     let mut max_in_flight = OwnedMutexGuard::map(guard, |cfg| &mut cfg.max_in_flight);
+    ///     *max_in_flight = 64;
+    /// }
     ///
-    /// // Map to access only the value field
-    /// let value_guard = OwnedMutexGuard::map(guard, |config| &mut config.value);
-    /// assert_eq!(*value_guard, 42);
+    /// assert_eq!(limits.lock().await.max_in_flight, 64);
     /// # }
     /// ```
     pub fn map<U, F>(mut orig: Self, f: F) -> OwnedMappedMutexGuard<T, U>
@@ -532,8 +541,18 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
 
     /// Attempts to project this guard to a mutable component of the protected value.
     ///
-    /// The original guard is returned when `f` returns `None`. Call this as
-    /// `OwnedMutexGuard::filter_map(...)` so a method with the same name on `T` remains accessible.
+    /// Call this as `OwnedMutexGuard::filter_map(...)` so a method with the same name on `T`
+    /// remains accessible.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     ///
     /// # Examples
     ///
@@ -545,15 +564,13 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
     /// use asyncband::mutex::Mutex;
     /// use asyncband::mutex::OwnedMutexGuard;
     ///
-    /// let data = vec![1, 2, 3, 4, 5];
-    /// let mutex = Arc::new(Mutex::new(data));
-    /// let guard = mutex.clone().lock_owned().await;
+    /// let queue = Arc::new(Mutex::new(vec![10, 20, 30]));
+    /// let guard = queue.clone().lock_owned().await;
+    /// let mut head = OwnedMutexGuard::filter_map(guard, |items| items.first_mut()).unwrap();
+    /// *head += 5;
+    /// drop(head);
     ///
-    /// // Map to the first element
-    /// let first_guard =
-    ///     OwnedMutexGuard::filter_map(guard, |vec| vec.get_mut(0)).expect("vec should not be empty");
-    ///
-    /// assert_eq!(*first_guard, 1);
+    /// assert_eq!(*queue.lock().await, [15, 20, 30]);
     /// # }
     /// ```
     pub fn filter_map<U, F>(mut orig: Self, f: F) -> Result<OwnedMappedMutexGuard<T, U>, Self>
@@ -594,32 +611,23 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
 /// use asyncband::mutex::Mutex;
 /// use asyncband::mutex::MutexGuard;
 ///
-/// #[derive(Debug)]
-/// struct User {
-///     id: u32,
-///     profile: UserProfile,
+/// struct Envelope {
+///     id: u64,
+///     payload: String,
 /// }
 ///
-/// #[derive(Debug)]
-/// struct UserProfile {
-///     email: String,
-///     name: String,
+/// let mutex = Mutex::new(Envelope {
+///     id: 7,
+///     payload: "pending".to_owned(),
+/// });
+///
+/// {
+///     let guard = mutex.lock().await;
+///     let mut payload = MutexGuard::map(guard, |env| &mut env.payload);
+///     *payload = "committed".to_owned();
 /// }
 ///
-/// let user = User {
-///     id: 1,
-///     profile: UserProfile {
-///         email: "user@example.com".to_owned(),
-///         name: "Alice".to_owned(),
-///     },
-/// };
-///
-/// let mutex = Mutex::new(user);
-/// let guard = mutex.lock().await;
-/// let profile_guard = MutexGuard::map(guard, |user| &mut user.profile);
-///
-/// // Now we can only access the user's profile
-/// assert_eq!(profile_guard.email, "user@example.com");
+/// assert_eq!(mutex.lock().await.payload, "committed");
 /// # }
 /// ```
 #[must_use = "dropping the guard releases the mutex immediately"]
@@ -630,15 +638,12 @@ pub struct MappedMutexGuard<'a, T: ?Sized> {
     variance: PhantomData<&'a mut T>,
 }
 
-// SAFETY: MappedMutexGuard can be safely sent between threads when T: Send.
-// The guard holds exclusive access to the data protected by the mutex lock,
-// and the NonNull<T> pointer remains valid for the guard's lifetime.
-// This is essential for async tasks that may be moved between threads at .await points.
+// SAFETY: The guard exclusively borrows the locked mutex and remains valid for `'a`, so moving it
+// across threads is safe when `T: Send`.
 unsafe impl<T: ?Sized + Send> Send for MappedMutexGuard<'_, T> {}
 
-// SAFETY: MappedMutexGuard can be safely shared between threads (Sync) when T: Sync.
-// Through &MappedMutexGuard, you can only get &T, so if T itself allows sharing references
-// across threads, then sharing MappedMutexGuard references is also safe.
+// SAFETY: `&MappedMutexGuard<'_, T>` yields only `&T`, so sharing it across threads is safe when
+// `T: Sync`.
 unsafe impl<T: ?Sized + Sync> Sync for MappedMutexGuard<'_, T> {}
 
 impl<T: ?Sized> Drop for MappedMutexGuard<'_, T> {
@@ -662,14 +667,14 @@ impl<T: ?Sized + fmt::Display> fmt::Display for MappedMutexGuard<'_, T> {
 impl<T: ?Sized> Deref for MappedMutexGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
-        // SAFETY: we hold the lock and the NonNull pointer is valid for the guard's lifetime
+        // SAFETY: `self` holds exclusive mutex access and `d` remains valid for `'a`.
         unsafe { self.d.as_ref() }
     }
 }
 
 impl<T: ?Sized> DerefMut for MappedMutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: we hold the lock and the NonNull pointer is valid for the guard's lifetime
+        // SAFETY: `self` holds exclusive mutex access and `d` remains valid for `'a`.
         unsafe { self.d.as_mut() }
     }
 }
@@ -681,6 +686,11 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
     /// `MappedMutexGuard::map(...)` so a method named `map` on `T` remains accessible through
     /// deref.
     ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
+    ///
     /// # Examples
     ///
     /// ```
@@ -690,35 +700,26 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
     /// use asyncband::mutex::Mutex;
     /// use asyncband::mutex::MutexGuard;
     ///
-    /// #[derive(Debug)]
-    /// struct User {
-    ///     id: u32,
-    ///     profile: UserProfile,
+    /// struct Counters {
+    ///     inner: InnerCounters,
     /// }
     ///
-    /// #[derive(Debug)]
-    /// struct UserProfile {
-    ///     email: String,
-    ///     name: String,
+    /// struct InnerCounters {
+    ///     accepted: u64,
     /// }
     ///
-    /// let user = User {
-    ///     id: 1,
-    ///     profile: UserProfile {
-    ///         email: "user@example.com".to_owned(),
-    ///         name: "Alice".to_owned(),
-    ///     },
-    /// };
+    /// let counters = Mutex::new(Counters {
+    ///     inner: InnerCounters { accepted: 0 },
+    /// });
     ///
-    /// let mutex = Mutex::new(user);
-    /// let guard = mutex.lock().await;
+    /// {
+    ///     let guard = counters.lock().await;
+    ///     let inner = MutexGuard::map(guard, |c| &mut c.inner);
+    ///     let mut accepted = MappedMutexGuard::map(inner, |i| &mut i.accepted);
+    ///     *accepted += 1;
+    /// }
     ///
-    /// // First map to user profile
-    /// let profile_guard = MutexGuard::map(guard, |user| &mut user.profile);
-    /// // Then map to the email field specifically
-    /// let email_guard = MappedMutexGuard::map(profile_guard, |profile| &mut profile.email);
-    ///
-    /// assert_eq!(&*email_guard, "user@example.com");
+    /// assert_eq!(counters.lock().await.inner.accepted, 1);
     /// # }
     /// ```
     pub fn map<U, F>(mut orig: Self, f: F) -> MappedMutexGuard<'a, U>
@@ -737,9 +738,18 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
 
     /// Attempts to project an already mapped guard to a deeper mutable component.
     ///
-    /// The original mapped guard is returned when `f` returns `None`. Call this as
-    /// `MappedMutexGuard::filter_map(...)` so a method with the same name on `T` remains
-    /// accessible.
+    /// Call this as `MappedMutexGuard::filter_map(...)` so a method with the same name on `T`
+    /// remains accessible.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     ///
     /// # Examples
     ///
@@ -750,27 +760,18 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
     /// use asyncband::mutex::Mutex;
     /// use asyncband::mutex::MutexGuard;
     ///
-    /// #[derive(Debug)]
-    /// struct Data {
-    ///     id: u32,
-    ///     value: Option<String>,
+    /// struct Slot {
+    ///     pending: Option<u32>,
     /// }
     ///
-    /// let data = Data {
-    ///     id: 1,
-    ///     value: Some("hello".to_owned()),
-    /// };
+    /// let slot = Mutex::new(Slot { pending: Some(4) });
+    /// let guard = slot.lock().await;
+    /// let pending = MutexGuard::map(guard, |s| &mut s.pending);
+    /// let mut value = MappedMutexGuard::filter_map(pending, |opt| opt.as_mut()).unwrap();
+    /// *value *= 2;
+    /// drop(value);
     ///
-    /// let mutex = Mutex::new(data);
-    /// let guard = mutex.lock().await;
-    ///
-    /// // First map to the value field
-    /// let value_guard = MutexGuard::map(guard, |data| &mut data.value);
-    /// // Then try to map to the inner string if it exists
-    /// let string_guard =
-    ///     MappedMutexGuard::filter_map(value_guard, |opt| opt.as_mut()).expect("value should exist");
-    ///
-    /// assert_eq!(&*string_guard, "hello");
+    /// assert_eq!(slot.lock().await.pending, Some(8));
     /// # }
     /// ```
     pub fn filter_map<U, F>(mut orig: Self, f: F) -> Result<MappedMutexGuard<'a, U>, Self>
@@ -808,16 +809,18 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
 /// use asyncband::mutex::Mutex;
 /// use asyncband::mutex::OwnedMutexGuard;
 ///
-/// struct Data {
-///     value: u32,
+/// struct Metrics {
+///     dropped: usize,
 /// }
 ///
-/// let data = Data { value: 42 };
-/// let mutex = Arc::new(Mutex::new(data));
-/// let guard = mutex.clone().lock_owned().await;
-/// let value_guard = OwnedMutexGuard::map(guard, |data| &mut data.value);
+/// let metrics = Arc::new(Mutex::new(Metrics { dropped: 0 }));
+/// {
+///     let guard = metrics.clone().lock_owned().await;
+///     let mut dropped = OwnedMutexGuard::map(guard, |m| &mut m.dropped);
+///     *dropped += 3;
+/// }
 ///
-/// assert_eq!(*value_guard, 42);
+/// assert_eq!(metrics.lock().await.dropped, 3);
 /// # }
 /// ```
 #[must_use = "dropping the guard releases the mutex immediately"]
@@ -828,16 +831,12 @@ pub struct OwnedMappedMutexGuard<T: ?Sized, U: ?Sized> {
     variance: PhantomData<*mut U>,
 }
 
-// SAFETY: OwnedMappedMutexGuard can be safely sent between threads when T: Send and U: Send.
-// It holds exclusive access to the data protected by the mutex lock, and the raw pointer
-// remains valid for the guard's lifetime. This is essential for async tasks that may be
-// moved between threads at .await points.
+// SAFETY: The guard holds exclusive mutex access and keeps the `Arc` alive, so moving it across
+// threads is safe when `T: Send` and `U: Send`.
 unsafe impl<T: ?Sized + Send, U: ?Sized + Send> Send for OwnedMappedMutexGuard<T, U> {}
 
-// SAFETY: OwnedMappedMutexGuard can be safely shared between threads (Sync) when T: Send + Sync and
-// U: Send + Sync. Through &OwnedMappedMutexGuard, you can only get &U, so if U itself allows
-// sharing references across threads, then sharing OwnedMappedMutexGuard references is also safe.
-// We require T: Send + Sync for maximum safety and ecosystem compatibility.
+// SAFETY: `&OwnedMappedMutexGuard<T, U>` yields only `&U`, and dropping/cloning lock state requires
+// `Mutex<T>: Sync`, so sharing across threads is safe when `T: Send + Sync` and `U: Send + Sync`.
 unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Send + Sync> Sync for OwnedMappedMutexGuard<T, U> {}
 
 impl<T: ?Sized, U: ?Sized> Drop for OwnedMappedMutexGuard<T, U> {
@@ -861,16 +860,16 @@ impl<T: ?Sized, U: ?Sized + fmt::Display> fmt::Display for OwnedMappedMutexGuard
 impl<T: ?Sized, U: ?Sized> Deref for OwnedMappedMutexGuard<T, U> {
     type Target = U;
     fn deref(&self) -> &Self::Target {
-        // SAFETY: we hold the lock and the NonNull pointer is valid for the guard's lifetime
-        // The Arc ensures the underlying data remains valid
+        // SAFETY: `self` owns the `Arc<Mutex<T>>` and holds exclusive lock access, so `d` stays
+        // valid.
         unsafe { self.d.as_ref() }
     }
 }
 
 impl<T: ?Sized, U: ?Sized> DerefMut for OwnedMappedMutexGuard<T, U> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: we hold the lock and the NonNull pointer is valid for the guard's lifetime
-        // The Arc ensures the underlying data remains valid
+        // SAFETY: `self` owns the `Arc<Mutex<T>>` and holds exclusive lock access, so `d` stays
+        // valid.
         unsafe { self.d.as_mut() }
     }
 }
@@ -881,6 +880,11 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
     /// The returned guard retains the same `Arc` and keeps the mutex locked. Call this as
     /// `OwnedMappedMutexGuard::map(...)` so a method named `map` on `U` remains accessible through
     /// deref.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     ///
     /// # Examples
     ///
@@ -893,26 +897,28 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
     /// use asyncband::mutex::OwnedMappedMutexGuard;
     /// use asyncband::mutex::OwnedMutexGuard;
     ///
-    /// #[derive(Debug)]
     /// struct Config {
-    ///     host: String,
-    ///     port: u16,
+    ///     endpoint: Endpoint,
     /// }
     ///
-    /// let config = Config {
-    ///     host: "localhost".to_owned(),
-    ///     port: 8080,
-    /// };
+    /// struct Endpoint {
+    ///     host: String,
+    /// }
     ///
-    /// let mutex = Arc::new(Mutex::new(config));
-    /// let guard = mutex.clone().lock_owned().await;
+    /// let config = Arc::new(Mutex::new(Config {
+    ///     endpoint: Endpoint {
+    ///         host: "127.0.0.1".to_owned(),
+    ///     },
+    /// }));
     ///
-    /// // First map to config
-    /// let config_guard = OwnedMutexGuard::map(guard, |config| &mut config.host);
-    /// // Then map to the host string specifically
-    /// let host_guard = OwnedMappedMutexGuard::map(config_guard, |host| host.as_mut_str());
+    /// {
+    ///     let guard = config.clone().lock_owned().await;
+    ///     let endpoint = OwnedMutexGuard::map(guard, |c| &mut c.endpoint);
+    ///     let mut host = OwnedMappedMutexGuard::map(endpoint, |e| &mut e.host);
+    ///     *host = "localhost".to_owned();
+    /// }
     ///
-    /// assert_eq!(&*host_guard, "localhost");
+    /// assert_eq!(config.lock().await.endpoint.host, "localhost");
     /// # }
     /// ```
     pub fn map<V, F>(mut orig: Self, f: F) -> OwnedMappedMutexGuard<T, V>
@@ -936,9 +942,18 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
 
     /// Attempts to project an owned mapped guard to a deeper mutable component.
     ///
-    /// The original mapped guard is returned when `f` returns `None`. Call this as
-    /// `OwnedMappedMutexGuard::filter_map(...)` so a method with the same name on `U` remains
-    /// accessible through deref.
+    /// Call this as `OwnedMappedMutexGuard::filter_map(...)` so a method with the same name on
+    /// `U` remains accessible through deref.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     ///
     /// # Examples
     ///
@@ -951,35 +966,22 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
     /// use asyncband::mutex::OwnedMappedMutexGuard;
     /// use asyncband::mutex::OwnedMutexGuard;
     ///
-    /// #[derive(Debug)]
-    /// struct Node {
-    ///     value: i32,
-    ///     left: Option<Box<Node>>,
-    ///     right: Option<Box<Node>>,
+    /// struct Entry {
+    ///     next: Option<Box<u64>>,
     /// }
     ///
-    /// let node = Node {
-    ///     value: 10,
-    ///     left: Some(Box::new(Node {
-    ///         value: 5,
-    ///         left: None,
-    ///         right: None,
-    ///     })),
-    ///     right: None,
-    /// };
+    /// let head = Arc::new(Mutex::new(Entry {
+    ///     next: Some(Box::new(5)),
+    /// }));
     ///
-    /// let mutex = Arc::new(Mutex::new(node));
-    /// let guard = mutex.clone().lock_owned().await;
+    /// {
+    ///     let guard = head.clone().lock_owned().await;
+    ///     let next = OwnedMutexGuard::map(guard, |e| &mut e.next);
+    ///     let mut tail = OwnedMappedMutexGuard::filter_map(next, |opt| opt.as_deref_mut()).unwrap();
+    ///     *tail += 7;
+    /// }
     ///
-    /// // First map to left child
-    /// let left_guard = OwnedMutexGuard::map(guard, |node| &mut node.left);
-    /// // Try to access the left child if it exists
-    /// let child_guard = OwnedMappedMutexGuard::filter_map(left_guard, |left| {
-    ///     left.as_mut().map(|boxed| boxed.as_mut())
-    /// })
-    /// .expect("left child should exist");
-    ///
-    /// assert_eq!(child_guard.value, 5);
+    /// assert_eq!(head.lock().await.next.as_deref(), Some(&12));
     /// # }
     /// ```
     pub fn filter_map<V, F>(mut orig: Self, f: F) -> Result<OwnedMappedMutexGuard<T, V>, Self>

@@ -43,7 +43,7 @@ use crate::internal::waker_batch::WakerBatch;
 /// The internal semaphore that provides low-level async primitives.
 #[derive(Debug)]
 pub struct Semaphore {
-    /// The current number of available permits in the semaphore.
+    /// Permits currently available without waiting.
     available_permits: AtomicUsize,
     /// Set when a release holding the queue lock loses a CAS race, and cleared after it
     /// successfully updates the available count. Releases that observe this flag skip the
@@ -70,14 +70,14 @@ impl Semaphore {
         }
     }
 
-    /// Returns the current number of available permits.
+    /// Reads the count of permits presently available.
     pub fn available_permits(&self) -> usize {
         self.available_permits.load(Ordering::Acquire)
     }
 
-    /// Tries to acquire `n` permits from the semaphore.
+    /// Claims `n` permits immediately if enough are available.
     ///
-    /// Returns `true` if the permits were acquired, `false` otherwise.
+    /// Returns `false` without mutating the count when fewer than `n` permits are present.
     pub fn try_acquire(&self, n: usize) -> bool {
         let mut available = self.available_permits.load(Ordering::Acquire);
         loop {
@@ -98,9 +98,7 @@ impl Semaphore {
         }
     }
 
-    /// Drains up to `up_to` permits that are currently available.
-    ///
-    /// Returns the number of permits that were actually drained.
+    /// Removes at most `up_to` immediately available permits and returns how many were taken.
     pub fn drain_permits(&self, up_to: usize) -> usize {
         if up_to == 0 {
             return 0;
@@ -327,7 +325,6 @@ impl Acquire<'_> {
                 }
             }
             None => {
-                // not yet enqueued
                 let requested = *requested_permits;
 
                 if acquired_or_enqueue(semaphore, requested, Some(index), Some(waker), true) {
@@ -374,13 +371,9 @@ fn acquired_or_enqueue(
         };
 
         if needed > 0 && lock.is_none() {
-            // No permits were immediately available, so this permit will
-            // (probably) need to wait. We'll need to acquire a lock on the
-            // wait queue before continuing. We need to do this _before_ the
-            // CAS that sets the new value of the semaphore's `available_permits`
-            // counter. Otherwise, if we subtract the permits and then
-            // acquire the lock, we might miss additional permits being
-            // added while waiting for the lock.
+            // Lock the wait queue before zeroing `available_permits`. If the counter reached zero
+            // first, a concurrent release could observe an empty queue and publish permits without
+            // waking the waiter we are about to link.
             lock = Some(sem.waiters.lock());
         }
 
@@ -390,19 +383,15 @@ fn acquired_or_enqueue(
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
-            // other thread changed the permits; retry
             available = actual;
             continue;
         }
 
-        // all requested permits were acquired
         if needed == 0 {
             return true;
         }
 
-        // all available permits were acquired, but more are needed;
-        // enqueue a waiter for the permits still needed
-
+        // Link the waiter for the remaining shortfall under the lock held above.
         let mut waiters = lock.take().unwrap_or_else(|| {
             unreachable!("lock must be acquired when needed {needed} > 0");
         });

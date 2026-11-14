@@ -17,13 +17,23 @@
 
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::Barrier;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Waker;
+use std::thread;
 
 use asyncband::waitgroup::WaitGroup;
 use tests_integration::WakeCounter;
+use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
+use tests_integration::poll_with;
+use tests_integration::waker_on_drop;
+use tests_integration::waker_on_wake;
 
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn waits_for_all_worker_handles() {
     let wg = WaitGroup::new();
@@ -138,4 +148,168 @@ fn repolling_replaces_the_registered_waker() {
 
     assert_eq!(first.count(), 0);
     assert_eq!(second.count(), 1);
+}
+
+#[test]
+fn cancelled_slots_can_be_reused_while_other_observers_are_registered() {
+    let group = WaitGroup::new();
+    let worker = group.clone();
+    let observer = group.into_future();
+    let mut inline = Box::pin(observer.clone());
+    let mut overflow = Box::pin(observer.clone());
+    let mut survivor = Box::pin(observer.clone());
+    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
+    let (replaced_waker, replaced_wakes) = WakeCounter::new();
+    let (live_waker, live_wakes) = WakeCounter::new();
+
+    assert!(poll_with(inline.as_mut(), &cancelled_waker).is_pending());
+    assert!(poll_with(overflow.as_mut(), &cancelled_waker).is_pending());
+    assert!(poll_with(survivor.as_mut(), &replaced_waker).is_pending());
+    drop(inline);
+    drop(overflow);
+
+    let mut inline = Box::pin(observer.clone());
+    let mut overflow = Box::pin(observer);
+    for waiter in [&mut inline, &mut overflow, &mut survivor] {
+        assert!(poll_with(waiter.as_mut(), &live_waker).is_pending());
+    }
+    drop(worker);
+
+    assert_eq!(cancelled_wakes.count(), 0);
+    assert_eq!(replaced_wakes.count(), 0);
+    assert_eq!(live_wakes.count(), 3);
+    for waiter in [&mut inline, &mut overflow, &mut survivor] {
+        assert!(poll_once(waiter.as_mut()).is_ready());
+    }
+}
+
+#[test]
+fn concurrent_registration_acquires_every_participants_work() {
+    let group = WaitGroup::new();
+    let start = Barrier::new(6);
+    let writes = [const { AtomicBool::new(false) }; 3];
+    let (waker, _) = WakeCounter::new();
+
+    thread::scope(|scope| {
+        for write in &writes {
+            let worker = group.clone();
+            let start = &start;
+            scope.spawn(move || {
+                start.wait();
+                write.store(true, Ordering::Relaxed);
+                drop(worker);
+            });
+        }
+        let observer = group.into_future();
+        for _ in 0..2 {
+            let mut wait = Box::pin(observer.clone());
+            let start = &start;
+            let writes = &writes;
+            let waker = &waker;
+            scope.spawn(move || {
+                start.wait();
+                while poll_with(wait.as_mut(), waker).is_pending() {
+                    thread::yield_now();
+                }
+                assert!(writes.iter().all(|written| written.load(Ordering::Relaxed)));
+            });
+        }
+        let mut wait = Box::pin(observer);
+        assert!(poll_with(wait.as_mut(), &waker).is_pending());
+        start.wait();
+        drop(wait);
+    });
+}
+
+#[test]
+fn racing_completion_notifies_a_poll_that_returns_pending() {
+    let group = WaitGroup::new();
+    let worker = group.clone();
+    let mut wait = Box::pin(group.into_future());
+    let start = Barrier::new(2);
+    let (waker, wakes) = WakeCounter::new();
+
+    let result = thread::scope(|scope| {
+        scope.spawn(|| {
+            start.wait();
+            drop(worker);
+        });
+        start.wait();
+        poll_with(wait.as_mut(), &waker)
+    });
+    if result.is_pending() {
+        assert_eq!(wakes.count(), 1);
+    }
+    assert!(poll_once(wait.as_mut()).is_ready());
+}
+
+#[test]
+fn retiring_a_registration_can_complete_the_group() {
+    for replace in [false, true] {
+        for use_overflow in [false, true] {
+            assert_completes_without_deadlock(move || {
+                let group = WaitGroup::new();
+                let worker = group.clone();
+                let observer = group.into_future();
+                let mut other = pin!(observer.clone());
+                if use_overflow {
+                    assert!(poll_once(other.as_mut()).is_pending());
+                }
+
+                let mut wait = Box::pin(observer);
+                let retired = waker_on_drop(move || drop(worker));
+                assert!(poll_with(wait.as_mut(), &retired).is_pending());
+                drop(retired);
+
+                if replace {
+                    let (next, wakes) = WakeCounter::new();
+                    assert!(poll_with(wait.as_mut(), &next).is_pending());
+                    assert_eq!(wakes.count(), 1);
+                }
+                drop(wait);
+                assert!(poll_once(other.as_mut()).is_ready());
+            });
+        }
+    }
+}
+
+#[test]
+fn final_worker_and_cancelled_observer_release_their_registration() {
+    let group = WaitGroup::new();
+    let worker = group.clone();
+    let mut wait = Box::pin(group.into_future());
+    let (waker, wakes) = WakeCounter::new();
+    assert!(poll_with(wait.as_mut(), &waker).is_pending());
+    drop(waker);
+
+    let start = Barrier::new(2);
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            start.wait();
+            drop(worker);
+        });
+        start.wait();
+        drop(wait);
+    });
+    assert!(wakes.count() <= 1);
+    assert_eq!(Arc::strong_count(&wakes), 1);
+}
+
+#[test]
+fn waking_can_drop_the_last_observer_during_completion() {
+    let group = WaitGroup::new();
+    let worker = group.clone();
+    let observer = Arc::new(Mutex::new(Some(Box::pin(group.into_future()))));
+    let waker = waker_on_wake({
+        let observer = observer.clone();
+        move || drop(observer.lock().unwrap().take().unwrap())
+    });
+
+    let mut guard = observer.lock().unwrap();
+    assert!(poll_with(guard.as_mut().unwrap().as_mut(), &waker).is_pending());
+    drop(guard);
+    drop(waker);
+
+    drop(worker);
+    assert!(observer.lock().unwrap().is_none());
 }

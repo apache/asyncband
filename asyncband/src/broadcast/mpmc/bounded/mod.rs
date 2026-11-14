@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A multi-producer multi-consumer broadcast channel with a bounded buffer.
+//! A capacity-limited fan-out channel with multiple senders and receivers.
 //!
-//! This channel supports multiple senders and multiple receivers. Each message sent by any sender
-//! is received by all active receivers. Nothing is ever displaced to make room, so receiving never
-//! reports lag; instead the channel retains at most `capacity` messages and makes producers wait.
+//! Publishing delivers every accepted value to every receiver subscribed at that moment. Older
+//! values are never overwritten to make room, so receiving never reports lag; once the shared
+//! backlog reaches `capacity`, producers wait for the slowest active receiver.
 //!
 //! # Capacity
 //!
@@ -60,16 +60,16 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() {
-//! let (tx, mut rx1) = mpmc::bounded(4);
-//! let mut rx2 = tx.subscribe();
+//! let (publisher, mut audit) = mpmc::bounded(4);
+//! let mut metrics = publisher.subscribe();
 //!
-//! tx.send(10).await;
-//! tx.send(20).await;
+//! publisher.send("started").await;
+//! publisher.send("finished").await;
 //!
-//! assert_eq!(*rx1.recv().await.unwrap(), 10);
-//! assert_eq!(*rx1.recv().await.unwrap(), 20);
-//! assert_eq!(*rx2.recv().await.unwrap(), 10);
-//! assert_eq!(*rx2.recv().await.unwrap(), 20);
+//! assert_eq!(*audit.recv().await.unwrap(), "started");
+//! assert_eq!(*audit.recv().await.unwrap(), "finished");
+//! assert_eq!(*metrics.recv().await.unwrap(), "started");
+//! assert_eq!(*metrics.recv().await.unwrap(), "finished");
 //! # }
 //! ```
 //!
@@ -225,7 +225,7 @@ impl<T> Shared<T> {
 
 /// The sending side of a bounded broadcast channel.
 ///
-/// The sender can be cloned to create multiple producers. Dropping the final sender disconnects
+/// Cloning this handle adds another producer. Dropping the final sender disconnects
 /// the channel. Each receiver may drain its own buffered messages before observing disconnection.
 pub struct BoundedSender<T> {
     shared: Arc<Shared<T>>,
@@ -266,13 +266,10 @@ impl<T> BoundedSender<T> {
     /// If no receivers are active, the message is dropped immediately and this returns without
     /// waiting.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// This method is cancel safe in the sense that matters for a lossless log: the value is
-    /// either published to every active receiver or not published at all. Publication happens in
-    /// one indivisible step, so cancelling a `send` future cannot leave a reserved but unfilled
-    /// position in the committed order. Dropping the future before publication drops the unsent
-    /// value.
+    /// Dropping a pending future does not publish the value and drops the unsent input. Publication
+    /// is indivisible: it cannot leave a reserved but unfilled position in the message order.
     ///
     /// # Panics
     ///
@@ -286,9 +283,9 @@ impl<T> BoundedSender<T> {
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let (tx, mut rx) = mpmc::bounded(1);
-    /// tx.send(10).await;
-    /// assert_eq!(*rx.recv().await.unwrap(), 10);
+    /// let (publisher, mut receiver) = mpmc::bounded(1);
+    /// publisher.send("ready").await;
+    /// assert_eq!(*receiver.recv().await.unwrap(), "ready");
     /// # }
     /// ```
     pub async fn send(&self, value: T) {
@@ -363,17 +360,18 @@ impl<T> BoundedSender<T> {
         poll_fn(|cx| send.poll_send(cx)).await
     }
 
-    /// Attempts to broadcast a value to all active receivers without waiting.
+    /// Broadcasts a value to all active receivers without waiting for capacity.
     ///
-    /// # Returns
+    /// If no receivers are active, the value is discarded and this returns `Ok(())`.
     ///
-    /// * `Ok(())`: The value was published, or discarded because no receivers are active.
-    /// * `Err(TrySendError::Full(value))`: The channel already retains `capacity` messages. The
-    ///   value was not published and is returned unchanged.
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] containing the unsent value if the channel has no capacity.
+    /// The value has not been published.
     ///
     /// # Panics
     ///
-    /// Panics if the internal message version counter overflows.
+    /// Panics if the channel's message version counter would overflow.
     ///
     /// # Examples
     ///
@@ -381,12 +379,15 @@ impl<T> BoundedSender<T> {
     /// use asyncband::broadcast::mpmc;
     /// use asyncband::broadcast::mpmc::TrySendError;
     ///
-    /// let (tx, mut rx) = mpmc::bounded(1);
-    /// tx.try_send(10).unwrap();
-    /// assert_eq!(tx.try_send(20), Err(TrySendError::Full(20)));
+    /// let (publisher, mut receiver) = mpmc::bounded(1);
+    /// publisher.try_send("first").unwrap();
+    /// assert_eq!(
+    ///     publisher.try_send("second"),
+    ///     Err(TrySendError::Full("second"))
+    /// );
     ///
-    /// assert_eq!(*rx.try_recv().unwrap(), 10);
-    /// tx.try_send(20).unwrap();
+    /// assert_eq!(*receiver.try_recv().unwrap(), "first");
+    /// publisher.try_send("second").unwrap();
     /// ```
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
         // `Arc::new` runs inside the critical section, but only after the capacity check, so a
@@ -446,12 +447,12 @@ impl<T> BoundedSender<T> {
     /// ```
     /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.try_send(10).unwrap();
-    /// assert_eq!(tx.retained_message_count(), 1);
+    /// let (publisher, mut receiver) = mpmc::bounded(4);
+    /// publisher.try_send("pending").unwrap();
+    /// assert_eq!(publisher.retained_message_count(), 1);
     ///
-    /// assert_eq!(*rx.try_recv().unwrap(), 10);
-    /// assert_eq!(tx.retained_message_count(), 0);
+    /// assert_eq!(*receiver.try_recv().unwrap(), "pending");
+    /// assert_eq!(publisher.retained_message_count(), 0);
     /// ```
     pub fn retained_message_count(&self) -> usize {
         self.shared.inner.lock().log.retained()
@@ -467,14 +468,14 @@ impl<T> BoundedSender<T> {
     /// ```
     /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, _rx) = mpmc::bounded::<i32>(8);
-    /// assert_eq!(tx.capacity(), 8);
+    /// let (publisher, _receiver) = mpmc::bounded::<i32>(8);
+    /// assert_eq!(publisher.capacity(), 8);
     /// ```
     pub fn capacity(&self) -> usize {
         self.shared.capacity
     }
 
-    /// Creates a new receiver that starts receiving messages from the current tail of the channel.
+    /// Subscribes a new receiver for values published from this point forward.
     ///
     /// Subscribing never consumes capacity: the new cursor starts at the tail, so it retains
     /// nothing that was not already retained.
@@ -487,13 +488,13 @@ impl<T> BoundedSender<T> {
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let (tx, _rx) = mpmc::bounded(4);
-    /// tx.send(10).await;
+    /// let (publisher, _initial) = mpmc::bounded(4);
+    /// publisher.send("earlier").await;
     ///
-    /// let mut rx = tx.subscribe();
-    /// assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
-    /// tx.send(20).await;
-    /// assert_eq!(*rx.recv().await.unwrap(), 20);
+    /// let mut late = publisher.subscribe();
+    /// assert_eq!(late.try_recv(), Err(TryRecvError::Empty));
+    /// publisher.send("later").await;
+    /// assert_eq!(*late.recv().await.unwrap(), "later");
     /// # }
     /// ```
     #[must_use = "the receiver is dropped immediately if it is not retained"]
@@ -543,23 +544,21 @@ impl<T> Drop for BoundedReceiver<T> {
 }
 
 impl<T> BoundedReceiver<T> {
-    /// Receives the next value for this receiver as the channel's shared `Arc<T>`.
+    /// Waits for this receiver's next value and returns the channel's shared `Arc<T>`.
     ///
     /// Receiving never clones `T`. The `Arc` outlives the message's stay in the backlog: a
     /// caller that keeps it keeps the payload alive but holds no capacity. Use
     /// [`recv_cloned`](BoundedReceiver::recv_cloned) to take an owned value instead.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// * `Ok(Arc<T>)`: The next message.
-    /// * `Err(RecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
+    /// Returns [`RecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Dropping a pending `recv` future leaves this receiver's cursor unchanged. A subsequent
-    /// `recv` future can still return the same next value, so these futures may safely be raced
-    /// with other futures in a selection construct.
+    /// Dropping a pending future leaves this receiver's cursor unchanged, so a subsequent receive
+    /// observes the same next value.
     ///
     /// # Examples
     ///
@@ -568,33 +567,35 @@ impl<T> BoundedReceiver<T> {
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.send(10).await;
-    /// assert_eq!(*rx.recv().await.unwrap(), 10);
+    /// let (publisher, mut receiver) = mpmc::bounded(4);
+    /// publisher.send("ready").await;
+    /// assert_eq!(*receiver.recv().await.unwrap(), "ready");
     /// # }
     /// ```
     pub async fn recv(&mut self) -> Result<Arc<T>, RecvError> {
         Ok(self.wait_next().await?.msg)
     }
 
-    /// Receives the next value for this receiver as an owned `T`.
+    /// Waits for this receiver's next value and returns it as an owned `T`.
     ///
     /// The payload is moved out of the channel without cloning when this read reclaims the message
     /// and nothing else still refers to it, such as an `Arc` kept from a shared receive or another
-    /// receiver's clone still in progress. Otherwise it is cloned with the channel unlocked. If
-    /// `T::clone` panics, this receiver has still advanced past the value.
+    /// receiver's clone still in progress. Otherwise it is cloned with the channel unlocked.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// * `Ok(T)`: The next message.
-    /// * `Err(RecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
+    /// Returns [`RecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Dropping a pending `recv_cloned` future leaves this receiver's cursor unchanged. A
-    /// subsequent receive can still return the same next value, so these futures may safely be
-    /// raced with other futures in a selection construct.
+    /// Dropping a pending future leaves this receiver's cursor unchanged, so a subsequent receive
+    /// observes the same next value.
+    ///
+    /// # Panics
+    ///
+    /// If `T::clone` panics, this receiver has already advanced past the message. Retrying
+    /// receives a later message rather than the one whose clone panicked.
     ///
     /// # Examples
     ///
@@ -603,9 +604,9 @@ impl<T> BoundedReceiver<T> {
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.send(String::from("owned")).await;
-    /// assert_eq!(rx.recv_cloned().await, Ok(String::from("owned")));
+    /// let (publisher, mut receiver) = mpmc::bounded(4);
+    /// publisher.send(String::from("owned")).await;
+    /// assert_eq!(receiver.recv_cloned().await, Ok(String::from("owned")));
     /// # }
     /// ```
     pub async fn recv_cloned(&mut self) -> Result<T, RecvError>
@@ -616,52 +617,56 @@ impl<T> BoundedReceiver<T> {
         Ok(common::take_msg(received))
     }
 
-    /// Attempts to receive the next value for this receiver without blocking, as the channel's
-    /// shared `Arc<T>`.
+    /// Attempts to take this receiver's next value without waiting, as the channel's shared
+    /// `Arc<T>`.
     ///
     /// See [`recv`](BoundedReceiver::recv) for what keeping the `Arc` means, and
     /// [`try_recv_cloned`](BoundedReceiver::try_recv_cloned) to take an owned value instead.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// * `Ok(Arc<T>)`: The next message.
-    /// * `Err(TryRecvError::Empty)`: No message is currently available.
-    /// * `Err(TryRecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
+    /// Returns [`TryRecvError::Empty`] when no message is available but a sender remains.
+    /// Returns [`TryRecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.try_send(10).unwrap();
-    /// assert_eq!(*rx.try_recv().unwrap(), 10);
+    /// let (publisher, mut receiver) = mpmc::bounded(4);
+    /// publisher.try_send("ready").unwrap();
+    /// assert_eq!(*receiver.try_recv().unwrap(), "ready");
     /// ```
     pub fn try_recv(&mut self) -> Result<Arc<T>, TryRecvError> {
         Ok(self.receive_released()?.msg)
     }
 
-    /// Attempts to receive the next value for this receiver without blocking, as an owned `T`.
+    /// Attempts to take this receiver's next value without waiting and returns it as an owned
+    /// `T`.
     ///
     /// See [`recv_cloned`](BoundedReceiver::recv_cloned) for when the payload is moved out rather
     /// than cloned.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// * `Ok(T)`: The next message.
-    /// * `Err(TryRecvError::Empty)`: No message is currently available.
-    /// * `Err(TryRecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
+    /// Returns [`TryRecvError::Empty`] when no message is available but a sender remains.
+    /// Returns [`TryRecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
+    ///
+    /// # Panics
+    ///
+    /// If `T::clone` panics, this receiver has already advanced past the message. Retrying
+    /// receives a later message rather than the one whose clone panicked.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.try_send(String::from("owned")).unwrap();
-    /// assert_eq!(rx.try_recv_cloned(), Ok(String::from("owned")));
+    /// let (publisher, mut receiver) = mpmc::bounded(4);
+    /// publisher.try_send(String::from("owned")).unwrap();
+    /// assert_eq!(receiver.try_recv_cloned(), Ok(String::from("owned")));
     /// ```
     pub fn try_recv_cloned(&mut self) -> Result<T, TryRecvError>
     where
@@ -685,8 +690,7 @@ impl<T> BoundedReceiver<T> {
         Ok(received)
     }
 
-    /// Re-subscribes to the channel, returning a new receiver that starts receiving messages from
-    /// the *current* tail of the channel.
+    /// Creates a new subscription positioned after all values already published to the channel.
     ///
     /// The new receiver skips every value already published, including the latest retained value.
     /// The original receiver is unchanged and continues to retain its own backlog until it
@@ -697,14 +701,14 @@ impl<T> BoundedReceiver<T> {
     /// ```
     /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.try_send(1).unwrap();
-    /// tx.try_send(2).unwrap();
+    /// let (publisher, mut original) = mpmc::bounded(4);
+    /// publisher.try_send("first").unwrap();
+    /// publisher.try_send("second").unwrap();
     ///
-    /// let mut rx2 = rx.resubscribe();
-    /// tx.try_send(3).unwrap();
+    /// let mut fresh = original.resubscribe();
+    /// publisher.try_send("third").unwrap();
     ///
-    /// assert_eq!(*rx2.try_recv().unwrap(), 3);
+    /// assert_eq!(*fresh.try_recv().unwrap(), "third");
     /// ```
     #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn resubscribe(&self) -> Self {

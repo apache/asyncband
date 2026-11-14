@@ -228,24 +228,28 @@ where
         }
     }
 
-    /// Executes and returns the results of the given function, making sure that only one execution
-    /// is in-flight for a given key at a time.
+    /// Returns a clone of the shared computation's value for `key`.
     ///
-    /// If a duplicate comes in, the duplicate caller waits for the original to complete and
-    /// receives the same results.
+    /// Callers that join the same in-flight entry share its successful result. Once `func`
+    /// completes successfully, the entry is removed so later calls can start new work.
+    /// [`forget`](Self::forget) lets new calls start independently of an existing entry.
     ///
-    /// If the computation is cancelled or panics, another caller waiting for the same key may retry
-    /// it.
+    /// # Cancellation
     ///
-    /// Once the function completes, the key, if not [`forgotten`], is removed from the group,
-    /// allowing future calls with the same key to execute the function again.
+    /// Dropping a caller that is waiting for a result does not cancel the active computation.
+    /// Dropping the caller executing `func` drops that attempt; another caller on the entry may
+    /// run its own `func`. Effects already performed by the cancelled attempt are not rolled back.
     ///
-    /// [`forgotten`]: Self::forget
+    /// # Panics
+    ///
+    /// A panic in `func` propagates to its caller without publishing a value. Another caller may
+    /// retry the computation.
     ///
     /// # Deadlocks
     ///
-    /// The function must not recursively call `work` or `try_work` for the same current key because
-    /// it would wait for its own result. Work for other keys remains independent.
+    /// The computation must not await `work` or `try_work` for an equivalent key on
+    /// the same current entry, because it would wait for its own result. Other keys are
+    /// independent.
     ///
     /// # Examples
     ///
@@ -253,35 +257,55 @@ where
     /// use std::sync::Arc;
     /// use std::sync::atomic::AtomicUsize;
     /// use std::sync::atomic::Ordering;
-    /// use std::time::Duration;
     ///
     /// use asyncband::singleflight::Group;
+    /// use tokio::sync::oneshot;
     ///
-    /// # #[tokio::main]
+    /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() {
-    /// let group = Group::new();
-    /// let counter = Arc::new(AtomicUsize::new(0));
+    /// let group = Arc::new(Group::new());
+    /// let runs = Arc::new(AtomicUsize::new(0));
+    /// let (started_tx, started_rx) = oneshot::channel();
+    /// let (release_tx, release_rx) = oneshot::channel();
     ///
-    /// let c1 = counter.clone();
-    /// let fut1 = group.work("key", || async move {
-    ///     c1.fetch_add(1, Ordering::SeqCst);
-    ///     // simulate heavy work to avoid immediate completion
-    ///     tokio::time::sleep(Duration::from_millis(100)).await;
-    ///     "result"
-    /// });
+    /// let leader = {
+    ///     let group = group.clone();
+    ///     let runs = runs.clone();
+    ///     tokio::spawn(async move {
+    ///         group
+    ///             .work("manifest", || async move {
+    ///                 runs.fetch_add(1, Ordering::SeqCst);
+    ///                 started_tx.send(()).unwrap();
+    ///                 release_rx.await.unwrap();
+    ///                 "v1"
+    ///             })
+    ///             .await
+    ///     })
+    /// };
     ///
-    /// let c2 = counter.clone();
-    /// let fut2 = group.work("key", || async move {
-    ///     c2.fetch_add(1, Ordering::SeqCst);
-    ///     // simulate heavy work to avoid immediate completion
-    ///     tokio::time::sleep(Duration::from_millis(100)).await;
-    ///     "result"
-    /// });
+    /// started_rx.await.unwrap();
     ///
-    /// let (r1, r2) = tokio::join!(fut1, fut2);
+    /// let follower = {
+    ///     let group = group.clone();
+    ///     let runs = runs.clone();
+    ///     tokio::spawn(async move {
+    ///         group
+    ///             .work("manifest", || async move {
+    ///                 runs.fetch_add(1, Ordering::SeqCst);
+    ///                 "unused"
+    ///             })
+    ///             .await
+    ///     })
+    /// };
     ///
-    /// assert_eq!(r1, r2);
-    /// assert_eq!(counter.load(Ordering::SeqCst), 1);
+    /// tokio::task::yield_now().await;
+    /// release_tx.send(()).unwrap();
+    ///
+    /// assert_eq!(leader.await.unwrap(), "v1");
+    /// assert_eq!(follower.await.unwrap(), "v1");
+    /// assert_eq!(runs.load(Ordering::SeqCst), 1);
+    ///
+    /// assert_eq!(group.work("manifest", || async { "v2" }).await, "v2");
     /// # }
     /// ```
     pub async fn work<F>(&self, key: K, func: F) -> V
@@ -303,55 +327,77 @@ where
         result
     }
 
-    /// Executes and returns the results of the given function, making sure that only one execution
-    /// is in-flight for a given key at a time.
+    /// Returns a clone of the shared computation's value for `key`.
     ///
-    /// If a duplicate comes in, the duplicate caller waits for the original to complete and
-    /// receives the same results.
+    /// Callers that join the same in-flight entry share its successful result. Once `func`
+    /// completes successfully, the entry is removed so later calls can start new work.
+    /// [`forget`](Self::forget) lets new calls start independently of an existing entry.
     ///
-    /// If the computation returns an error, it is returned to that caller. After an error,
-    /// cancellation, or panic, another caller may retry the computation.
+    /// # Errors
     ///
-    /// Once the function completes successfully, the key, if not [`forgotten`], is removed from
-    /// the group, allowing future calls with the same key to execute the function again.
+    /// Returns an error from this call's `func` only to this caller. Errors are not stored or
+    /// shared; another caller waiting on the entry may run its own `func`.
     ///
-    /// [`forgotten`]: Self::forget
+    /// # Cancellation
+    ///
+    /// Dropping a caller that is waiting for a result does not cancel the active computation.
+    /// Dropping the caller executing `func` drops that attempt; another caller on the entry may
+    /// run its own `func`. Effects already performed by the cancelled attempt are not rolled back.
+    ///
+    /// # Panics
+    ///
+    /// A panic in `func` propagates to its caller without publishing a value. Another caller may
+    /// retry the computation.
     ///
     /// # Deadlocks
     ///
-    /// The function must not recursively call `work` or `try_work` for the same current key because
-    /// it would wait for its own result. Work for other keys remains independent.
+    /// The computation must not await `work` or `try_work` for an equivalent key on
+    /// the same current entry, because it would wait for its own result. Other keys are
+    /// independent.
     ///
     /// # Examples
     ///
     /// ```
     /// use std::sync::Arc;
-    /// use std::sync::atomic::AtomicUsize;
-    /// use std::sync::atomic::Ordering;
-    /// use std::time::Duration;
     ///
     /// use asyncband::singleflight::Group;
+    /// use tokio::sync::oneshot;
     ///
-    /// # #[tokio::main]
+    /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() {
-    /// let group = Group::new();
+    /// let group = Arc::new(Group::new());
+    /// let (started_tx, started_rx) = oneshot::channel();
+    /// let (release_tx, release_rx) = oneshot::channel();
     ///
-    /// let fut1 = group.try_work("key", || async move {
-    ///     // simulate heavy work to avoid immediate completion
-    ///     tokio::time::sleep(Duration::from_millis(100)).await;
-    ///     Err::<_, &'static str>("fut1")
-    /// });
+    /// let leader = {
+    ///     let group = group.clone();
+    ///     tokio::spawn(async move {
+    ///         group
+    ///             .try_work("manifest", || async move {
+    ///                 started_tx.send(()).unwrap();
+    ///                 release_rx.await.unwrap();
+    ///                 Err::<&str, &str>("transient")
+    ///             })
+    ///             .await
+    ///     })
+    /// };
     ///
-    /// let fut2 = group.try_work("key", || async move {
-    ///     // simulate heavy work to avoid immediate completion
-    ///     tokio::time::sleep(Duration::from_millis(200)).await;
-    ///     Ok::<_, &'static str>("fut2")
-    /// });
+    /// started_rx.await.unwrap();
     ///
-    /// let (r1, r2) = tokio::join!(fut1, fut2);
+    /// let follower = {
+    ///     let group = group.clone();
+    ///     tokio::spawn(async move {
+    ///         group
+    ///             .try_work("manifest", || async { Ok::<&str, &str>("recovered") })
+    ///             .await
+    ///     })
+    /// };
     ///
-    /// assert_eq!(r1, Err("fut1"));
-    /// assert_eq!(r2, Ok("fut2"));
+    /// tokio::task::yield_now().await;
+    /// release_tx.send(()).unwrap();
+    ///
+    /// assert_eq!(leader.await.unwrap(), Err("transient"));
+    /// assert_eq!(follower.await.unwrap(), Ok("recovered"));
     /// # }
     /// ```
     pub async fn try_work<E, F>(&self, key: K, func: F) -> Result<V, E>
@@ -373,10 +419,11 @@ where
         Ok(result)
     }
 
-    /// Forgets about the given key.
+    /// Detaches any in-flight entry for `key` from the group.
     ///
-    /// Future calls to `work` for this key will call the function rather than waiting for an
-    /// earlier call to complete. Existing calls to `work` for this key are not affected.
+    /// Callers that already joined the detached entry continue waiting for its outcome, while later
+    /// calls to [`work`](Self::work) or [`try_work`](Self::try_work) for an equivalent key start a
+    /// separate entry immediately. Has no effect if `key` has no active entry.
     pub fn forget<Q>(&self, key: &Q)
     where
         K: Borrow<Q>,

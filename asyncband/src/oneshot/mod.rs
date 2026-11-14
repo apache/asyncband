@@ -21,16 +21,12 @@
 // Upstream source (oneshot v0.1.11, before its channel code was split into modules):
 // https://github.com/faern/oneshot/blob/25274e995ee0a702b3e9e1ac81e577f8c3ce0892/src/lib.rs
 
-//! A one-shot channel is used for sending a single message between asynchronous tasks. The
-//! [`channel`] function is used to create a [`Sender`] and [`Receiver`] pair that form the channel.
+//! Single-value channel linking one producer to one consumer across async or blocking boundaries.
 //!
-//! The sender is used by the producer to send the value. The receiver is used by the consumer
-//! to receive the value.
-//!
-//! The sender and receiver can be used by separate tasks.
-//!
-//! Since [`Sender::send`] is not async, it can be used anywhere. This includes sending between
-//! two runtimes, and using it from non-async code.
+//! Call [`channel`] to create a matched [`Sender`] and [`Receiver`] pair. Sending completes
+//! synchronously without awaiting, so values can be handed off from ordinary threads, drop
+//! destructors, or tasks running on a different executor while the receiving side awaits
+//! completion.
 //!
 //! # Examples
 //!
@@ -41,41 +37,40 @@
 //!
 //! let (tx, rx) = oneshot::channel();
 //!
-//! let sender = tokio::spawn(async move {
-//!     tx.send(3).unwrap();
+//! let producer = tokio::spawn(async move {
+//!     tx.send("pong").unwrap();
 //! });
 //!
-//! assert_eq!(rx.await, Ok(3));
-//! sender.await.unwrap();
+//! assert_eq!(rx.await, Ok("pong"));
+//! producer.await.unwrap();
 //! # }
 //! ```
 //!
-//! If the sender is dropped without sending, the receiver will fail with [`RecvError`]:
+//! Dropping the [`Sender`] without sending causes awaiting the [`Receiver`] to fail with
+//! [`RecvError::Disconnected`]:
 //!
 //! ```
 //! # #[tokio::main]
 //! # async fn main() {
 //! use asyncband::oneshot;
 //!
-//! let (tx, rx) = oneshot::channel::<u32>();
-//!
+//! let (tx, rx) = oneshot::channel::<i32>();
 //! drop(tx);
 //!
 //! assert_eq!(rx.await, Err(oneshot::RecvError::Disconnected));
 //! # }
 //! ```
 //!
-//! If the receiver is dropped before receiving, the sender will fail with [`SendError`]:
+//! Dropping the [`Receiver`] before a send lets the caller recover its payload from [`SendError`]:
 //!
 //! ```
 //! use asyncband::oneshot;
 //!
-//! let (tx, rx) = oneshot::channel::<u32>();
-//!
+//! let (tx, rx) = oneshot::channel::<i32>();
 //! drop(rx);
 //!
-//! let error = tx.send(42).unwrap_err();
-//! assert_eq!(error.into_inner(), 42);
+//! let error = tx.send(99).unwrap_err();
+//! assert_eq!(error.into_inner(), 99);
 //! ```
 //!
 //! # Cancellation
