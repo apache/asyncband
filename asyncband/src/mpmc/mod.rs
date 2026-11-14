@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A multi-producer, multi-consumer queue for sending values between asynchronous tasks.
+//! Multi-producer, multi-consumer channels that distribute each message to one receiver.
 //!
 //! Receivers compete for values: each value accepted by a sender is delivered to exactly one
 //! receiver while a receiver remains. Clone a receiver to distribute work across multiple

@@ -86,8 +86,7 @@
 //! [`sync.Pool`](https://pkg.go.dev/sync#Pool).
 //!
 //! To configure a factory for creating objects when the pool is empty, like `sync.Pool`'s `New`,
-//! you can create the unbounded pool via [`Pool::new`](unbounded::Pool::new) with an
-//! implementation of [`ManageObject`].
+//! pass a [`ManageObject`] implementation to [`Pool::new`](unbounded::Pool::new).
 //!
 //! ## Examples
 //!

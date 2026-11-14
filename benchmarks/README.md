@@ -46,12 +46,26 @@ The clock starts before constructing the fixture and stops after cleanup, includ
 
 MPSC task scenarios include both one and four producers, small and large buffers, and current-thread controls. Use the reported range to decide whether an apparent difference is reproducible. To compare *different* scenarios, set the same round count where their work units are equivalent; independently sized rows are not a throughput ranking.
 
+Wait group rows cover an already registered observer, an observer that polls after work finishes, and a worker that registers four nested workers while an observer is waiting. The drain row registers four observers before the last worker exits, as in graceful shutdown: Asyncband clones `Wait`, the single-waiter `waitgroup` crate wraps its future in `FutureExt::shared`, and Tokio uses a closed `TaskTracker` with one live token.
+
 ## Set and preserve a baseline
 
 1. Choose the scenario and a fixed reference revision. For the ecosystem workloads in this revision, the reference library is Asyncband at `c37b1a4`.
 2. Run only the reference, for example `cargo x bench --bench ecosystem -- mpsc/bounded/try-roundtrip --baseline-only --rounds 30000000 --repeat 5`. Pick a convenient fixed count that puts the reference median in the hundreds of milliseconds, typically near 300 ms. Check the range as well: retuning a noisy scenario does not eliminate its variability.
 3. Put that count in the scenario registration and run all implementations. Neither peers nor later revisions are calibrated independently. Compare the same scenario, work size, toolchain and machine; a change from 300 to 240 ms is a 20% reduction in elapsed time.
 4. If the work size, an input or a timing boundary changes, rerun both sides under the new definition. Treat it as a new baseline. There is no automatic calibration or elapsed-time performance assertion in CI.
+
+## Diagnose bounded MPSC payload movement
+
+The `tasks-4p1c-cap64-4w`, `tasks-4p1c-cap64-4w-inline1k`, and `tasks-4p1c-cap64-4w-boxed1k` scenarios use the same task fixture with different payload representations. Set all three to 26 rounds when investigating [inline payload throughput (#401)](https://github.com/apache/asyncband/issues/401); their registered default round counts differ. Boxed values include allocation and deallocation in the measurement, so that control is not a measurement of queue copying alone.
+
+```shell
+cargo x bench --bench ecosystem -- mpsc/bounded/tasks-4p1c-cap64-4w --rounds 26 --repeat 10 --raw
+cargo x bench --bench ecosystem -- mpsc/bounded/ready-roundtrip-inline1k --repeat 10 --raw
+cargo x bench --bench ecosystem -- mpsc/bounded/ready-roundtrip-boxed1k --repeat 10 --raw
+```
+
+The ready payload cases hand-poll immediately ready sends and receives with the existing reference-counted waker, check the received sequence, and include message construction and validation. They help distinguish payload movement from task scheduling; they do not isolate send time from receive time. Inspect the optimized send and receive code separately or collect stack samples to attribute any difference.
 
 ## Diagnose Asyncband primitives
 

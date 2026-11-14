@@ -36,7 +36,7 @@ use std::fmt;
 pub struct SendError<T>(T);
 
 impl<T> SendError<T> {
-    /// Gets a reference to the unsent message, or `()` for a failed reservation.
+    /// Returns a reference to the unsent message, or `()` for a failed reservation.
     pub fn as_inner(&self) -> &T {
         &self.0
     }
@@ -81,7 +81,7 @@ pub enum TrySendError<T> {
 }
 
 impl<T> TrySendError<T> {
-    /// Gets a reference to the unsent message, or `()` for a failed reservation.
+    /// Returns a reference to the unsent message, or `()` for a failed reservation.
     pub fn as_inner(&self) -> &T {
         match self {
             TrySendError::Full(msg) | TrySendError::Disconnected(msg) => msg,

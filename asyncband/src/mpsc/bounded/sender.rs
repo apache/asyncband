@@ -74,11 +74,13 @@ impl<T> BoundedSender<T> {
         Self { shared }
     }
 
-    /// Sends a message, waiting until the channel has capacity when necessary.
+    /// Sends a value, waiting for capacity when the queue is full.
     ///
-    /// If the receiver has been dropped, the returned error contains `value`.
+    /// # Errors
     ///
-    /// # Cancel safety
+    /// Returns [`SendError`] containing the unsent value if the receiver has been dropped.
+    ///
+    /// # Cancellation
     ///
     /// Dropping a pending `send` future loses its place waiting for capacity and drops `value`;
     /// a future that has returned `Pending` has not sent the message. Use
@@ -97,17 +99,18 @@ impl<T> BoundedSender<T> {
         }
     }
 
-    /// Reserves capacity for one message before constructing it.
+    /// Reserves capacity for one message before the caller supplies its value.
     ///
-    /// A successful reservation returns a [`Permit`]. Dropping the permit releases capacity;
-    /// [`Permit::send`] publishes a value without waiting for space. Reservations do not establish
-    /// message order: other producers may send while a permit is held.
+    /// The returned [`Permit`] holds one capacity slot. Dropping it releases that slot;
+    /// [`Permit::send`] publishes a value without waiting for space. Holding a permit does not
+    /// establish message order or keep a receiver alive.
     ///
-    /// Returns `SendError(())` if the receiver has been dropped. A permit obtained earlier does
-    /// not keep the receiver alive; sending with it can still return the unsent value on
-    /// disconnect.
+    /// # Errors
     ///
-    /// # Cancel safety
+    /// Returns `SendError(())` if the receiver has been dropped. A successful reservation
+    /// can still fail to send if disconnection happens before [`Permit::send`].
+    ///
+    /// # Cancellation
     ///
     /// Dropping a pending `reserve` future loses its place in the wait queue. If capacity has
     /// already been granted, it is released to the next waiter or made available to a new sender.
@@ -139,8 +142,14 @@ impl<T> BoundedSender<T> {
 
     /// Reserves capacity for one message without waiting.
     ///
-    /// Returns [`TrySendError::Full`] if queued messages and outstanding permits occupy the
-    /// buffer, or [`TrySendError::Disconnected`] if the receiver has been dropped.
+    /// Dropping the returned [`Permit`] releases its capacity. See [`reserve`](Self::reserve)
+    /// for reservation and message ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] if capacity is unavailable, or
+    /// [`TrySendError::Disconnected`] if the receiver has been dropped. Errors carry `()`
+    /// because no message has been supplied.
     pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
         self.shared.lock().acquire()?;
         Ok(Permit {
@@ -148,10 +157,13 @@ impl<T> BoundedSender<T> {
         })
     }
 
-    /// Attempts to send a message without waiting for capacity.
+    /// Sends a value without waiting for capacity.
     ///
-    /// A full buffer returns [`TrySendError::Full`], while a dropped receiver returns
-    /// [`TrySendError::Disconnected`]. Both errors return ownership of the unsent value.
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] if capacity is unavailable, or
+    /// [`TrySendError::Disconnected`] if the receiver has been dropped. Both errors contain the
+    /// unsent value; nothing is enqueued on error.
     ///
     /// # Examples
     ///
@@ -224,9 +236,13 @@ impl<T> fmt::Debug for Permit<'_, T> {
 }
 
 impl<T> Permit<'_, T> {
-    /// Publishes a message using this permit, without waiting for capacity.
+    /// Publishes a value using this reserved capacity without waiting for space.
     ///
-    /// If the receiver has been dropped, the returned error contains the unsent value.
+    /// This consumes the permit, including when sending fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError`] containing the unsent value if the receiver has been dropped.
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
         let mut state = self.shared.lock();
         if !state.receiver {

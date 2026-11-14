@@ -157,6 +157,10 @@ This crate is built against the latest stable release, and its minimum supported
 
 The policy is that the minimum Rust version required to use this crate can be increased in minor version updates. For example, if Asyncband 1.0 requires Rust 1.20.0, then Asyncband 1.0.z for all values of z will also require Rust 1.20.0 or newer. However, Asyncband 1.y for y > 0 may require a newer minimum version of Rust.
 
+## Security
+
+Report suspected vulnerabilities privately to [security@apache.org](mailto:security@apache.org), with "Asyncband" in the subject. Follow the [ASF vulnerability reporting process](https://security.apache.org/report/).
+
 ## License and Trademarks
 
 This project is licensed under [Apache License, Version 2.0](LICENSE); the license file also records incorporated third-party works and their terms.

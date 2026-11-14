@@ -43,10 +43,14 @@ use crate::oneshot::Sender;
 use crate::oneshot::deallocate_empty_channel;
 use crate::oneshot::drop_message_and_deallocate_channel;
 
-/// Receives a value from the associated [`Sender`].
+/// The receiving half of a [`oneshot`](crate::oneshot) channel.
 ///
-/// Awaiting converts this receiver into a [`Recv`] future. Dropping either the receiver or its
-/// future disconnects the channel and discards any unread message.
+/// Awaiting converts this receiver into a [`Recv`] future linked to the paired [`Sender`].
+///
+/// # Cancellation
+///
+/// Dropping either the receiver or its future disconnects the channel and discards any unread
+/// message.
 ///
 /// To keep a pending operation alive when another branch wins, call [`Receiver::into_future`]
 /// before selecting and borrow the resulting future as `&mut Recv`. The receiver itself does not
@@ -73,6 +77,17 @@ impl<T> IntoFuture for Receiver<T> {
 
     type IntoFuture = Recv<T>;
 
+    /// Converts this receiver into a future that owns the receiving endpoint.
+    ///
+    /// # Errors
+    ///
+    /// The future reports [`RecvError::Disconnected`] if the sender drops without sending or
+    /// the message was already taken. See [`Recv`].
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping the returned future disconnects the channel and discards any unread message,
+    /// even before its first poll. Retain and borrow the future to keep waiting after selection.
     fn into_future(self) -> Self::IntoFuture {
         // `Recv` takes over receiver-side cleanup, so `Receiver::drop` must not run afterward.
         let receiver = ManuallyDrop::new(self);
@@ -82,29 +97,25 @@ impl<T> IntoFuture for Receiver<T> {
 }
 
 impl<T> Receiver<T> {
-    /// Returns `true` if the channel is disconnected.
+    /// Reports whether the channel can never yield a message because the paired [`Sender`] was
+    /// dropped without sending, or because the message was already extracted.
     ///
-    /// This occurs when the associated [`Sender`] is dropped without sending a message, or after
-    /// the message is received.
-    ///
-    /// If `true` is returned, any subsequent attempt to receive the message will return an error.
+    /// Once this returns `true`, subsequent attempts to receive fail.
     pub fn is_disconnected(&self) -> bool {
         // SAFETY: The existence of `self` guarantees that the receiver is still alive. If the
         // sender was dropped, it observed the live receiver and left allocation cleanup to it, so
         // `channel_ptr` remains valid.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
-        // ORDERING: Relaxed is sufficient to enforce the method's contract.
-        //
-        // Once true has been observed, it will remain true. However, if false is observed, the
-        // sender might just have been dropped without this thread observing it yet.
+        // ORDERING: `DISCONNECTED` is terminal, so a `Relaxed` load suffices to report a permanent
+        // state; observing `false` makes no synchronization claim against a concurrent drop.
         matches!(channel.state.load(Ordering::Relaxed), DISCONNECTED)
     }
 
-    /// Returns true if there is a message in the channel, ready to be received.
+    /// Reports whether a sent message is buffered and ready to be taken.
     ///
-    /// If `true` is returned, the next attempt to receive the message is guaranteed to complete
-    /// immediately.
+    /// Once this returns `true`, the next receive operation on this handle completes without
+    /// waiting.
     pub fn has_message(&self) -> bool {
         // SAFETY: The existence of `self` guarantees that the receiver is still alive. If the
         // sender was dropped, it observed the live receiver and left allocation cleanup to it, so
@@ -117,37 +128,32 @@ impl<T> Receiver<T> {
         matches!(channel.state.load(Ordering::Relaxed), MESSAGE)
     }
 
-    /// Checks if there is a message in the channel without blocking. Returns:
+    /// Takes the message if it is available, without waiting.
     ///
-    /// * `Ok(message)` if there was a message in the channel.
-    /// * `Err(TryRecvError::Empty)` if the [`Sender`] is alive, but has not yet sent a message.
-    /// * `Err(TryRecvError::Disconnected)` if the [`Sender`] was dropped before sending anything or
-    ///   if the message has already been extracted by a previous `try_recv` call.
+    /// A successful receive consumes the only message. Later receives report disconnection.
     ///
-    /// If a message is returned, the channel is disconnected and any subsequent attempt to receive
-    /// a message will return an error: [`TryRecvError::Disconnected`] for `try_recv`, or
-    /// [`RecvError::Disconnected`] when awaiting the receiver.
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Empty`] if the sender is alive but has not sent a message.
+    /// Returns [`TryRecvError::Disconnected`] if the sender dropped without sending or the
+    /// message was already taken.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        // SAFETY: The channel will not be freed while this method is still running.
+        // SAFETY: The channel remains allocated until this receiver drops or converts into `Recv`.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
-        // ORDERING: Relaxed is fine since the only branch that needs synchronization is MESSAGE,
-        // and that branch has its own synchronization.
+        // ORDERING: Only the `MESSAGE` branch accesses sender-written storage; it performs the
+        // conditional `Acquire` synchronization below.
         match channel.state.load(Ordering::Relaxed) {
             MESSAGE => {
-                // It is okay to break up the load and store since once we are in the MESSAGE state,
-                // the sender no longer modifies the state
-                //
-                // ORDERING: The sender has completed, so this receiver-only terminal update does
-                // not publish data to another thread.
+                // `MESSAGE` is terminal for the sender, so marking disconnection needs no RMW and
+                // publishes no data to another thread.
                 channel.state.store(DISCONNECTED, Ordering::Relaxed);
 
-                // ORDERING: The preceding Relaxed load read MESSAGE from the sender's Release
-                // publication. This conditional Acquire makes the message visible before it is
-                // taken.
+                // ORDERING: Pairs with the sender's `Release` publication of `MESSAGE` before
+                // reading the initialized payload.
                 fence(Ordering::Acquire);
 
-                // SAFETY: we are in the MESSAGE state so the message is present and synchronized.
+                // SAFETY: `MESSAGE` is uniquely owned by this receiver after synchronization.
                 Ok(unsafe { channel.take_message() })
             }
             EMPTY => Err(TryRecvError::Empty),
@@ -167,45 +173,45 @@ impl<T> Drop for Receiver<T> {
         // this side.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
-        // Set the channel state to disconnected and read what state the channel was in.
-        //
-        // ORDERING: This is a bidirectional ownership handoff. Release publishes the receiver's
-        // last access when the sender must reclaim the allocation; Acquire receives a
-        // sender-published message or disconnected state before receiver-side cleanup.
+        // ORDERING: Bidirectional ownership handoff: `Release` publishes the receiver's final
+        // access when the sender must reclaim the channel, while `Acquire` synchronizes
+        // with a sender-published message or disconnection before receiver-side cleanup.
         match channel.state.swap(DISCONNECTED, Ordering::AcqRel) {
-            // The sender has not sent anything, nor is it dropped. The sender is responsible for
-            // deallocating the channel.
+            // Sender is still alive; sender-side `send` or `drop` reclaims the empty channel.
             EMPTY => {}
-            // The sender already sent something. We must drop it, and free the channel.
+            // Sender already published a message; drop both the payload and the channel.
             MESSAGE => {
-                // SAFETY: The MESSAGE state plus acquire ordering guarantees the sender has
-                // written a message and that it has a happens-before relationship with this drop.
-                // In addition, the acquire ordering above synchronizes with the sender's final
-                // write of the state, so we can safely deallocate the channel.
+                // SAFETY: `MESSAGE` plus the swap's `Acquire` guarantees the initialized payload
+                // and sender completion are synchronized before reclamation.
                 unsafe { drop_message_and_deallocate_channel(self.channel_ptr) };
             }
-            // The sender was already dropped. We are responsible for freeing the channel.
+            // Sender already dropped or this receiver already extracted the message; reclaim here.
             DISCONNECTED => {
-                // SAFETY: If the sender published DISCONNECTED, the swap's Acquire half makes its
-                // preceding accesses happen before reclamation. If this receiver previously wrote
-                // DISCONNECTED after taking the message, no cross-thread synchronization is needed.
+                // SAFETY: Any prior sender accesses happened before the `Acquire` half of the swap
+                // if the sender wrote `DISCONNECTED`.
                 unsafe { deallocate_empty_channel(self.channel_ptr) };
             }
-            // NOTE: the receiver, unless transformed into a future, will never see the RECEIVING or
-            // AWAKING states, so we can ignore them here.
+            // A plain `Receiver` never registers a waker, so waking states are unreachable here.
             state => unreachable!("unexpected channel state: {}", state),
         }
     }
 }
 
-/// A future that receives a value from the associated [`Sender`], or returns [`RecvError`] if the
-/// sender is dropped without sending.
+/// A future that receives the channel's only message.
 ///
-/// Created by [`Receiver::into_future`], this future owns the receiving endpoint. Dropping it
-/// disconnects the channel and discards any unread message.
+/// Created by [`Receiver::into_future`], this future owns the receiving endpoint. A completed
+/// future must not be polled again.
 ///
-/// Select on `&mut Recv` to keep the pending future alive when another branch wins. A completed
-/// `Recv` future must not be polled again.
+/// # Errors
+///
+/// Resolves to [`RecvError::Disconnected`] if the sender drops without sending or the
+/// message was already taken before conversion.
+///
+/// # Cancellation
+///
+/// Dropping this future disconnects the channel and discards any unread message, even if the
+/// future was never polled. To keep the operation alive when another branch wins a selection,
+/// retain the same future and select on `&mut Recv`.
 pub struct Recv<T> {
     channel_ptr: NonNull<Channel<T>>,
 }
@@ -417,11 +423,11 @@ impl fmt::Display for TryRecvError {
 
 impl Error for TryRecvError {}
 
-/// An error returned when awaiting the message via [`Receiver`].
+/// Error returned when awaiting a [`Receiver`] or [`Recv`] future that can no longer yield a
+/// message.
 ///
-/// This error indicates that the corresponding [`Sender`] was dropped before sending any message.
-/// Note that if a message was already received (e.g., via [`Receiver::try_recv`]), subsequent
-/// `try_recv` calls will return [`TryRecvError::Disconnected`] instead.
+/// Reported when the paired [`Sender`] was dropped without sending, or when the single message
+/// was already extracted via [`Receiver::try_recv`] before awaiting.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RecvError {
     /// No message can become available because the sender was dropped without sending or the

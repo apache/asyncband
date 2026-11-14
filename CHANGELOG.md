@@ -19,33 +19,42 @@ under the License.
 
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All significant changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Performance improvements
+
+* Speed up `WaitGroup` handle cloning, worker completion, and waiting across single- and multi-observer workloads, while avoiding extra heap allocations when at most one observer waits before completion.
+* Speed up unlocking an uncontended `Mutex` by avoiding its internal wait-queue lock.
+
+## v0.8.0
+
 ### Breaking changes
 
-* Return shared messages from `broadcast::mpmc` receivers: `recv` and `try_recv` now yield `Arc<T>`, and `bounded` and `unbounded` no longer require `T: Clone`. Shared receives also share the payload's interior mutable state. To preserve the previous owning-receive behavior, use the new `recv_cloned` and `try_recv_cloned`, which follow `T`'s `Clone` semantics and still move the payload out instead of cloning it when nothing else still refers to the message. Callers that sent `Arc<T>` only to avoid cloning can send `T` directly. A retained `Arc<T>` keeps its payload alive after the message leaves the backlog, so a bounded channel's capacity limits retained messages rather than memory.
-* Remove `MappedRwLockWriteGuard::downgrade` and `OwnedMappedRwLockWriteGuard::downgrade`, which could cause undefined behavior when the mapped component is reachable by other readers through interior mutability. To keep shared access to a component, downgrade the original write guard first and then map it with `RwLockReadGuard::map` or `OwnedRwLockReadGuard::map`.
+* `broadcast::mpmc::BoundedReceiver::{recv, try_recv}` and `UnboundedReceiver::{recv, try_recv}` now return `Arc<T>` instead of `T`, and `broadcast::mpmc::{bounded, unbounded}` no longer require `T: Clone`. Shared receives expose any interior mutability in `T` across receivers, and retaining an `Arc<T>` keeps its payload alive after it leaves the channel backlog, so bounded capacity limits queued messages rather than live payload memory. Use the new `recv_cloned` and `try_recv_cloned` methods to preserve owning `Clone` semantics (moving the payload without cloning when the receiver holds the last reference), or send `T` directly where `Arc<T>` was previously used only to avoid cloning.
+* `MappedRwLockWriteGuard::downgrade` and `OwnedMappedRwLockWriteGuard::downgrade` are removed because downgrading a projected write guard could cause undefined behavior when concurrent readers can reach the projected component through interior mutability. Downgrade `RwLockWriteGuard` or `OwnedRwLockWriteGuard` first, then project the resulting read guard with `RwLockReadGuard::map` or `OwnedRwLockReadGuard::map`.
 
 ### New features
 
-* Add `rwlock::UpgradableRwLock` with a single upgradable reader, atomic upgrade and downgrade, and cancellation that releases a pending upgrade's guard; writers and upgradable readers share a FIFO reservation while ordinary readers use the data-permit queue.
-* Add `is_disconnected` to the `mpsc` and `mpmc` senders and receivers, alongside the existing `oneshot` and `watch` methods, so callers can check whether the other side is gone without sending or receiving. A receiver reports disconnection as soon as the last sender is gone, even while queued messages remain receivable.
-* Add `is_empty` to the `mpsc` and `mpmc` receivers to check for queued values without receiving; held permits and sends still waiting for capacity do not count as queued values.
+* Add `rwlock::UpgradableRwLock` and `rwlock::RwLockUpgradableReadGuard` to allow multiple ordinary readers alongside one upgradable reader that can atomically `upgrade`, `try_upgrade`, or `downgrade` to `RwLockReadGuard`. Cancelling a pending `upgrade` releases the consumed guard, and writers coordinate in FIFO order with upgradable readers so queued writers cannot deadlock an upgrade while ordinary readers may still acquire ahead of waiting writers.
+* Add `is_disconnected` to `mpsc` and `mpmc` senders and receivers to check whether the peer endpoint has been dropped without sending or receiving; receivers report disconnection as soon as the last sender drops, even while buffered values remain available.
+* Add `is_empty` to `mpsc` and `mpmc` receivers to check whether buffered values are queued without receiving; held reservation permits and sends waiting for capacity do not count as queued values.
+
+### Performance improvements
+
+* Speed up `mpsc::BoundedReceiver` receives on ready values by avoiding intermediate payload copies, particularly for larger inline message types; contended receive latency is roughly unchanged.
+* Speed up `broadcast::mpmc` receives by avoiding an extra `Arc` clone when the slowest active receiver consumes the oldest retained message and skipping sender-wakeup checks on bounded receives that do not free capacity.
+* Speed up uncontended fresh `OnceCell` initialization while keeping already-initialized reads and contended multi-waiter initialization unchanged.
+* Speed up re-polling a pending `oneshot::Receiver` from the same task, such as across repeated `select!` iterations, by avoiding redundant waker clones while keeping first-poll and send-wakeup latency unchanged.
+* Shrink the futures returned by `Mutex`, `RwLock`, `UpgradableRwLock`, `Condvar`, `Semaphore`, `Once`, `OnceCell`, and `broadcast::mpmc::BoundedSender::send`, speeding up uncontended lock reuse, upgradable lock operations, queued semaphore bursts, and single-waiter condition notifications.
+* Speed up `Barrier::wait` for non-final arrivals and cancelled pending waits.
 
 ### Bug fixes
 
-* Prevent `OnceMap` from keeping an empty entry when a computation fails, panics, or is cancelled while a concurrent `get` looks up the same key.
-* Prevent `OnceMap` and `singleflight::Group` from leaking entries or values when a duplicate key's destructor panics, including when the original computation is cancelled during that destructor.
-* Fix `Barrier` on 32-bit targets after 2^32 completed generations, where debug builds panicked and stopped releasing waiters, and release builds could panic or make a waiter miss its wakeup.
-
-### Improvements
-
-* Reduce the cost of initializing an uncontended `OnceCell` by avoiding its internal wait-queue lock.
-* Reduce the cost of polling a pending oneshot receive again from the same task, which now keeps its registered waker instead of cloning and dropping it.
-* Reduce the state kept by futures waiting for a `Mutex`, `RwLock`, `Semaphore`, `Once`, `OnceCell`, or bounded broadcast capacity, making lock, permit acquisition, and bounded broadcast send futures smaller.
-* Reduce the cost of `Barrier::wait` for participants that are not the last to arrive, which now record their arrival and register for wakeup under one lock acquisition instead of two.
+* `OnceMap::get` no longer retains an empty entry when an in-flight computation fails, panics, or is cancelled while a concurrent `get` inspects the same key.
+* `OnceMap` and `singleflight::Group` now reclaim in-flight entries and cached value clones when dropping a duplicate key panics, including if the active computation is cancelled during unwinding.
+* `Barrier::wait` on 32-bit targets no longer panics on overflow in debug builds or risks panics and missed follower wakeups in release builds after `2^32` completed generations.
 
 ## v0.7.4 (2026-10-25)
 
@@ -55,52 +64,55 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
-* Add bounded MPMC `reserve` and `try_reserve` methods returning a borrowed `Permit`, so callers can wait for capacity before constructing a value; sends and reservations receive capacity in wait-queue order, and unused permits release it.
+* Add `mpmc::BoundedSender::{reserve, try_reserve}` returning a borrowed `mpmc::Permit` so callers can wait for capacity before constructing a value. Pending sends and reservations receive capacity in wait-queue order, and dropping an unused permit releases its slot without claiming message order.
+
+### Performance improvements
+
+* Speed up `FutureExt::block_on` throughput and reduce context switches when multiple threads repeatedly block on a contended primitive such as `mpmc::bounded`; isolated cross-thread wakeups cost slightly more, and ready or timed waits are unchanged.
+* Speed up `ManualResetEvent::is_set`, `ManualResetEvent::try_wait`, and already-set `ManualResetEvent::{wait, wait_owned}` calls, particularly under concurrent reads; replacing a pending waiter's waker costs slightly more.
+* Speed up `Semaphore::release`, `RwLock` read-guard drops, and `pool::bounded` object returns when spare permits or capacity remain available; `Mutex` releases are unchanged.
 
 ### Bug fixes
 
-* Prevent deadlocks in `singleflight::Group::work` and `try_work` when a duplicate key's destructor calls back into the same group.
-* Fix undefined behavior when sending or dropping a oneshot sender races with receiver completion or cancellation.
-
-### Improvements
-
-* Improve `FutureExt::block_on` throughput and reduce context switches when many threads repeatedly block on the same primitive, such as a contended MPMC channel; an isolated cross-thread wake-up costs slightly more.
-* Reduce `ManualResetEvent` state-query and already-set wait overhead, especially with concurrent readers.
-* Add a lock-free fast path for releasing `Semaphore` permits while permits remain available, which speeds up dropping `RwLock` read guards, releasing multi-permit `Semaphore` permits, and returning objects to a bounded pool that is not at capacity. `Mutex` releases are unchanged.
+* `singleflight::Group::{work, try_work}` no longer deadlock when dropping a duplicate key calls back into the same group.
+* Fix undefined behavior in `oneshot` when sending on or dropping `Sender` races with `Receiver` completion or cancellation.
 
 ## v0.7.3 (2026-09-29)
 
 ### New features
 
-* Add `event::AutoResetEvent`, a reusable signal that releases one waiter, retains at most one unassigned signal that can be cleared with `reset`, and transfers assigned signals when waits are cancelled.
+* Add `event::AutoResetEvent` for releasing a single waiter per signal while retaining at most one unassigned signal that `reset` can clear and transferring assigned signals when waits are cancelled.
 * Add `ManualResetEvent::try_wait` to check readiness without registering a waiter or consuming the set state.
-* Implement `broadcast::mpmc::bounded`, a lossless bounded broadcast channel that retains at most the requested capacity and makes producers wait for the slowest active receiver.
-* Add opt-in bounded and unbounded `asyncband::spmc` queues with one non-cloneable sender requiring exclusive access, cloneable competing receivers, and cancellation-safe receive notification handoff.
-* Add opt-in bounded and unbounded `asyncband::mpmc` queues with cloneable producers and competing consumers, delivering each accepted value to exactly one receiver while a receiver remains.
-* Add an opt-in runtime-agnostic `Phaser` with shared observer handles, dynamic RAII participants registered individually or in batches through an owning iterator, `u64` phase numbers, split arrival/wait with cancellation-resilient retries, and a `close` operation that releases unfinished waits with `Closed`.
-* Add bounded MPSC `reserve` and `try_reserve` methods returning a `Permit`, allowing callers to wait for capacity before constructing a message; pending sends and reservations receive capacity in wait-queue order, and unused permits release capacity without claiming message order.
-
-### Bug fixes
-
-* Complete semaphore permit releases and notify all eligible waiters even if a wake callback panics.
-* Release MPSC receiver wakers when the receiver is dropped, avoiding retained tasks and ownership cycles when a waker holds a sender.
-* Notify all blocked bounded MPSC senders on receiver disconnection even when a buffered message destructor panics.
+* Add `broadcast::mpmc::bounded` alongside `BoundedSender` and `BoundedReceiver` for lossless bounded fan-out that retains at most the configured message count and applies backpressure from the slowest active receiver.
+* Add `mpmc::{bounded, unbounded}` behind the `mpmc` feature, with cloneable `BoundedSender` and `UnboundedSender` handles and competing `BoundedReceiver` and `UnboundedReceiver` handles that deliver each accepted value to one receiver.
+* Add `spmc::{bounded, unbounded}` behind the `spmc` feature, with an exclusive non-cloneable sender and cloneable competing receivers.
+* Add `phaser::{Phaser, PhaserParticipant, PhaserParticipants, Closed}` behind the `phaser` feature for reusable phase synchronization with dynamic RAII participant registration, `u64` phase observations, split `arrive` and `wait` operations, observer handles, and explicit `close` signaling.
+* Add `mpsc::BoundedSender::{reserve, try_reserve}` returning a borrowed `mpsc::Permit` so callers can wait for capacity before constructing a message. Pending sends and reservations receive capacity in wait-queue order, and dropping an unused permit releases its slot without claiming message order.
 
 ### Improvements
 
-* Allow `Condvar` waits with unsized mutex contents, including slices and trait objects, for both borrowed and owned guards.
-* Allow manual unbounded pools to use non-`Send` factory closures with `get_or_create`, including factories that borrow task-local state.
-* Allow `watch::channel` to store non-`Clone` values for publication and change notification; only owning reads through `Receiver::get` and `Receiver::recv` require `Clone`.
-* Finish releasing buffered bounded MPSC messages even if one message destructor panics.
-* Improve unbounded MPSC throughput with batched receiving and incremental storage reclamation; empty-buffer retention is bounded independently of previous peak occupancy.
-* Make completed and abandoned `Completion` waits lock-free while preserving cancellable pending registration.
-* Reduce allocations when notifying waiters in Barrier, broadcast, condvar, event, MPSC, and watch.
+* Allow `Condvar` wait methods to accept `Mutex` guards over unsized values such as slices and trait objects, for both borrowed and owned guards.
+* Allow manual `pool::unbounded` checkouts via `get_or_create` to use non-`Send` factory closures, including factories that borrow task-local state.
+* Remove the `T: Clone` bound from `watch::channel` construction, publication, and change observation; only owning reads via `watch::Receiver::{get, recv}` require `Clone`.
+
+### Performance improvements
+
+* Speed up `Completion::wait` once a value has been published or the completer has been dropped, while keeping pending wait registration and cancellation roughly unchanged.
+* Speed up `mpsc::unbounded` burst and multi-producer workloads while bounding retained empty buffer capacity independently of peak burst size, and speed up `mpsc::bounded` ready and multi-producer sends and receives.
+* Speed up `broadcast::mpmc` message reclamation when subscriptions lag behind or are dropped, scaling cleanup with released messages rather than peak subscriber count.
+* Avoid heap allocations when waking up to 32 tasks at once across `Barrier`, `broadcast`, `Condvar`, `event`, `mpsc`, and `watch` notifications.
+
+### Bug fixes
+
+* `Semaphore::release` and permit drops now finish releasing permits and waking remaining eligible waiters even if a waker callback panics.
+* Dropping `mpsc::BoundedReceiver` or `UnboundedReceiver` now releases any stored receiver waker immediately, avoiding retained tasks and reference cycles when a waker holds a sender.
+* Dropping `mpsc::BoundedReceiver` when a buffered message's destructor panics now finishes dropping the remaining buffered messages and wakes all blocked senders with disconnection errors.
 
 ## v0.7.2 (2026-09-11)
 
 ### Improvements
 
-* Preserve applicable third-party licensing and copyright notices on derived source files, and record exact provenance mappings in `LICENSE` and source comments.
+* Preserve third-party copyright and license notices on derived source files, and document provenance mappings in `LICENSE` and source comments.
 
 ## v0.7.1 (2026-09-04)
 
@@ -108,7 +120,7 @@ This is an interim non-ASF release. It has not been approved by the Apache Incub
 
 ### Bug fixes
 
-* Correct source-header treatment and make third-party derivation and test provenance records more precise in source distributions.
+* Correct source license headers and make third-party derivation and test provenance records more precise in source distributions.
 
 ## v0.7.0 (2026-09-04)
 
@@ -116,41 +128,41 @@ This non-ASF release was not approved by the Apache Incubator PMC, is not an act
 
 ### Breaking changes
 
-* Gate all exported primitives behind opt-in Cargo features and enable no features by default; downstream dependencies must explicitly enable the APIs they use.
-* Raise the minimum supported Rust version from 1.85.0 to 1.86.0.
-* Remove the `admission` module, including `FairShare`, `FairSharePermit`, and `OwnedFairSharePermit`.
-* Remove the `asyncband::atomicbox` module and its `AtomicBox` and `AtomicOptionBox` types from the public API.
-* Remove the lossy `broadcast::overflow` channel; use the new lossless `broadcast::mpmc::unbounded` channel instead.
-* Remove `OnceMap::with_capacity` and `OnceMap::with_capacity_and_hasher`; use `OnceMap::new` or `OnceMap::with_hasher`, which allocate the backing table lazily.
-* Remove the unconstructible `LatchWait` and `OwnedLatchWait` types from the public API; `Latch::wait` and `Latch::wait_owned` continue to return anonymous futures through their `async fn` signatures.
+* Gate all public modules behind opt-in Cargo features with `default = []` (`barrier`, `blocking`, `broadcast`, `completion`, `condvar`, `event`, `latch`, `lazy-cell`, `mpsc`, `mutex`, `once`, `once-cell`, `once-map`, `oneshot`, `pool`, `rwlock`, `semaphore`, `shutdown`, `singleflight`, `waitgroup`, and `watch`). Downstream crates must explicitly enable the features for the APIs they use.
+* Raise the minimum supported Rust version (MSRV) from 1.85.0 to 1.86.0.
+* Remove the `admission` module (`FairShare`, `FairSharePermit`, and `OwnedFairSharePermit`) and the `atomicbox` module (`AtomicBox` and `AtomicOptionBox`) from the public API.
+* Remove the lossy `broadcast::overflow` channel; use `broadcast::mpmc::unbounded` instead.
+* Remove `OnceMap::with_capacity` and `OnceMap::with_capacity_and_hasher`; use `OnceMap::new` or `OnceMap::with_hasher`, which allocate backing storage lazily.
+* Remove the unconstructible `LatchWait` and `OwnedLatchWait` types from the public API; `Latch::wait` and `Latch::wait_owned` continue to return anonymous futures via `async fn`.
 * Rename `oneshot::Sender::is_closed` and `oneshot::Receiver::is_closed` to `is_disconnected`.
-* Remove `Semaphore::try_acquire_and_forget`, `Semaphore::acquire_and_forget`, `Semaphore::try_acquire_owned_and_forget`, and `Semaphore::acquire_owned_and_forget`; acquire a permit and call its `forget` method instead.
-* Replace `Semaphore::forget` with `Semaphore::drain_permits` and `Semaphore::forget_exact` with `Semaphore::reduce_permits`; permit-level `forget` methods are unchanged.
-* Redesign graceful shutdown: rename `ShutdownSend` and `ShutdownRecv` to `Shutdown` and `ShutdownGuard`, and `shutdown::new_pair` to `shutdown::new`; replace `ShutdownSend::shutdown` with `Shutdown::request_shutdown` and `ShutdownSend::await_shutdown` with awaiting `Shutdown`; rename `is_shutdown_now`, `is_shutdown`, and `is_shutdown_owned` to `is_shutdown_requested`, `shutdown_requested`, and `shutdown_requested_owned`; and add `ShutdownGuard::into_watch`.
+* Remove `Semaphore::{try_acquire_and_forget, acquire_and_forget, try_acquire_owned_and_forget, acquire_owned_and_forget}`, and replace `Semaphore::forget` with `Semaphore::drain_permits` and `Semaphore::forget_exact` with `Semaphore::reduce_permits`. Acquire a permit and call its `forget` method for queued acquisition without automatic release; permit-level `forget` methods are unchanged.
+* Redesign `shutdown`: rename `shutdown::new_pair` to `shutdown::new`, `ShutdownSend` to `Shutdown`, and `ShutdownRecv` to `ShutdownGuard`; replace `ShutdownSend::shutdown` with `Shutdown::request_shutdown` and `ShutdownSend::await_shutdown` with awaiting `Shutdown`; rename `is_shutdown_now`, `is_shutdown`, and `is_shutdown_owned` to `is_shutdown_requested`, `shutdown_requested`, and `shutdown_requested_owned`; and add `ShutdownGuard::into_watch`.
 
 ### New features
 
-* Implement `broadcast::mpmc::unbounded`, an unbounded broadcast channel that retains messages until all active receivers consume them or are dropped.
-* Add an opt-in clone-based latest-state channel under `asyncband::watch`, including retained replacement updates through `Sender::send_replace`.
-* Add opt-in `asyncband::event::ManualResetEvent`, a reusable level-triggered signal that releases registered waits and remains ready for future waits until explicitly reset.
-* Add an opt-in shared one-shot completion primitive under `asyncband::completion` with a single-use completer, cloneable observers, a retained borrowed result, and observable abandonment.
-* Add opt-in `asyncband::once::LazyCell` for values that own one asynchronous initializer and preserve its in-flight future across caller cancellation.
-* Add opt-in bounded and unbounded runtime-agnostic object pools under `asyncband::pool`.
-* Add an opt-in `asyncband::blocking::FutureExt` bridge with `block_on` and `wait_timeout` methods for waiting on runtime-agnostic futures from synchronous code.
-
-### Bug fixes
-
-* Reject semaphore permit merges whose combined count exceeds `usize::MAX` instead of wrapping and losing permits.
-* Release cancelled wait registrations promptly and reclaim fulfilled `Semaphore::reduce_permits` debt nodes.
-* Preserve fan-out notifications, including semaphore permit grants, when one registered waker panics.
+* Add `broadcast::mpmc::unbounded` alongside `UnboundedSender` and `UnboundedReceiver` behind the `broadcast` feature for lossless broadcast channels that retain messages until all active receivers consume them or are dropped.
+* Add `watch::{channel, Sender, Receiver, SendError, RecvError}` behind the `watch` feature for publishing latest state across independent receivers that coalesce intermediate updates, including in-place replacement via `Sender::send_replace`.
+* Add `event::ManualResetEvent` behind the `event` feature for reusable level-triggered signaling that releases current and future waiters until explicitly reset.
+* Add `completion::{new, Completer, Completion, Abandoned}` behind the `completion` feature for publishing a single shared result to cloneable observers with borrowed result access and observable producer abandonment.
+* Add `once::LazyCell` behind the `lazy-cell` feature for asynchronous lazy initialization that preserves an in-flight future across caller cancellation and supports retryable fallible initialization via `try_force` and `try_force_with`.
+* Add `pool::{bounded, unbounded}` alongside `ManageObject` and pool lifecycle policies behind the `pool` feature for runtime-agnostic asynchronous object pooling.
+* Add `blocking::FutureExt` behind the `blocking` feature with `block_on` and `wait_timeout` for driving runtime-agnostic futures from synchronous code.
 
 ### Improvements
 
-* Reduce fan-out notification overhead by avoiding heap allocation for a single waiter and transferring terminal waiter storage out of state locks.
-* Reduce MPSC receiver registration and wake latency by storing receiver wakers inline instead of allocating them on the heap.
-* Reduce semaphore and mutex hot-path overhead by avoiding wake-buffer allocation when no tasks are queued and batching queued wakes on the stack.
-* Allocate `OnceMap` and `singleflight::Group` registries lazily to reduce construction overhead.
-* Describe disconnected channel states consistently in channel error messages.
-* Avoid fixed CPU spinning before registering `WaitGroup`, `Latch`, and `Once` waiters.
-* Specialize `WaitGroup`'s one-shot completion state to reduce handle registration and multi-waiter notification overhead while preserving cancellable multi-observer waits.
-* Reduce waiter state and notification overhead across `Barrier`, broadcast, completion, `Latch`, `Once`, and watch by reusing each primitive's existing lifecycle state instead of maintaining duplicate waiter epochs.
+* Remove the `slab` dependency and make `hashbrown` optional (enabled only by `once-map` and `singleflight`), leaving all other features with no runtime dependencies.
+* Format disconnected channel error messages consistently across channel modules.
+
+### Performance improvements
+
+* Speed up uncontended `Mutex` and `Semaphore` acquire-release cycles and queued `Semaphore` permit handoffs by avoiding wake-buffer heap allocations when no tasks are queued or up to 32 waiters are woken.
+* Speed up pending `mpsc` receiver re-polls and wakeups by avoiding per-poll waker heap allocations.
+* Speed up pending wait cancellation and multi-waiter fan-out across `Latch`, `Once`, and `WaitGroup`, along with `WaitGroup` handle clone/drop and multi-worker completion.
+* Speed up single- and small-cohort fan-out notifications across `Completion`, `Condvar`, `ManualResetEvent`, `Barrier`, `Latch`, `Once`, and `watch` by avoiding single-waiter heap allocations.
+* Speed up `OnceMap` and `singleflight::Group` empty construction and same-key coalescing via lazy table allocation; multi-threaded lookups and leader starts across many distinct keys contend on a single table lock instead of fixed shards.
+
+### Bug fixes
+
+* `SemaphorePermit::merge` and `OwnedSemaphorePermit::merge` now panic without losing permits from either guard if the combined count would exceed `usize::MAX`, instead of wrapping.
+* Cancelled wait registrations now release their waiter slots immediately instead of retaining them until notification, and fulfilled `Semaphore::reduce_permits` (formerly `forget_exact`) obligations are reclaimed immediately.
+* Fan-out notifications, including `Semaphore` permit grants, now continue waking remaining waiters when an earlier waker callback panics.

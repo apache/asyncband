@@ -55,6 +55,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 
 [dev-dependencies]
 async-broadcast = { workspace = true }
+futures-util = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 waitgroup = { workspace = true }
 
 [lib]
