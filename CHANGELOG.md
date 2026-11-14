@@ -26,6 +26,7 @@ All significant changes to this project will be documented in this file.
 ### Performance improvements
 
 * Speed up `WaitGroup` handle cloning, worker completion, and waiting across single- and multi-observer workloads, while avoiding extra heap allocations when at most one observer waits before completion.
+* Speed up unlocking an uncontended `Mutex` by avoiding its internal wait-queue lock.
 
 ## v0.8.0
 
