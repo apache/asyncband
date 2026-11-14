@@ -33,17 +33,16 @@
 //! use asyncband::barrier::Barrier;
 //!
 //! let barrier = Arc::new(Barrier::new(3));
-//! let stage = Arc::new([const { AtomicUsize::new(0) }; 3]);
+//! let arrived = Arc::new(AtomicUsize::new(0));
 //! let mut workers = Vec::with_capacity(3);
 //!
-//! for slot in 0..3 {
+//! for _ in 0..3 {
 //!     let barrier = barrier.clone();
-//!     let stage = stage.clone();
+//!     let arrived = arrived.clone();
 //!     workers.push(tokio::spawn(async move {
-//!         stage[slot].store(slot + 1, Ordering::Release);
+//!         arrived.fetch_add(1, Ordering::Relaxed);
 //!         let result = barrier.wait().await;
-//!         let sum: usize = stage.iter().map(|v| v.load(Ordering::Acquire)).sum();
-//!         assert_eq!(sum, 6);
+//!         assert_eq!(arrived.load(Ordering::Relaxed), 3);
 //!         result.is_leader()
 //!     }));
 //! }

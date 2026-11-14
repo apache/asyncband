@@ -44,6 +44,8 @@ The clock starts before constructing the fixture and stops after cleanup, includ
 
 MPSC task scenarios include both one and four producers, small and large buffers, and current-thread controls. Use the reported range to decide whether an apparent difference is reproducible. To compare *different* scenarios, set the same round count where their work units are equivalent; independently sized rows are not a throughput ranking.
 
+Wait group rows cover an already registered observer, an observer that polls after work finishes, and a worker that registers four nested workers while an observer is waiting. The drain row registers four observers before the last worker exits, as in graceful shutdown: Asyncband clones `Wait`, the single-waiter `waitgroup` crate wraps its future in `FutureExt::shared`, and Tokio uses a closed `TaskTracker` with one live token.
+
 ## Set and preserve a baseline
 
 1. Choose the scenario and a fixed reference revision. For the ecosystem workloads in this revision, the reference library is Asyncband at `c37b1a4`.

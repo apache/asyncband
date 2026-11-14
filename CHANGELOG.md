@@ -23,6 +23,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Improvements
+
+* Reduce `WaitGroup` completion overhead by sharing allocation ownership across participants and storing the first pending observer's waker inline.
+
 ## v0.8.0
 
 ### Breaking changes
