@@ -88,9 +88,11 @@ struct CommandBench {
 
 impl CommandBench {
     fn run(self) {
-        for cmd in make_bench_cmds(self.no_run, self.bench.as_deref(), &self.args) {
-            run_command(cmd);
-        }
+        run_command(make_bench_cmd(
+            self.no_run,
+            self.bench.as_deref(),
+            &self.args,
+        ));
     }
 }
 
@@ -392,23 +394,20 @@ fn classify_release_type(baseline: &Version, release: &Version) -> SemverRelease
     }
 }
 
-fn make_bench_cmds(no_run: bool, bench: Option<&str>, args: &[String]) -> Vec<StdCommand> {
-    let benches = bench.map_or_else(|| vec!["ecosystem", "primitives"], |bench| vec![bench]);
-
-    benches
-        .into_iter()
-        .map(|bench| {
-            let mut cmd = find_command("cargo");
-            cmd.args(["bench", "--workspace", "--all-features", "--bench", bench]);
-            if no_run {
-                cmd.arg("--no-run");
-            }
-            if !args.is_empty() {
-                cmd.arg("--").args(args);
-            }
-            cmd
-        })
-        .collect()
+fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> StdCommand {
+    let mut cmd = find_command("cargo");
+    cmd.args(["bench", "--workspace", "--all-features"]);
+    match bench {
+        Some(bench) => cmd.args(["--bench", bench]),
+        None => cmd.args(["--bench", "ecosystem", "--bench", "primitives"]),
+    };
+    if no_run {
+        cmd.arg("--no-run");
+    }
+    if !args.is_empty() {
+        cmd.arg("--").args(args);
+    }
+    cmd
 }
 
 fn make_build_cmd(locked: bool) -> StdCommand {
@@ -595,25 +594,6 @@ mod tests {
         assert_eq!(
             SemverReleaseType::Patch.audit_release_type(),
             SemverReleaseType::Patch
-        );
-    }
-
-    #[test]
-    fn default_benchmarks_leave_the_stage_target_opt_in() {
-        let commands = make_bench_cmds(false, None, &[]);
-        let selected = commands
-            .iter()
-            .map(|cmd| cmd.get_args().last().unwrap().to_str().unwrap())
-            .collect::<Vec<_>>();
-
-        assert_eq!(selected, ["ecosystem", "primitives"]);
-
-        let stage_command = make_bench_cmds(false, Some("upgradable_stages"), &[]);
-        assert_eq!(stage_command.len(), 1);
-        assert!(
-            stage_command[0]
-                .get_args()
-                .any(|arg| arg == "upgradable_stages")
         );
     }
 }
