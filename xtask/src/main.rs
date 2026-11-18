@@ -129,37 +129,20 @@ struct CommandMiri;
 impl CommandMiri {
     fn run(self) {
         run_command(make_miri_cmd(PACKAGE_NAME, &["--lib", "--all-features"]));
-        run_command(make_miri_cmd(
-            "tests-integration",
-            &["--test", "oneshot_test"],
-        ));
-        run_command(make_miri_cmd(
-            "tests-integration",
-            &["--test", "unsafe_paths_test"],
-        ));
-        run_command(make_miri_cmd(
-            "tests-integration",
-            &["--test", "upgradable_rwlock_test"],
-        ));
-        run_command(make_miri_cmd("tests-integration", &["--test", "mpsc_test"]));
-        run_command(make_miri_cmd("tests-integration", &["--test", "mpmc_test"]));
-        run_command(make_miri_cmd("tests-integration", &["--test", "spmc_test"]));
-        run_command(make_miri_cmd(
-            "tests-integration",
-            &["--test", "waitgroup_test"],
-        ));
-        run_command(make_miri_cmd(
-            "tests-integration",
-            &["--test", "broadcast_test"],
-        ));
-        run_command(make_miri_cmd(
-            "tests-integration",
-            &["--test", "phaser_test"],
-        ));
-        run_command(make_miri_cmd(
-            "tests-integration",
-            &["--test", "semaphore_ordering_test"],
-        ));
+        for target in [
+            "oneshot_test",
+            "unsafe_paths_test",
+            "upgradable_rwlock_test",
+            "mpsc_test",
+            "mpmc_test",
+            "spmc_test",
+            "waitgroup_test",
+            "broadcast_test",
+            "phaser_test",
+            "semaphore_ordering_test",
+        ] {
+            run_command(make_miri_cmd("tests-integration", &["--test", target]));
+        }
     }
 }
 
