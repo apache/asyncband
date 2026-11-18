@@ -27,24 +27,41 @@ use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
 use benchmarks::implementations;
 
-fn task_batch<C, const WORKERS: usize>(bencher: Bencher, consumers: usize)
+fn task_batch<C, const WORKERS: usize, const CAPACITY: usize>(bencher: Bencher, consumers: usize)
 where
-    Bounded<C>: Channel,
+    Bounded<C, CAPACITY>: Channel,
 {
     let runtime = runtime(WORKERS);
     bencher.bench_local(|| {
-        let batch = TaskBatch::new::<Bounded<C>>(&runtime, consumers);
+        let batch = TaskBatch::new::<Bounded<C, CAPACITY>>(&runtime, consumers);
         runtime.block_on(batch.run())
     });
 }
 
-pub fn register(runner: &mut Runner) {
+fn compare_tasks<const CAPACITY: usize, const WORKERS: usize>(
+    runner: &mut Runner,
+    consumers: usize,
+    rounds: usize,
+) {
+    let executor = if WORKERS == 0 {
+        String::from("current")
+    } else {
+        format!("{WORKERS}w")
+    };
     runner.compare(
-        "spmc/bounded/tasks-1p4c-cap64-4w",
-        320,
+        &format!("spmc/bounded/tasks-1p{consumers}c-cap{CAPACITY}-{executor}"),
+        rounds,
         implementations!(
             [AsyncbandSpmc, AsyncbandMpmc, AsyncChannel, Flume],
-            |C, b| task_batch::<C, 4>(b, 4)
+            |C, b| task_batch::<C, WORKERS, CAPACITY>(b, consumers)
         ),
     );
+}
+
+pub fn register(runner: &mut Runner) {
+    compare_tasks::<64, 4>(runner, 4, 320);
+    compare_tasks::<64, 4>(runner, 1, 320);
+    compare_tasks::<1, 4>(runner, 4, 160);
+    compare_tasks::<1024, 4>(runner, 4, 320);
+    compare_tasks::<64, 0>(runner, 4, 320);
 }

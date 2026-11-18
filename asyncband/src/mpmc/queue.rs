@@ -16,7 +16,6 @@
 // under the License.
 
 use std::collections::VecDeque;
-use std::fmt;
 use std::future::poll_fn;
 use std::mem;
 use std::task::Context;
@@ -33,17 +32,18 @@ use crate::mpmc::SendError;
 use crate::mpmc::TryRecvError;
 use crate::mpmc::TrySendError;
 
+/// The lazy-storage queue used by unbounded channels and bounded fallback configurations.
 pub struct Shared<T> {
     state: Mutex<State<T>>,
 }
 
-/// Values, endpoint counts, and both waiter queues share one lock, so each transition and the
+/// Values, endpoint counts, and both wait queues share one lock, so each transition and the
 /// waiter it selects are decided together. Wake callbacks and waker or value destructors run
 /// outside the lock, because they may reenter the queue.
 struct State<T> {
     values: VecDeque<T>,
-    // None is an unbounded queue. In a bounded queue, each slot belongs to available,
-    // a queued value, a Permit, or a detached waiter with a grant.
+    // None means unbounded. Otherwise capacity belongs to available, a queued value, a permit,
+    // or a detached waiter that was granted capacity.
     available: Option<usize>,
     senders: usize,
     receivers: usize,
@@ -73,9 +73,7 @@ impl<T> State<T> {
         if self.receivers == 0 {
             return None;
         }
-        let Some(available) = &mut self.available else {
-            return None;
-        };
+        let available = self.available.as_mut()?;
         if let Some(waker) = self.send_waiters.grant_one() {
             return Some(waker);
         }
@@ -280,29 +278,11 @@ impl<T> Shared<T> {
     }
 }
 
-/// Capacity reserved for one value on a bounded MPMC queue.
-///
-/// A permit does not keep any receiver alive or claim message order. Dropping it without sending
-/// passes its capacity to the next waiting sender or makes it available again.
-#[must_use = "dropping the permit releases its reserved capacity"]
 pub struct Permit<'a, T> {
     shared: &'a Shared<T>,
 }
 
-impl<T> fmt::Debug for Permit<'_, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Permit").finish_non_exhaustive()
-    }
-}
-
 impl<T> Permit<'_, T> {
-    /// Publishes a value using this reserved capacity without waiting for space.
-    ///
-    /// This consumes the permit, including when sending fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SendError`] containing the unsent value if all receivers have been dropped.
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
         let waker = {
             let mut state = self.shared.state.lock();
@@ -413,7 +393,7 @@ impl<T> Recv<'_, T> {
             self.waiter = None;
         }
         let outcome = match state.pop() {
-            Ok(popped) => Ok(popped),
+            Ok(value) => Ok(value),
             Err(TryRecvError::Disconnected) => Err(RecvError::Disconnected),
             Err(TryRecvError::Empty) => {
                 let retired = state.recv_waiters.register(&mut self.waiter, cx.waker());
@@ -424,14 +404,14 @@ impl<T> Recv<'_, T> {
         };
         let retired = self.waiter.take().map(|id| state.recv_waiters.remove(id));
         drop(state);
-        let result = outcome.map(|(value, waker)| {
+        let outcome = outcome.map(|(value, waker)| {
             if let Some(waker) = waker {
                 waker.wake();
             }
             value
         });
         drop(retired);
-        Poll::Ready(result)
+        Poll::Ready(outcome)
     }
 }
 

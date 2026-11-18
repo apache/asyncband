@@ -22,16 +22,20 @@ use crate::spmc::RecvError;
 use crate::spmc::SendError;
 use crate::spmc::TryRecvError;
 use crate::spmc::TrySendError;
-use crate::spmc::queue::Shared;
+use crate::spmc::bounded_queue::Shared;
 
 /// Creates a bounded single-producer, multi-consumer queue.
 ///
 /// The queue stores at most `capacity` values. Sending waits for a receiver to free capacity when
 /// the queue is full.
 ///
-/// Operations briefly acquire an internal mutex. No lock is held across an await point, while
-/// waking tasks, or while dropping messages. The `try_*` methods do not wait for capacity or
-/// messages, but may wait to acquire a mutex.
+/// Storage may be preallocated when the queue is created; very large capacities use lazily
+/// allocated storage.
+///
+/// Operations may wait for internal synchronization, including short spin-based critical
+/// sections. No critical section spans an await point, a wake callback, or message destruction.
+/// The `try_*` methods do not wait for new messages or newly available capacity, but are not
+/// lock-free.
 ///
 /// # Panics
 ///
@@ -83,7 +87,9 @@ impl<T> BoundedSender<T> {
     /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is
     /// unavailable.
     pub async fn send(&mut self, value: T) -> Result<(), SendError<T>> {
-        self.shared.send(value).await
+        // SAFETY: This non-cloneable endpoint is the queue's only producer. The exclusive borrow
+        // lasts through completion or cancellation of the send.
+        unsafe { self.shared.send(value).await }
     }
 
     /// Sends a value without waiting for capacity.
@@ -94,7 +100,8 @@ impl<T> BoundedSender<T> {
     /// [`TrySendError::Disconnected`] if all receivers have been dropped. Both errors contain the
     /// unsent value; nothing is enqueued on error.
     pub fn try_send(&mut self, value: T) -> Result<(), TrySendError<T>> {
-        self.shared.try_send(value)
+        // SAFETY: This non-cloneable endpoint is the queue's only producer.
+        unsafe { self.shared.try_send(value) }
     }
 }
 
