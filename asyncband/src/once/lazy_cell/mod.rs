@@ -408,10 +408,7 @@ where
             initializer()
         };
 
-        // SAFETY: The current variant contains no structurally pinned future, and its initializer
-        // slot is empty. The newly created future is written directly into its final pinned
-        // location before it is polled.
-        *unsafe { state.as_mut().get_unchecked_mut() } = State::Attempt(future);
+        state.set(State::Attempt(future));
     }
 
     let value = poll_fn(|cx| {
@@ -427,11 +424,9 @@ where
     })
     .await;
 
-    // Assignment drops the completed future in place before changing the phase. Treat a panic
-    // from that destructor as an initializer panic as well.
+    // A panic while dropping the completed future also poisons the cell.
     let _poison = PoisonOnPanic(poisoned);
-    // SAFETY: Dropping a pinned value in place is permitted, and no value is moved out.
-    *unsafe { state.as_mut().get_unchecked_mut() } = State::Complete;
+    state.set(State::Complete);
     value
 }
 
