@@ -17,16 +17,16 @@
 
 use std::fmt;
 use std::future::Future;
+use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
+use crate::event::Waiter;
 use crate::internal::mutex::Mutex;
-use crate::internal::register_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::waker_batch::WakerBatch;
@@ -110,13 +110,8 @@ impl ManualResetEvent {
             self.is_set.store(true, Ordering::Release);
             // Detach the complete cohort before invoking any waker. A wake callback may reset the
             // event and register a new wait, which must belong to the state current at that point.
-            while let Some((_id, waiter)) = waiters.unlink_first_waiter(|waiter| {
-                waiter.notified = true;
-                true
-            }) {
-                if let Some(waker) = waiter.waker.take() {
-                    wakers.push(waker);
-                }
+            while let Some((_, waiter)) = waiters.unlink_first_waiter(|_| true) {
+                wakers.push(waiter.mark_notified());
             }
         }
         wakers.wake_all();
@@ -218,7 +213,7 @@ impl ManualResetEvent {
     ///
     /// `set` unlinks every queued waiter and marks it notified, and a wait that starts while the
     /// event is set never enqueues. A linked waiter therefore always belongs to an unset event, so
-    /// `notified` alone decides whether a registered waiter is already committed.
+    /// a notified waiter remains ready even if the event is reset.
     fn poll_wait(&self, waiter_id: &mut Option<WaiterId>, cx: &mut Context<'_>) -> Poll<()> {
         // Only an unregistered wait can skip the lock: a released waiter still owns a node.
         if waiter_id.is_none() && self.is_set() {
@@ -228,27 +223,27 @@ impl ManualResetEvent {
         let (poll, retired_waker) = {
             let mut waiters = self.waiters.lock();
             match *waiter_id {
-                Some(id) if waiters.waiter_mut(id).notified => {
-                    let waiter = waiters.remove_unlinked_waiter(id);
-                    *waiter_id = None;
-                    (Poll::Ready(()), waiter.waker)
-                }
-                Some(id) => {
-                    debug_assert!(
-                        !self.is_set.load(Ordering::Relaxed),
-                        "a linked waiter must belong to an unset event"
-                    );
-                    let waiter = waiters.waiter_mut(id);
-                    (Poll::Pending, register_waker(&mut waiter.waker, cx.waker()))
-                }
+                Some(id) => match waiters.waiter_mut(id) {
+                    Waiter::Notified => {
+                        waiters.remove_unlinked_waiter(id);
+                        *waiter_id = None;
+                        (Poll::Ready(()), None)
+                    }
+                    Waiter::Waiting(waker) => {
+                        debug_assert!(
+                            !self.is_set.load(Ordering::Relaxed),
+                            "a linked waiter must belong to an unset event"
+                        );
+                        let retired = (!waker.will_wake(cx.waker()))
+                            .then(|| mem::replace(waker, cx.waker().clone()));
+                        (Poll::Pending, retired)
+                    }
+                },
                 // A set after the false fast probe must either be observed here or release
                 // the node that we register while holding this same lock.
                 None if self.is_set.load(Ordering::Relaxed) => (Poll::Ready(()), None),
                 None => {
-                    *waiter_id = Some(waiters.push_back(Waiter {
-                        notified: false,
-                        waker: Some(cx.waker().clone()),
-                    }));
+                    *waiter_id = Some(waiters.push_back(Waiter::Waiting(cx.waker().clone())));
                     (Poll::Pending, None)
                 }
             }
@@ -281,12 +276,6 @@ impl fmt::Debug for ManualResetEvent {
             .field("is_set", &is_set)
             .finish_non_exhaustive()
     }
-}
-
-#[derive(Debug)]
-struct Waiter {
-    notified: bool,
-    waker: Option<Waker>,
 }
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]

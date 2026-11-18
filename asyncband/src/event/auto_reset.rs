@@ -24,6 +24,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
+use crate::event::Waiter;
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
@@ -278,20 +279,12 @@ struct State {
 impl State {
     fn signal(&mut self) -> Option<Waker> {
         if let Some((_, waiter)) = self.waiters.unlink_first_waiter(|_| true) {
-            let Waiter::Waiting(waker) = mem::replace(waiter, Waiter::Notified) else {
-                unreachable!("only unselected waits remain queued")
-            };
-            Some(waker)
+            Some(waiter.mark_notified())
         } else {
             self.is_set = true;
             None
         }
     }
-}
-
-enum Waiter {
-    Waiting(Waker),
-    Notified,
 }
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
