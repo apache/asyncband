@@ -378,7 +378,7 @@ where
         // SAFETY: Exclusive access to the pinned cell pins its state in place for this call.
         let state = unsafe { Pin::new_unchecked(this.state.get_mut()) };
         let value = drive_pinned_attempt(state, &this.poisoned).await;
-        this.value.init_mut(value)
+        this.value.write_mut(value)
     }
 }
 

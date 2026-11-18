@@ -96,11 +96,17 @@ impl<T> ValueCell<T> {
         unsafe { (*slot).assume_init_ref() }
     }
 
-    pub fn init_mut(&mut self, value: T) -> &mut T {
-        assert!(!self.has_value_mut(), "cell already initialized");
-        let value = self.slot.get_mut().write(value);
-        *self.published.get_mut() = true;
-        value
+    pub fn write_mut(&mut self, value: T) -> &mut T {
+        let published = self.published.get_mut();
+        if *published {
+            *published = false;
+            // SAFETY: The slot held a live value. Clear the flag before dropping it so an
+            // unwinding destructor leaves the cell empty.
+            unsafe { self.slot.get_mut().assume_init_drop() };
+        }
+        let stored = self.slot.get_mut().write(value);
+        *published = true;
+        stored
     }
 
     pub fn take(&mut self) -> Option<T> {
@@ -134,6 +140,8 @@ impl<T> Drop for ValueCell<T> {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
     use std::thread;
 
     use super::*;
@@ -185,28 +193,54 @@ mod tests {
         assert!(cell.get_mut().is_none());
         assert!(cell.take().is_none());
 
-        cell.init_mut(DropCounter(&drops));
+        cell.write_mut(DropCounter(&drops));
         assert!(cell.has_value_mut());
         assert_eq!(drops.get(), 0);
+
+        // Overwriting an already populated slot must drop the prior value.
+        cell.write_mut(DropCounter(&drops));
+        assert_eq!(drops.get(), 1);
 
         let taken = cell.take();
         assert!(taken.is_some());
         assert!(!cell.has_value_mut());
-        assert_eq!(drops.get(), 0);
-        drop(taken);
         assert_eq!(drops.get(), 1);
+        drop(taken);
+        assert_eq!(drops.get(), 2);
 
-        cell.init_mut(DropCounter(&drops));
+        // Re-publishing after `take` works and transfers ownership to `into_inner`.
+        // SAFETY: `cell` is empty and accessed from a single thread.
+        unsafe { cell.publish(DropCounter(&drops)) };
         assert!(cell.is_published());
         let extracted = cell.into_inner();
         assert!(extracted.is_some());
-        assert_eq!(drops.get(), 1);
-        drop(extracted);
         assert_eq!(drops.get(), 2);
+        drop(extracted);
+        assert_eq!(drops.get(), 3);
 
         // `with_value` and `Drop` drop the stored value once.
         let cell = ValueCell::with_value(DropCounter(&drops));
         drop(cell);
-        assert_eq!(drops.get(), 3);
+        assert_eq!(drops.get(), 4);
+    }
+
+    #[test]
+    fn overwrite_leaves_cell_empty_if_dropping_the_old_value_panics() {
+        struct PanicOnDrop;
+
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                panic!("old value dropped");
+            }
+        }
+
+        // Only drop the cell after verifying that it no longer claims to own the old value.
+        let mut cell = ManuallyDrop::new(ValueCell::with_value(Some(PanicOnDrop)));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            cell.write_mut(None);
+        }));
+        assert!(result.is_err());
+        assert!(!cell.is_published());
+        drop(ManuallyDrop::into_inner(cell));
     }
 }
