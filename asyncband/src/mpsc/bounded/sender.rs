@@ -322,8 +322,7 @@ impl<T> Drop for Reserve<'_, T> {
             if !state.receiver {
                 return;
             }
-            state.send_waiters.unlink_waiter(index, |_| true);
-            let waiter = state.send_waiters.remove_unlinked_waiter(index);
+            let waiter = state.send_waiters.remove(index);
             let wake = if waiter.grant { state.release() } else { None };
             (waiter, wake)
         };

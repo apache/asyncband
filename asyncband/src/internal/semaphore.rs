@@ -280,13 +280,8 @@ impl Drop for Acquire<'_> {
     fn drop(&mut self) {
         if let Some(id) = self.waiter_id.take() {
             let mut waiters = self.semaphore.waiters.lock();
-            let mut acquired = 0;
-            waiters.unlink_waiter(id, |node| {
-                acquired = self.requested_permits - node.needed_permits;
-                node.needed_permits = 0;
-                true
-            });
-            let waiter = waiters.remove_unlinked_waiter(id);
+            let waiter = waiters.remove(id);
+            let acquired = self.requested_permits - waiter.needed_permits;
             if acquired > 0 {
                 self.semaphore.distribute_permits(acquired, waiters);
             } else {

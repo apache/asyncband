@@ -111,12 +111,6 @@ enum SendWaiter {
     Granted,
 }
 
-fn remove_waiter<W>(waiters: &mut WaitList<W>, id: WaiterId) -> W {
-    // Unlinking is idempotent, so detached waiters are removed the same way as linked ones.
-    waiters.unlink_waiter(id, |_| true);
-    waiters.remove_unlinked_waiter(id)
-}
-
 impl WaitList<RecvWaiter> {
     fn notify_one(&mut self) -> Option<Waker> {
         let (_, waiter) = self.unlink_first_waiter(|_| true)?;
@@ -141,7 +135,7 @@ impl WaitList<RecvWaiter> {
         }
         if let Some(notified) = id.take() {
             // The notification already took this node's waker, so nothing is retired.
-            remove_waiter(self, notified);
+            self.remove_unlinked_waiter(notified);
         }
         *id = Some(self.push_back(RecvWaiter::Waiting(current.clone())));
         None
@@ -428,7 +422,7 @@ impl<T> Drop for Reserve<'_, T> {
             if state.receivers == 0 {
                 return;
             }
-            let retired = remove_waiter(&mut state.send_waiters, id);
+            let retired = state.send_waiters.remove(id);
             // A grant already owns a slot, so returning it does not require a capacity check.
             let waker = if matches!(retired, SendWaiter::Granted) {
                 state.release()
@@ -466,10 +460,7 @@ impl<T> Recv<'_, T> {
                 return Poll::Pending;
             }
         };
-        let retired = self
-            .waiter
-            .take()
-            .map(|id| remove_waiter(&mut state.recv_waiters, id));
+        let retired = self.waiter.take().map(|id| state.recv_waiters.remove(id));
         drop(state);
         let result = outcome.map(|(value, waker)| {
             if let Some(waker) = waker {
@@ -492,7 +483,7 @@ impl<T> Drop for Recv<'_, T> {
             if state.senders == 0 {
                 return;
             }
-            let retired = remove_waiter(&mut state.recv_waiters, id);
+            let retired = state.recv_waiters.remove(id);
             // Hand an unconsumed notification to the next receiver while a value still waits.
             let waker = if matches!(retired, RecvWaiter::Notified) && !state.values.is_empty() {
                 state.recv_waiters.notify_one()

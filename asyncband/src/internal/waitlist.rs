@@ -100,7 +100,7 @@ impl<T> WaitList<T> {
     /// The node and its value remain available until
     /// [`remove_unlinked_waiter`](Self::remove_unlinked_waiter) is called. If the waiter is already
     /// detached, the predicate still runs but the list links are unchanged.
-    pub fn unlink_waiter(
+    fn unlink_waiter(
         &mut self,
         id: WaiterId,
         should_unlink: impl FnOnce(&mut T) -> bool,
@@ -148,6 +148,12 @@ impl<T> WaitList<T> {
 
     pub fn waiter_mut(&mut self, id: WaiterId) -> &mut T {
         &mut self.node_mut(id).value
+    }
+
+    /// Removes a waiter by ID, whether it is still linked or already detached.
+    pub fn remove(&mut self, id: WaiterId) -> T {
+        self.unlink_waiter(id, |_| true);
+        self.remove_unlinked_waiter(id)
     }
 
     pub fn remove_unlinked_waiter(&mut self, id: WaiterId) -> T {

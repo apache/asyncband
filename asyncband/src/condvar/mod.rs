@@ -396,8 +396,7 @@ impl<G> Drop for Wait<'_, G> {
 
         let (waiter, waker) = {
             let mut waiters = self.condvar.waiters.lock();
-            waiters.unlink_waiter(index, |_| true);
-            let waiter = waiters.remove_unlinked_waiter(index);
+            let waiter = waiters.remove(index);
 
             let waker = match &waiter {
                 WaitState::NotifiedOne => notify_one_locked(&mut waiters),
