@@ -32,10 +32,34 @@ fn bounded_panics_on_zero_capacity() {
 #[test]
 #[should_panic(expected = "broadcast channel version counter overflowed")]
 fn send_panics_on_version_overflow() {
-    // The receiver is dropped right away: the doctored counter would make its own drop overflow.
     let (tx, _) = bounded(1);
     tx.shared.inner.lock().log.set_tail(u64::MAX);
     let _ = tx.try_send(());
+}
+
+#[test]
+fn overflow_drops_payload_outside_the_channel_lock() {
+    for has_receiver in [false, true] {
+        let (tx, _) = bounded(1);
+        tx.shared.inner.lock().log.set_tail(u64::MAX);
+        let _receiver = has_receiver.then(|| tx.subscribe());
+        let shared = tx.shared.clone();
+        common::tests::assert_overflow_drops_unlocked(
+            move || shared.inner.try_lock().map(|inner| inner.log.retained()),
+            |value| {
+                let _ = tx.try_send(value);
+            },
+        );
+    }
+}
+
+#[test]
+fn full_channel_rejects_the_value_at_the_last_version() {
+    let (tx, _) = bounded(1);
+    tx.shared.inner.lock().log.set_tail(u64::MAX - 1);
+    let _receiver = tx.subscribe();
+    tx.try_send(1).unwrap();
+    assert!(matches!(tx.try_send(2), Err(TrySendError::Full(2))));
 }
 
 #[test]

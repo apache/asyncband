@@ -21,10 +21,23 @@ use crate::broadcast::mpmc::common::MIN_RETAINED_CAPACITY;
 #[test]
 #[should_panic(expected = "broadcast channel version counter overflowed")]
 fn send_panics_on_version_overflow() {
-    // The receiver is dropped right away: the doctored counter would make its own drop overflow.
     let (tx, _) = unbounded();
     tx.shared.inner.lock().log.set_tail(u64::MAX);
     tx.send(());
+}
+
+#[test]
+fn overflow_drops_payload_outside_the_channel_lock() {
+    for has_receiver in [false, true] {
+        let (tx, _) = unbounded();
+        tx.shared.inner.lock().log.set_tail(u64::MAX);
+        let _receiver = has_receiver.then(|| tx.subscribe());
+        let shared = tx.shared.clone();
+        common::tests::assert_overflow_drops_unlocked(
+            move || shared.inner.try_lock().map(|inner| inner.log.retained()),
+            |value| tx.send(value),
+        );
+    }
 }
 
 #[test]

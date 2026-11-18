@@ -28,6 +28,10 @@ All significant changes to this project will be documented in this file.
 * Speed up `WaitGroup` handle cloning, worker completion, and waiting across single- and multi-observer workloads, while avoiding extra heap allocations when at most one observer waits before completion.
 * Speed up unlocking an uncontended `Mutex` by avoiding its internal wait-queue lock.
 
+### Bug fixes
+
+* Allow payload destructors to reenter bounded and unbounded broadcast channels when a send panics on message version overflow.
+
 ## v0.8.0 (2026-11-15)
 
 ### Breaking changes

@@ -181,62 +181,23 @@ impl<T> Backlog<T> {
         usize::try_from(self.tail - head).expect("unread broadcast message count exceeds usize")
     }
 
-    /// Advances the committed tail.
+    /// Publishes one version, taking the payload only if a subscription can read it.
     ///
-    /// # Panics
-    ///
-    /// Panics if the message version counter overflows.
-    fn advance_tail(&mut self) {
+    /// The caller owns the payload through the overflow check and drops any unretained value
+    /// after unlocking. Conversion to an Arc is deferred until the value will be retained.
+    pub fn publish<P>(&mut self, payload: &mut Option<P>, into_msg: impl FnOnce(P) -> Arc<T>) {
         self.tail = self
             .tail
             .checked_add(1)
             .expect("broadcast channel version counter overflowed");
-    }
-
-    /// Advances the committed tail for a message no subscription can read.
-    ///
-    /// `head` moves with it so the invariant that `buffer` covers versions `[head, tail)` still
-    /// holds without buffering anything. The buffer is already drained when the last receiver was
-    /// dropped, so there is nothing to clear here. The caller keeps the payload and drops it after
-    /// releasing the channel lock.
-    pub fn publish_discarded(&mut self) {
-        debug_assert!(!self.has_receivers());
-        debug_assert!(self.buffer.is_empty());
-        debug_assert_eq!(self.at_tail, 0);
-        self.advance_tail();
-        self.head = self.tail;
-    }
-
-    /// Advances the committed tail and retains `msg` for every currently active subscription.
-    ///
-    /// Returns the message when no subscription can read it, so the caller drops it after
-    /// releasing the channel lock rather than running `T::drop` inside the critical section.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the message version counter overflows.
-    #[must_use = "drop the unretained message after releasing the channel lock"]
-    pub fn publish(&mut self, msg: Arc<T>) -> Option<Arc<T>> {
         if !self.has_receivers() {
-            self.publish_discarded();
-            return Some(msg);
+            debug_assert!(self.buffer.is_empty());
+            debug_assert_eq!(self.at_tail, 0);
+            self.head = self.tail;
+            return;
         }
 
-        self.publish_retained(msg);
-        None
-    }
-
-    /// Advances the committed tail and retains `msg`.
-    ///
-    /// The caller must already have established that a subscription is active, which is what a
-    /// bounded channel does anyway to decide between rejecting and discarding.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the message version counter overflows.
-    pub fn publish_retained(&mut self, msg: Arc<T>) {
-        debug_assert!(self.has_receivers());
-        self.advance_tail();
+        let msg = into_msg(payload.take().expect("a publication must have a payload"));
         // Every cursor that was caught up now has this message as its next read.
         let cursors = mem::take(&mut self.at_tail);
         self.buffer.push_back(Slot { msg, cursors });
@@ -387,6 +348,8 @@ impl<T> Backlog<T> {
     /// Doctors the sequencer so a test can reach the overflow guard in `publish`.
     #[cfg(test)]
     pub fn set_tail(&mut self, tail: u64) {
+        assert!(self.buffer.is_empty() && !self.has_receivers());
+        self.head = tail;
         self.tail = tail;
     }
 
@@ -525,8 +488,43 @@ pub fn take_msg<T: Clone>(received: Received<T>) -> T {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
+    use std::cell::Cell;
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
+    use std::rc::Rc;
+
     use super::*;
+
+    pub struct InspectOnDrop(Box<dyn Fn()>);
+
+    impl Drop for InspectOnDrop {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+
+    pub fn assert_overflow_drops_unlocked(
+        inspect: impl Fn() -> Option<usize> + 'static,
+        send: impl FnOnce(InspectOnDrop),
+    ) {
+        let observed = Rc::new(Cell::new(None));
+        let result = observed.clone();
+        let payload = InspectOnDrop(Box::new(move || result.set(inspect())));
+        let overflow = catch_unwind(AssertUnwindSafe(|| send(payload)));
+        assert!(overflow.is_err());
+        assert_eq!(
+            observed.get(),
+            Some(0),
+            "destructor could not inspect the backlog"
+        );
+    }
+
+    fn publish(log: &mut Backlog<u64>, value: u64) -> Option<u64> {
+        let mut payload = Some(value);
+        log.publish(&mut payload, Arc::new);
+        payload
+    }
 
     /// Drives every cursor-count mutation point — subscribing, publishing, receiving, and dropping
     /// — and checks the accounting after each step.
@@ -540,10 +538,10 @@ mod tests {
 
         // The first publication picks up the caught-up cursors; a subscription registered
         // mid-backlog starts at the tail and counts against the next publication.
-        assert!(log.publish(Arc::new(1)).is_none());
+        assert!(publish(&mut log, 1).is_none());
         let c = log.subscribe();
-        assert!(log.publish(Arc::new(2)).is_none());
-        assert!(log.publish(Arc::new(3)).is_none());
+        assert!(publish(&mut log, 2).is_none());
+        assert!(publish(&mut log, 3).is_none());
         log.assert_cursor_accounting();
 
         assert_eq!(*log.receive(a).unwrap().msg, 1);
@@ -571,7 +569,7 @@ mod tests {
 
         // A call to `receive` that catches up to the tail releases the head slot and moves the
         // cursor back to `at_tail`.
-        assert!(log.publish(Arc::new(4)).is_none());
+        assert!(publish(&mut log, 4).is_none());
         let received = log.receive(a).unwrap();
         assert_eq!(*received.msg, 4);
         assert!(received.reclaimed);
@@ -579,7 +577,7 @@ mod tests {
 
         // With no subscription left, a publication is discarded and nothing is counted.
         assert!(log.remove_receiver(a).is_empty());
-        assert_eq!(*log.publish(Arc::new(5)).unwrap(), 5);
+        assert_eq!(publish(&mut log, 5), Some(5));
         log.assert_cursor_accounting();
     }
 }
