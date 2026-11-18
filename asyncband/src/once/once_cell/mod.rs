@@ -31,6 +31,10 @@ use crate::internal::value_cell::ValueCell;
 use crate::semaphore::Semaphore;
 use crate::semaphore::SemaphorePermit;
 
+// One spare permit lets an uncontended release bypass the wait queue while leaving too few
+// permits for a second initializer.
+const PERMITS_PER_INITIALIZER: usize = 2;
+
 /// A thread-safe cell that stores one value from an initializer supplied at access time.
 ///
 /// Callers provide an initializer when accessing an empty cell. An initializer that returns an
@@ -59,8 +63,6 @@ use crate::semaphore::SemaphorePermit;
 /// ```
 pub struct OnceCell<T> {
     value: ValueCell<T>,
-    // Each initializer takes two of three permits, so only one can run at a time. The spare
-    // permit lets an uncontended release avoid locking the semaphore's wait queue.
     semaphore: Semaphore,
 }
 
@@ -75,7 +77,7 @@ impl<T> OnceCell<T> {
     pub const fn new() -> Self {
         Self {
             value: ValueCell::empty(),
-            semaphore: Semaphore::new(3),
+            semaphore: Semaphore::new(PERMITS_PER_INITIALIZER + 1),
         }
     }
 
@@ -83,7 +85,7 @@ impl<T> OnceCell<T> {
     pub const fn from_value(value: T) -> Self {
         Self {
             value: ValueCell::with_value(value),
-            semaphore: Semaphore::new(3),
+            semaphore: Semaphore::new(PERMITS_PER_INITIALIZER + 1),
         }
     }
 
@@ -179,7 +181,7 @@ impl<T> OnceCell<T> {
             return Ok(v);
         }
 
-        let permit = self.semaphore.acquire(2).await;
+        let permit = self.semaphore.acquire(PERMITS_PER_INITIALIZER).await;
 
         if let Some(v) = self.get() {
             // Another task initialized the cell while we waited for permits.
@@ -408,7 +410,8 @@ impl<T> OnceCell<T> {
     }
 
     fn set_value(&self, value: T, _permit: SemaphorePermit<'_>) -> &T {
-        // SAFETY: Holding two of the three semaphore permits serializes initialization.
+        // SAFETY: The caller checked that the cell was empty while holding the initializer's
+        // permits. Holding them through publication excludes other initializers.
         unsafe { self.value.publish(value) }
     }
 
