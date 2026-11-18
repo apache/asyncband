@@ -23,6 +23,7 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
+use crate::internal::retry_waiter::RetryWaiter;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::spmc::RecvError;
@@ -42,8 +43,8 @@ struct State<T> {
     capacity: Option<usize>,
     sender_alive: bool,
     receivers: usize,
-    recv_waiters: WaitList<Waiter>,
-    send_waiters: WaitList<Waiter>,
+    recv_waiters: WaitList<RetryWaiter>,
+    send_waiters: WaitList<RetryWaiter>,
 }
 
 impl<T> State<T> {
@@ -68,47 +69,6 @@ impl<T> State<T> {
         } else {
             Err(TryRecvError::Empty)
         }
-    }
-}
-
-/// Notification state for an operation waiting to send or receive a value.
-///
-/// Notification wakes the waiting task; it does not reserve a value or queue slot.
-/// The future retains its waiter ID so it can reclaim the detached node when polled again or
-/// dropped. Disconnection clears the waiter storage instead.
-enum Waiter {
-    Waiting(Waker),
-    Notified,
-}
-
-impl WaitList<Waiter> {
-    fn notify_one(&mut self) -> Option<Waker> {
-        let (_, waiter) = self.unlink_first_waiter(|_| true)?;
-        let Waiter::Waiting(waker) = mem::replace(waiter, Waiter::Notified) else {
-            unreachable!("only waiting operations remain linked");
-        };
-        Some(waker)
-    }
-
-    /// Registers a pending operation's waker or refreshes an existing registration.
-    ///
-    /// If the future finds no value or slot after notification, its waiter rejoins the queue.
-    #[must_use = "drop the replaced waker after releasing the queue lock"]
-    fn register(&mut self, id: &mut Option<WaiterId>, current: &Waker) -> Option<Waker> {
-        if let Some(queued) = *id {
-            if let Waiter::Waiting(waker) = self.waiter_mut(queued) {
-                if waker.will_wake(current) {
-                    return None;
-                }
-                return Some(mem::replace(waker, current.clone()));
-            }
-        }
-        if let Some(notified) = id.take() {
-            // The notification already took this node's waker, so nothing is retired.
-            self.remove_unlinked_waiter(notified);
-        }
-        *id = Some(self.push_back(Waiter::Waiting(current.clone())));
-        None
     }
 }
 
@@ -324,7 +284,7 @@ impl<T> Drop for Recv<'_, T> {
             }
             let retired = state.recv_waiters.remove(id);
             // Hand an unconsumed notification to the next receiver while a value still waits.
-            let waker = if matches!(retired, Waiter::Notified) && !state.values.is_empty() {
+            let waker = if matches!(retired, RetryWaiter::Notified) && !state.values.is_empty() {
                 state.recv_waiters.notify_one()
             } else {
                 None
