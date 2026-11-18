@@ -74,6 +74,7 @@ use std::task::Poll;
 pub use self::error::RecvError;
 pub use self::error::SendError;
 use crate::internal::mutex::Mutex;
+use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
@@ -116,6 +117,19 @@ struct State<T> {
     senders: usize,
     receivers: usize,
     waiters: WakerSet,
+}
+
+impl<T> State<T> {
+    // Leave the old value with the caller so it can be dropped after unlocking. Borrowing the
+    // input also keeps its destructor outside the lock if the version counter overflows.
+    fn publish(&mut self, value: &mut T) -> WakerBatch {
+        self.version = self
+            .version
+            .checked_add(1)
+            .expect("watch channel version counter overflowed");
+        mem::swap(&mut self.value, value);
+        self.waiters.take_all()
+    }
 }
 
 /// The sending side of a watch channel.
@@ -168,23 +182,15 @@ impl<T> Sender<T> {
     /// # Panics
     ///
     /// Panics if the channel has already published `u64::MAX` updates.
-    pub fn send(&self, value: T) -> Result<(), SendError<T>> {
-        let mut state = self.shared.state.lock();
-        if state.receivers == 0 {
-            return Err(SendError::new(value));
-        }
-        let version = state
-            .version
-            .checked_add(1)
-            .expect("watch channel version counter overflowed");
-        let replaced = mem::replace(&mut state.value, value);
-        state.version = version;
-        let mut wakers = state.waiters.take_all();
-        drop(state);
-
-        // Waker callbacks and the replaced value's destructor may reenter this channel.
+    pub fn send(&self, mut value: T) -> Result<(), SendError<T>> {
+        let mut wakers = {
+            let mut state = self.shared.state.lock();
+            if state.receivers == 0 {
+                return Err(SendError::new(value));
+            }
+            state.publish(&mut value)
+        };
         wakers.wake_all();
-        drop(replaced);
         Ok(())
     }
 
@@ -196,18 +202,10 @@ impl<T> Sender<T> {
     /// # Panics
     ///
     /// Panics if the channel has already published `u64::MAX` updates.
-    pub fn send_replace(&self, value: T) -> T {
-        let mut state = self.shared.state.lock();
-        let version = state
-            .version
-            .checked_add(1)
-            .expect("watch channel version counter overflowed");
-        let replaced = mem::replace(&mut state.value, value);
-        state.version = version;
-        let mut wakers = state.waiters.take_all();
-        drop(state);
+    pub fn send_replace(&self, mut value: T) -> T {
+        let mut wakers = self.shared.state.lock().publish(&mut value);
         wakers.wake_all();
-        replaced
+        value
     }
 
     /// Creates a receiver that considers the current value already observed.
