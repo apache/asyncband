@@ -209,7 +209,8 @@ impl Runner {
     }
 }
 
-fn summary(samples: &[Duration]) -> (Duration, Duration, Duration) {
+/// Returns the minimum, median, and maximum of a nonempty sample.
+pub fn summary(samples: &[Duration]) -> (Duration, Duration, Duration) {
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
     let lo = sorted[(sorted.len() - 1) / 2];
