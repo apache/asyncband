@@ -93,7 +93,7 @@ impl TaskBatch {
         Self { start, workers }
     }
 
-    pub async fn run(&mut self) -> (usize, usize) {
+    pub async fn run(mut self) -> (usize, usize) {
         self.start.wait().await;
         let mut count = 0;
         let mut checksum = 0usize;
@@ -178,11 +178,11 @@ impl ThreadBatch {
         Self { start, workers }
     }
 
-    pub fn run(&mut self) -> (usize, usize) {
+    pub fn run(self) -> (usize, usize) {
         self.start.wait();
         let mut count = 0;
         let mut checksum = 0usize;
-        for worker in self.workers.drain(..) {
+        for worker in self.workers {
             let (received, sum) = worker.join().expect("benchmark worker panicked");
             count += received;
             checksum = checksum.wrapping_add(sum);

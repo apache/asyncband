@@ -69,7 +69,7 @@ impl TaskBatch {
         Self { start, tasks }
     }
 
-    pub async fn run(&mut self) -> (usize, usize) {
+    pub async fn run(mut self) -> (usize, usize) {
         self.start.wait().await;
         let mut count = 0;
         let mut checksum = 0usize;
