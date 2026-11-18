@@ -42,9 +42,8 @@ impl<T: ?Sized> RwLock<T> {
     /// Dropping a pending future removes the request and returns any permits already assigned to
     /// it. Retrying joins the back of the queue. The future also releases its owned `Arc`.
     pub async fn read_owned(self: Arc<Self>) -> OwnedRwLockReadGuard<T> {
-        self.s.acquire(1).await;
         OwnedRwLockReadGuard {
-            access: ReadAccess::new(self),
+            access: ReadAccess::acquire(self).await,
         }
     }
 
@@ -52,13 +51,9 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// This consumes the passed `Arc` even when acquisition fails.
     pub fn try_read_owned(self: Arc<Self>) -> Option<OwnedRwLockReadGuard<T>> {
-        if self.s.try_acquire(1) {
-            Some(OwnedRwLockReadGuard {
-                access: ReadAccess::new(self),
-            })
-        } else {
-            None
-        }
+        Some(OwnedRwLockReadGuard {
+            access: ReadAccess::try_acquire(self)?,
+        })
     }
 }
 

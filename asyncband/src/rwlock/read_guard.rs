@@ -41,9 +41,8 @@ impl<T: ?Sized> RwLock<T> {
     /// Dropping a pending future removes the request and returns any permits already assigned to
     /// it. Retrying joins the back of the queue.
     pub async fn read(&self) -> RwLockReadGuard<'_, T> {
-        self.s.acquire(1).await;
         RwLockReadGuard {
-            access: ReadAccess::new(self),
+            access: ReadAccess::acquire(self).await,
         }
     }
 
@@ -51,13 +50,9 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// Readers cannot bypass an earlier queued writer.
     pub fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
-        if self.s.try_acquire(1) {
-            Some(RwLockReadGuard {
-                access: ReadAccess::new(self),
-            })
-        } else {
-            None
-        }
+        Some(RwLockReadGuard {
+            access: ReadAccess::try_acquire(self)?,
+        })
     }
 }
 

@@ -149,8 +149,7 @@ impl<T: ?Sized> UpgradableRwLock<T> {
     /// Cancellation releases the reservation and any assigned permits and loses both queue
     /// positions.
     pub async fn write(&self) -> RwLockWriteGuard<'_, T> {
-        self.reservation.acquire(1).await;
-        let reservation = ReadAccess::new(&self.reservation);
+        let reservation = ReadAccess::acquire(&self.reservation).await;
         let write = self.inner.write().await;
         drop(reservation);
         write
@@ -159,10 +158,7 @@ impl<T: ?Sized> UpgradableRwLock<T> {
     /// Returns a write guard immediately, or `None` when the reservation or exclusive access is
     /// unavailable. Failure releases any reservation acquired by this call.
     pub fn try_write(&self) -> Option<RwLockWriteGuard<'_, T>> {
-        if !self.reservation.try_acquire(1) {
-            return None;
-        }
-        let reservation = ReadAccess::new(&self.reservation);
+        let reservation = ReadAccess::try_acquire(&self.reservation)?;
         let write = self.inner.try_write();
         drop(reservation);
         write
@@ -178,11 +174,9 @@ impl<T: ?Sized> UpgradableRwLock<T> {
     /// Cancellation releases the reservation and any assigned permit and loses both queue
     /// positions.
     pub async fn upgradable_read(&self) -> RwLockUpgradableReadGuard<'_, T> {
-        self.reservation.acquire(1).await;
-        let reservation = ReadAccess::new(&self.reservation);
-        self.inner.s.acquire(1).await;
+        let reservation = ReadAccess::acquire(&self.reservation).await;
         RwLockUpgradableReadGuard {
-            access: ReadAccess::new(&self.inner),
+            access: ReadAccess::acquire(&self.inner).await,
             reservation,
         }
     }
@@ -190,15 +184,9 @@ impl<T: ?Sized> UpgradableRwLock<T> {
     /// Returns an upgradable guard immediately, or `None` when the reservation or a reader slot
     /// is unavailable. Failure releases any reservation acquired by this call.
     pub fn try_upgradable_read(&self) -> Option<RwLockUpgradableReadGuard<'_, T>> {
-        if !self.reservation.try_acquire(1) {
-            return None;
-        }
-        let reservation = ReadAccess::new(&self.reservation);
-        if !self.inner.s.try_acquire(1) {
-            return None;
-        }
+        let reservation = ReadAccess::try_acquire(&self.reservation)?;
         Some(RwLockUpgradableReadGuard {
-            access: ReadAccess::new(&self.inner),
+            access: ReadAccess::try_acquire(&self.inner)?,
             reservation,
         })
     }
