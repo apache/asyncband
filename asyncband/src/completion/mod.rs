@@ -82,6 +82,16 @@ struct Shared<T> {
     waiters: Mutex<WakerSet>,
 }
 
+impl<T> Shared<T> {
+    fn finish(&self, result: Option<T>) -> WakerSet {
+        let mut waiters = self.waiters.lock();
+        // Detach registrations before publishing completion to lock-free observers.
+        let wakers = mem::take(&mut *waiters);
+        assert!(self.result.set(result).is_ok());
+        wakers
+    }
+}
+
 /// The error returned by [`Completion::wait`] when the completer was dropped without a value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Abandoned(());
@@ -129,11 +139,7 @@ impl<T> Completer<T> {
         let Some(shared) = self.shared.upgrade() else {
             return Err(value);
         };
-        let mut waiters = shared.waiters.lock();
-        // Detach registrations before publishing completion to lock-free observers.
-        let wakers = mem::take(&mut *waiters);
-        assert!(shared.result.set(Some(value)).is_ok());
-        drop(waiters);
+        let wakers = shared.finish(Some(value));
         // Disarm abandonment handling before invoking wake callbacks.
         self.shared = Weak::new();
         wakers.wake_all();
@@ -146,11 +152,7 @@ impl<T> Drop for Completer<T> {
         let Some(shared) = self.shared.upgrade() else {
             return;
         };
-        let mut waiters = shared.waiters.lock();
-        let wakers = mem::take(&mut *waiters);
-        assert!(shared.result.set(None).is_ok());
-        drop(waiters);
-        wakers.wake_all();
+        shared.finish(None).wake_all();
     }
 }
 
