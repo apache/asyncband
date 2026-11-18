@@ -18,6 +18,7 @@
 use std::mem;
 use std::task::Waker;
 
+use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 
@@ -47,10 +48,7 @@ impl WaitList<RetryWaiter> {
     pub fn register(&mut self, id: &mut Option<WaiterId>, current: &Waker) -> Option<Waker> {
         if let Some(queued) = *id {
             if let RetryWaiter::Waiting(waker) = self.waiter_mut(queued) {
-                if waker.will_wake(current) {
-                    return None;
-                }
-                return Some(mem::replace(waker, current.clone()));
+                return update_waker(waker, current);
             }
         }
         if let Some(notified) = id.take() {

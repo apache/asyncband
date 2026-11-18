@@ -25,6 +25,7 @@ use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
 use crate::internal::retry_waiter::RetryWaiter;
+use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::mpmc::RecvError;
@@ -114,10 +115,7 @@ impl WaitList<SendWaiter> {
             let SendWaiter::Waiting(waker) = self.waiter_mut(queued) else {
                 unreachable!("a granted waiter must be claimed before registration");
             };
-            if waker.will_wake(current) {
-                return None;
-            }
-            return Some(mem::replace(waker, current.clone()));
+            return update_waker(waker, current);
         }
         *id = Some(self.push_back(SendWaiter::Waiting(current.clone())));
         None

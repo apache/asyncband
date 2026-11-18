@@ -66,6 +66,7 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
+use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::waker_batch::WakerBatch;
@@ -366,12 +367,9 @@ where
 
         let index = this.index.expect("wait future polled after completion");
         let mut waiters = this.condvar.waiters.lock();
-        let mut old_waker = None;
         let notify_one_baton = match waiters.waiter_mut(index) {
             WaitState::Waiting(waker) => {
-                if !waker.will_wake(cx.waker()) {
-                    old_waker = Some(mem::replace(waker, cx.waker().clone()));
-                }
+                let old_waker = update_waker(waker, cx.waker());
                 drop(waiters);
                 drop(old_waker);
                 return Poll::Pending;
