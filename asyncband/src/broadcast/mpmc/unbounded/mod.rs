@@ -168,16 +168,16 @@ impl<T> UnboundedSender<T> {
     /// assert_eq!(*second.try_recv().unwrap(), "update");
     /// ```
     pub fn send(&self, msg: T) {
-        let msg = Arc::new(msg);
-
-        let mut inner = self.shared.inner.lock();
-        let unretained = inner.log.publish(msg);
-        let mut wakers = inner.waiters.take_all();
-        drop(inner);
+        let mut payload = Some(Arc::new(msg));
+        let mut wakers = {
+            let mut inner = self.shared.inner.lock();
+            inner.log.publish(&mut payload, |msg| msg);
+            inner.waiters.take_all()
+        };
 
         // Wake callbacks and payload destruction may reenter the channel.
         wakers.wake_all();
-        drop(unretained);
+        drop(payload);
     }
 
     /// Returns the number of values in the shared backlog.

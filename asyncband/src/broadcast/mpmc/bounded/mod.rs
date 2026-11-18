@@ -414,22 +414,19 @@ impl<T> BoundedSender<T> {
     /// Calls `into_msg` only when retaining the payload, so `try_send` can defer its allocation
     /// until capacity is available while `try_publish` passes through its existing `Arc`.
     fn publish<P>(&self, payload: P, into_msg: impl FnOnce(P) -> Arc<T>) -> Result<(), P> {
-        let mut discarded = None;
-        let mut inner = self.shared.inner.lock();
-        if !inner.log.has_receivers() {
-            // Drop the discarded payload after unlocking: its destructor may reenter the channel.
-            inner.log.publish_discarded();
-            discarded = Some(payload);
-        } else if inner.log.retained() == self.shared.capacity {
-            // Leave waiters registered because no message was published.
-            return Err(payload);
-        } else {
-            inner.log.publish_retained(into_msg(payload));
-        }
-        let mut wakers = inner.waiters.take_all();
-        drop(inner);
+        let mut unretained;
+        let mut wakers = {
+            let mut inner = self.shared.inner.lock();
+            // A channel without receivers has an empty backlog and positive capacity.
+            if inner.log.retained() == self.shared.capacity {
+                return Err(payload);
+            }
+            unretained = Some(payload);
+            inner.log.publish(&mut unretained, into_msg);
+            inner.waiters.take_all()
+        };
         wakers.wake_all();
-        drop(discarded);
+        drop(unretained);
         Ok(())
     }
 
