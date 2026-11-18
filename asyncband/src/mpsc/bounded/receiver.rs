@@ -28,6 +28,7 @@ use crate::internal::waitlist::WaitList;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
 use crate::mpsc::bounded::State;
+use crate::mpsc::bounded::Waiter;
 
 /// The receiving endpoint of a bounded mpsc channel.
 ///
@@ -55,10 +56,11 @@ impl<T> Drop for BoundedReceiver<T> {
             (queue, recv_waker, waiters)
         };
         // Notify blocked senders before destroying buffered values, whose destructors may panic.
-        while let Some((_, waiter)) = waiters.unlink_first_waiter(|_| true) {
-            if let Some(waker) = waiter.waker.take() {
-                waker.wake();
-            }
+        while let Some((id, _)) = waiters.unlink_first_waiter(|_| true) {
+            let Waiter::Waiting(waker) = waiters.remove_unlinked_waiter(id) else {
+                unreachable!("only waiting senders remain linked");
+            };
+            waker.wake();
         }
         drop(recv_waker);
         drop(queue);

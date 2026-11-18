@@ -262,8 +262,7 @@ impl ManualResetEvent {
         let waiter = {
             let mut waiters = self.waiters.lock();
             // Released waits retain their detached nodes until repolled or cancelled.
-            waiters.unlink_waiter(id, |_| true);
-            waiters.remove_unlinked_waiter(id)
+            waiters.remove(id)
         };
         drop(waiter);
     }

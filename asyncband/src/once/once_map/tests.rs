@@ -96,7 +96,7 @@ fn cancelled_compute_removes_empty_entry_during_get() {
 
     // A concurrent `get` holds its lookup result after releasing the table lock. Cancel the
     // computation inside that window.
-    let held_by_get = map.find_entry(map.hasher.hash_one("key"), |entry| entry.key == "key");
+    let held_by_get = map.find_ready_entry("key");
     drop(compute);
     drop(held_by_get);
 

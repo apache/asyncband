@@ -31,15 +31,7 @@ impl<T> RwLock<T> {
         Self(std::sync::RwLock::new(t))
     }
 
-    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, T> {
-        self.0.read().unwrap_or_else(PoisonError::into_inner)
-    }
-
     pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, T> {
         self.0.write().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub fn get_mut(&mut self) -> &mut T {
-        self.0.get_mut().unwrap_or_else(PoisonError::into_inner)
     }
 }

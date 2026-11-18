@@ -23,7 +23,6 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
-use crate::internal::register_waker;
 use crate::internal::waitlist::WaiterId;
 use crate::mpsc::SendError;
 use crate::mpsc::TrySendError;
@@ -283,34 +282,26 @@ impl<'a, T> Reserve<'a, T> {
         }
         if let Some(index) = self.waiter {
             let waiter = state.send_waiters.waiter_mut(index);
-            if waiter.grant {
-                let waiter = state.send_waiters.remove_unlinked_waiter(index);
-                self.waiter = None;
-                let permit = Permit {
-                    shared: self.shared,
-                };
-                drop(state);
-                drop(waiter);
-                return Poll::Ready(Ok(permit));
+            if let Waiter::Waiting(waker) = waiter {
+                if !waker.will_wake(cx.waker()) {
+                    let old = mem::replace(waker, cx.waker().clone());
+                    drop(state);
+                    drop(old);
+                }
+                return Poll::Pending;
             }
-            let old = register_waker(&mut waiter.waker, cx.waker());
-            drop(state);
-            drop(old);
+            state.send_waiters.remove_unlinked_waiter(index);
+            self.waiter = None;
+        } else if state.available != 0 {
+            state.available -= 1;
+        } else {
+            let waiter = Waiter::Waiting(cx.waker().clone());
+            self.waiter = Some(state.send_waiters.push_back(waiter));
             return Poll::Pending;
         }
-        if state.available != 0 {
-            state.available -= 1;
-            let permit = Permit {
-                shared: self.shared,
-            };
-            drop(state);
-            return Poll::Ready(Ok(permit));
-        }
-        self.waiter = Some(state.send_waiters.push_back(Waiter {
-            grant: false,
-            waker: Some(cx.waker().clone()),
-        }));
-        Poll::Pending
+        Poll::Ready(Ok(Permit {
+            shared: self.shared,
+        }))
     }
 }
 
@@ -322,9 +313,11 @@ impl<T> Drop for Reserve<'_, T> {
             if !state.receiver {
                 return;
             }
-            state.send_waiters.unlink_waiter(index, |_| true);
-            let waiter = state.send_waiters.remove_unlinked_waiter(index);
-            let wake = if waiter.grant { state.release() } else { None };
+            let waiter = state.send_waiters.remove(index);
+            let wake = match waiter {
+                Waiter::Granted => state.release(),
+                Waiter::Waiting(_) => None,
+            };
             (waiter, wake)
         };
         if let Some(waker) = wake {

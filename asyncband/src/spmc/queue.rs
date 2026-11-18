@@ -90,12 +90,6 @@ impl WaitList<Waiter> {
         Some(waker)
     }
 
-    fn remove_waiter(&mut self, id: WaiterId) -> Waiter {
-        // Unlinking is idempotent, so notified waiters are removed the same way as linked ones.
-        self.unlink_waiter(id, |_| true);
-        self.remove_unlinked_waiter(id)
-    }
-
     /// Registers a pending operation's waker or refreshes an existing registration.
     ///
     /// If the future finds no value or slot after notification, its waiter rejoins the queue.
@@ -111,7 +105,7 @@ impl WaitList<Waiter> {
         }
         if let Some(notified) = id.take() {
             // The notification already took this node's waker, so nothing is retired.
-            self.remove_waiter(notified);
+            self.remove_unlinked_waiter(notified);
         }
         *id = Some(self.push_back(Waiter::Waiting(current.clone())));
         None
@@ -253,10 +247,7 @@ impl<T> Send<'_, T> {
             drop(retired);
             return Poll::Pending;
         };
-        let retired = self
-            .waiter
-            .take()
-            .map(|id| state.send_waiters.remove_waiter(id));
+        let retired = self.waiter.take().map(|id| state.send_waiters.remove(id));
         drop(state);
         let result = outcome
             .map(|waker| {
@@ -280,7 +271,7 @@ impl<T> Drop for Send<'_, T> {
             if state.receivers == 0 {
                 return;
             }
-            state.send_waiters.remove_waiter(id)
+            state.send_waiters.remove(id)
         };
         drop(retired);
     }
@@ -308,10 +299,7 @@ impl<T> Recv<'_, T> {
                 return Poll::Pending;
             }
         };
-        let retired = self
-            .waiter
-            .take()
-            .map(|id| state.recv_waiters.remove_waiter(id));
+        let retired = self.waiter.take().map(|id| state.recv_waiters.remove(id));
         drop(state);
         let result = outcome.map(|(value, waker)| {
             if let Some(waker) = waker {
@@ -334,7 +322,7 @@ impl<T> Drop for Recv<'_, T> {
             if !state.sender_alive {
                 return;
             }
-            let retired = state.recv_waiters.remove_waiter(id);
+            let retired = state.recv_waiters.remove(id);
             // Hand an unconsumed notification to the next receiver while a value still waits.
             let waker = if matches!(retired, Waiter::Notified) && !state.values.is_empty() {
                 state.recv_waiters.notify_one()

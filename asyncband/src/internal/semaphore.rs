@@ -123,14 +123,14 @@ impl Semaphore {
     ///
     /// If fewer than `n` permits are available, a queue-head debt node consumes future releases.
     pub fn reduce_permits(&self, n: usize) {
-        acquired_or_enqueue(self, n, None, None, false);
+        acquire_or_enqueue(self, n, PermitRequest::Debt);
     }
 
     /// Returns a future that acquires `n` permits from the semaphore.
     pub fn acquire(&self, n: usize) -> Acquire<'_> {
         Acquire {
             requested_permits: n,
-            index: None,
+            waiter_id: None,
             semaphore: self,
         }
     }
@@ -272,21 +272,16 @@ impl Semaphore {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Acquire<'a> {
     requested_permits: usize,
-    index: Option<WaiterId>,
+    waiter_id: Option<WaiterId>,
     semaphore: &'a Semaphore,
 }
 
 impl Drop for Acquire<'_> {
     fn drop(&mut self) {
-        if let Some(index) = self.index.take() {
+        if let Some(id) = self.waiter_id.take() {
             let mut waiters = self.semaphore.waiters.lock();
-            let mut acquired = 0;
-            waiters.unlink_waiter(index, |node| {
-                acquired = self.requested_permits - node.needed_permits;
-                node.needed_permits = 0;
-                true
-            });
-            let waiter = waiters.remove_unlinked_waiter(index);
+            let waiter = waiters.remove(id);
+            let acquired = self.requested_permits - waiter.needed_permits;
             if acquired > 0 {
                 self.semaphore.distribute_permits(acquired, waiters);
             } else {
@@ -301,16 +296,16 @@ impl Acquire<'_> {
     pub fn poll_once(&mut self, waker: &Waker) -> Poll<()> {
         let Self {
             requested_permits,
-            index,
+            waiter_id,
             semaphore,
         } = self;
 
         let mut old_waker = None;
-        match index {
-            Some(idx) => {
+        match waiter_id {
+            Some(id) => {
                 let mut waiters = semaphore.waiters.lock();
                 let ready = {
-                    let node = waiters.waiter_mut(*idx);
+                    let node = waiters.waiter_mut(*id);
                     if node.needed_permits > 0 {
                         old_waker = register_waker(&mut node.waker, waker);
                         false
@@ -319,15 +314,14 @@ impl Acquire<'_> {
                     }
                 };
                 if ready {
-                    waiters.remove_unlinked_waiter(*idx);
-                    *index = None;
+                    waiters.remove_unlinked_waiter(*id);
+                    *waiter_id = None;
                     return Poll::Ready(());
                 }
             }
             None => {
-                let requested = *requested_permits;
-
-                if acquired_or_enqueue(semaphore, requested, Some(index), Some(waker), true) {
+                let request = PermitRequest::Acquire { waiter_id, waker };
+                if acquire_or_enqueue(semaphore, *requested_permits, request) {
                     return Poll::Ready(());
                 }
             }
@@ -347,19 +341,16 @@ impl Future for Acquire<'_> {
     }
 }
 
-/// Returns `true` if successfully acquired the semaphore; `false` otherwise.
-fn acquired_or_enqueue(
-    sem: &Semaphore,
-    requested: usize,
-    index: Option<&mut Option<WaiterId>>,
-    waker: Option<&Waker>,
-    enqueue_last: bool,
-) -> bool {
-    assert_eq!(
-        index.is_some(),
-        waker.is_some(),
-        "only acquire waiters have a future owner"
-    );
+enum PermitRequest<'a> {
+    Debt,
+    Acquire {
+        waiter_id: &'a mut Option<WaiterId>,
+        waker: &'a Waker,
+    },
+}
+
+/// Returns true when all permits were available and no node was queued.
+fn acquire_or_enqueue(sem: &Semaphore, requested: usize, request: PermitRequest<'_>) -> bool {
     let mut available = sem.available_permits.load(Ordering::Acquire);
     let mut lock = None;
 
@@ -396,20 +387,23 @@ fn acquired_or_enqueue(
             unreachable!("lock must be acquired when needed {needed} > 0");
         });
 
-        let node = WaitNode {
-            needed_permits: needed,
-            waker: waker.cloned(),
-        };
-        let id = if enqueue_last {
-            waiters.push_back(node)
-        } else {
-            waiters.push_front(node)
-        };
-        if let Some(index) = index {
-            assert!(
-                index.replace(id).is_none(),
-                "waiter must not be registered twice"
-            );
+        match request {
+            PermitRequest::Debt => {
+                waiters.push_front(WaitNode {
+                    needed_permits: needed,
+                    waker: None,
+                });
+            }
+            PermitRequest::Acquire { waiter_id, waker } => {
+                let id = waiters.push_back(WaitNode {
+                    needed_permits: needed,
+                    waker: Some(waker.clone()),
+                });
+                assert!(
+                    waiter_id.replace(id).is_none(),
+                    "waiter must not be registered twice"
+                );
+            }
         }
 
         return false;

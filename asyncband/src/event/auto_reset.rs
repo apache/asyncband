@@ -239,8 +239,7 @@ impl AutoResetEvent {
         let (waiter, waker) = {
             let mut state = self.state.lock();
             // A selected waiter is already detached, but still owns its signal until removal.
-            state.waiters.unlink_waiter(id, |_| true);
-            let waiter = state.waiters.remove_unlinked_waiter(id);
+            let waiter = state.waiters.remove(id);
             let waker = match &waiter {
                 Waiter::Notified => state.signal(),
                 Waiter::Waiting(_) => None,
