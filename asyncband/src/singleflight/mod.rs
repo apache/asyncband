@@ -26,6 +26,7 @@
 //! successful values should remain cached by key.
 
 use std::borrow::Borrow;
+use std::convert::Infallible;
 use std::fmt;
 use std::hash::BuildHasher;
 use std::hash::Hash;
@@ -312,19 +313,12 @@ where
     where
         F: AsyncFnOnce() -> V,
     {
-        let guard = self.get_or_insert(key);
-        let entry = guard.entry();
-        let result = entry
-            .cell
-            .get_or_init(async || {
-                let result = func().await;
-                self.remove_if_current(entry);
-                result
-            })
+        match self
+            .try_work(key, async || Ok::<V, Infallible>(func().await))
             .await
-            .clone();
-        guard.dismiss();
-        result
+        {
+            Ok(value) => value,
+        }
     }
 
     /// Returns a clone of the shared computation's value for `key`.

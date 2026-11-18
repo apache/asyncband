@@ -16,6 +16,7 @@
 // under the License.
 
 use std::borrow::Borrow;
+use std::convert::Infallible;
 use std::fmt;
 use std::hash::BuildHasher;
 use std::hash::Hash;
@@ -313,14 +314,12 @@ where
     where
         F: AsyncFnOnce() -> V,
     {
-        let guard = match self.get_or_insert(key) {
-            Lookup::Ready(value) => return value,
-            Lookup::Pending(guard) => guard,
-        };
-
-        let result = guard.entry().cell.get_or_init(func).await.clone();
-        guard.dismiss();
-        result
+        match self
+            .try_compute(key, async || Ok::<V, Infallible>(func().await))
+            .await
+        {
+            Ok(value) => value,
+        }
     }
 
     /// Returns a clone of the stored or newly computed value for `key`.
