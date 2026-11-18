@@ -96,13 +96,11 @@ impl<T> ValueCell<T> {
         unsafe { (*slot).assume_init_ref() }
     }
 
-    pub fn write_mut(&mut self, value: T) -> &mut T {
-        if *self.published.get_mut() {
-            // SAFETY: `published` indicates an initialized value in `slot`.
-            unsafe { self.slot.get_mut().assume_init_drop() };
-        }
+    pub fn init_mut(&mut self, value: T) -> &mut T {
+        assert!(!self.has_value_mut(), "cell already initialized");
+        let value = self.slot.get_mut().write(value);
         *self.published.get_mut() = true;
-        self.slot.get_mut().write(value)
+        value
     }
 
     pub fn take(&mut self) -> Option<T> {
@@ -187,34 +185,28 @@ mod tests {
         assert!(cell.get_mut().is_none());
         assert!(cell.take().is_none());
 
-        cell.write_mut(DropCounter(&drops));
+        cell.init_mut(DropCounter(&drops));
         assert!(cell.has_value_mut());
         assert_eq!(drops.get(), 0);
-
-        // Overwriting an already populated slot must drop the prior value.
-        cell.write_mut(DropCounter(&drops));
-        assert_eq!(drops.get(), 1);
 
         let taken = cell.take();
         assert!(taken.is_some());
         assert!(!cell.has_value_mut());
-        assert_eq!(drops.get(), 1);
+        assert_eq!(drops.get(), 0);
         drop(taken);
-        assert_eq!(drops.get(), 2);
+        assert_eq!(drops.get(), 1);
 
-        // Re-publishing after `take` works and transfers ownership to `into_inner`.
-        // SAFETY: `cell` is empty and accessed from a single thread.
-        unsafe { cell.publish(DropCounter(&drops)) };
+        cell.init_mut(DropCounter(&drops));
         assert!(cell.is_published());
         let extracted = cell.into_inner();
         assert!(extracted.is_some());
-        assert_eq!(drops.get(), 2);
+        assert_eq!(drops.get(), 1);
         drop(extracted);
-        assert_eq!(drops.get(), 3);
+        assert_eq!(drops.get(), 2);
 
         // `with_value` and `Drop` drop the stored value once.
         let cell = ValueCell::with_value(DropCounter(&drops));
         drop(cell);
-        assert_eq!(drops.get(), 4);
+        assert_eq!(drops.get(), 3);
     }
 }

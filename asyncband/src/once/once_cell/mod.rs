@@ -275,7 +275,7 @@ impl<T> OnceCell<T> {
     where
         F: AsyncFnOnce() -> Result<T, E>,
     {
-        // Check the flag before borrowing so the fallback branch can call `set_value_mut`.
+        // Check the flag before borrowing so the fallback branch can initialize the slot.
         if self.value.has_value_mut() {
             return Ok(self
                 .value
@@ -284,7 +284,7 @@ impl<T> OnceCell<T> {
         }
 
         let value = init().await?;
-        Ok(self.set_value_mut(value))
+        Ok(self.value.init_mut(value))
     }
 
     /// Stores `value` if the cell is empty and returns a reference to it.
@@ -413,10 +413,6 @@ impl<T> OnceCell<T> {
         // SAFETY: The caller checked that the cell was empty while holding the initializer's
         // permits. Holding them through publication excludes other initializers.
         unsafe { self.value.publish(value) }
-    }
-
-    fn set_value_mut(&mut self, value: T) -> &mut T {
-        self.value.write_mut(value)
     }
 }
 
