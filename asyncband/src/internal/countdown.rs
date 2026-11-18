@@ -16,6 +16,7 @@
 // under the License.
 
 use std::mem;
+use std::pin::Pin;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -59,45 +60,11 @@ impl CountdownState {
         wakers.wake_all();
     }
 
-    /// Polls for zero, registering the current waker if the countdown is still active.
-    pub fn poll_wait(&self, token: &mut Option<WakerToken>, cx: &mut Context<'_>) -> Poll<()> {
-        if self.try_wait().is_ok() {
-            // The zero transition owns detaching every registration. Avoid taking the waiter lock
-            // again when the completed future is dropped.
-            *token = None;
-            return Poll::Ready(());
+    pub fn wait(&self) -> impl Future<Output = ()> + '_ {
+        CountdownWait {
+            countdown: self,
+            token: None,
         }
-
-        let mut waiters = self.waiters.lock();
-        if self.state() == 0 {
-            // A concurrent zero transition detaches the registrations under this same lock.
-            *token = None;
-            return Poll::Ready(());
-        }
-
-        let retired_waker = waiters.register(token, cx.waker());
-        drop(waiters);
-        drop(retired_waker);
-        Poll::Pending
-    }
-
-    #[inline]
-    pub fn unregister(&self, token: &mut Option<WakerToken>) {
-        if token.is_none() {
-            return;
-        }
-
-        let mut waiters = self.waiters.lock();
-        if self.state() == 0 {
-            // The terminal zero transition owns this registration or has already detached it. No
-            // later countdown generation can reuse its slot.
-            *token = None;
-            return;
-        }
-
-        let removed_waker = waiters.unregister(token);
-        drop(waiters);
-        drop(removed_waker);
     }
 
     /// Returns `Ok(())` if the counter is zero, otherwise returns the current counter value.
@@ -123,5 +90,55 @@ impl CountdownState {
                 Err(x) => cnt = x,
             }
         }
+    }
+}
+
+struct CountdownWait<'a> {
+    countdown: &'a CountdownState,
+    token: Option<WakerToken>,
+}
+
+impl Future for CountdownWait<'_> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let Self { countdown, token } = self.get_mut();
+        if countdown.try_wait().is_ok() {
+            // The zero transition owns detaching every registration. Avoid taking the waiter lock
+            // again when the completed future is dropped.
+            *token = None;
+            return Poll::Ready(());
+        }
+
+        let mut waiters = countdown.waiters.lock();
+        if countdown.state() == 0 {
+            // A concurrent zero transition detaches the registrations under this same lock.
+            *token = None;
+            return Poll::Ready(());
+        }
+
+        let retired_waker = waiters.register(token, cx.waker());
+        drop(waiters);
+        drop(retired_waker);
+        Poll::Pending
+    }
+}
+
+impl Drop for CountdownWait<'_> {
+    fn drop(&mut self) {
+        if self.token.is_none() {
+            return;
+        }
+
+        let mut waiters = self.countdown.waiters.lock();
+        if self.countdown.state() == 0 {
+            // The terminal zero transition owns this registration or has already detached it. No
+            // later countdown generation can reuse its slot.
+            return;
+        }
+
+        let removed_waker = waiters.unregister(&mut self.token);
+        drop(waiters);
+        drop(removed_waker);
     }
 }
