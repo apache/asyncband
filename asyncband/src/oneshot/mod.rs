@@ -183,6 +183,22 @@ impl<T> Channel<T> {
         }
     }
 
+    /// Disconnects the receiver and takes the published message.
+    ///
+    /// # Safety
+    ///
+    /// The caller must own the receiving endpoint and have observed `MESSAGE` with a load or
+    /// failed compare-exchange on `state`. The message must still be unconsumed.
+    #[inline]
+    unsafe fn take_published_message(&self) -> T {
+        // ORDERING: MESSAGE is terminal for the sender, so this receiver-only update publishes
+        // no data. The fence pairs the caller's observation with the sender's Release publication.
+        self.state.store(DISCONNECTED, Ordering::Relaxed);
+        fence(Ordering::Acquire);
+        // SAFETY: The receiver exclusively owns the message and has synchronized with its write.
+        unsafe { self.take_message() }
+    }
+
     /// Initializes the message slot.
     ///
     /// # Safety
@@ -278,17 +294,8 @@ impl<T> Channel<T> {
                 // state, so it has not accessed the waker. We must drop it.
                 unsafe { self.drop_waker() };
 
-                // ORDERING: The sender has completed, so this receiver-only terminal update does
-                // not publish data to another thread.
-                self.state.store(DISCONNECTED, Ordering::Relaxed);
-
-                // ORDERING: The failed CAS read MESSAGE from the sender's Release publication. This
-                // conditional Acquire makes the initialized message visible before it is taken.
-                fence(Ordering::Acquire);
-
-                // SAFETY: The MESSAGE state tells us there is a correctly initialized message,
-                // and the fence above synchronizes with that write.
-                Poll::Ready(Ok(unsafe { self.take_message() }))
+                // SAFETY: The receiver observed MESSAGE in the failed compare-exchange.
+                Poll::Ready(Ok(unsafe { self.take_published_message() }))
             }
             // The sender was dropped before sending anything while we prepared to await.
             Err(DISCONNECTED) => {
