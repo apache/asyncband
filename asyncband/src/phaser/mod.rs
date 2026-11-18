@@ -419,8 +419,8 @@ impl Drop for PhaserParticipants {
 #[derive(Debug)]
 pub struct PhaserParticipant {
     phaser: Phaser,
-    // Cleared only after advancement, so a pending current phase also records arrival.
-    pending: Option<u64>,
+    // Retain the arrival across cancellation so a retry can observe the same phase.
+    arrived_phase: Option<u64>,
     registered: bool,
 }
 
@@ -428,7 +428,7 @@ impl PhaserParticipant {
     fn new(phaser: Phaser) -> Self {
         Self {
             phaser,
-            pending: None,
+            arrived_phase: None,
             registered: true,
         }
     }
@@ -453,10 +453,10 @@ impl PhaserParticipant {
             return Err(Closed(()));
         }
         let phase = state.phase;
-        if self.pending != Some(phase) {
+        if self.arrived_phase != Some(phase) {
             state.unarrived -= 1;
         }
-        self.pending = Some(phase);
+        self.arrived_phase = Some(phase);
         let mut wakers = state.advance_if_ready();
         drop(state);
         wakers.wake_all();
@@ -480,12 +480,12 @@ impl PhaserParticipant {
     /// the pending observation, so retrying this method waits for the same phase without
     /// counting another arrival. An explicit new `arrive` replaces that pending observation.
     pub async fn wait(&mut self) -> Result<u64, Closed> {
-        let observed = match self.pending {
+        let observed = match self.arrived_phase {
             Some(phase) => phase,
             None => self.arrive()?,
         };
         let next = self.phaser.wait(observed).await?;
-        self.pending = None;
+        self.arrived_phase = None;
         Ok(next)
     }
 
@@ -506,7 +506,7 @@ impl PhaserParticipant {
         let mut state = self.phaser.state.lock();
         self.registered = false;
         state.registered -= 1;
-        if self.pending != Some(state.phase) {
+        if self.arrived_phase != Some(state.phase) {
             state.unarrived -= 1;
         }
         let result = if state.closed {

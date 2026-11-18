@@ -22,6 +22,7 @@ use std::time::Instant;
 
 use asyncband::rwlock::RwLockUpgradableReadGuard;
 use asyncband::rwlock::UpgradableRwLock;
+use benchmarks::harness::summary;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
@@ -165,17 +166,8 @@ fn measure(rounds: usize, repeat: usize) -> Results {
     results
 }
 
-fn report(name: &str, rounds: usize, mut samples: Vec<Duration>) {
-    samples.sort_unstable();
-    let middle = samples.len() / 2;
-    let median = if samples.len() % 2 == 0 {
-        let lower = samples[middle - 1];
-        lower + (samples[middle] - lower) / 2
-    } else {
-        samples[middle]
-    };
-    let minimum = samples.first().unwrap();
-    let maximum = samples.last().unwrap();
+fn report(name: &str, rounds: usize, samples: &[Duration]) {
+    let (minimum, median, maximum) = summary(samples);
     let ns_per_round = median.as_nanos() as f64 / rounds as f64;
     let runs = samples
         .iter()
@@ -213,16 +205,16 @@ fn main() {
     report(
         "empty timing interval",
         options.rounds,
-        results.empty_interval,
+        &results.empty_interval,
     );
-    report("acquisition", options.rounds, results.acquisition);
-    report("promotion", options.rounds, results.promotion);
+    report("acquisition", options.rounds, &results.acquisition);
+    report("promotion", options.rounds, &results.promotion);
     report(
         "acquisition + reader held",
         options.rounds,
-        results.acquisition_with_reader,
+        &results.acquisition_with_reader,
     );
-    for (&reader_count, samples) in READER_COUNTS.iter().zip(results.promotion_with_readers) {
+    for (&reader_count, samples) in READER_COUNTS.iter().zip(&results.promotion_with_readers) {
         report(
             &format!("promotion + {reader_count} readers"),
             options.rounds,
@@ -232,11 +224,11 @@ fn main() {
     report(
         "promotion + writer queued",
         options.rounds,
-        results.promotion_with_waiting_writer,
+        &results.promotion_with_waiting_writer,
     );
     report(
         "acquire behind queued writer",
         options.rounds,
-        results.acquisition_after_waiting_writer,
+        &results.acquisition_after_waiting_writer,
     );
 }

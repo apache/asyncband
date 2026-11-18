@@ -97,12 +97,16 @@ impl<T> ValueCell<T> {
     }
 
     pub fn write_mut(&mut self, value: T) -> &mut T {
-        if *self.published.get_mut() {
-            // SAFETY: `published` indicates an initialized value in `slot`.
+        let published = self.published.get_mut();
+        if *published {
+            *published = false;
+            // SAFETY: The slot held a live value. Clear the flag before dropping it so an
+            // unwinding destructor leaves the cell empty.
             unsafe { self.slot.get_mut().assume_init_drop() };
         }
-        *self.published.get_mut() = true;
-        self.slot.get_mut().write(value)
+        let stored = self.slot.get_mut().write(value);
+        *published = true;
+        stored
     }
 
     pub fn take(&mut self) -> Option<T> {
@@ -136,6 +140,8 @@ impl<T> Drop for ValueCell<T> {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
     use std::thread;
 
     use super::*;
@@ -216,5 +222,25 @@ mod tests {
         let cell = ValueCell::with_value(DropCounter(&drops));
         drop(cell);
         assert_eq!(drops.get(), 4);
+    }
+
+    #[test]
+    fn overwrite_leaves_cell_empty_if_dropping_the_old_value_panics() {
+        struct PanicOnDrop;
+
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                panic!("old value dropped");
+            }
+        }
+
+        // Only drop the cell after verifying that it no longer claims to own the old value.
+        let mut cell = ManuallyDrop::new(ValueCell::with_value(Some(PanicOnDrop)));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            cell.write_mut(None);
+        }));
+        assert!(result.is_err());
+        assert!(!cell.is_published());
+        drop(ManuallyDrop::into_inner(cell));
     }
 }
