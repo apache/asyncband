@@ -17,7 +17,6 @@
 
 use std::cell::UnsafeCell;
 use std::mem;
-use std::mem::ManuallyDrop;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -117,14 +116,8 @@ impl<T> ValueCell<T> {
         Some(unsafe { self.slot.get_mut().assume_init_read() })
     }
 
-    pub fn into_inner(self) -> Option<T> {
-        let mut this = ManuallyDrop::new(self);
-        if *this.published.get_mut() {
-            // SAFETY: `this` is wrapped in `ManuallyDrop` and `published` is true.
-            Some(unsafe { this.slot.get_mut().assume_init_read() })
-        } else {
-            None
-        }
+    pub fn into_inner(mut self) -> Option<T> {
+        self.take()
     }
 }
 
@@ -140,6 +133,7 @@ impl<T> Drop for ValueCell<T> {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::mem::ManuallyDrop;
     use std::panic::AssertUnwindSafe;
     use std::panic::catch_unwind;
     use std::thread;

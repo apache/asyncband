@@ -82,6 +82,9 @@ pub(crate) mod value_cell;
 #[allow(dead_code)]
 pub(crate) mod mutex;
 
+#[cfg(any(feature = "mpmc", feature = "spmc"))]
+pub(crate) mod retry_waiter;
+
 #[cfg(feature = "waitgroup")]
 pub(crate) mod rwlock;
 

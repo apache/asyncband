@@ -120,15 +120,11 @@ impl<T> PoolState<T> {
             retained += 1;
         }
 
-        let removed = if current == retained {
-            vec![]
-        } else {
-            self.idle
-                .split_off(retained)
-                .into_iter()
-                .map(|state| state.o)
-                .collect::<Vec<_>>()
-        };
+        let removed = self
+            .idle
+            .drain(retained..)
+            .map(|state| state.o)
+            .collect::<Vec<_>>();
         self.current_size -= removed.len();
 
         RetainResult { retained, removed }

@@ -16,12 +16,8 @@
 // under the License.
 
 use std::fmt;
-use std::pin::Pin;
-use std::task::Context;
-use std::task::Poll;
 
 use crate::internal::countdown::CountdownState;
-use crate::internal::wakerset::WakerToken;
 use crate::semaphore::Semaphore;
 
 /// Coordinates a one-time asynchronous initialization step.
@@ -225,40 +221,6 @@ impl Once {
     /// # }
     /// ```
     pub async fn wait(&self) {
-        if self.is_completed() {
-            return;
-        }
-
-        OnceWait {
-            token: None,
-            once: self,
-        }
-        .await
-    }
-}
-
-struct OnceWait<'a> {
-    token: Option<WakerToken>,
-    once: &'a Once,
-}
-
-impl fmt::Debug for OnceWait<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OnceWait").finish_non_exhaustive()
-    }
-}
-
-impl Future for OnceWait<'_> {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self { token, once } = self.get_mut();
-        once.done.poll_wait(token, cx)
-    }
-}
-
-impl Drop for OnceWait<'_> {
-    fn drop(&mut self) {
-        self.once.done.unregister(&mut self.token);
+        self.done.wait().await
     }
 }

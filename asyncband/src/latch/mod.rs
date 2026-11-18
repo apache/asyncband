@@ -48,14 +48,9 @@
 //! # }
 //! ```
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::Context;
-use std::task::Poll;
 
 use crate::internal::countdown::CountdownState;
-use crate::internal::wakerset::WakerToken;
 
 /// A one-shot countdown that can wake any number of waiting tasks.
 ///
@@ -179,11 +174,7 @@ impl Latch {
     /// # }
     /// ```
     pub async fn wait(&self) {
-        let fut = LatchWait {
-            token: None,
-            latch: self,
-        };
-        fut.await
+        self.state.wait().await
     }
 
     /// Waits until the countdown reaches zero while owning this [`Arc`].
@@ -212,26 +203,5 @@ impl Latch {
     /// ```
     pub async fn wait_owned(self: Arc<Self>) {
         self.wait().await
-    }
-}
-
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-struct LatchWait<'a> {
-    token: Option<WakerToken>,
-    latch: &'a Latch,
-}
-
-impl Future for LatchWait<'_> {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self { token, latch } = self.get_mut();
-        latch.state.poll_wait(token, cx)
-    }
-}
-
-impl Drop for LatchWait<'_> {
-    fn drop(&mut self) {
-        self.latch.state.unregister(&mut self.token);
     }
 }
