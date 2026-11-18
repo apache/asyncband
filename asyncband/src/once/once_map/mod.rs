@@ -114,28 +114,18 @@ where
         }
     }
 
-    fn find_entry(
-        &self,
-        hash: u64,
-        matches: impl Fn(&Entry<K, V>) -> bool,
-    ) -> Option<Arc<Entry<K, V>>> {
-        // A reader holding a pending entry would stop an abandoned computation from reclaiming it.
-        self.entries
-            .lock()
-            .find(hash, |entry| matches(entry))
-            .filter(|entry| entry.cell.initialized())
-            .cloned()
-    }
-
-    fn get_value<Q>(&self, key: &Q) -> Option<V>
+    fn find_ready_entry<Q>(&self, key: &Q) -> Option<Arc<Entry<K, V>>>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
-        V: Clone,
     {
         let hash = self.hasher.hash_one(key);
-        let entry = self.find_entry(hash, |entry| entry.key.borrow() == key)?;
-        entry.cell.get().cloned()
+        // A reader holding a pending entry would stop an abandoned computation from reclaiming it.
+        self.entries
+            .lock()
+            .find(hash, |entry| entry.key.borrow() == key)
+            .filter(|entry| entry.cell.initialized())
+            .cloned()
     }
 
     fn remove_entry<Q>(&self, key: &Q) -> Option<Arc<Entry<K, V>>>
@@ -383,7 +373,8 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.get_value(key)
+        let entry = self.find_ready_entry(key)?;
+        entry.cell.get().cloned()
     }
 
     /// Evicts `key` from the map without cloning any stored value.
