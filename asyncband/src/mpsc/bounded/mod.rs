@@ -18,6 +18,7 @@
 //! Bounded multi-producer, single-consumer channel with capacity backpressure.
 
 use std::collections::VecDeque;
+use std::mem;
 use std::sync::Arc;
 use std::task::Waker;
 
@@ -98,15 +99,17 @@ impl<T> State<T> {
         }
         if let Some((_, waiter)) = self.send_waiters.unlink_first_waiter(|_| true) {
             // The detached node owns capacity until its future claims or cancels the grant.
-            waiter.grant = true;
-            return waiter.waker.take();
+            let Waiter::Waiting(waker) = mem::replace(waiter, Waiter::Granted) else {
+                unreachable!("only waiting senders remain linked");
+            };
+            return Some(waker);
         }
         self.available += 1;
         None
     }
 }
 
-struct Waiter {
-    grant: bool,
-    waker: Option<Waker>,
+enum Waiter {
+    Waiting(Waker),
+    Granted,
 }
