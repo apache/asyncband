@@ -95,25 +95,8 @@ impl<T> WaitList<T> {
         id
     }
 
-    /// Detaches a waiter if the predicate returns `true`.
-    ///
-    /// The node and its value remain available until
-    /// [`remove_unlinked_waiter`](Self::remove_unlinked_waiter) is called. If the waiter is already
-    /// detached, the predicate still runs but the list links are unchanged.
-    fn unlink_waiter(
-        &mut self,
-        id: WaiterId,
-        should_unlink: impl FnOnce(&mut T) -> bool,
-    ) -> Option<&mut T> {
-        let links = {
-            let node = self.node_mut(id);
-            if !should_unlink(&mut node.value) {
-                return None;
-            }
-            node.links.take()
-        };
-
-        if let Some(Links { prev, next }) = links {
+    fn unlink_waiter(&mut self, id: WaiterId) {
+        if let Some(Links { prev, next }) = self.node_mut(id).links.take() {
             if let Some(prev) = prev {
                 self.linked_node_mut(prev).next = next;
             } else {
@@ -126,18 +109,25 @@ impl<T> WaitList<T> {
                 self.tail = prev;
             }
         }
-
-        Some(&mut self.node_mut(id).value)
     }
 
-    /// Detaches the first waiter if the predicate returns `true`.
-    pub fn unlink_first_waiter(
+    /// Detaches the first waiter, keeping its slot available until removal.
+    pub fn unlink_first_waiter(&mut self) -> Option<(WaiterId, &mut T)> {
+        let first = self.head?;
+        self.unlink_waiter(first);
+        Some((first, self.waiter_mut(first)))
+    }
+
+    /// Updates the first waiter, leaving it at the head if the predicate returns `false`.
+    pub fn unlink_first_waiter_if(
         &mut self,
         should_unlink: impl FnOnce(&mut T) -> bool,
     ) -> Option<(WaiterId, &mut T)> {
         let first = self.head?;
-        self.unlink_waiter(first, should_unlink)
-            .map(|waiter| (first, waiter))
+        if !should_unlink(self.waiter_mut(first)) {
+            return None;
+        }
+        self.unlink_first_waiter()
     }
 
     /// Returns `true` if no linked waiters remain.
@@ -152,7 +142,7 @@ impl<T> WaitList<T> {
 
     /// Removes a waiter by ID, whether it is still linked or already detached.
     pub fn remove(&mut self, id: WaiterId) -> T {
-        self.unlink_waiter(id, |_| true);
+        self.unlink_waiter(id);
         self.remove_unlinked_waiter(id)
     }
 
@@ -204,22 +194,13 @@ mod tests {
         let first = waiters.push_back(1);
         let second = waiters.push_back(2);
 
-        assert_eq!(waiters.unlink_first_waiter(|_| true).unwrap().0, first);
+        assert_eq!(waiters.unlink_first_waiter().unwrap().0, first);
         assert_eq!(*waiters.waiter_mut(first), 1);
         assert_eq!(waiters.occupied_len(), 2);
 
-        assert_eq!(
-            *waiters
-                .unlink_waiter(first, |value| {
-                    *value += 10;
-                    true
-                })
-                .unwrap(),
-            11
-        );
-
-        assert_eq!(waiters.remove_unlinked_waiter(first), 11);
-        assert_eq!(waiters.unlink_first_waiter(|_| true).unwrap().0, second);
+        *waiters.waiter_mut(first) += 10;
+        assert_eq!(waiters.remove(first), 11);
+        assert_eq!(waiters.unlink_first_waiter().unwrap().0, second);
         assert!(waiters.is_empty());
         assert_eq!(waiters.remove_unlinked_waiter(second), 2);
         assert_eq!(waiters.occupied_len(), 0);
@@ -233,7 +214,7 @@ mod tests {
         let last = waiters.push_back(3);
 
         for expected in [(first, 1), (middle, 2), (last, 3)] {
-            let (id, value) = waiters.unlink_first_waiter(|_| true).unwrap();
+            let (id, value) = waiters.unlink_first_waiter().unwrap();
             assert_eq!((id, *value), expected);
             waiters.remove_unlinked_waiter(id);
         }
@@ -247,13 +228,11 @@ mod tests {
         let middle = waiters.push_back(2);
         let last = waiters.push_back(3);
 
-        assert!(waiters.unlink_waiter(middle, |_| false).is_none());
-        assert_eq!(*waiters.unlink_waiter(middle, |_| true).unwrap(), 2);
-        assert_eq!(waiters.remove_unlinked_waiter(middle), 2);
+        assert_eq!(waiters.remove(middle), 2);
 
         let replacement = waiters.push_back(4);
         for expected in [(first, 1), (last, 3), (replacement, 4)] {
-            let (id, value) = waiters.unlink_first_waiter(|_| true).unwrap();
+            let (id, value) = waiters.unlink_first_waiter().unwrap();
             assert_eq!((id, *value), expected);
             waiters.remove_unlinked_waiter(id);
         }

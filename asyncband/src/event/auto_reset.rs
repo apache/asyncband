@@ -275,7 +275,7 @@ struct State {
 
 impl State {
     fn signal(&mut self) -> Option<Waker> {
-        if let Some((_, waiter)) = self.waiters.unlink_first_waiter(|_| true) {
+        if let Some((_, waiter)) = self.waiters.unlink_first_waiter() {
             Some(waiter.mark_notified())
         } else {
             self.is_set = true;

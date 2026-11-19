@@ -176,10 +176,8 @@ impl Semaphore {
     pub fn notify_all(&self) {
         let mut waiters = self.waiters.lock();
         let mut wakers = WakerBatch::new();
-        while let Some((id, waiter)) = waiters.unlink_first_waiter(|node| {
-            node.needed_permits = 0;
-            true
-        }) {
+        while let Some((id, waiter)) = waiters.unlink_first_waiter() {
+            waiter.needed_permits = 0;
             if let Some(waker) = waiter.waker.take() {
                 wakers.push(waker);
             } else {
@@ -222,7 +220,7 @@ impl Semaphore {
 
         loop {
             while remaining > 0 && !batch.will_spill() {
-                let Some((id, waiter)) = waiters.unlink_first_waiter(|node| {
+                let Some((id, waiter)) = waiters.unlink_first_waiter_if(|node| {
                     let assigned = node.needed_permits.min(remaining);
                     node.needed_permits -= assigned;
                     remaining -= assigned;

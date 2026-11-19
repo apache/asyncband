@@ -89,7 +89,7 @@ enum WaitState {
 }
 
 fn notify_one_locked(waiters: &mut WaitList<WaitState>) -> Option<Waker> {
-    let (_, state) = waiters.unlink_first_waiter(|_| true)?;
+    let (_, state) = waiters.unlink_first_waiter()?;
     let WaitState::Waiting(waker) = mem::replace(state, WaitState::NotifiedOne) else {
         unreachable!("only waiting tasks remain linked")
     };
@@ -151,7 +151,7 @@ impl Condvar {
         {
             let mut waiters = self.waiters.lock();
 
-            while let Some((_, state)) = waiters.unlink_first_waiter(|_| true) {
+            while let Some((_, state)) = waiters.unlink_first_waiter() {
                 let WaitState::Waiting(waker) = mem::replace(state, WaitState::NotifiedAll) else {
                     unreachable!("only waiting tasks remain linked")
                 };

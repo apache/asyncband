@@ -97,7 +97,7 @@ impl<T> State<T> {
         if !self.receiver {
             return None;
         }
-        if let Some((_, waiter)) = self.send_waiters.unlink_first_waiter(|_| true) {
+        if let Some((_, waiter)) = self.send_waiters.unlink_first_waiter() {
             // The detached node owns capacity until its future claims or cancels the grant.
             let Waiter::Waiting(waker) = mem::replace(waiter, Waiter::Granted) else {
                 unreachable!("only waiting senders remain linked");
