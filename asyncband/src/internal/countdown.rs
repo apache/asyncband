@@ -69,9 +69,9 @@ impl CountdownState {
         }
     }
 
-    /// Decrements the counter by `n` and wakes all waiters if this operation reaches zero.
+    /// Records `n` arrivals and wakes all waiters if the remaining count reaches zero.
     /// Returns whether this operation completed the countdown.
-    pub fn decrement(&self, n: u32) -> bool {
+    pub fn arrive(&self, n: u32) -> bool {
         if n == 0 {
             return false;
         }

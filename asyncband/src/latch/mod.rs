@@ -124,7 +124,7 @@ impl Latch {
     /// assert_eq!(latch.count(), 0);
     /// ```
     pub fn arrive(&self, n: u32) {
-        self.state.decrement(n);
+        self.state.arrive(n);
     }
 
     /// Checks whether the countdown has reached zero without waiting.

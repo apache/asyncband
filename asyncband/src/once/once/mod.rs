@@ -182,10 +182,7 @@ impl Once {
 
         f().await;
 
-        assert!(
-            self.done.decrement(1),
-            "[BUG] Once completed more than once"
-        );
+        assert!(self.done.arrive(1), "[BUG] Once completed more than once");
     }
 
     /// Waits until an initializer passed to [`call_once`](Self::call_once) completes successfully.
