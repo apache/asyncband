@@ -22,6 +22,8 @@ use std::task::Wake;
 use std::thread;
 
 use super::*;
+#[cfg(feature = "blocking")]
+use crate::blocking::FutureExt;
 
 struct CountWakes(AtomicUsize);
 
@@ -404,4 +406,66 @@ fn threads_mixing_reservations_and_direct_sends_deliver_every_value_once() {
     received.sort_unstable();
     assert_eq!(received, (0..THREADS * VALUES).collect::<Vec<_>>());
     assert_eq!(reservation_state(&shared), (0, false));
+}
+
+#[cfg(feature = "blocking")]
+#[test]
+fn blocked_threads_alternating_across_a_tiny_ring_do_not_lose_wakeups() {
+    // Each side keeps the other parked, so a wakeup lost between a transfer and a registration
+    // stalls the test.
+    const VALUES: usize = if cfg!(miri) { 16 } else { 100_000 };
+    let shared = Shared::new(2);
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            for value in 0..VALUES {
+                if value % 3 == 0 {
+                    shared.reserve().block_on().unwrap().send(value).unwrap();
+                } else {
+                    shared.send(value).block_on().unwrap();
+                }
+            }
+        });
+        for expected in 0..VALUES {
+            assert_eq!(shared.recv().block_on(), Ok(expected));
+        }
+    });
+}
+
+#[cfg(feature = "blocking")]
+#[test]
+fn blocked_threads_queued_behind_other_waiters_do_not_lose_wakeups() {
+    // Several waiters queue on each side, so wakeups must reach those queued behind the first.
+    const THREADS: usize = 2;
+    const VALUES: usize = if cfg!(miri) { 12 } else { 50_000 };
+    let shared = Shared::new(2);
+    let mut received = thread::scope(|scope| {
+        for producer in 0..THREADS {
+            let shared = &shared;
+            scope.spawn(move || {
+                for value in producer * VALUES..(producer + 1) * VALUES {
+                    if value % 3 == 0 {
+                        shared.reserve().block_on().unwrap().send(value).unwrap();
+                    } else {
+                        shared.send(value).block_on().unwrap();
+                    }
+                }
+            });
+        }
+        let consumers = (0..THREADS)
+            .map(|_| {
+                let shared = &shared;
+                scope.spawn(move || {
+                    (0..VALUES)
+                        .map(|_| shared.recv().block_on().unwrap())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        consumers
+            .into_iter()
+            .flat_map(|consumer| consumer.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    received.sort_unstable();
+    assert_eq!(received, (0..THREADS * VALUES).collect::<Vec<_>>());
 }
