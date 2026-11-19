@@ -187,8 +187,9 @@ impl<T> Channel<T> {
     ///
     /// # Safety
     ///
-    /// The caller must own the receiving endpoint and have observed `MESSAGE` with a load or
-    /// failed compare-exchange on `state`. The message must still be unconsumed.
+    /// * The caller must have exclusive access to the receiving endpoint.
+    /// * `state` must be `MESSAGE`, read atomically on the current thread to pair with the acquire
+    ///   fence in this method.
     #[inline]
     unsafe fn take_published_message(&self) -> T {
         // ORDERING: MESSAGE is terminal for the sender, so this receiver-only update publishes
@@ -233,7 +234,7 @@ impl<T> Channel<T> {
     ///
     /// * The `waker` field must not contain an initialized waker when calling this method.
     /// * The `state` must not be in the `RECEIVING` or `AWAKING` state when calling this method.
-    /// * No other receiver operation may access the waker slot concurrently.
+    /// * The caller must have exclusive access to the receiving endpoint.
     unsafe fn register_waker(&self, waker: Waker) -> Poll<Result<T, RecvError>> {
         // SAFETY: The sender cannot access the waker until the state becomes RECEIVING.
         unsafe {
@@ -253,7 +254,7 @@ impl<T> Channel<T> {
     ///
     /// * The `waker` field must contain an initialized waker owned by the receiver.
     /// * The `state` must not be in the `RECEIVING` or `AWAKING` state when calling this method.
-    /// * No other receiver operation may access the waker slot concurrently.
+    /// * The caller must have exclusive access to the receiving endpoint.
     unsafe fn reregister_waker(&self, waker: &Waker) -> Poll<Result<T, RecvError>> {
         // SAFETY: The sender cannot access the waker until the state becomes RECEIVING.
         unsafe {
@@ -276,7 +277,7 @@ impl<T> Channel<T> {
     ///
     /// * The `waker` field must contain an initialized waker when calling this method.
     /// * The `state` must not be in the `RECEIVING` or `AWAKING` state when calling this method.
-    /// * No other receiver operation may access the waker slot concurrently.
+    /// * The caller must have exclusive access to the receiving endpoint.
     unsafe fn publish_waker(&self) -> Poll<Result<T, RecvError>> {
         // ORDERING: On success, Release publishes the initialized waker. Failure only observes the
         // current state; the MESSAGE branch performs its own conditional Acquire below, while the
@@ -294,7 +295,8 @@ impl<T> Channel<T> {
                 // state, so it has not accessed the waker. We must drop it.
                 unsafe { self.drop_waker() };
 
-                // SAFETY: The receiver observed MESSAGE in the failed compare-exchange.
+                // SAFETY: The caller has exclusive access to the receiving endpoint, and the
+                // failed compare-exchange read MESSAGE on this thread.
                 Poll::Ready(Ok(unsafe { self.take_published_message() }))
             }
             // The sender was dropped before sending anything while we prepared to await.
