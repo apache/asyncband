@@ -227,8 +227,7 @@ impl<M: ManageObject> Pool<M> {
     /// dropped.
     pub async fn replenish_to(&self, target_idle: usize) -> Result<usize, M::Error> {
         let target_idle = target_idle.min(self.config.max_size);
-        let Some(mut reservation) = ReplenishReservation::reserve_up_to(&self.permits, target_idle)
-        else {
+        let Some(mut reservation) = self.permits.try_acquire_up_to(target_idle) else {
             return Ok(0);
         };
 
@@ -251,7 +250,8 @@ impl<M: ManageObject> Pool<M> {
             .saturating_sub(idle_count)
             .min(reservation.permits())
             .min(available_slots);
-        reservation.release(reservation.permits() - to_create);
+        let surplus = reservation.permits() - to_create;
+        drop(reservation.split(surplus).expect("surplus is reserved"));
 
         let mut replenished = 0;
         for _ in 0..to_create {
@@ -261,7 +261,8 @@ impl<M: ManageObject> Pool<M> {
                 slots.add_idle(ObjectState::new(object));
             }
             replenished += 1;
-            reservation.release(1);
+            // A waiting checkout can use this object while the next creation is in progress.
+            drop(reservation.split(1).expect("each creation has a permit"));
         }
 
         Ok(replenished)
@@ -450,40 +451,6 @@ impl<M: ManageObject> Pool<M> {
         drop(slots);
 
         self.manager.on_detached(o);
-    }
-}
-
-// Temporarily removes capacity while `replenish_to` creates objects. Idle objects do not consume
-// semaphore permits, so successful insertions release their reservation. Dropping the guard
-// restores any unfinished capacity after an error or cancellation.
-struct ReplenishReservation<'a> {
-    semaphore: &'a Semaphore,
-    permits: usize,
-}
-
-impl<'a> ReplenishReservation<'a> {
-    fn reserve_up_to(semaphore: &'a Semaphore, up_to: usize) -> Option<Self> {
-        let permits = semaphore.drain_permits(up_to);
-        (permits != 0).then_some(Self { semaphore, permits })
-    }
-
-    fn permits(&self) -> usize {
-        self.permits
-    }
-
-    fn release(&mut self, permits: usize) {
-        assert!(
-            permits <= self.permits,
-            "cannot release more permits than this reservation holds"
-        );
-        self.permits -= permits;
-        self.semaphore.release(permits);
-    }
-}
-
-impl Drop for ReplenishReservation<'_> {
-    fn drop(&mut self) {
-        self.semaphore.release(self.permits);
     }
 }
 
