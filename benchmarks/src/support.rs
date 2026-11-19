@@ -71,9 +71,13 @@ thread_local! {
     static THREAD_TICKET: Cell<usize> = const { Cell::new(0) };
 }
 
+pub fn thread_slot() -> usize {
+    THREAD_SLOT.with(|slot| *slot)
+}
+
 // Thread-local tickets avoid adding shared-counter contention to the timed loop.
 pub fn thread_slot_ticket() -> (usize, usize) {
-    let slot = THREAD_SLOT.with(|slot| *slot);
+    let slot = thread_slot();
     let ticket = THREAD_TICKET.with(|ticket| {
         let current = ticket.get();
         ticket.set(current.wrapping_add(1));

@@ -25,12 +25,12 @@ use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
 use benchmarks::support::poll_pinned_ready;
 use benchmarks::support::poll_ready;
+use benchmarks::support::thread_slot;
 use benchmarks::support::wait_until_open;
 
 use crate::singleflight::support::BATCH_SIZES;
 use crate::singleflight::support::BenchGroup;
 use crate::singleflight::support::THREAD_COUNTS;
-use crate::singleflight::support::unique_thread_key;
 
 // Reuse the group so table capacity survives completed calls.
 fn leader_success(bencher: Bencher) {
@@ -70,11 +70,11 @@ fn distinct_keys(bencher: Bencher, caller_count: usize) {
     });
 }
 
-// Unique keys isolate shared-table contention from same-key coalescing.
+// Each worker reuses its own key. Group removes completed calls, so every round starts a leader.
 fn distributed_leaders(bencher: Bencher) {
     let group = BenchGroup::default();
     bencher.bench(|| {
-        let key = unique_thread_key();
+        let key = thread_slot();
         let mut context = bench_context();
         black_box(poll_ready(
             group.work(black_box(key), || async move { black_box(key) }),
