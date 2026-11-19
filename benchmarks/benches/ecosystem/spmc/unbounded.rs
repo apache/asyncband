@@ -33,7 +33,7 @@ where
 {
     let runtime = runtime(WORKERS);
     bencher.bench_local(|| {
-        let mut batch = TaskBatch::new::<Unbounded<C>>(&runtime, consumers);
+        let batch = TaskBatch::new::<Unbounded<C>>(&runtime, consumers);
         runtime.block_on(batch.run())
     });
 }

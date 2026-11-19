@@ -17,7 +17,6 @@
 
 use std::fmt;
 use std::future::Future;
-use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -27,6 +26,7 @@ use std::task::Poll;
 
 use crate::event::Waiter;
 use crate::internal::mutex::Mutex;
+use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::waker_batch::WakerBatch;
@@ -234,9 +234,7 @@ impl ManualResetEvent {
                             !self.is_set.load(Ordering::Relaxed),
                             "a linked waiter must belong to an unset event"
                         );
-                        let retired = (!waker.will_wake(cx.waker()))
-                            .then(|| mem::replace(waker, cx.waker().clone()));
-                        (Poll::Pending, retired)
+                        (Poll::Pending, update_waker(waker, cx.waker()))
                     }
                 },
                 // A set after the false fast probe must either be observed here or release

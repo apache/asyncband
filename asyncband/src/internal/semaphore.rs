@@ -279,31 +279,43 @@ pub struct Acquire<'a> {
 impl Drop for Acquire<'_> {
     fn drop(&mut self) {
         if let Some(id) = self.waiter_id.take() {
-            let mut waiters = self.semaphore.waiters.lock();
-            let waiter = waiters.remove(id);
-            let acquired = self.requested_permits - waiter.needed_permits;
-            if acquired > 0 {
-                self.semaphore.distribute_permits(acquired, waiters);
-            } else {
-                drop(waiters);
-            }
-            drop(waiter);
+            self.semaphore.cancel_acquire(self.requested_permits, id);
         }
     }
 }
 
 impl Acquire<'_> {
     pub fn poll_once(&mut self, waker: &Waker) -> Poll<()> {
-        let Self {
-            requested_permits,
-            waiter_id,
-            semaphore,
-        } = self;
+        self.semaphore
+            .poll_acquire(self.requested_permits, &mut self.waiter_id, waker)
+    }
+}
 
+impl Semaphore {
+    /// Cancels a queued acquisition and returns any permits already assigned to it.
+    pub fn cancel_acquire(&self, requested: usize, id: WaiterId) {
+        let mut waiters = self.waiters.lock();
+        let waiter = waiters.remove(id);
+        let acquired = requested - waiter.needed_permits;
+        if acquired > 0 {
+            self.distribute_permits(acquired, waiters);
+        } else {
+            drop(waiters);
+        }
+        drop(waiter);
+    }
+
+    /// Reuse the same count and registration until ready or cancelled.
+    pub fn poll_acquire(
+        &self,
+        requested: usize,
+        waiter_id: &mut Option<WaiterId>,
+        waker: &Waker,
+    ) -> Poll<()> {
         let mut old_waker = None;
         match waiter_id {
             Some(id) => {
-                let mut waiters = semaphore.waiters.lock();
+                let mut waiters = self.waiters.lock();
                 let ready = {
                     let node = waiters.waiter_mut(*id);
                     if node.needed_permits > 0 {
@@ -321,7 +333,7 @@ impl Acquire<'_> {
             }
             None => {
                 let request = PermitRequest::Acquire { waiter_id, waker };
-                if acquire_or_enqueue(semaphore, *requested_permits, request) {
+                if acquire_or_enqueue(self, requested, request) {
                     return Poll::Ready(());
                 }
             }

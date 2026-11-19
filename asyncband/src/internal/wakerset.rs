@@ -21,11 +21,11 @@
 //! their tokens must be cleared rather than passed back to the set. Returned wakers must be woken
 //! or dropped after releasing the lock.
 
-use std::mem;
 use std::task::Waker;
 
 use crate::internal::arena::Arena;
 use crate::internal::arena::SlotId;
+use crate::internal::update_waker;
 use crate::internal::waker_batch::WakerBatch;
 
 /// An exclusive handle to one waker slot in a [`WakerSet`].
@@ -94,11 +94,7 @@ impl WakerSet {
             .wakers
             .get_mut(token.0)
             .expect("waker token must refer to an occupied slot");
-        if current.will_wake(waker) {
-            None
-        } else {
-            Some(mem::replace(current, waker.clone()))
-        }
+        update_waker(current, waker)
     }
 
     /// Removes and returns the waker identified by `token`.

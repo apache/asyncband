@@ -66,6 +66,7 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
+use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::waker_batch::WakerBatch;
@@ -181,8 +182,7 @@ impl Condvar {
         let mutex = mutex::guard_lock(&guard);
         let notify_one_baton = Wait {
             condvar: self,
-            guard: Some(guard),
-            index: None,
+            phase: WaitPhase::Holding(guard),
         }
         .await;
         let guard = mutex.lock().await;
@@ -206,8 +206,7 @@ impl Condvar {
         let mutex = mutex::owned_guard_lock(&guard);
         let notify_one_baton = Wait {
             condvar: self,
-            guard: Some(guard),
-            index: None,
+            phase: WaitPhase::Holding(guard),
         }
         .await;
         let guard = mutex.lock_owned().await;
@@ -339,8 +338,13 @@ impl Condvar {
 
 struct Wait<'a, G> {
     condvar: &'a Condvar,
-    guard: Option<G>,
-    index: Option<WaiterId>,
+    phase: WaitPhase<G>,
+}
+
+enum WaitPhase<G> {
+    Holding(G),
+    Registered(WaiterId),
+    Done,
 }
 
 impl<'a, G> Future for Wait<'a, G>
@@ -352,26 +356,25 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
-        if this.guard.is_some() {
-            let mut waiters = this.condvar.waiters.lock();
-            this.index = Some(waiters.push_back(WaitState::Waiting(cx.waker().clone())));
-            let guard = this.guard.take().unwrap();
-
-            // Registration must happen before unlocking the associated mutex. A notifier that
-            // acquires the mutex after this point will therefore observe this waiter.
-            drop(waiters);
-            drop(guard);
-            return Poll::Pending;
-        }
-
-        let index = this.index.expect("wait future polled after completion");
+        let index = match this.phase {
+            WaitPhase::Holding(_) => {
+                let index = this
+                    .condvar
+                    .waiters
+                    .lock()
+                    .push_back(WaitState::Waiting(cx.waker().clone()));
+                // Replacing Holding unlocks the associated mutex. A notifier that subsequently
+                // acquires it must already be able to find this registration.
+                this.phase = WaitPhase::Registered(index);
+                return Poll::Pending;
+            }
+            WaitPhase::Registered(index) => index,
+            WaitPhase::Done => panic!("wait future polled after completion"),
+        };
         let mut waiters = this.condvar.waiters.lock();
-        let mut old_waker = None;
         let notify_one_baton = match waiters.waiter_mut(index) {
             WaitState::Waiting(waker) => {
-                if !waker.will_wake(cx.waker()) {
-                    old_waker = Some(mem::replace(waker, cx.waker().clone()));
-                }
+                let old_waker = update_waker(waker, cx.waker());
                 drop(waiters);
                 drop(old_waker);
                 return Poll::Pending;
@@ -381,7 +384,7 @@ where
         };
 
         let waiter = waiters.remove_unlinked_waiter(index);
-        this.index = None;
+        this.phase = WaitPhase::Done;
         drop(waiters);
         drop(waiter);
         Poll::Ready(notify_one_baton)
@@ -390,7 +393,7 @@ where
 
 impl<G> Drop for Wait<'_, G> {
     fn drop(&mut self) {
-        let Some(index) = self.index.take() else {
+        let WaitPhase::Registered(index) = self.phase else {
             return;
         };
 

@@ -30,7 +30,7 @@ use benchmarks::implementations;
 
 fn thread_batch<C: UnboundedMpmc>(bencher: Bencher, topology: Topology) {
     bencher.bench_local(|| {
-        let mut batch = ThreadBatch::new_unbounded::<C>(topology);
+        let batch = ThreadBatch::new_unbounded::<C>(topology);
         batch.run()
     });
 }
@@ -38,7 +38,7 @@ fn thread_batch<C: UnboundedMpmc>(bencher: Bencher, topology: Topology) {
 fn task_batch<C: UnboundedMpmc, const WORKERS: usize>(bencher: Bencher, topology: Topology) {
     let runtime = runtime(WORKERS);
     bencher.bench_local(|| {
-        let mut batch = TaskBatch::new::<Unbounded<C>>(&runtime, topology);
+        let batch = TaskBatch::new::<Unbounded<C>>(&runtime, topology);
         runtime.block_on(batch.run())
     });
 }

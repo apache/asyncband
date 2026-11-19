@@ -28,7 +28,6 @@ use std::mem::ManuallyDrop;
 use std::pin::Pin;
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::fence;
 use std::task::Context;
 use std::task::Poll;
 
@@ -145,16 +144,8 @@ impl<T> Receiver<T> {
         // conditional `Acquire` synchronization below.
         match channel.state.load(Ordering::Relaxed) {
             MESSAGE => {
-                // `MESSAGE` is terminal for the sender, so marking disconnection needs no RMW and
-                // publishes no data to another thread.
-                channel.state.store(DISCONNECTED, Ordering::Relaxed);
-
-                // ORDERING: Pairs with the sender's `Release` publication of `MESSAGE` before
-                // reading the initialized payload.
-                fence(Ordering::Acquire);
-
-                // SAFETY: `MESSAGE` is uniquely owned by this receiver after synchronization.
-                Ok(unsafe { channel.take_message() })
+                // SAFETY: This receiver's load observed MESSAGE.
+                Ok(unsafe { channel.take_published_message() })
             }
             EMPTY => Err(TryRecvError::Empty),
             DISCONNECTED => Err(TryRecvError::Disconnected),
@@ -244,17 +235,8 @@ impl<T> Future for Recv<T> {
             }
             // The sender sent the message.
             MESSAGE => {
-                // ORDERING: The sender has completed, so this receiver-only terminal update does
-                // not publish data to another thread.
-                channel.state.store(DISCONNECTED, Ordering::Relaxed);
-
-                // ORDERING: The preceding Relaxed load read MESSAGE from the sender's Release
-                // publication. This conditional Acquire makes the message visible before it is
-                // taken.
-                fence(Ordering::Acquire);
-
-                // SAFETY: we are in the MESSAGE state and have synchronized with the sender.
-                Poll::Ready(Ok(unsafe { channel.take_message() }))
+                // SAFETY: This receiver's load observed MESSAGE.
+                Poll::Ready(Ok(unsafe { channel.take_published_message() }))
             }
             // We were polled again while waiting for the sender. Replace the waker unless it
             // already wakes the polling task.
@@ -278,18 +260,8 @@ impl<T> Future for Recv<T> {
                     // We take the message and mark the channel disconnected.
                     // The sender has already taken the waker.
                     Err(MESSAGE) => {
-                        // ORDERING: The sender has completed, so this receiver-only terminal update
-                        // does not publish data to another thread.
-                        channel.state.store(DISCONNECTED, Ordering::Relaxed);
-
-                        // ORDERING: The failed CAS read MESSAGE from the sender's Release
-                        // publication. This conditional Acquire makes the message visible before it
-                        // is taken.
-                        fence(Ordering::Acquire);
-
-                        // SAFETY: The state tells us the sender has initialized the message, and
-                        // the fence above synchronizes with that write.
-                        Poll::Ready(Ok(unsafe { channel.take_message() }))
+                        // SAFETY: This receiver's failed compare-exchange observed MESSAGE.
+                        Poll::Ready(Ok(unsafe { channel.take_published_message() }))
                     }
                     // The sender started awakening us while we prepared to replace the waker.
                     Err(AWAKING) => {

@@ -26,6 +26,7 @@ use std::task::Waker;
 
 use crate::event::Waiter;
 use crate::internal::mutex::Mutex;
+use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 
@@ -216,11 +217,7 @@ impl AutoResetEvent {
                         *waiter_id = None;
                         (Poll::Ready(()), None)
                     }
-                    Waiter::Waiting(waker) => {
-                        let retired = (!waker.will_wake(cx.waker()))
-                            .then(|| mem::replace(waker, cx.waker().clone()));
-                        (Poll::Pending, retired)
-                    }
+                    Waiter::Waiting(waker) => (Poll::Pending, update_waker(waker, cx.waker())),
                 },
                 None if state.is_set => {
                     state.is_set = false;

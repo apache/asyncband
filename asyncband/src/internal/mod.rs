@@ -15,7 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::mem;
 use std::task::Waker;
+
+/// Refreshes an occupied registration unless both wakers are known to wake the same task.
+#[inline]
+#[must_use = "drop the replaced waker after releasing the state lock"]
+pub fn update_waker(current: &mut Waker, waker: &Waker) -> Option<Waker> {
+    if current.will_wake(waker) {
+        None
+    } else {
+        Some(mem::replace(current, waker.clone()))
+    }
+}
 
 /// Retains the current task waker, returning any replaced registration for unlocked destruction.
 #[inline]
@@ -23,13 +35,9 @@ use std::task::Waker;
 // Some feature subsets have no primitive that registers a single waker slot.
 #[allow(dead_code)]
 pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> {
-    if slot
-        .as_ref()
-        .is_some_and(|current| current.will_wake(waker))
-    {
-        None
-    } else {
-        slot.replace(waker.clone())
+    match slot {
+        Some(current) => update_waker(current, waker),
+        None => slot.replace(waker.clone()),
     }
 }
 

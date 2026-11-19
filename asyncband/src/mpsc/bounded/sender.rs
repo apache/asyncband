@@ -23,6 +23,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::internal::mutex::Mutex;
+use crate::internal::update_waker;
 use crate::internal::waitlist::WaiterId;
 use crate::mpsc::SendError;
 use crate::mpsc::TrySendError;
@@ -283,11 +284,9 @@ impl<'a, T> Reserve<'a, T> {
         if let Some(index) = self.waiter {
             let waiter = state.send_waiters.waiter_mut(index);
             if let Waiter::Waiting(waker) = waiter {
-                if !waker.will_wake(cx.waker()) {
-                    let old = mem::replace(waker, cx.waker().clone());
-                    drop(state);
-                    drop(old);
-                }
+                let old = update_waker(waker, cx.waker());
+                drop(state);
+                drop(old);
                 return Poll::Pending;
             }
             state.send_waiters.remove_unlinked_waiter(index);
