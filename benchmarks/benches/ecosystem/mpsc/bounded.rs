@@ -27,6 +27,7 @@ use crate::mpsc::adapters::Asyncband;
 use crate::mpsc::adapters::BoundedMpsc;
 use crate::mpsc::adapters::Flume;
 use crate::mpsc::adapters::Tokio;
+use crate::mpsc::bench_primed_batch;
 use crate::mpsc::support::BOUNDED_CAPACITY;
 use crate::mpsc::support::Bounded;
 use crate::mpsc::support::Message;
@@ -67,8 +68,7 @@ fn ready_payload<C: BoundedMpsc<T>, T: Message>(bencher: Bencher) {
 
 fn reused_threads<C: BoundedMpsc>(bencher: Bencher, producer_count: usize) {
     let mut batch = RepeatedBatch::<Bounded<C>>::new(producer_count);
-    batch.run();
-    bencher.bench_local(|| batch.run());
+    bench_primed_batch(bencher, || batch.run());
 }
 
 fn reused_tasks<C: BoundedMpsc, const CAPACITY: usize>(
@@ -76,8 +76,7 @@ fn reused_tasks<C: BoundedMpsc, const CAPACITY: usize>(
     TaskShape { producers, workers }: TaskShape,
 ) {
     let mut batch = RepeatedTasks::<Bounded<C, CAPACITY>>::new(producers, workers);
-    batch.run();
-    bencher.bench_local(|| batch.run());
+    bench_primed_batch(bencher, || batch.run());
 }
 
 fn reused_tasks_payload<C: BoundedMpsc<T>, const CAPACITY: usize, T: Message>(
@@ -85,20 +84,17 @@ fn reused_tasks_payload<C: BoundedMpsc<T>, const CAPACITY: usize, T: Message>(
     TaskShape { producers, workers }: TaskShape,
 ) {
     let mut batch = RepeatedTasks::<Bounded<C, CAPACITY, T>>::new(producers, workers);
-    batch.run();
-    bencher.bench_local(|| batch.run());
+    bench_primed_batch(bencher, || batch.run());
 }
 
 fn capacity_one_task_handoff<C: BoundedMpsc>(bencher: Bencher) {
     let mut batch = RepeatedTasks::<Bounded<C, 1>>::new(4, 4);
-    batch.run();
-    bencher.bench_local(|| batch.run());
+    bench_primed_batch(bencher, || batch.run());
 }
 
 fn external_receiver<C: BoundedMpsc>(bencher: Bencher, producers: usize) {
     let mut batch = RepeatedTasks::<Bounded<C>>::external_receiver(producers, 4);
-    batch.run();
-    bencher.bench_local(|| batch.run());
+    bench_primed_batch(bencher, || batch.run());
 }
 
 fn compare_tasks<const CAPACITY: usize>(

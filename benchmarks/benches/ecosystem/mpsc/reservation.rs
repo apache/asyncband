@@ -29,6 +29,7 @@ use benchmarks::support::poll_ready;
 use crate::mpsc::adapters::Asyncband;
 use crate::mpsc::adapters::BoundedMpsc;
 use crate::mpsc::adapters::Tokio;
+use crate::mpsc::bench_primed_batch;
 use crate::mpsc::support::ConcurrentMpsc;
 use crate::mpsc::support::RepeatedTasks;
 
@@ -93,8 +94,7 @@ impl<C: Reservable, const CAPACITY: usize> ConcurrentMpsc for Reserved<C, CAPACI
 
 fn capacity_one_task_handoff<C: Reservable>(bencher: Bencher) {
     let mut batch = RepeatedTasks::<Reserved<C, 1>>::new(4, 4);
-    batch.run();
-    bencher.bench_local(|| batch.run());
+    bench_primed_batch(bencher, || batch.run());
 }
 
 pub fn register(runner: &mut Runner) {

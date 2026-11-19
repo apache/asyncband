@@ -24,7 +24,14 @@ mod reservation;
 mod support;
 mod unbounded;
 
+use benchmarks::harness::Bencher;
 use benchmarks::harness::Runner;
+
+/// Runs one priming batch inside the timed workload before the configured rounds.
+fn bench_primed_batch<O>(bencher: Bencher, mut run: impl FnMut() -> O) {
+    run();
+    bencher.bench_local(run);
+}
 
 pub fn register(runner: &mut Runner) {
     bounded::register(runner);

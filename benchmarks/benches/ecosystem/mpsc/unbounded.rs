@@ -34,6 +34,7 @@ use crate::mpsc::adapters::Asyncband;
 use crate::mpsc::adapters::Flume;
 use crate::mpsc::adapters::Tokio;
 use crate::mpsc::adapters::UnboundedMpsc;
+use crate::mpsc::bench_primed_batch;
 use crate::mpsc::support::BATCH_MESSAGES;
 use crate::mpsc::support::RepeatedTasks;
 use crate::mpsc::support::TaskShape;
@@ -70,7 +71,7 @@ fn repeated_bursts<C: UnboundedMpsc<T>, T, F: Fn() -> T>(
     for _ in 0..backlog {
         C::send(&sender, make_value());
     }
-    let mut run = || {
+    let run = || {
         for _ in 0..messages {
             C::send(&sender, black_box(make_value()));
         }
@@ -80,14 +81,12 @@ fn repeated_bursts<C: UnboundedMpsc<T>, T, F: Fn() -> T>(
     };
     // Measure recurring bursts after the initial allocation, including a deliberately retained
     // backlog where requested. Do not require an extra `try_recv` call to trigger reclamation.
-    run();
-    bencher.bench_local(run);
+    bench_primed_batch(bencher, run);
 }
 
 fn reused_tasks<C: UnboundedMpsc>(bencher: Bencher, TaskShape { producers, workers }: TaskShape) {
     let mut batch = RepeatedTasks::<Unbounded<C>>::new(producers, workers);
-    batch.run();
-    bencher.bench_local(|| batch.run());
+    bench_primed_batch(bencher, || batch.run());
 }
 
 fn check_inline_message(value: [u8; 1024], expected: &mut [u64]) -> usize {
@@ -140,7 +139,7 @@ fn scheduled_bursts_inline<C: UnboundedMpsc<[u8; 1024]>>(
     drop(sender);
 
     let mut expected = vec![0u64; producers];
-    let mut run = || {
+    let run = || {
         runtime.block_on(async {
             let mut checksum = 0;
             for _ in 0..BATCH_MESSAGES / burst_messages {
@@ -180,8 +179,7 @@ fn scheduled_bursts_inline<C: UnboundedMpsc<[u8; 1024]>>(
     };
     // Reuse the channel and tasks, including across bursts. Timing includes producer release,
     // channel wakeups, concurrent payload movement, and storage reclamation, not task creation.
-    run();
-    bencher.bench_local(run);
+    bench_primed_batch(bencher, run);
 
     stop.store(true, Ordering::Release);
     for producer in &start {
