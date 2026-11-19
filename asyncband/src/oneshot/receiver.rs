@@ -144,7 +144,8 @@ impl<T> Receiver<T> {
         // conditional `Acquire` synchronization below.
         match channel.state.load(Ordering::Relaxed) {
             MESSAGE => {
-                // SAFETY: This receiver's load observed MESSAGE.
+                // SAFETY: `Receiver` is `!Sync`, giving `&self` exclusive access to the receiving
+                // endpoint, and this load read MESSAGE on this thread.
                 Ok(unsafe { channel.take_published_message() })
             }
             EMPTY => Err(TryRecvError::Empty),
@@ -235,7 +236,8 @@ impl<T> Future for Recv<T> {
             }
             // The sender sent the message.
             MESSAGE => {
-                // SAFETY: This receiver's load observed MESSAGE.
+                // SAFETY: Polling has exclusive access to the receiving endpoint, and this load
+                // read MESSAGE on this thread.
                 Poll::Ready(Ok(unsafe { channel.take_published_message() }))
             }
             // We were polled again while waiting for the sender. Replace the waker unless it
@@ -260,7 +262,8 @@ impl<T> Future for Recv<T> {
                     // We take the message and mark the channel disconnected.
                     // The sender has already taken the waker.
                     Err(MESSAGE) => {
-                        // SAFETY: This receiver's failed compare-exchange observed MESSAGE.
+                        // SAFETY: Polling has exclusive access to the receiving endpoint, and the
+                        // failed compare-exchange read MESSAGE on this thread.
                         Poll::Ready(Ok(unsafe { channel.take_published_message() }))
                     }
                     // The sender started awakening us while we prepared to replace the waker.
