@@ -26,7 +26,6 @@ use tests_integration::assert_completes_without_deadlock;
 use tests_integration::expect_ready;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
-use tests_integration::test_runtime;
 use tokio::task::JoinHandle;
 
 struct NotifyOnDrop(Arc<Condvar>);
@@ -45,121 +44,110 @@ impl Drop for NotifyOnDrop {
 
 #[test]
 fn predicate_preserves_state_when_notification_precedes_wait() {
-    test_runtime().block_on(async {
-        let mutex = Mutex::new(false);
-        let condvar = Condvar::new();
+    let mutex = Mutex::new(false);
+    let condvar = Condvar::new();
 
-        {
-            let mut ready = mutex.lock().await;
-            *ready = true;
-            condvar.notify_one();
-        }
+    {
+        let mut ready = mutex.try_lock().unwrap();
+        *ready = true;
+        condvar.notify_one();
+    }
 
-        // The notification itself was not buffered. The predicate is the durable state, so a task
-        // that arrives later observes it and does not wait.
-        let ready = condvar
-            .wait_while(mutex.lock().await, |ready| !*ready)
-            .await;
-        assert!(*ready);
-    });
+    // The notification itself was not buffered. The predicate is the durable state, so a task
+    // that arrives later observes it and does not wait.
+    let mut wait = pin!(condvar.wait_while(mutex.try_lock().unwrap(), |ready| !*ready));
+    let ready = expect_ready(poll_once(wait.as_mut()));
+    assert!(*ready);
 }
 
 #[test]
 fn notify_one_is_not_buffered() {
-    test_runtime().block_on(async {
-        let mutex = Mutex::new(());
-        let condvar = Condvar::new();
+    let mutex = Mutex::new(());
+    let condvar = Condvar::new();
 
-        for _ in 0..3 {
-            condvar.notify_one();
-        }
+    for _ in 0..3 {
+        condvar.notify_one();
+    }
 
-        let mut wait = pin!(condvar.wait(mutex.lock().await));
-        assert!(poll_once(wait.as_mut()).is_pending());
-    });
+    let mut wait = pin!(condvar.wait(mutex.try_lock().unwrap()));
+    assert!(poll_once(wait.as_mut()).is_pending());
 }
 
 #[test]
 fn notify_all_is_not_buffered() {
-    test_runtime().block_on(async {
-        let mutex = Mutex::new(());
-        let condvar = Condvar::new();
+    let mutex = Mutex::new(());
+    let condvar = Condvar::new();
 
-        condvar.notify_all();
+    condvar.notify_all();
 
-        let mut wait = pin!(condvar.wait(mutex.lock().await));
-        assert!(poll_once(wait.as_mut()).is_pending());
-    });
+    let mut wait = pin!(condvar.wait(mutex.try_lock().unwrap()));
+    assert!(poll_once(wait.as_mut()).is_pending());
 }
 
 #[test]
 fn notify_one_wakes_one_waiter_at_a_time() {
-    test_runtime().block_on(async {
-        let mutex = Mutex::new(());
-        let condvar = Condvar::new();
+    let mutex = Mutex::new(());
+    let condvar = Condvar::new();
 
-        let mut first = pin!(condvar.wait(mutex.lock().await));
-        assert!(poll_once(first.as_mut()).is_pending());
+    let mut first = pin!(condvar.wait(mutex.try_lock().unwrap()));
+    assert!(poll_once(first.as_mut()).is_pending());
 
-        let mut second = pin!(condvar.wait(mutex.lock().await));
-        assert!(poll_once(second.as_mut()).is_pending());
+    let mut second = pin!(condvar.wait(mutex.try_lock().unwrap()));
+    assert!(poll_once(second.as_mut()).is_pending());
 
-        condvar.notify_one();
-        drop(expect_ready(poll_once(first.as_mut())));
-        assert!(poll_once(second.as_mut()).is_pending());
+    condvar.notify_one();
+    drop(expect_ready(poll_once(first.as_mut())));
+    assert!(poll_once(second.as_mut()).is_pending());
 
-        condvar.notify_one();
-        drop(expect_ready(poll_once(second.as_mut())));
-    });
+    condvar.notify_one();
+    drop(expect_ready(poll_once(second.as_mut())));
 }
 
-#[test]
-fn notify_all_wakes_current_waiters_using_a_predicate_loop() {
-    test_runtime().block_on(async {
-        const WAITERS: usize = 10;
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notify_all_wakes_current_waiters_using_a_predicate_loop() {
+    const WAITERS: usize = 10;
 
-        #[derive(Default)]
-        struct State {
-            ready: bool,
-            waiting: usize,
-        }
+    #[derive(Default)]
+    struct State {
+        ready: bool,
+        waiting: usize,
+    }
 
-        let pair = Arc::new((Mutex::new(State::default()), Condvar::new()));
-        let mut tasks: Vec<JoinHandle<()>> = vec![];
+    let pair = Arc::new((Mutex::new(State::default()), Condvar::new()));
+    let mut tasks: Vec<JoinHandle<()>> = vec![];
 
-        for _ in 0..WAITERS {
-            let pair = pair.clone();
-            tasks.push(tokio::spawn(async move {
-                let (mutex, condvar) = &*pair;
-                let mut state = mutex.lock().await;
-                state.waiting += 1;
-                let state = condvar.wait_while(state, |state| !state.ready).await;
-                assert!(state.ready);
-            }));
-        }
-
-        let (mutex, condvar) = &*pair;
-        loop {
-            let state = mutex.lock().await;
-            if state.waiting == WAITERS {
-                break;
-            }
-            drop(state);
-            tokio::task::yield_now().await;
-        }
-
-        // Seeing every task's `waiting` update while holding this mutex also means every task has
-        // registered with the condition variable before releasing the same mutex.
-        {
+    for _ in 0..WAITERS {
+        let pair = pair.clone();
+        tasks.push(tokio::spawn(async move {
+            let (mutex, condvar) = &*pair;
             let mut state = mutex.lock().await;
-            state.ready = true;
-            condvar.notify_all();
-        }
+            state.waiting += 1;
+            let state = condvar.wait_while(state, |state| !state.ready).await;
+            assert!(state.ready);
+        }));
+    }
 
-        for task in tasks {
-            task.await.unwrap();
+    let (mutex, condvar) = &*pair;
+    loop {
+        let state = mutex.lock().await;
+        if state.waiting == WAITERS {
+            break;
         }
-    });
+        drop(state);
+        tokio::task::yield_now().await;
+    }
+
+    // Seeing every task's `waiting` update while holding this mutex also means every task has
+    // registered with the condition variable before releasing the same mutex.
+    {
+        let mut state = mutex.lock().await;
+        state.ready = true;
+        condvar.notify_all();
+    }
+
+    for task in tasks {
+        task.await.unwrap();
+    }
 }
 
 #[test]
@@ -178,92 +166,84 @@ fn cancelling_waiter_drops_its_waker_outside_the_waiter_lock() {
 
 #[test]
 fn cancelling_notified_waiter_passes_notify_one_to_next_waiter() {
-    test_runtime().block_on(async {
-        for reacquire in [false, true] {
-            let mutex = Mutex::new(());
-            let condvar = Condvar::new();
+    for reacquire in [false, true] {
+        let mutex = Mutex::new(());
+        let condvar = Condvar::new();
 
-            let mut first = Box::pin(condvar.wait(mutex.lock().await));
+        let mut first = Box::pin(condvar.wait(mutex.try_lock().unwrap()));
+        assert!(poll_once(first.as_mut()).is_pending());
+
+        let mut second = pin!(condvar.wait(mutex.try_lock().unwrap()));
+        assert!(poll_once(second.as_mut()).is_pending());
+
+        let held = mutex.try_lock().unwrap();
+        condvar.notify_one();
+
+        // Cancel either before the selected waiter is polled again or while it reacquires
+        // the mutex. Both paths must pass the notification to the next waiter.
+        if reacquire {
             assert!(poll_once(first.as_mut()).is_pending());
-
-            let mut second = pin!(condvar.wait(mutex.lock().await));
-            assert!(poll_once(second.as_mut()).is_pending());
-
-            let held = mutex.lock().await;
-            condvar.notify_one();
-
-            // Cancel either before the selected waiter is polled again or while it reacquires
-            // the mutex. Both paths must pass the notification to the next waiter.
-            if reacquire {
-                assert!(poll_once(first.as_mut()).is_pending());
-            }
-            drop(first);
-            drop(held);
-
-            drop(expect_ready(poll_once(second.as_mut())));
         }
-    });
+        drop(first);
+        drop(held);
+
+        drop(expect_ready(poll_once(second.as_mut())));
+    }
 }
 
 #[test]
 fn cancelling_only_notified_waiter_does_not_buffer_notify_one() {
-    test_runtime().block_on(async {
-        for reacquire in [false, true] {
-            let mutex = Mutex::new(());
-            let condvar = Condvar::new();
+    for reacquire in [false, true] {
+        let mutex = Mutex::new(());
+        let condvar = Condvar::new();
 
-            let mut first = Box::pin(condvar.wait(mutex.lock().await));
+        let mut first = Box::pin(condvar.wait(mutex.try_lock().unwrap()));
+        assert!(poll_once(first.as_mut()).is_pending());
+
+        let held = mutex.try_lock().unwrap();
+        condvar.notify_one();
+        if reacquire {
             assert!(poll_once(first.as_mut()).is_pending());
-
-            let held = mutex.lock().await;
-            condvar.notify_one();
-            if reacquire {
-                assert!(poll_once(first.as_mut()).is_pending());
-            }
-            drop(first);
-            drop(held);
-
-            let mut late = pin!(condvar.wait(mutex.lock().await));
-            assert!(poll_once(late.as_mut()).is_pending());
         }
-    });
+        drop(first);
+        drop(held);
+
+        let mut late = pin!(condvar.wait(mutex.try_lock().unwrap()));
+        assert!(poll_once(late.as_mut()).is_pending());
+    }
 }
 
 #[test]
 fn cancelled_notify_all_waiter_does_not_wake_late_waiter() {
-    test_runtime().block_on(async {
-        let mutex = Mutex::new(());
-        let condvar = Condvar::new();
+    let mutex = Mutex::new(());
+    let condvar = Condvar::new();
 
-        let mut current = Box::pin(condvar.wait(mutex.lock().await));
-        assert!(poll_once(current.as_mut()).is_pending());
-        condvar.notify_all();
+    let mut current = Box::pin(condvar.wait(mutex.try_lock().unwrap()));
+    assert!(poll_once(current.as_mut()).is_pending());
+    condvar.notify_all();
 
-        let mut late = pin!(condvar.wait(mutex.lock().await));
-        assert!(poll_once(late.as_mut()).is_pending());
-        drop(current);
+    let mut late = pin!(condvar.wait(mutex.try_lock().unwrap()));
+    assert!(poll_once(late.as_mut()).is_pending());
+    drop(current);
 
-        assert!(poll_once(late.as_mut()).is_pending());
-        condvar.notify_one();
-        drop(expect_ready(poll_once(late.as_mut())));
-    });
+    assert!(poll_once(late.as_mut()).is_pending());
+    condvar.notify_one();
+    drop(expect_ready(poll_once(late.as_mut())));
 }
 
 #[test]
 fn wait_owned_reacquires_the_mutex() {
-    test_runtime().block_on(async {
-        let mutex = Arc::new(Mutex::new(0));
-        let condvar = Condvar::new();
+    let mutex = Arc::new(Mutex::new(0));
+    let condvar = Condvar::new();
 
-        let mut wait = pin!(condvar.wait_owned(mutex.clone().lock_owned().await));
-        assert!(poll_once(wait.as_mut()).is_pending());
-        condvar.notify_one();
+    let mut wait = pin!(condvar.wait_owned(mutex.clone().try_lock_owned().unwrap()));
+    assert!(poll_once(wait.as_mut()).is_pending());
+    condvar.notify_one();
 
-        let mut guard = expect_ready(poll_once(wait.as_mut()));
-        *guard = 1;
-        drop(guard);
-        assert_eq!(*mutex.lock().await, 1);
-    });
+    let mut guard = expect_ready(poll_once(wait.as_mut()));
+    *guard = 1;
+    drop(guard);
+    assert_eq!(*mutex.try_lock().unwrap(), 1);
 }
 
 #[test]
