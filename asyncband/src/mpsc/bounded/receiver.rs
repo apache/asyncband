@@ -56,7 +56,7 @@ impl<T> Drop for BoundedReceiver<T> {
             (queue, recv_waker, waiters)
         };
         // Notify blocked senders before destroying buffered values, whose destructors may panic.
-        while let Some((id, _)) = waiters.unlink_first_waiter(|_| true) {
+        while let Some((id, _)) = waiters.unlink_first_waiter() {
             let Waiter::Waiting(waker) = waiters.remove_unlinked_waiter(id) else {
                 unreachable!("only waiting senders remain linked");
             };

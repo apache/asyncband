@@ -34,7 +34,7 @@ pub enum RetryWaiter {
 
 impl WaitList<RetryWaiter> {
     pub fn notify_one(&mut self) -> Option<Waker> {
-        let (_, waiter) = self.unlink_first_waiter(|_| true)?;
+        let (_, waiter) = self.unlink_first_waiter()?;
         let RetryWaiter::Waiting(waker) = mem::replace(waiter, RetryWaiter::Notified) else {
             unreachable!("only waiting operations remain linked");
         };

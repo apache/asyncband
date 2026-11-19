@@ -104,9 +104,7 @@ impl Latch {
     /// assert_eq!(latch.count(), 1);
     /// ```
     pub fn count_down(&self) {
-        if self.state.decrement(1) {
-            self.state.wake_all();
-        }
+        self.arrive(1);
     }
 
     /// Decrements the latch count by `n`, waking up all waiting tasks if the counter reaches zero.
@@ -126,9 +124,7 @@ impl Latch {
     /// assert_eq!(latch.count(), 0);
     /// ```
     pub fn arrive(&self, n: u32) {
-        if n != 0 && self.state.decrement(n) {
-            self.state.wake_all();
-        }
+        self.state.arrive(n);
     }
 
     /// Checks whether the countdown has reached zero without waiting.

@@ -120,6 +120,16 @@ struct State<T> {
 }
 
 impl<T> State<T> {
+    fn change_since(&self, seen: u64) -> Poll<Result<u64, RecvError>> {
+        if self.version != seen {
+            Poll::Ready(Ok(self.version))
+        } else if self.senders == 0 {
+            Poll::Ready(Err(RecvError::Disconnected))
+        } else {
+            Poll::Pending
+        }
+    }
+
     // Leave the old value with the caller so it can be dropped after unlocking. Borrowing the
     // input also keeps its destructor outside the lock if the version counter overflows.
     fn publish(&mut self, value: &mut T) -> WakerBatch {
@@ -288,13 +298,9 @@ impl<T> Receiver<T> {
     /// Returns [`RecvError::Disconnected`] when all senders have been dropped and no unseen
     /// version remains.
     pub fn has_changed(&self) -> Result<bool, RecvError> {
-        let state = self.shared.state.lock();
-        if state.version != self.seen {
-            Ok(true)
-        } else if state.senders == 0 {
-            Err(RecvError::Disconnected)
-        } else {
-            Ok(false)
+        match self.shared.state.lock().change_since(self.seen) {
+            Poll::Ready(result) => result.map(|_| true),
+            Poll::Pending => Ok(false),
         }
     }
 
@@ -385,21 +391,16 @@ impl<T> Future for Change<'_, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let mut state = this.shared.state.lock();
-        let (poll, retired_waker) = if state.version != this.seen {
-            // Publishing a newer version detached this registration under the same lock.
+        let change = state.change_since(this.seen);
+        if change.is_ready() {
+            // Publication and the final sender drop both detach registrations under this lock.
             this.token = None;
-            (Poll::Ready(Ok(state.version)), None)
-        } else if state.senders == 0 {
-            // The final sender detached all registrations before releasing this state lock.
-            this.token = None;
-            (Poll::Ready(Err(RecvError::Disconnected)), None)
-        } else {
-            let retired = state.waiters.register(&mut this.token, cx.waker());
-            (Poll::Pending, retired)
-        };
+            return change;
+        }
+        let retired_waker = state.waiters.register(&mut this.token, cx.waker());
         drop(state);
         drop(retired_waker);
-        poll
+        Poll::Pending
     }
 }
 
@@ -410,9 +411,8 @@ impl<T> Drop for Change<'_, T> {
         }
 
         let mut state = self.shared.state.lock();
-        if state.version != self.seen || state.senders == 0 {
+        if state.change_since(self.seen).is_ready() {
             // A publication or terminal sender drop already detached this registration.
-            self.token = None;
             return;
         }
 

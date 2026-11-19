@@ -110,7 +110,7 @@ impl ManualResetEvent {
             self.is_set.store(true, Ordering::Release);
             // Detach the complete cohort before invoking any waker. A wake callback may reset the
             // event and register a new wait, which must belong to the state current at that point.
-            while let Some((_, waiter)) = waiters.unlink_first_waiter(|_| true) {
+            while let Some((_, waiter)) = waiters.unlink_first_waiter() {
                 wakers.push(waiter.mark_notified());
             }
         }

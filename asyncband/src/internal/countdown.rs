@@ -54,12 +54,6 @@ impl CountdownState {
             .map(|_| ())
     }
 
-    /// Detaches the waiter set under its lock, then wakes every waiter after releasing the lock.
-    pub fn wake_all(&self) {
-        let wakers = mem::take(&mut *self.waiters.lock());
-        wakers.wake_all();
-    }
-
     pub fn wait(&self) -> impl Future<Output = ()> + '_ {
         CountdownWait {
             countdown: self,
@@ -75,18 +69,26 @@ impl CountdownState {
         }
     }
 
-    /// Decrements the counter by `n`, returning whether the caller should wake up all waiters.
-    pub fn decrement(&self, n: u32) -> bool {
+    /// Records `n` arrivals and wakes all waiters if the remaining count reaches zero.
+    /// Returns whether this operation completed the countdown.
+    pub fn arrive(&self, n: u32) -> bool {
+        if n == 0 {
+            return false;
+        }
         let mut cnt = self.state();
         loop {
             if cnt == 0 {
-                // Only the operation that performs the transition to zero owns waiter notification.
                 return false;
             }
 
             let new_cnt = cnt.saturating_sub(n);
             match self.cas_state(cnt, new_cnt) {
-                Ok(_) => return new_cnt == 0,
+                Ok(_) if new_cnt == 0 => {
+                    let wakers = mem::take(&mut *self.waiters.lock());
+                    wakers.wake_all();
+                    return true;
+                }
+                Ok(_) => return false,
                 Err(x) => cnt = x,
             }
         }

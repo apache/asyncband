@@ -122,7 +122,7 @@ impl WaitList<SendWaiter> {
     }
 
     fn grant_one(&mut self) -> Option<Waker> {
-        let (_, waiter) = self.unlink_first_waiter(|_| true)?;
+        let (_, waiter) = self.unlink_first_waiter()?;
         let SendWaiter::Waiting(waker) = mem::replace(waiter, SendWaiter::Granted) else {
             unreachable!("only waiting operations remain linked");
         };
@@ -130,7 +130,7 @@ impl WaitList<SendWaiter> {
     }
 
     fn take_waiting_waker(&mut self) -> Option<Waker> {
-        let (id, _) = self.unlink_first_waiter(|_| true)?;
+        let (id, _) = self.unlink_first_waiter()?;
         let SendWaiter::Waiting(waker) = self.remove_unlinked_waiter(id) else {
             unreachable!("only waiting operations remain linked");
         };
