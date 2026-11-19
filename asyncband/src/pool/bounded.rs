@@ -311,21 +311,16 @@ impl<M: ManageObject> Pool<M> {
                         pool: self,
                     };
 
-                    let state = unready_object.state();
-                    let status = state.status;
-                    if self
-                        .manager
-                        .is_recyclable(&mut state.o, &status)
+                    if unready_object
+                        .state()
+                        .try_recycle(&self.manager)
                         .await
                         .is_ok()
                     {
-                        state.status.mark_recycled();
                         break unready_object.ready(permit);
-                    } else {
-                        // We need to manually detach here as the drop implementation
-                        // depends on the recycle cancelled strategy.
-                        unready_object.detach();
                     }
+                    // A rejected object must be detached even when cancellation would restore it.
+                    unready_object.detach();
                 }
             };
         };

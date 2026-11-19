@@ -20,6 +20,7 @@
 
 use std::collections::VecDeque;
 
+use crate::pool::ManageObject;
 use crate::pool::ObjectStatus;
 use crate::pool::QueueStrategy;
 use crate::pool::RetainResult;
@@ -36,6 +37,15 @@ impl<T> ObjectState<T> {
             o,
             status: ObjectStatus::default(),
         }
+    }
+
+    pub async fn try_recycle<M: ManageObject<Object = T>>(
+        &mut self,
+        manager: &M,
+    ) -> Result<(), M::Error> {
+        manager.is_recyclable(&mut self.o, &self.status).await?;
+        self.status.mark_recycled();
+        Ok(())
     }
 }
 
