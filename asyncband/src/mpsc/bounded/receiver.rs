@@ -97,14 +97,7 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let mut state = self.shared.lock();
-        let value = match state.queue.pop_front() {
-            Some(value) => value,
-            None if state.senders == 0 => return Err(TryRecvError::Disconnected),
-            None => return Err(TryRecvError::Empty),
-        };
-        let wake = state.release();
-        drop(state);
+        let (value, wake) = self.shared.lock().dequeue()?;
         if let Some(waker) = wake {
             waker.wake();
         }
@@ -193,22 +186,21 @@ impl<T> BoundedReceiver<T> {
 
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
         let mut state = self.shared.lock();
-        match state.queue.pop_front() {
-            Some(value) => {
-                let wake = state.release();
+        match state.dequeue() {
+            Ok((value, wake)) => {
                 drop(state);
                 if let Some(waker) = wake {
                     waker.wake();
                 }
                 Poll::Ready(Ok(value))
             }
-            None if state.senders == 0 => {
+            Err(TryRecvError::Disconnected) => {
                 let old = state.recv_waker.take();
                 drop(state);
                 drop(old);
                 Poll::Ready(Err(RecvError::Disconnected))
             }
-            None => {
+            Err(TryRecvError::Empty) => {
                 let old = register_waker(&mut state.recv_waker, cx.waker());
                 drop(state);
                 drop(old);

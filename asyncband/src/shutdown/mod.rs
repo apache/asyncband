@@ -84,7 +84,7 @@ pub fn new() -> (Shutdown, ShutdownGuard) {
         wait: wg.clone().into_future(),
     };
     let guard = ShutdownGuard {
-        latch,
+        watch: ShutdownWatch { latch },
         wait_group: wg,
     };
     (shutdown, guard)
@@ -157,7 +157,7 @@ impl Future for Shutdown {
 /// See the [module level documentation](self) for more.
 #[derive(Debug, Clone)]
 pub struct ShutdownGuard {
-    latch: Arc<Latch>,
+    watch: ShutdownWatch,
     #[expect(
         dead_code,
         reason = "keeps shutdown completion pending until this guard is dropped"
@@ -171,20 +171,17 @@ impl ShutdownGuard {
     /// The returned handle does not delay shutdown completion, but this guard still does. Use
     /// [`into_watch`](Self::into_watch) to stop keeping completion pending.
     pub fn watch(&self) -> ShutdownWatch {
-        ShutdownWatch {
-            latch: self.latch.clone(),
-        }
+        self.watch.clone()
     }
 
     /// Converts this guard into a watch that does not delay completion.
     pub fn into_watch(self) -> ShutdownWatch {
-        let Self { latch, .. } = self;
-        ShutdownWatch { latch }
+        self.watch
     }
 
     /// Returns whether shutdown has been requested.
     pub fn is_shutdown_requested(&self) -> bool {
-        self.latch.try_wait().is_ok()
+        self.watch.is_shutdown_requested()
     }
 
     /// Waits until shutdown is requested.
@@ -194,7 +191,7 @@ impl ShutdownGuard {
     /// Dropping a pending future removes only this wait. It does not request shutdown, clear an
     /// existing request, or drop the handle borrowed by this call.
     pub async fn shutdown_requested(&self) {
-        self.latch.wait().await;
+        self.watch.shutdown_requested().await;
     }
 
     /// Returns a future that observes a shutdown request without borrowing this handle.
@@ -206,7 +203,7 @@ impl ShutdownGuard {
     /// Dropping the future removes only this wait. It does not request shutdown or clear an
     /// existing request.
     pub fn shutdown_requested_owned(&self) -> impl Future<Output = ()> + 'static {
-        self.latch.clone().wait_owned()
+        self.watch.shutdown_requested_owned()
     }
 }
 

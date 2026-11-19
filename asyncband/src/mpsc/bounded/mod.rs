@@ -24,6 +24,7 @@ use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
 use crate::internal::waitlist::WaitList;
+use crate::mpsc::TryRecvError;
 use crate::mpsc::TrySendError;
 
 mod receiver;
@@ -82,6 +83,15 @@ struct State<T> {
 }
 
 impl<T> State<T> {
+    /// Removes the oldest value and returns its slot to the first waiting sender, if any.
+    fn dequeue(&mut self) -> Result<(T, Option<Waker>), TryRecvError> {
+        match self.queue.pop_front() {
+            Some(value) => Ok((value, self.release())),
+            None if self.senders == 0 => Err(TryRecvError::Disconnected),
+            None => Err(TryRecvError::Empty),
+        }
+    }
+
     fn acquire(&mut self) -> Result<(), TrySendError<()>> {
         if !self.receiver {
             Err(TrySendError::Disconnected(()))

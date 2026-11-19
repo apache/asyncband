@@ -66,13 +66,15 @@ fn yield_now() {
 }
 
 impl ParkerState {
-    fn park(&self, timeout: Option<Duration>) {
-        // Notifications are tokens. Consuming one is the common self-wake path and needs no lock.
-        if self
-            .state
+    fn try_consume_notification(&self) -> bool {
+        self.state
             .compare_exchange(NOTIFIED, EMPTY, SeqCst, SeqCst)
             .is_ok()
-        {
+    }
+
+    fn park(&self, timeout: Option<Duration>) {
+        // Notifications are tokens. Consuming one is the common self-wake path and needs no lock.
+        if self.try_consume_notification() {
             return;
         }
 
@@ -85,11 +87,7 @@ impl ParkerState {
         // so time spent yielding would extend the caller's deadline.
         if timeout.is_none() {
             yield_now();
-            if self
-                .state
-                .compare_exchange(NOTIFIED, EMPTY, SeqCst, SeqCst)
-                .is_ok()
-            {
+            if self.try_consume_notification() {
                 return;
             }
         }
@@ -109,11 +107,7 @@ impl ParkerState {
         match timeout {
             None => loop {
                 guard = self.condvar.wait(guard).unwrap();
-                if self
-                    .state
-                    .compare_exchange(NOTIFIED, EMPTY, SeqCst, SeqCst)
-                    .is_ok()
-                {
+                if self.try_consume_notification() {
                     return;
                 }
             },
