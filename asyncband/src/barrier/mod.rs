@@ -198,8 +198,7 @@ impl Barrier {
     pub async fn wait(&self) -> BarrierWaitResult {
         BarrierWait {
             barrier: self,
-            generation: 0,
-            token: None,
+            registration: None,
         }
         .await
     }
@@ -209,17 +208,21 @@ impl Barrier {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 struct BarrierWait<'a> {
     barrier: &'a Barrier,
-    /// The generation joined by the first poll, meaningful while `token` is set.
+    registration: Option<Registration>,
+}
+
+struct Registration {
     generation: u64,
-    /// The follower's registration. `None` also means not yet arrived, so this must not be polled
-    /// after `Ready`, which the `async fn` in [`Barrier::wait`] guarantees.
-    token: Option<WakerToken>,
+    token: WakerToken,
 }
 
 impl fmt::Debug for BarrierWait<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BarrierWait")
-            .field("generation", &self.generation)
+            .field(
+                "generation",
+                &self.registration.as_ref().map(|r| r.generation),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -231,48 +234,48 @@ impl Future for BarrierWait<'_> {
         let this = self.get_mut();
         let mut state = this.barrier.state.lock();
 
-        if this.token.is_none() {
-            state.arrived += 1;
-            // The final arrival completes this generation. Advance the generation while holding
-            // the state lock, then wake the detached followers after releasing it.
-            if state.arrived == this.barrier.n {
-                state.arrived = 0;
-                state.generation = state.generation.wrapping_add(1);
-                let mut wakers = state.waiters.take_all();
-                drop(state);
-                wakers.wake_all();
-                return Poll::Ready(BarrierWaitResult(true));
+        if let Some(registration) = &this.registration {
+            if state.generation != registration.generation {
+                // Completing this generation detached all of its registrations.
+                this.registration = None;
+                return Poll::Ready(BarrierWaitResult(false));
             }
-            this.generation = state.generation;
-        } else if state.generation != this.generation {
-            // Completion advances the generation and detaches its old waiters under this same lock,
-            // so no registration represented by this token remains in the waker set.
-            this.token = None;
-            return Poll::Ready(BarrierWaitResult(false));
+            let retired_waker = state.waiters.update(&registration.token, cx.waker());
+            drop(state);
+            drop(retired_waker);
+            return Poll::Pending;
         }
 
-        let retired_waker = state.waiters.register(&mut this.token, cx.waker());
-        drop(state);
-        drop(retired_waker);
+        state.arrived += 1;
+        if state.arrived == this.barrier.n {
+            state.arrived = 0;
+            state.generation = state.generation.wrapping_add(1);
+            let mut wakers = state.waiters.take_all();
+            drop(state);
+            wakers.wake_all();
+            return Poll::Ready(BarrierWaitResult(true));
+        }
+        this.registration = Some(Registration {
+            generation: state.generation,
+            token: state.waiters.insert(cx.waker()),
+        });
         Poll::Pending
     }
 }
 
 impl Drop for BarrierWait<'_> {
     fn drop(&mut self) {
-        if self.token.is_none() {
+        let Some(registration) = self.registration.take() else {
             return;
-        }
+        };
 
         let mut state = self.barrier.state.lock();
-        if state.generation != self.generation {
-            // Advancing the generation detached this registration before making the new generation
-            // visible under the same lock.
-            self.token = None;
+        if state.generation != registration.generation {
+            // The current generation may already have reused this slot.
             return;
         }
 
-        let removed_waker = state.waiters.unregister(&mut self.token);
+        let removed_waker = state.waiters.remove(registration.token);
         drop(state);
         drop(removed_waker);
     }
