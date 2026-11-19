@@ -182,12 +182,10 @@ impl Once {
 
         f().await;
 
-        // `decrement` retries spurious failures from the weak CAS.
-        if !self.done.decrement(1) {
-            unreachable!("[BUG] Once completed more than once");
-        }
-
-        self.done.wake_all();
+        assert!(
+            self.done.decrement(1),
+            "[BUG] Once completed more than once"
+        );
     }
 
     /// Waits until an initializer passed to [`call_once`](Self::call_once) completes successfully.
