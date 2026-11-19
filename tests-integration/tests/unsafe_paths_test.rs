@@ -63,7 +63,14 @@ fn mapped_mutex_guards_preserve_lock_ownership() {
         } else {
             OwnedMutexGuard::map(guard, |value| value.as_mut().unwrap())
         };
-        let mut mapped = OwnedMappedMutexGuard::map(mapped, |values| &mut values[0]);
+        let mut mapped = if fallible_projection {
+            let mapped =
+                OwnedMappedMutexGuard::filter_map(mapped, |values| values.get_mut(2)).unwrap_err();
+            assert!(mutex.try_lock().is_none());
+            OwnedMappedMutexGuard::filter_map(mapped, |values| values.first_mut()).unwrap()
+        } else {
+            OwnedMappedMutexGuard::map(mapped, |values| &mut values[0])
+        };
         assert!(mutex.try_lock().is_none());
         *mapped = 7;
         drop(mapped);

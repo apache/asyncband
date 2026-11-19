@@ -69,7 +69,6 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ops::DerefMut;
-use std::ptr;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -528,14 +527,8 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
     {
         let d = NonNull::from(f(&mut *orig));
 
-        let guard = ManuallyDrop::new(orig);
-
-        // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
-        // so the `Arc` can be moved out to transfer lock ownership to the new guard.
-        let lock = unsafe { ptr::read(&guard.lock) };
-
         OwnedMappedMutexGuard {
-            lock,
+            guard: orig,
             d,
             variance: PhantomData,
         }
@@ -583,14 +576,8 @@ impl<T: ?Sized> OwnedMutexGuard<T> {
         match f(&mut *orig) {
             Some(d) => {
                 let d = NonNull::from(d);
-                let guard = ManuallyDrop::new(orig);
-
-                // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
-                // so the `Arc` can be moved out to transfer lock ownership to the new guard.
-                let lock = unsafe { ptr::read(&guard.lock) };
-
                 Ok(OwnedMappedMutexGuard {
-                    lock,
+                    guard: orig,
                     d,
                     variance: PhantomData,
                 })
@@ -800,6 +787,8 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
 ///
 /// [`OwnedMutexGuard::map`] and [`OwnedMutexGuard::filter_map`] create this guard. It keeps the
 /// original mutex alive and locked while exposing only the projected component.
+/// Further projections retain exclusive access to the entire protected value until the final
+/// guard is dropped.
 ///
 /// # Examples
 ///
@@ -827,9 +816,12 @@ impl<'a, T: ?Sized> MappedMutexGuard<'a, T> {
 /// ```
 #[must_use = "dropping the guard releases the mutex immediately"]
 pub struct OwnedMappedMutexGuard<T: ?Sized, U: ?Sized> {
-    lock: Arc<Mutex<T>>,
+    // Move this guard through every projection to keep the allocation alive and unlock exactly
+    // once. Access the protected value only through `d` after projecting it.
+    guard: OwnedMutexGuard<T>,
     d: NonNull<U>,
-    // Mutable access requires invariance over U.
+    // NonNull is covariant. Writing through &mut U requires invariance so a caller cannot
+    // shorten a reference lifetime in U and write it back into longer-lived storage.
     variance: PhantomData<*mut U>,
 }
 
@@ -840,12 +832,6 @@ unsafe impl<T: ?Sized + Send, U: ?Sized + Send> Send for OwnedMappedMutexGuard<T
 // SAFETY: `&OwnedMappedMutexGuard<T, U>` yields only `&U`, and dropping/cloning lock state requires
 // `Mutex<T>: Sync`, so sharing across threads is safe when `T: Send + Sync` and `U: Send + Sync`.
 unsafe impl<T: ?Sized + Send + Sync, U: ?Sized + Send + Sync> Sync for OwnedMappedMutexGuard<T, U> {}
-
-impl<T: ?Sized, U: ?Sized> Drop for OwnedMappedMutexGuard<T, U> {
-    fn drop(&mut self) {
-        self.lock.s.release(PERMITS_PER_LOCK);
-    }
-}
 
 impl<T: ?Sized, U: ?Sized + fmt::Debug> fmt::Debug for OwnedMappedMutexGuard<T, U> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -929,14 +915,8 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
         V: ?Sized,
     {
         let d = NonNull::from(f(&mut *orig));
-        let orig = ManuallyDrop::new(orig);
-
-        // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
-        // so the `Arc` can be moved out to transfer lock ownership to the new guard.
-        let lock = unsafe { ptr::read(&orig.lock) };
-
         OwnedMappedMutexGuard {
-            lock,
+            guard: orig.guard,
             d,
             variance: PhantomData,
         }
@@ -994,14 +974,8 @@ impl<T: ?Sized, U: ?Sized> OwnedMappedMutexGuard<T, U> {
         match f(&mut *orig) {
             Some(d) => {
                 let d = NonNull::from(d);
-                let orig = ManuallyDrop::new(orig);
-
-                // SAFETY: The guard is wrapped in `ManuallyDrop` and will not be dropped,
-                // so the `Arc` can be moved out to transfer lock ownership to the new guard.
-                let lock = unsafe { ptr::read(&orig.lock) };
-
                 Ok(OwnedMappedMutexGuard {
-                    lock,
+                    guard: orig.guard,
                     d,
                     variance: PhantomData,
                 })
