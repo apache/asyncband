@@ -17,6 +17,7 @@
 
 use std::future::IntoFuture;
 use std::hint::black_box;
+use std::pin::Pin;
 
 use asyncband::waitgroup::WaitGroup;
 use benchmarks::harness::Bencher;
@@ -24,7 +25,7 @@ use benchmarks::harness::Runner;
 use benchmarks::primitive;
 use benchmarks::support::bench_context;
 use benchmarks::support::poll_pending;
-use benchmarks::support::poll_pinned_ready;
+use benchmarks::support::poll_ready;
 
 const WAITER_COUNTS: &[usize] = &[1, 4, 16];
 
@@ -35,16 +36,14 @@ fn complete_waiter_batch(bencher: Bencher, waiter_count: usize) {
         let root = WaitGroup::new();
         let worker = root.clone();
         let wait = root.into_future();
-        let mut waiters = (0..waiter_count)
-            .map(|_| Box::pin(wait.clone()))
-            .collect::<Vec<_>>();
+        let mut waiters = (0..waiter_count).map(|_| wait.clone()).collect::<Vec<_>>();
         for waiter in &mut waiters {
-            poll_pending(waiter.as_mut(), &mut context);
+            poll_pending(Pin::new(waiter), &mut context);
         }
 
         drop(worker);
-        for mut waiter in waiters {
-            poll_pinned_ready(waiter.as_mut(), &mut context);
+        for waiter in waiters {
+            poll_ready(waiter, &mut context);
         }
         black_box(())
     });
