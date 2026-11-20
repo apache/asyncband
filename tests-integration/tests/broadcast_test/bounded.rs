@@ -513,15 +513,21 @@ fn cancelled_notified_sender_passes_capacity_to_the_next_sender() {
     let (tx, mut rx) = bounded(1);
     tx.try_send(0).unwrap();
 
+    let (first_waker, first_wakes) = WakeCounter::new();
+    let (second_waker, second_wakes) = WakeCounter::new();
     let mut first = Box::pin(tx.send(1));
     let mut second = pin!(tx.send(2));
-    assert!(poll_once(first.as_mut()).is_pending());
-    assert!(poll_once(second.as_mut()).is_pending());
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+    assert_eq!(first_wakes.count(), 0);
 
     assert_eq!(rx.try_recv().as_deref(), Ok(&0));
-    drop(first);
+    assert_eq!(first_wakes.count(), 1);
+    assert_eq!(second_wakes.count(), 0);
 
-    assert!(poll_once(second.as_mut()).is_ready());
+    drop(first);
+    assert_eq!(second_wakes.count(), 1);
+    assert!(poll_with(second.as_mut(), &second_waker).is_ready());
     assert_eq!(rx.try_recv().as_deref(), Ok(&2));
 }
 
