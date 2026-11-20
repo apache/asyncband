@@ -34,6 +34,15 @@ pub(super) fn block_on<F: IntoFuture>(future: F) -> F::Output {
 }
 
 pub(super) fn wait_timeout<F: IntoFuture>(future: F, timeout: Duration) -> Option<F::Output> {
+    if timeout.is_zero() {
+        let mut future = pin!(future.into_future());
+        let mut context = Context::from_waker(Waker::noop());
+        return match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => Some(output),
+            Poll::Pending => None,
+        };
+    }
+
     let Some(deadline) = Instant::now().checked_add(timeout) else {
         // A duration beyond Instant's range cannot expire during the process lifetime.
         return Some(block_on(future));
@@ -70,20 +79,21 @@ thread_local! {
 }
 
 fn with_parker<T>(wait: impl FnOnce(&Parker, &Waker) -> T) -> T {
-    CACHE.with(|cache| {
-        let cached;
-        let fresh;
-        let (parker, waker) = match cache.try_borrow_mut() {
-            Ok(pair) => {
-                cached = pair;
-                &*cached
-            }
-            Err(_) => {
-                fresh = parker_and_waker();
-                &fresh
-            }
+    let mut wait = Some(wait);
+    let result = CACHE.try_with(|cache| {
+        let Ok(pair) = cache.try_borrow_mut() else {
+            return None;
         };
+        let (parker, waker) = &*pair;
+        Some(wait.take().unwrap()(parker, waker))
+    });
 
-        wait(parker, waker)
-    })
+    match result {
+        Ok(Some(output)) => output,
+        // Fall back to a fresh parker on recursive reentrancy or during TLS teardown.
+        Ok(None) | Err(_) => {
+            let (parker, waker) = parker_and_waker();
+            wait.take().unwrap()(&parker, &waker)
+        }
+    }
 }

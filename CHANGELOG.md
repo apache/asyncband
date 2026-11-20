@@ -32,11 +32,13 @@ All significant changes to this project will be documented in this file.
 * Speed up `WaitGroup` handle cloning, worker completion, and waiting across single- and multi-observer workloads, while avoiding extra heap allocations when at most one observer waits before completion.
 * Speed up unlocking an uncontended `Mutex` by avoiding its internal wait-queue lock.
 * Speed up publishing a watch value and immediately reading it with `watch::Receiver::recv` on a single receiver.
+* Speed up `blocking::FutureExt::wait_timeout` with `Duration::ZERO` by polling once without reading the clock or borrowing the thread-local parker.
 
 ### Bug fixes
 
 * Allow payload destructors to reenter bounded and unbounded broadcast channels when a send panics on message version overflow.
 * Avoid preallocating waiter capacity in `Barrier::new` so large participant counts no longer panic or abort on construction before tasks wait.
+* Allow `blocking::FutureExt::{block_on, wait_timeout}` to run during thread-local destructor teardown after the thread's cached parker has been destroyed.
 
 ## v0.8.0 (2026-11-15)
 

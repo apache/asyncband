@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::RefCell;
 use std::future::Future;
 use std::future::pending;
 use std::future::poll_fn;
@@ -44,6 +45,63 @@ fn block_on_supports_method_and_ufcs_syntax() {
 fn wait_timeout_polls_before_checking_the_deadline() {
     assert_eq!(async { 42 }.wait_timeout(Duration::ZERO), Some(42));
     assert_eq!(pending::<()>().wait_timeout(Duration::ZERO), None);
+
+    let (completion, mut future, polls) = controlled_future();
+    assert_eq!((&mut future).wait_timeout(Duration::ZERO), None);
+    polls.recv_timeout(TEST_WATCHDOG).unwrap();
+
+    let producer = thread::spawn(move || {
+        polls.recv().unwrap();
+        completion.complete(7);
+    });
+    assert_eq!(future.block_on(), 7);
+    producer.join().unwrap();
+}
+
+#[test]
+fn waits_work_during_thread_local_destruction() {
+    struct OnDrop(Option<mpsc::Sender<usize>>);
+
+    impl Drop for OnDrop {
+        fn drop(&mut self) {
+            let Some(done_tx) = self.0.take() else {
+                return;
+            };
+
+            let (completion, future, polls) = controlled_future();
+            let notifier = thread::spawn(move || {
+                polls.recv().unwrap();
+                completion.complete(20);
+            });
+            let first = future.block_on();
+            notifier.join().unwrap();
+
+            let second = async { 22 }.wait_timeout(TEST_WATCHDOG).unwrap();
+            done_tx.send(first + second).unwrap();
+        }
+    }
+
+    thread_local! {
+        static BEFORE_CACHE: RefCell<OnDrop> = const { RefCell::new(OnDrop(None)) };
+        static AFTER_CACHE: RefCell<OnDrop> = const { RefCell::new(OnDrop(None)) };
+    }
+
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = thread::spawn({
+        let done_tx = done_tx.clone();
+        move || {
+            // Register one destructor before and one after initializing the executor's TLS cache so
+            // at least one runs after the cache is destroyed regardless of TLS teardown order.
+            BEFORE_CACHE.with(|slot| *slot.borrow_mut() = OnDrop(Some(done_tx.clone())));
+            assert_eq!(async { 1 }.block_on(), 1);
+            AFTER_CACHE.with(|slot| *slot.borrow_mut() = OnDrop(Some(done_tx)));
+        }
+    });
+    drop(done_tx);
+
+    worker.join().unwrap();
+    assert_eq!(done_rx.recv_timeout(TEST_WATCHDOG).unwrap(), 42);
+    assert_eq!(done_rx.recv_timeout(TEST_WATCHDOG).unwrap(), 42);
 }
 
 #[test]

@@ -234,4 +234,23 @@ mod tests {
             notifier.join().unwrap();
         });
     }
+
+    #[test]
+    fn timed_park_sleeps_until_woken() {
+        with_watchdog(|| {
+            reset_yields();
+            let parker = Parker::new();
+            let state = parker.state.clone();
+            let notifier = thread::spawn(move || {
+                while state.state.load(SeqCst) != PARKED {
+                    thread::yield_now();
+                }
+                state.unpark();
+            });
+            parker.park_timeout(Duration::from_secs(5));
+            assert_eq!(yield_count(), 0);
+            assert_eq!(parker.state.state.load(SeqCst), EMPTY);
+            notifier.join().unwrap();
+        });
+    }
 }
