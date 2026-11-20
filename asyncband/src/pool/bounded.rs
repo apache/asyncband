@@ -238,9 +238,10 @@ impl<M: ManageObject> Pool<M> {
         }
         let needed = {
             let slots = self.core.slots.lock();
-            let missing_idle = target_idle.saturating_sub(slots.idle_count());
-            let remaining_capacity = self.max_size.saturating_sub(slots.current_size());
-            missing_idle.min(remaining_capacity)
+            let idle_count = slots.idle_count();
+            let missing_idle = target_idle.saturating_sub(idle_count);
+            let available_slots = self.permits.available_permits().saturating_sub(idle_count);
+            missing_idle.min(available_slots)
         };
         let reserved = self.permits.drain_permits(needed);
         if reserved == 0 {
