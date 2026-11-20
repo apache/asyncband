@@ -23,11 +23,8 @@ excludes = [
   # These third-party-derived files retain the applicable upstream license and copyright notices.
   "asyncband/src/blocking/executor.rs",
   "asyncband/src/blocking/parker.rs",
-  "asyncband/src/pool/bounded.rs",
   "asyncband/src/pool/common.rs",
   "asyncband/src/pool/mod.rs",
-  "asyncband/src/pool/state.rs",
-  "asyncband/src/pool/unbounded.rs",
 ]
 includes = [
   "**/*.md",

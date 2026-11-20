@@ -19,13 +19,19 @@ use std::cell::Cell;
 use std::convert::Infallible;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
+use std::vec;
 
+use asyncband::pool::ManageObject;
+use asyncband::pool::ObjectStatus;
 use asyncband::pool::QueueStrategy;
 use asyncband::pool::bounded;
 use asyncband::pool::unbounded;
 
 use crate::support::Manager;
+use crate::support::ready;
 
 #[test]
 #[should_panic(expected = "bounded pool max_size must be greater than zero")]
@@ -145,4 +151,102 @@ fn retain_predicate_panic_preserves_pool_ownership() {
         .collect::<Vec<_>>();
     objects.sort_unstable();
     assert_eq!(objects, [1, 2, 3, 4]);
+}
+
+#[test]
+fn extend_converts_and_drops_iterator_outside_pool_lock() {
+    struct ReentrantIter<'a> {
+        pool: &'a unbounded::Pool<usize>,
+        items: vec::IntoIter<usize>,
+        panic_after_first: bool,
+        observed_on_drop: &'a Cell<usize>,
+    }
+
+    impl Iterator for ReentrantIter<'_> {
+        type Item = usize;
+
+        fn next(&mut self) -> Option<usize> {
+            let next = self.items.next()?;
+            assert!(
+                !(self.panic_after_first && next == 2),
+                "iterator step panic"
+            );
+            Some(next)
+        }
+    }
+
+    impl Drop for ReentrantIter<'_> {
+        fn drop(&mut self) {
+            self.observed_on_drop.set(self.pool.status().idle_count);
+        }
+    }
+
+    struct ReentrantIntoIter<'a>(ReentrantIter<'a>);
+
+    impl<'a> IntoIterator for ReentrantIntoIter<'a> {
+        type Item = usize;
+        type IntoIter = ReentrantIter<'a>;
+
+        fn into_iter(self) -> Self::IntoIter {
+            assert_eq!(
+                self.0.pool.status().current_size,
+                self.0.observed_on_drop.get()
+            );
+            self.0
+        }
+    }
+
+    let pool = unbounded::Pool::<usize>::never_manage(unbounded::PoolConfig::default());
+    let observed = Cell::new(0);
+    pool.extend(ReentrantIntoIter(ReentrantIter {
+        pool: &pool,
+        items: vec![1, 2].into_iter(),
+        panic_after_first: false,
+        observed_on_drop: &observed,
+    }));
+    assert_eq!(observed.get(), 2);
+
+    let unwound = catch_unwind(AssertUnwindSafe(|| {
+        pool.extend(ReentrantIntoIter(ReentrantIter {
+            pool: &pool,
+            items: vec![1, 2].into_iter(),
+            panic_after_first: true,
+            observed_on_drop: &observed,
+        }));
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(observed.get(), 3);
+    assert_eq!(pool.status().idle_count, 3);
+}
+
+#[test]
+fn panicking_detach_hook_still_releases_bounded_pool_capacity() {
+    struct PanicOnFirstDetach(AtomicBool);
+
+    impl ManageObject for PanicOnFirstDetach {
+        type Object = usize;
+        type Error = Infallible;
+
+        async fn create(&self) -> Result<usize, Infallible> {
+            Ok(7)
+        }
+
+        async fn is_recyclable(&self, _: &mut usize, _: &ObjectStatus) -> Result<(), Infallible> {
+            Ok(())
+        }
+
+        fn on_detached(&self, _: &mut usize) {
+            assert!(!self.0.swap(false, Ordering::Relaxed), "detach hook panic");
+        }
+    }
+
+    let pool = bounded::Pool::new(
+        bounded::PoolConfig::new(1),
+        PanicOnFirstDetach(AtomicBool::new(true)),
+    );
+    let object = ready(pool.get()).unwrap();
+    assert!(catch_unwind(AssertUnwindSafe(|| object.detach())).is_err());
+    assert_eq!(pool.status().current_size, 0);
+    assert_eq!(pool.status().idle_count, 0);
+    assert_eq!(*ready(pool.get()).unwrap(), 7);
 }

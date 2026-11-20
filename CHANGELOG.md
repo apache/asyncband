@@ -39,6 +39,7 @@ All significant changes to this project will be documented in this file.
 
 * Allow payload destructors to reenter bounded and unbounded broadcast channels when a send panics on message version overflow.
 * Allow `blocking::FutureExt::{block_on, wait_timeout}` to run during thread-local destructor teardown after the thread's cached parker has been destroyed.
+* Avoid transiently draining semaphore permits for existing idle objects when `pool::bounded::Pool::replenish_to` needs no additional capacity.
 
 ## v0.8.0 (2026-11-15)
 

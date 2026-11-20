@@ -433,7 +433,11 @@ The exact upstream revision is:
   https://github.com/fast/fastpool/tree/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool
 
 Asyncband retains Fastpool's runtime-agnostic design and caller-side timeout
-composition. Fastpool is licensed under Apache-2.0, and its source carries the
-following copyright notice:
+composition, and substantially rewrote bounded.rs, state.rs, and unbounded.rs
+around shared PoolCore state, panic-safe in-place retention, inline semaphore
+capacity, best-effort replenishment, and non-Send factory closures. The
+standard ASF source headers on those files cover the substantial modifications
+contributed to Apache Asyncband; the incorporated Fastpool-derived portions
+remain under Apache-2.0 with the following upstream copyright notice:
 
   Copyright 2025 FastLabs Developers
