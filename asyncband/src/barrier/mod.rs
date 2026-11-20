@@ -145,7 +145,7 @@ impl Barrier {
     ///
     /// let barrier = Barrier::new(3);
     /// ```
-    pub fn new(n: u32) -> Self {
+    pub const fn new(n: u32) -> Self {
         // Normalize an empty group to one participant so every wait completes its own generation.
         let n = if n > 0 { n } else { 1 };
 
@@ -154,8 +154,7 @@ impl Barrier {
             state: Mutex::new(BarrierState {
                 arrived: 0,
                 generation: 0,
-                // The final participant completes the generation without parking.
-                waiters: WakerSet::with_capacity((n - 1) as usize),
+                waiters: WakerSet::new(),
             }),
         }
     }
@@ -214,17 +213,6 @@ struct BarrierWait<'a> {
 struct Registration {
     generation: u64,
     token: WakerToken,
-}
-
-impl fmt::Debug for BarrierWait<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BarrierWait")
-            .field(
-                "generation",
-                &self.registration.as_ref().map(|r| r.generation),
-            )
-            .finish_non_exhaustive()
-    }
 }
 
 impl Future for BarrierWait<'_> {

@@ -23,15 +23,22 @@ All significant changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Improvements
+
+* Make `Barrier::new` and `Latch::new` `const fn` so barriers and latches can be initialized in `static` items and `const` contexts.
+
 ### Performance improvements
 
 * Speed up `WaitGroup` handle cloning, worker completion, and waiting across single- and multi-observer workloads, while avoiding extra heap allocations when at most one observer waits before completion.
 * Speed up unlocking an uncontended `Mutex` by avoiding its internal wait-queue lock.
 * Speed up publishing a watch value and immediately reading it with `watch::Receiver::recv` on a single receiver.
+* Speed up `blocking::FutureExt::wait_timeout` with `Duration::ZERO` by polling once without reading the clock or borrowing the thread-local parker.
+* Shrink `PhaserParticipant::wait` futures and speed up implicit arrival-and-wait handoffs by recording the arrival and checking or registering for completion under one lock acquisition.
 
 ### Bug fixes
 
 * Allow payload destructors to reenter bounded and unbounded broadcast channels when a send panics on message version overflow.
+* Allow `blocking::FutureExt::{block_on, wait_timeout}` to run during thread-local destructor teardown after the thread's cached parker has been destroyed.
 
 ## v0.8.0 (2026-11-15)
 

@@ -76,14 +76,6 @@ impl<T> Arena<T> {
         }
     }
 
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            slots: Vec::with_capacity(capacity),
-            vacant_head: None,
-            len: 0,
-        }
-    }
-
     pub fn insert(&mut self, value: T) -> SlotId {
         let id = if let Some(id) = self.vacant_head {
             let slot = self
@@ -214,7 +206,7 @@ mod tests {
 
     #[test]
     fn take_all_retains_capacity_and_restarts_slot_ids() {
-        let mut arena = Arena::with_capacity(3);
+        let mut arena = Arena::new();
         let first = arena.insert(1);
         let second = arena.insert(2);
         let third = arena.insert(3);

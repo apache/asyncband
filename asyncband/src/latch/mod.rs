@@ -70,7 +70,7 @@ impl Latch {
     ///
     /// let latch = Latch::new(3);
     /// ```
-    pub fn new(count: u32) -> Self {
+    pub const fn new(count: u32) -> Self {
         Self {
             state: CountdownState::new(count),
         }

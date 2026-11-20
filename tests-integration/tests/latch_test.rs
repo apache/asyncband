@@ -25,6 +25,17 @@ use tests_integration::WakeCounter;
 use tokio::sync::Barrier;
 
 #[test]
+fn latch_can_be_constructed_in_const_context() {
+    static LATCH: Latch = Latch::new(1);
+    let zero = const { Latch::new(0) };
+
+    assert_eq!(zero.try_wait(), Ok(()));
+    assert_eq!(LATCH.try_wait(), Err(1));
+    LATCH.count_down();
+    assert_eq!(LATCH.try_wait(), Ok(()));
+}
+
+#[test]
 fn countdown_operations_saturate_at_zero() {
     let latch = Latch::new(5);
 
