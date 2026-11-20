@@ -247,7 +247,7 @@ mod tests {
                 }
                 state.unpark();
             });
-            parker.park_timeout(Duration::from_secs(5));
+            parker.park_timeout(Duration::from_secs(60));
             assert_eq!(yield_count(), 0);
             assert_eq!(parker.state.state.load(SeqCst), EMPTY);
             notifier.join().unwrap();

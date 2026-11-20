@@ -60,6 +60,19 @@ fn wait_timeout_polls_before_checking_the_deadline() {
 
 #[test]
 fn waits_work_during_thread_local_destruction() {
+    fn self_waking_once(output: usize) -> impl Future<Output = usize> {
+        let mut polled = false;
+        poll_fn(move |context| {
+            if polled {
+                Poll::Ready(output)
+            } else {
+                polled = true;
+                context.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+    }
+
     struct OnDrop(Option<mpsc::Sender<usize>>);
 
     impl Drop for OnDrop {
@@ -68,16 +81,13 @@ fn waits_work_during_thread_local_destruction() {
                 return;
             };
 
-            let (completion, future, polls) = controlled_future();
-            let notifier = thread::spawn(move || {
-                polls.recv().unwrap();
-                completion.complete(20);
-            });
-            let first = future.block_on();
-            notifier.join().unwrap();
-
-            let second = async { 22 }.wait_timeout(TEST_WATCHDOG).unwrap();
-            done_tx.send(first + second).unwrap();
+            // Avoid spawning or waiting on other OS threads here: on Windows (including Rust
+            // 1.86.0), TLS destructors can run under the OS loader lock, which serializes thread
+            // startup and exit across the process.
+            let first = self_waking_once(20).block_on();
+            let second = self_waking_once(21).wait_timeout(TEST_WATCHDOG).unwrap();
+            let third = async { 1 }.wait_timeout(Duration::ZERO).unwrap();
+            done_tx.send(first + second + third).unwrap();
         }
     }
 
