@@ -27,6 +27,7 @@ All significant changes to this project will be documented in this file.
 
 * Speed up `WaitGroup` handle cloning, worker completion, and waiting across single- and multi-observer workloads, while avoiding extra heap allocations when at most one observer waits before completion.
 * Speed up unlocking an uncontended `Mutex` by avoiding its internal wait-queue lock.
+* Speed up publishing a watch value and immediately reading it with `watch::Receiver::recv` on a single receiver.
 
 ### Bug fixes
 
