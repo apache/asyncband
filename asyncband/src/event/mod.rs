@@ -31,22 +31,5 @@
 mod auto_reset;
 mod manual_reset;
 
-use std::mem;
-use std::task::Waker;
-
 pub use self::auto_reset::AutoResetEvent;
 pub use self::manual_reset::ManualResetEvent;
-
-enum Waiter {
-    Waiting(Waker),
-    Notified,
-}
-
-impl Waiter {
-    fn mark_notified(&mut self) -> Waker {
-        let Self::Waiting(waker) = mem::replace(self, Self::Notified) else {
-            unreachable!("only waiting nodes remain queued");
-        };
-        waker
-    }
-}

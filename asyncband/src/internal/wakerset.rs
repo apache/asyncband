@@ -54,15 +54,27 @@ impl WakerSet {
         }
     }
 
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.wakers.is_empty()
+    }
+
+    /// Moves registered wakers into `batch`, retaining slot capacity for reuse.
+    #[inline]
+    pub fn drain_into(&mut self, batch: &mut WakerBatch) {
+        if !self.wakers.is_empty() {
+            self.wakers.drain().for_each(|waker| batch.push(waker));
+        }
+    }
+
     /// Collects registered wakers into an owned batch, retaining slot capacity for reuse.
     ///
     /// Moves each waker into the batch; up to [`WakerBatch::STACK_SIZE`] fit without allocating.
     #[inline]
     pub fn take_all(&mut self) -> WakerBatch {
-        if self.wakers.is_empty() {
-            return WakerBatch::new();
-        }
-        self.wakers.take_all()
+        let mut batch = WakerBatch::new();
+        self.drain_into(&mut batch);
+        batch
     }
 
     /// Consumes the set, waking every registered waker and releasing its allocation.

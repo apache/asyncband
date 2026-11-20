@@ -150,6 +150,7 @@ pub(crate) mod waker_batch;
     feature = "barrier",
     feature = "broadcast",
     feature = "completion",
+    feature = "event",
     feature = "latch",
     feature = "once",
     feature = "phaser",

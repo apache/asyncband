@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::borrow::Borrow;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -24,12 +25,10 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::event::Waiter;
 use crate::internal::mutex::Mutex;
-use crate::internal::update_waker;
-use crate::internal::waitlist::WaitList;
-use crate::internal::waitlist::WaiterId;
 use crate::internal::waker_batch::WakerBatch;
+use crate::internal::wakerset::WakerSet;
+use crate::internal::wakerset::WakerToken;
 
 /// A reusable signal that releases all waiters and remains set until explicitly reset.
 ///
@@ -73,9 +72,17 @@ use crate::internal::waker_batch::WakerBatch;
 /// # }
 /// ```
 pub struct ManualResetEvent {
-    // Flag writes and waiter registration are serialized by the same lock.
+    // Flag writes and waiter registration are serialized by `state`.
     is_set: AtomicBool,
-    waiters: Mutex<WaitList<Waiter>>,
+    state: Mutex<State>,
+}
+
+struct State {
+    // Identifies the unset cycle collecting waiters. Compare identity, not order: the counter
+    // wraps, and woken waiters may remain unpolled across later cycles. Using u64 keeps an old
+    // waiter from matching again unless it survives a full 2^64-cycle wraparound.
+    generation: u64,
+    waiters: WakerSet,
 }
 
 impl ManualResetEvent {
@@ -90,7 +97,10 @@ impl ManualResetEvent {
     pub const fn with_state(is_set: bool) -> Self {
         Self {
             is_set: AtomicBool::new(is_set),
-            waiters: Mutex::new(WaitList::new()),
+            state: Mutex::new(State {
+                generation: 0,
+                waiters: WakerSet::new(),
+            }),
         }
     }
 
@@ -101,18 +111,21 @@ impl ManualResetEvent {
     pub fn set(&self) {
         let mut wakers = WakerBatch::new();
         {
-            let mut waiters = self.waiters.lock();
+            let mut state = self.state.lock();
             if self.is_set.load(Ordering::Relaxed) {
                 return;
             }
 
-            // Publish to successful observations that do not acquire the waiter lock.
-            self.is_set.store(true, Ordering::Release);
-            // Detach the complete cohort before invoking any waker. A wake callback may reset the
-            // event and register a new wait, which must belong to the state current at that point.
-            while let Some((_, waiter)) = waiters.unlink_first_waiter() {
-                wakers.push(waiter.mark_notified());
+            state.generation = state.generation.wrapping_add(1);
+            if state.waiters.is_empty() {
+                self.is_set.store(true, Ordering::Release);
+                return;
             }
+            // Detach the complete cohort before publishing `is_set`. Any wait that subsequently
+            // observes `is_set() == true` already has its slot freed, and any wake callback that
+            // resets the event registers into the new generation.
+            state.waiters.drain_into(&mut wakers);
+            self.is_set.store(true, Ordering::Release);
         }
         wakers.wake_all();
     }
@@ -122,7 +135,7 @@ impl ManualResetEvent {
     /// Waits already released by a preceding [`set`](Self::set) remain ready. If the event is
     /// already unset, this has no effect.
     pub fn reset(&self) {
-        let _waiters = self.waiters.lock();
+        let _state = self.state.lock();
         // Reset cannot race ahead of a set that is still detaching its waiter cohort.
         self.is_set.store(false, Ordering::Relaxed);
     }
@@ -176,7 +189,7 @@ impl ManualResetEvent {
     pub async fn wait(&self) {
         Wait {
             event: self,
-            waiter: None,
+            registration: None,
         }
         .await
     }
@@ -206,42 +219,47 @@ impl ManualResetEvent {
     /// # }
     /// ```
     pub async fn wait_owned(self: Arc<Self>) {
-        self.wait().await;
+        Wait {
+            event: self,
+            registration: None,
+        }
+        .await
     }
 
-    /// Polls a wait, registering `waiter_id` on the first poll that observes an unset event.
+    /// Polls a wait, registering in the current generation on the first poll that observes an unset
+    /// event.
     ///
-    /// `set` unlinks every queued waiter and marks it notified, and a wait that starts while the
-    /// event is set never enqueues. A linked waiter therefore always belongs to an unset event, so
-    /// a notified waiter remains ready even if the event is reset.
-    fn poll_wait(&self, waiter_id: &mut Option<WaiterId>, cx: &mut Context<'_>) -> Poll<()> {
-        // Only an unregistered wait can skip the lock: a released waiter still owns a node.
-        if waiter_id.is_none() && self.is_set() {
+    /// `set` detaches every registered waker and advances `generation` before storing `true` with
+    /// `Release`, so any wait observing `is_set()` has no active slot left to clean up, and a
+    /// released wait remains ready even if the event is subsequently reset.
+    fn poll_wait(&self, registration: &mut Option<Registration>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.is_set() {
+            *registration = None;
             return Poll::Ready(());
         }
 
         let (poll, retired_waker) = {
-            let mut waiters = self.waiters.lock();
-            match *waiter_id {
-                Some(id) => match waiters.waiter_mut(id) {
-                    Waiter::Notified => {
-                        waiters.remove_unlinked_waiter(id);
-                        *waiter_id = None;
-                        (Poll::Ready(()), None)
-                    }
-                    Waiter::Waiting(waker) => {
-                        debug_assert!(
-                            !self.is_set.load(Ordering::Relaxed),
-                            "a linked waiter must belong to an unset event"
-                        );
-                        (Poll::Pending, update_waker(waker, cx.waker()))
-                    }
-                },
-                // A set after the false fast probe must either be observed here or release
-                // the node that we register while holding this same lock.
+            let mut state = self.state.lock();
+            match registration {
+                Some(reg) if state.generation != reg.generation => {
+                    *registration = None;
+                    (Poll::Ready(()), None)
+                }
+                Some(reg) => {
+                    debug_assert!(
+                        !self.is_set.load(Ordering::Relaxed),
+                        "an active registration must belong to an unset event"
+                    );
+                    (Poll::Pending, state.waiters.update(&reg.token, cx.waker()))
+                }
+                // A set after the false fast probe must either be observed here or release the
+                // slot that we register while holding this same lock.
                 None if self.is_set.load(Ordering::Relaxed) => (Poll::Ready(()), None),
                 None => {
-                    *waiter_id = Some(waiters.push_back(Waiter::Waiting(cx.waker().clone())));
+                    *registration = Some(Registration {
+                        generation: state.generation,
+                        token: state.waiters.insert(cx.waker()),
+                    });
                     (Poll::Pending, None)
                 }
             }
@@ -251,13 +269,13 @@ impl ManualResetEvent {
         poll
     }
 
-    fn unregister_waiter(&self, id: WaiterId) {
-        let waiter = {
-            let mut waiters = self.waiters.lock();
-            // Released waits retain their detached nodes until repolled or cancelled.
-            waiters.remove(id)
+    fn unregister_waiter(&self, reg: Registration) {
+        let waker = {
+            let mut state = self.state.lock();
+            // A set that raced ahead of cancellation already detached the entire generation.
+            (state.generation == reg.generation).then(|| state.waiters.remove(reg.token))
         };
-        drop(waiter);
+        drop(waker);
     }
 }
 
@@ -276,25 +294,33 @@ impl fmt::Debug for ManualResetEvent {
     }
 }
 
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-struct Wait<'a> {
-    event: &'a ManualResetEvent,
-    waiter: Option<WaiterId>,
+struct Registration {
+    generation: u64,
+    token: WakerToken,
 }
 
-impl Future for Wait<'_> {
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+struct Wait<E: Borrow<ManualResetEvent>> {
+    event: E,
+    registration: Option<Registration>,
+}
+
+impl<E: Borrow<ManualResetEvent> + Unpin> Future for Wait<E> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        this.event.poll_wait(&mut this.waiter, cx)
+        this.event.borrow().poll_wait(&mut this.registration, cx)
     }
 }
 
-impl Drop for Wait<'_> {
+impl<E: Borrow<ManualResetEvent>> Drop for Wait<E> {
     fn drop(&mut self) {
-        if let Some(id) = self.waiter.take() {
-            self.event.unregister_waiter(id);
+        if let Some(reg) = self.registration.take() {
+            let event = self.event.borrow();
+            if !event.is_set() {
+                event.unregister_waiter(reg);
+            }
         }
     }
 }
