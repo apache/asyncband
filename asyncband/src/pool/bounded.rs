@@ -228,7 +228,16 @@ impl<M: ManageObject> Pool<M> {
     /// dropped.
     pub async fn replenish_to(&self, target_idle: usize) -> Result<usize, M::Error> {
         let target_idle = target_idle.min(self.config.max_size);
-        let Some(mut reservation) = self.permits.try_acquire_up_to(target_idle) else {
+        if target_idle == 0 {
+            return Ok(0);
+        }
+        let needed = {
+            let slots = self.slots.lock();
+            target_idle
+                .saturating_sub(slots.idle_count())
+                .min(self.config.max_size.saturating_sub(slots.current_size()))
+        };
+        let Some(mut reservation) = self.permits.try_acquire_up_to(needed) else {
             return Ok(0);
         };
 
@@ -257,10 +266,8 @@ impl<M: ManageObject> Pool<M> {
         let mut replenished = 0;
         for _ in 0..to_create {
             let object = self.manager.create().await?;
-            {
-                let mut slots = self.slots.lock();
-                slots.add_idle(ObjectState::new(object));
-            }
+            let state = ObjectState::new(object);
+            self.slots.lock().add_idle(state);
             replenished += 1;
             // A waiting checkout can use this object while the next creation is in progress.
             drop(reservation.split(1).expect("each creation has a permit"));

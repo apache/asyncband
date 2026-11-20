@@ -20,6 +20,7 @@ use std::convert::Infallible;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::time::Instant;
+use std::vec;
 
 use asyncband::pool::QueueStrategy;
 use asyncband::pool::bounded;
@@ -145,4 +146,70 @@ fn retain_predicate_panic_preserves_pool_ownership() {
         .collect::<Vec<_>>();
     objects.sort_unstable();
     assert_eq!(objects, [1, 2, 3, 4]);
+}
+
+#[test]
+fn extend_converts_and_drops_iterator_outside_pool_lock() {
+    struct ReentrantIter<'a> {
+        pool: &'a unbounded::Pool<usize>,
+        items: vec::IntoIter<usize>,
+        panic_after_first: bool,
+        observed_on_drop: &'a Cell<usize>,
+    }
+
+    impl Iterator for ReentrantIter<'_> {
+        type Item = usize;
+
+        fn next(&mut self) -> Option<usize> {
+            let next = self.items.next()?;
+            assert!(
+                !(self.panic_after_first && next == 2),
+                "iterator step panic"
+            );
+            Some(next)
+        }
+    }
+
+    impl Drop for ReentrantIter<'_> {
+        fn drop(&mut self) {
+            self.observed_on_drop.set(self.pool.status().idle_count);
+        }
+    }
+
+    struct ReentrantIntoIter<'a>(ReentrantIter<'a>);
+
+    impl<'a> IntoIterator for ReentrantIntoIter<'a> {
+        type Item = usize;
+        type IntoIter = ReentrantIter<'a>;
+
+        fn into_iter(self) -> Self::IntoIter {
+            assert_eq!(
+                self.0.pool.status().current_size,
+                self.0.observed_on_drop.get()
+            );
+            self.0
+        }
+    }
+
+    let pool = unbounded::Pool::<usize>::never_manage(unbounded::PoolConfig::default());
+    let observed = Cell::new(0);
+    pool.extend(ReentrantIntoIter(ReentrantIter {
+        pool: &pool,
+        items: vec![1, 2].into_iter(),
+        panic_after_first: false,
+        observed_on_drop: &observed,
+    }));
+    assert_eq!(observed.get(), 2);
+
+    let unwound = catch_unwind(AssertUnwindSafe(|| {
+        pool.extend(ReentrantIntoIter(ReentrantIter {
+            pool: &pool,
+            items: vec![1, 2].into_iter(),
+            panic_after_first: true,
+            observed_on_drop: &observed,
+        }));
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(observed.get(), 3);
+    assert_eq!(pool.status().idle_count, 3);
 }

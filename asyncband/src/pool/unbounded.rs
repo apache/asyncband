@@ -388,14 +388,15 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// pool.extend_one(Vec::<i64>::with_capacity(1024));
     /// ```
     pub fn extend_one(&self, o: T) {
-        self.extend(Some(o));
+        let state = ObjectState::new(o);
+        self.slots.lock().add_idle(state);
     }
 
     /// Extends the pool with the objects of an iterator.
     ///
     /// # Deadlocks
     ///
-    /// The iterator is consumed while the pool is locked and must not call back into it.
+    /// Advancing the iterator runs while the pool is locked and must not call back into it.
     ///
     /// # Examples
     ///
@@ -413,8 +414,9 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// ]);
     /// ```
     pub fn extend(&self, iter: impl IntoIterator<Item = T>) {
+        let mut iter = iter.into_iter();
         let mut slots = self.slots.lock();
-        for o in iter {
+        for o in &mut iter {
             slots.add_idle(ObjectState::new(o));
         }
     }
