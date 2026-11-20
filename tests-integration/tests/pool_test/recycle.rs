@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::panic::AssertUnwindSafe;
-use std::panic::catch_unwind;
 use std::pin::pin;
 
 use asyncband::pool::RecycleCancelledStrategy;
@@ -168,39 +166,6 @@ macro_rules! recycle_contract {
             assert_eq!(recycled, ids);
             assert_eq!(manager.created(), 3);
             assert!(manager.detached().is_empty());
-        }
-
-        #[test]
-        fn panicking_validation_detaches_object_even_when_cancellation_returns_to_pool() {
-            for yield_before_panic in [false, true] {
-                let manager = Manager::default();
-                let pool = pool(
-                    1,
-                    manager.clone(),
-                    Some(RecycleCancelledStrategy::ReturnToPool),
-                );
-                drop(ready(pool.get()).unwrap());
-
-                manager.corrupt_next_recycle();
-                let validation = manager.pause_recycle();
-                let unwound = catch_unwind(AssertUnwindSafe(|| {
-                    let mut checkout = pin!(pool.get());
-                    if yield_before_panic {
-                        assert!(poll_once(checkout.as_mut()).is_pending());
-                    }
-                    // Dropping the sender makes `is_recyclable` panic when polled.
-                    drop(validation);
-                    let _ = poll_once(checkout.as_mut());
-                }));
-                assert!(unwound.is_err());
-                assert_eq!(pool.status().current_size, 0);
-                assert_eq!(pool.status().idle_count, 0);
-                assert_eq!(manager.detached(), [999]);
-
-                let replacement = ready(pool.get()).unwrap();
-                assert_eq!(*replacement, 1);
-                assert_eq!(manager.created(), 2);
-            }
         }
     };
 }

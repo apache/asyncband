@@ -20,7 +20,6 @@ use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -40,7 +39,6 @@ struct State {
     created: AtomicUsize,
     creating: Mutex<VecDeque<Step>>,
     recycling: Mutex<VecDeque<Step>>,
-    corrupt_before_recycle: AtomicBool,
     detached: Mutex<Vec<usize>>,
 }
 
@@ -67,10 +65,6 @@ impl Manager {
         self.0.recycling.lock().unwrap().push_back(receiver);
         sender
     }
-
-    pub fn corrupt_next_recycle(&self) {
-        self.0.corrupt_before_recycle.store(true, Ordering::Relaxed);
-    }
 }
 
 impl ManageObject for Manager {
@@ -86,14 +80,7 @@ impl ManageObject for Manager {
         Ok(id)
     }
 
-    async fn is_recyclable(
-        &self,
-        object: &mut usize,
-        _: &ObjectStatus,
-    ) -> Result<(), ManagerError> {
-        if self.0.corrupt_before_recycle.swap(false, Ordering::Relaxed) {
-            *object = 999;
-        }
+    async fn is_recyclable(&self, _: &mut usize, _: &ObjectStatus) -> Result<(), ManagerError> {
         let step = self.0.recycling.lock().unwrap().pop_front();
         if let Some(step) = step {
             step.await.expect("recycle controller dropped")?;

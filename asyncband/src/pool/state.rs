@@ -19,7 +19,6 @@
 // https://github.com/fast/fastpool/blob/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool/src/unbounded.rs
 
 use std::collections::VecDeque;
-use std::thread;
 
 use crate::internal::mutex::Mutex;
 use crate::pool::ManageObject;
@@ -209,9 +208,8 @@ impl<T, M: ManageObject<Object = T>> PoolCore<T, M> {
 
 /// Owns an idle object while `ManageObject::is_recyclable` runs during `Pool::get`.
 ///
-/// Passing validation extracts the `ObjectState` via `into_ready()`. Rejection or unwinding from
-/// `is_recyclable` detaches the object; external cancellation applies the pool's
-/// [`RecycleCancelledStrategy`].
+/// Passing validation extracts the `ObjectState` via `into_ready()`. Rejection detaches the
+/// object; cancellation applies the pool's [`RecycleCancelledStrategy`].
 pub struct UnreadyObject<'a, T, M: ManageObject<Object = T>> {
     state: Option<ObjectState<T>>,
     core: &'a PoolCore<T, M>,
@@ -220,10 +218,6 @@ pub struct UnreadyObject<'a, T, M: ManageObject<Object = T>> {
 impl<T, M: ManageObject<Object = T>> Drop for UnreadyObject<'_, T, M> {
     fn drop(&mut self) {
         if let Some(mut state) = self.state.take() {
-            if thread::panicking() {
-                self.core.detach_object(&mut state.o);
-                return;
-            }
             match self.core.recycle_cancelled_strategy {
                 RecycleCancelledStrategy::Detach => {
                     self.core.detach_object(&mut state.o);
