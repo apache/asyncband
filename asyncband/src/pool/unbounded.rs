@@ -96,6 +96,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::thread;
 
 use crate::internal::mutex::Mutex;
 use crate::pool::ManageObject;
@@ -599,6 +600,10 @@ struct UnreadyObject<'a, M: ManageObject> {
 impl<M: ManageObject> Drop for UnreadyObject<'_, M> {
     fn drop(&mut self) {
         if let Some(mut state) = self.state.take() {
+            if thread::panicking() {
+                self.pool.detach_object(&mut state.o);
+                return;
+            }
             match self.pool.config.recycle_cancelled_strategy {
                 RecycleCancelledStrategy::Detach => {
                     self.pool.detach_object(&mut state.o);
