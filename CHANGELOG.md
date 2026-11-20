@@ -35,6 +35,7 @@ All significant changes to this project will be documented in this file.
 * Speed up `blocking::FutureExt::wait_timeout` with `Duration::ZERO` by polling once without reading the clock or borrowing the thread-local parker.
 * Shrink `PhaserParticipant::wait` futures and speed up implicit arrival-and-wait handoffs by recording the arrival and checking or registering for completion under one lock acquisition.
 * Speed up `ManualResetEvent::{wait, wait_owned}` across already-set polls, single-waiter handoffs, multi-waiter fan-out, and cancellation reuse; empty `set`/`reset` cycles are unchanged.
+* Shrink `broadcast::mpmc::BoundedSender::send` futures and speed up waiting receiver deliveries and bounded sender backpressure handoffs and cancellations.
 
 ### Bug fixes
 

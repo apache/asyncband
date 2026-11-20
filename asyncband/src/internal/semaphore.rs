@@ -162,32 +162,6 @@ impl Semaphore {
         self.distribute_permits(n, self.waiters.lock());
     }
 
-    /// Releases `n` permits only if the queue contains waiters when locked.
-    #[cfg(feature = "broadcast")]
-    pub fn release_if_waiters(&self, n: usize) {
-        let waiters = self.waiters.lock();
-        if !waiters.is_empty() {
-            self.distribute_permits(n, waiters);
-        }
-    }
-
-    /// Adds as many permits until there is no waiter.
-    #[cfg(feature = "broadcast")]
-    pub fn notify_all(&self) {
-        let mut waiters = self.waiters.lock();
-        let mut wakers = WakerBatch::new();
-        while let Some((id, waiter)) = waiters.unlink_first_waiter() {
-            waiter.needed_permits = 0;
-            if let Some(waker) = waiter.waker.take() {
-                wakers.push(waker);
-            } else {
-                waiters.remove_unlinked_waiter(id);
-            }
-        }
-        drop(waiters);
-        wakers.wake_all();
-    }
-
     /// Tries to update the available permit count from `expected` to `expected + released`.
     ///
     /// Returns the observed count if it does not match `expected`. Panics if the sum would
