@@ -21,7 +21,7 @@ use tokio_test::assert_ready;
 use tokio_test::task::spawn;
 
 #[test]
-fn const_and_max_participant_barriers_construct_without_allocating() {
+fn barrier_can_be_constructed_in_const_context() {
     static BARRIER: Barrier = Barrier::new(2);
 
     let _ = Barrier::new(u32::MAX);
