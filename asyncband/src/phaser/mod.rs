@@ -480,13 +480,11 @@ impl PhaserParticipant {
     /// the pending observation, so retrying this method waits for the same phase without
     /// counting another arrival. An explicit new `arrive` replaces that pending observation.
     pub async fn wait(&mut self) -> Result<u64, Closed> {
-        let observed = match self.arrived_phase {
-            Some(phase) => phase,
-            None => self.arrive()?,
-        };
-        let next = self.phaser.wait(observed).await?;
-        self.arrived_phase = None;
-        Ok(next)
+        ParticipantWait {
+            participant: self,
+            token: None,
+        }
+        .await
     }
 
     /// Withdraws this participant and returns the phase from which it withdrew.
@@ -560,6 +558,76 @@ impl Drop for PhaserWait<'_> {
         }
         let mut state = self.phaser.state.lock();
         if state.completion(self.observed).is_ready() {
+            return;
+        }
+        let retired = state.waiters.unregister(&mut self.token);
+        drop(state);
+        drop(retired);
+    }
+}
+
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+struct ParticipantWait<'a> {
+    participant: &'a mut PhaserParticipant,
+    token: Option<WakerToken>,
+}
+
+impl Future for ParticipantWait<'_> {
+    type Output = Result<u64, Closed>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let mut state = this.participant.phaser.state.lock();
+        if let Some(observed) = this.participant.arrived_phase {
+            match state.completion(observed) {
+                Poll::Ready(Ok(next)) => {
+                    this.token = None;
+                    this.participant.arrived_phase = None;
+                    return Poll::Ready(Ok(next));
+                }
+                Poll::Ready(Err(closed)) => {
+                    this.token = None;
+                    return Poll::Ready(Err(closed));
+                }
+                Poll::Pending => {
+                    let retired = state.waiters.register(&mut this.token, cx.waker());
+                    drop(state);
+                    drop(retired);
+                    return Poll::Pending;
+                }
+            }
+        }
+
+        if state.closed {
+            return Poll::Ready(Err(Closed(())));
+        }
+        let observed = state.phase;
+        state.unarrived -= 1;
+        if state.unarrived == 0 {
+            let mut wakers = state.advance_if_ready();
+            let next = state.phase;
+            drop(state);
+            wakers.wake_all();
+            return Poll::Ready(Ok(next));
+        }
+
+        this.participant.arrived_phase = Some(observed);
+        this.token = Some(state.waiters.insert(cx.waker()));
+        Poll::Pending
+    }
+}
+
+impl Drop for ParticipantWait<'_> {
+    fn drop(&mut self) {
+        if self.token.is_none() {
+            return;
+        }
+        let observed = self
+            .participant
+            .arrived_phase
+            .expect("registered participant wait must have recorded an arrival");
+        let mut state = self.participant.phaser.state.lock();
+        if state.completion(observed).is_ready() {
             return;
         }
         let retired = state.waiters.unregister(&mut self.token);

@@ -33,6 +33,7 @@ All significant changes to this project will be documented in this file.
 * Speed up unlocking an uncontended `Mutex` by avoiding its internal wait-queue lock.
 * Speed up publishing a watch value and immediately reading it with `watch::Receiver::recv` on a single receiver.
 * Speed up `blocking::FutureExt::wait_timeout` with `Duration::ZERO` by polling once without reading the clock or borrowing the thread-local parker.
+* Shrink `PhaserParticipant::wait` futures and speed up implicit arrival-and-wait handoffs by recording the arrival and checking or registering for completion under one lock acquisition.
 
 ### Bug fixes
 
