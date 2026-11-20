@@ -54,13 +54,6 @@ impl WakerSet {
         }
     }
 
-    /// Constructs an empty waker set with the specified capacity.
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            wakers: Arena::with_capacity(capacity),
-        }
-    }
-
     /// Collects registered wakers into an owned batch, retaining slot capacity for reuse.
     ///
     /// Moves each waker into the batch; up to [`WakerBatch::STACK_SIZE`] fit without allocating.

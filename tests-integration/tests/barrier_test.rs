@@ -21,6 +21,19 @@ use tokio_test::assert_ready;
 use tokio_test::task::spawn;
 
 #[test]
+fn const_and_max_participant_barriers_construct_without_allocating() {
+    static BARRIER: Barrier = Barrier::new(2);
+
+    let _ = Barrier::new(u32::MAX);
+
+    let mut first = spawn(BARRIER.wait());
+    assert_pending!(first.poll());
+    let mut second = spawn(BARRIER.wait());
+    assert!(assert_ready!(second.poll()).is_leader());
+    assert!(!assert_ready!(first.poll()).is_leader());
+}
+
+#[test]
 fn zero_and_one_participant_generations_never_block() {
     for participants in [0, 1] {
         let barrier = Barrier::new(participants);
