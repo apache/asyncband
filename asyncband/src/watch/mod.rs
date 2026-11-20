@@ -68,6 +68,7 @@ use std::future::Future;
 use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::MutexGuard;
 use std::task::Context;
 use std::task::Poll;
 
@@ -111,6 +112,16 @@ struct Shared<T> {
     state: Mutex<State<T>>,
 }
 
+impl<T> Shared<T> {
+    fn wait_for_change(&self, seen: u64) -> Change<'_, T> {
+        Change {
+            shared: self,
+            seen,
+            token: None,
+        }
+    }
+}
+
 struct State<T> {
     value: T,
     version: u64,
@@ -120,9 +131,9 @@ struct State<T> {
 }
 
 impl<T> State<T> {
-    fn change_since(&self, seen: u64) -> Poll<Result<u64, RecvError>> {
+    fn change_since(&self, seen: u64) -> Poll<Result<(), RecvError>> {
         if self.version != seen {
-            Poll::Ready(Ok(self.version))
+            Poll::Ready(Ok(()))
         } else if self.senders == 0 {
             Poll::Ready(Err(RecvError::Disconnected))
         } else {
@@ -319,13 +330,7 @@ impl<T> Receiver<T> {
     /// Dropping a pending future leaves the observed version unchanged. A later call can still
     /// observe the latest unseen version.
     pub async fn changed(&mut self) -> Result<(), RecvError> {
-        let seen = Change {
-            shared: &self.shared,
-            seen: self.seen,
-            token: None,
-        }
-        .await?;
-        self.seen = seen;
+        self.seen = self.shared.wait_for_change(self.seen).await?.version;
         Ok(())
     }
 
@@ -358,13 +363,7 @@ impl<T> Receiver<T> {
     where
         T: Clone,
     {
-        Change {
-            shared: &self.shared,
-            seen: self.seen,
-            token: None,
-        }
-        .await?;
-        let state = self.shared.state.lock();
+        let state = self.shared.wait_for_change(self.seen).await?;
         let value = state.value.clone();
         self.seen = state.version;
         Ok(value)
@@ -385,17 +384,17 @@ struct Change<'a, T> {
     token: Option<WakerToken>,
 }
 
-impl<T> Future for Change<'_, T> {
-    type Output = Result<u64, RecvError>;
+impl<'a, T> Future for Change<'a, T> {
+    type Output = Result<MutexGuard<'a, State<T>>, RecvError>;
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let mut state = this.shared.state.lock();
-        let change = state.change_since(this.seen);
-        if change.is_ready() {
+        if let Poll::Ready(result) = state.change_since(this.seen) {
             // Publication and the final sender drop both detach registrations under this lock.
             this.token = None;
-            return change;
+            return Poll::Ready(result.map(|()| state));
         }
         let retired_waker = state.waiters.register(&mut this.token, cx.waker());
         drop(state);
