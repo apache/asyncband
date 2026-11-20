@@ -52,6 +52,7 @@ pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> 
     feature = "mpsc",
     feature = "mutex",
     feature = "phaser",
+    feature = "pool",
     feature = "rwlock",
     feature = "semaphore",
     feature = "waitgroup",
@@ -82,6 +83,7 @@ pub(crate) mod value_cell;
     feature = "mpsc",
     feature = "mutex",
     feature = "phaser",
+    feature = "pool",
     feature = "rwlock",
     feature = "semaphore",
     feature = "watch",
@@ -99,12 +101,13 @@ pub(crate) mod rwlock;
 #[cfg(any(
     feature = "broadcast",
     feature = "mutex",
+    feature = "pool",
     feature = "rwlock",
     feature = "semaphore",
 ))]
-// Broadcast uses waiter notifications; mutexes and rwlocks use acquire/release operations; the
-// public semaphore also exposes permit accounting. Single-primitive builds leave part of this API
-// unused.
+// Broadcast uses waiter notifications; mutexes, pools, and rwlocks use acquire/release operations;
+// the public semaphore also exposes permit accounting. Single-primitive builds leave part of this
+// API unused.
 #[allow(dead_code)]
 pub(crate) mod semaphore;
 
@@ -115,6 +118,7 @@ pub(crate) mod semaphore;
     feature = "spmc",
     feature = "mpsc",
     feature = "mutex",
+    feature = "pool",
     feature = "rwlock",
     feature = "semaphore",
 ))]
@@ -132,6 +136,7 @@ pub(crate) mod waitlist;
     feature = "mutex",
     feature = "once",
     feature = "phaser",
+    feature = "pool",
     feature = "rwlock",
     feature = "semaphore",
     feature = "waitgroup",

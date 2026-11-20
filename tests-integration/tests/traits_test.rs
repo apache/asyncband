@@ -188,6 +188,33 @@ fn movable_public_types_are_send() {
     let (bounded_sender, bounded_receiver) = mpmc::bounded::<Cell<u8>>(1);
     assert_send_value(bounded_sender.send(Cell::new(0)));
     assert_send_value(bounded_receiver.recv());
+
+    struct CellPoolManager;
+
+    impl ManageObject for CellPoolManager {
+        type Object = Cell<u8>;
+        type Error = Infallible;
+
+        async fn create(&self) -> Result<Self::Object, Self::Error> {
+            Ok(Cell::new(0))
+        }
+
+        async fn is_recyclable(
+            &self,
+            _object: &mut Self::Object,
+            _status: &ObjectStatus,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    let bounded_pool = pool::bounded::Pool::new(pool::bounded::PoolConfig::new(1), CellPoolManager);
+    assert_send_value(bounded_pool.get());
+    assert_send_value(bounded_pool.replenish_to(1));
+
+    let unbounded_pool =
+        pool::unbounded::Pool::new(pool::unbounded::PoolConfig::new(), CellPoolManager);
+    assert_send_value(unbounded_pool.get());
 }
 
 #[test]

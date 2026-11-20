@@ -19,14 +19,19 @@ use std::cell::Cell;
 use std::convert::Infallible;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 use std::vec;
 
+use asyncband::pool::ManageObject;
+use asyncband::pool::ObjectStatus;
 use asyncband::pool::QueueStrategy;
 use asyncband::pool::bounded;
 use asyncband::pool::unbounded;
 
 use crate::support::Manager;
+use crate::support::ready;
 
 #[test]
 #[should_panic(expected = "bounded pool max_size must be greater than zero")]
@@ -212,4 +217,36 @@ fn extend_converts_and_drops_iterator_outside_pool_lock() {
     assert!(unwound.is_err());
     assert_eq!(observed.get(), 3);
     assert_eq!(pool.status().idle_count, 3);
+}
+
+#[test]
+fn panicking_detach_hook_still_releases_bounded_pool_capacity() {
+    struct PanicOnFirstDetach(AtomicBool);
+
+    impl ManageObject for PanicOnFirstDetach {
+        type Object = usize;
+        type Error = Infallible;
+
+        async fn create(&self) -> Result<usize, Infallible> {
+            Ok(7)
+        }
+
+        async fn is_recyclable(&self, _: &mut usize, _: &ObjectStatus) -> Result<(), Infallible> {
+            Ok(())
+        }
+
+        fn on_detached(&self, _: &mut usize) {
+            assert!(!self.0.swap(false, Ordering::Relaxed), "detach hook panic");
+        }
+    }
+
+    let pool = bounded::Pool::new(
+        bounded::PoolConfig::new(1),
+        PanicOnFirstDetach(AtomicBool::new(true)),
+    );
+    let object = ready(pool.get()).unwrap();
+    assert!(catch_unwind(AssertUnwindSafe(|| object.detach())).is_err());
+    assert_eq!(pool.status().current_size, 0);
+    assert_eq!(pool.status().idle_count, 0);
+    assert_eq!(*ready(pool.get()).unwrap(), 7);
 }

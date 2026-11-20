@@ -198,15 +198,6 @@ impl Semaphore {
         }
     }
 
-    #[cfg(feature = "pool")]
-    pub(crate) fn try_acquire_up_to(&self, up_to: usize) -> Option<SemaphorePermit<'_>> {
-        let permits = self.drain_permits(up_to);
-        if permits == 0 {
-            return None;
-        }
-        Some(SemaphorePermit { sem: self, permits })
-    }
-
     /// Waits until `permits` permits are available and returns a guard holding them.
     ///
     /// Dropping the returned [`SemaphorePermit`] returns its permits to this semaphore unless

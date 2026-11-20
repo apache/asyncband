@@ -19,10 +19,13 @@
 // https://github.com/fast/fastpool/blob/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool/src/unbounded.rs
 
 use std::collections::VecDeque;
+use std::thread;
 
+use crate::internal::mutex::Mutex;
 use crate::pool::ManageObject;
 use crate::pool::ObjectStatus;
 use crate::pool::QueueStrategy;
+use crate::pool::RecycleCancelledStrategy;
 use crate::pool::RetainResult;
 
 #[derive(Debug)]
@@ -138,5 +141,129 @@ impl<T> PoolState<T> {
         self.current_size -= removed.len();
 
         RetainResult { retained, removed }
+    }
+}
+
+pub struct PoolCore<T, M> {
+    pub queue_strategy: QueueStrategy,
+    pub recycle_cancelled_strategy: RecycleCancelledStrategy,
+    pub manager: M,
+    pub slots: Mutex<PoolState<T>>,
+}
+
+impl<T, M> PoolCore<T, M> {
+    pub fn new(
+        queue_strategy: QueueStrategy,
+        recycle_cancelled_strategy: RecycleCancelledStrategy,
+        manager: M,
+    ) -> Self {
+        Self {
+            queue_strategy,
+            recycle_cancelled_strategy,
+            manager,
+            slots: Mutex::new(PoolState::new()),
+        }
+    }
+}
+
+impl<T, M: ManageObject<Object = T>> PoolCore<T, M> {
+    #[inline]
+    pub fn pop(&self) -> Option<ObjectState<T>> {
+        self.slots.lock().pop(self.queue_strategy)
+    }
+
+    #[inline]
+    pub async fn create_active(&self) -> Result<ObjectState<T>, M::Error> {
+        let object = self.manager.create().await?;
+        let state = ObjectState::new(object);
+        self.slots.lock().add_active();
+        Ok(state)
+    }
+
+    pub fn retain(&self, f: impl FnMut(&mut T, ObjectStatus) -> bool) -> RetainResult<T> {
+        let mut result = self.slots.lock().retain(f);
+        for object in &mut result.removed {
+            self.manager.on_detached(object);
+        }
+        result
+    }
+
+    #[inline]
+    pub fn return_object(&self, mut state: ObjectState<T>) {
+        state.status.mark_returned();
+        self.restore_idle(state);
+    }
+
+    #[inline]
+    pub fn restore_idle(&self, state: ObjectState<T>) {
+        self.slots.lock().return_idle(state);
+    }
+
+    pub fn detach_object(&self, o: &mut T) {
+        let mut slots = self.slots.lock();
+        slots.detach();
+        drop(slots);
+        self.manager.on_detached(o);
+    }
+}
+
+/// Owns an idle object while `ManageObject::is_recyclable` runs during `Pool::get`.
+///
+/// Passing validation extracts the `ObjectState` via `into_ready()`. Rejection or unwinding from
+/// `is_recyclable` detaches the object; external cancellation applies the pool's
+/// [`RecycleCancelledStrategy`].
+pub struct UnreadyObject<'a, T, M: ManageObject<Object = T>> {
+    state: Option<ObjectState<T>>,
+    core: &'a PoolCore<T, M>,
+}
+
+impl<T, M: ManageObject<Object = T>> Drop for UnreadyObject<'_, T, M> {
+    fn drop(&mut self) {
+        if let Some(mut state) = self.state.take() {
+            if thread::panicking() {
+                self.core.detach_object(&mut state.o);
+                return;
+            }
+            match self.core.recycle_cancelled_strategy {
+                RecycleCancelledStrategy::Detach => {
+                    self.core.detach_object(&mut state.o);
+                }
+                RecycleCancelledStrategy::ReturnToPool => {
+                    self.core.restore_idle(state);
+                }
+            }
+        }
+    }
+}
+
+impl<'a, T, M: ManageObject<Object = T>> UnreadyObject<'a, T, M> {
+    #[inline]
+    pub fn new(core: &'a PoolCore<T, M>, state: ObjectState<T>) -> Self {
+        Self {
+            state: Some(state),
+            core,
+        }
+    }
+
+    #[inline]
+    pub async fn recycle(&mut self) -> Result<(), M::Error> {
+        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
+        self.state
+            .as_mut()
+            .unwrap()
+            .try_recycle(&self.core.manager)
+            .await
+    }
+
+    #[inline]
+    pub fn into_ready(mut self) -> ObjectState<T> {
+        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
+        self.state.take().unwrap()
+    }
+
+    pub fn detach(&mut self) {
+        if let Some(mut state) = self.state.take() {
+            self.core.detach_object(&mut state.o);
+        }
     }
 }
