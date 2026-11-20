@@ -27,6 +27,8 @@ All significant changes to this project will be documented in this file.
 
 * Speed up `WaitGroup` handle cloning, worker completion, and waiting across single- and multi-observer workloads, while avoiding extra heap allocations when at most one observer waits before completion.
 * Speed up unlocking an uncontended `Mutex` by avoiding its internal wait-queue lock.
+* Improve small-message bounded MPMC throughput at capacity 64 in Apple Silicon benchmarks for 2-producer/2-consumer async and threaded workloads, including reserved sends, and 1-producer/8-consumer threaded workloads. Eligible queues preallocate up to 64 KiB of message storage, which stays allocated until every sender and receiver is dropped; capacity-one queues and large allocations retain lazy storage, where an async `send` and `recv` round trip that completes without waiting is about 20% slower in Apple Silicon benchmarks and up to about 40% slower on x86-64 Linux, and other async operations may be slightly slower. With a single producer at capacity 64, bounded MPMC is about 25–40% slower on x86-64 Linux, with one or four consumers and on a current-thread runtime, and about 10% slower on a current-thread runtime in Apple Silicon benchmarks. Requested logical capacity and reservation semantics are unchanged.
+* Improve small-message bounded SPMC throughput with four competing consumers at capacities 64 and 1024 in Apple Silicon benchmarks; single-consumer and capacity-one workloads may be slightly slower. Eligible queues now preallocate up to 64 KiB of message storage, which stays allocated until the sender and every receiver are dropped, while very large capacities retain lazy allocation.
 
 ### Bug fixes
 

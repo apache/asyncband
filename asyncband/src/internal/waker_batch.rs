@@ -75,7 +75,10 @@ impl WakerBatch {
             // SAFETY: This prefix was initialized by `push` and is no longer owned by the batch.
             unsafe { slot.assume_init_read() }.wake();
         }
-        self.spilled.drain(..).for_each(Waker::wake);
+        // Most wake batches fit entirely in inline storage.
+        if !self.spilled.is_empty() {
+            self.spilled.drain(..).for_each(Waker::wake);
+        }
     }
 }
 

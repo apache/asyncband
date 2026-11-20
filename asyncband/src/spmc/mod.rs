@@ -94,7 +94,9 @@
 //! drop(pending);
 //! ```
 
+mod atomic_ring;
 mod bounded;
+mod bounded_queue;
 mod error;
 mod queue;
 mod unbounded;

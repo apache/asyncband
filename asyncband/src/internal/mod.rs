@@ -62,6 +62,9 @@ pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> 
 #[allow(dead_code)]
 pub(crate) mod arena;
 
+#[cfg(any(feature = "mpmc", feature = "spmc"))]
+pub(crate) mod cache_padded;
+
 #[cfg(any(feature = "latch", feature = "once"))]
 pub(crate) mod countdown;
 
@@ -92,6 +95,9 @@ pub(crate) mod mutex;
 
 #[cfg(any(feature = "mpmc", feature = "spmc"))]
 pub(crate) mod retry_waiter;
+
+#[cfg(any(feature = "mpmc", feature = "spmc"))]
+pub(crate) mod ring_slots;
 
 #[cfg(feature = "waitgroup")]
 pub(crate) mod rwlock;
@@ -129,6 +135,7 @@ pub(crate) mod waitlist;
     feature = "completion",
     feature = "event",
     feature = "latch",
+    feature = "mpmc",
     feature = "mutex",
     feature = "once",
     feature = "phaser",

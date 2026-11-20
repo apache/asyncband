@@ -60,6 +60,7 @@ use asyncband::shutdown::Shutdown;
 use asyncband::shutdown::ShutdownGuard;
 use asyncband::shutdown::ShutdownWatch;
 use asyncband::singleflight;
+use asyncband::spmc;
 use asyncband::waitgroup::Wait;
 use asyncband::waitgroup::WaitGroup;
 use asyncband::watch;
@@ -287,6 +288,26 @@ fn mpsc_endpoints_keep_legacy_traits_regardless_of_payload() {
     assert_payload_traits!(BoundedReceiver);
     assert_payload_traits!(UnboundedSender);
     assert_payload_traits!(UnboundedReceiver);
+}
+
+#[test]
+fn competing_channel_endpoints_preserve_legacy_traits() {
+    fn assert_traits<T: Send + Sync + Unpin + UnwindSafe + RefUnwindSafe>() {}
+
+    macro_rules! assert_payload {
+        ($payload:ty) => {
+            assert_traits::<mpmc::BoundedSender<$payload>>();
+            assert_traits::<mpmc::BoundedReceiver<$payload>>();
+            assert_traits::<mpmc::Permit<'static, $payload>>();
+            assert_traits::<spmc::BoundedSender<$payload>>();
+            assert_traits::<spmc::BoundedReceiver<$payload>>();
+        };
+    }
+
+    assert_payload!(i32);
+    assert_payload!(Cell<u8>);
+    assert_payload!(&'static mut i32);
+    assert_payload!(PhantomPinned);
 }
 
 #[test]
