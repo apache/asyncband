@@ -31,22 +31,22 @@ use crate::rwlock::write_guard;
 /// Shared and exclusive access with a single reader that can reserve an atomic upgrade.
 ///
 /// Ordinary readers and one upgradable reader may coexist, up to the configured reader limit.
-/// Writers exclude all readers. An upgrade retains its read permit until it owns every permit,
-/// so no writer can modify the value between inspection and mutation. Panics do not poison the
-/// lock. Ordinary read and write guards are the same types returned by [`RwLock`].
+/// Writers exclude all readers. An upgrade retains its reader slot until exclusive access is
+/// granted, so no writer can modify the value between inspection and mutation. Panics do not
+/// poison the lock. Ordinary read and write guards are the same types returned by [`RwLock`].
 ///
 /// # Ordering
 ///
 /// Writers and upgradable readers acquire a shared reservation in FIFO order, before requesting
-/// data permits. An upgradable reader retains this reservation until upgrade, downgrade, or drop.
+/// reader slots. An upgradable reader retains this reservation until upgrade, downgrade, or drop.
 /// A writer releases it once it has exclusive access. Thus a writer waiting behind an upgradable
-/// reader cannot enter the data-permit queue ahead of that reader's upgrade and deadlock it.
+/// reader cannot enter the reader-slot queue ahead of that reader's upgrade and deadlock it.
 /// A writer already waiting for the reservation precedes a later upgradable acquisition.
 ///
-/// Ordinary readers bypass the reservation. Data permits are assigned in FIFO order: once a
+/// Ordinary readers bypass the reservation. Reader slots are assigned in FIFO order: once a
 /// writer or upgrade queues for them, later readers cannot pass it. Readers already queued before
-/// an upgrade may finish first. With a reader limit of one, upgrading needs no additional permits
-/// and completes immediately, even if readers are queued.
+/// an upgrade may finish first. With a reader limit of one, upgrading needs no additional reader
+/// slots and completes immediately, even if readers are queued.
 ///
 /// There is no single FIFO order across both queues. Readers may pass writers still waiting for
 /// the reservation, including while an upgradable guard is held. Progress assumes holders release
@@ -89,7 +89,7 @@ use crate::rwlock::write_guard;
 /// # }
 /// ```
 pub struct UpgradableRwLock<T: ?Sized> {
-    // Every operation taking more than one data permit must first hold this reservation.
+    // Every operation taking more than one data slot must first hold this reservation.
     // It is never exposed, nor is the inner lock, so writers cannot bypass it.
     reservation: Semaphore,
     inner: RwLock<T>,
@@ -264,7 +264,10 @@ impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
         let lock = *this.access.owner();
         // Keep both RAII tokens alive across the await. The semaphore's acquisition future owns
         // additional permits until completion and returns them if cancelled, even after a grant.
-        lock.s.acquire(lock.max_readers - 1).await;
+        lock.state
+            .semaphore()
+            .acquire(lock.state.upgrade_permits())
+            .await;
         this.into_write()
     }
 
@@ -294,7 +297,11 @@ impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
     /// ```
     pub fn try_upgrade(this: Self) -> Result<RwLockWriteGuard<'a, T>, Self> {
         let lock = *this.access.owner();
-        if lock.s.try_acquire(lock.max_readers - 1) {
+        if lock
+            .state
+            .semaphore()
+            .try_acquire(lock.state.upgrade_permits())
+        {
             Ok(this.into_write())
         } else {
             Err(this)
@@ -315,8 +322,8 @@ impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
         read
     }
 
-    // Called only after acquiring all max_readers - 1 additional data permits. No await or
-    // callback occurs during the transfer. The borrowed token has no owner allocation to free.
+    // Called only after acquiring all remaining reader slots so that `lock` holds `writer_permits`
+    // in total. No await or callback occurs during the transfer.
     fn into_write(self) -> RwLockWriteGuard<'a, T> {
         let Self {
             access,
@@ -324,7 +331,7 @@ impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
         } = self;
         let lock = *access.owner();
         mem::forget(access);
-        let write = write_guard::from_access(WriteAccess::new(lock, lock.max_readers));
+        let write = write_guard::from_access(WriteAccess::new(lock));
         drop(reservation);
         write
     }

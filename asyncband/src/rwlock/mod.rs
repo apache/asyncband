@@ -111,7 +111,7 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::num::NonZeroUsize;
 
-use crate::internal::semaphore::Semaphore;
+use crate::rwlock::access::LockState;
 
 mod access;
 mod mapped_read_guard;
@@ -139,8 +139,7 @@ pub use self::write_guard::RwLockWriteGuard;
 ///
 /// See the [module documentation](self) for ordering, cancellation, and guard projection.
 pub struct RwLock<T: ?Sized> {
-    max_readers: usize,
-    s: Semaphore,
+    state: LockState,
     c: UnsafeCell<T>,
 }
 
@@ -182,10 +181,10 @@ impl<T> RwLock<T> {
     /// A downgraded guard occupies one reader slot. A write guard excludes all reader slots,
     /// regardless of the limit. Every `NonZeroUsize` is accepted.
     pub const fn with_max_readers(t: T, max_readers: NonZeroUsize) -> RwLock<T> {
-        let max_readers = max_readers.get();
-        let s = Semaphore::new(max_readers);
-        let c = UnsafeCell::new(t);
-        RwLock { max_readers, c, s }
+        RwLock {
+            state: LockState::new(max_readers),
+            c: UnsafeCell::new(t),
+        }
     }
 
     /// Unwraps the value by consuming its lock.

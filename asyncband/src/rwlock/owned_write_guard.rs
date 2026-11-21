@@ -43,10 +43,12 @@ impl<T: ?Sized> RwLock<T> {
     /// Dropping a pending future removes the request and returns any permits already assigned to
     /// it. Retrying joins the back of the queue. The future also releases its owned `Arc`.
     pub async fn write_owned(self: Arc<Self>) -> OwnedRwLockWriteGuard<T> {
-        self.s.acquire(self.max_readers).await;
-        let permits_acquired = self.max_readers;
+        self.state
+            .semaphore()
+            .acquire(self.state.writer_permits())
+            .await;
         OwnedRwLockWriteGuard {
-            access: WriteAccess::new(self, permits_acquired),
+            access: WriteAccess::new(self),
         }
     }
 
@@ -54,10 +56,13 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// This consumes the passed `Arc` even when acquisition fails.
     pub fn try_write_owned(self: Arc<Self>) -> Option<OwnedRwLockWriteGuard<T>> {
-        if self.s.try_acquire(self.max_readers) {
-            let permits_acquired = self.max_readers;
+        if self
+            .state
+            .semaphore()
+            .try_acquire(self.state.writer_permits())
+        {
             Some(OwnedRwLockWriteGuard {
-                access: WriteAccess::new(self, permits_acquired),
+                access: WriteAccess::new(self),
             })
         } else {
             None
