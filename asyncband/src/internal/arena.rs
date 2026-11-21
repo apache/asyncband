@@ -123,6 +123,10 @@ impl<T> Arena<T> {
         self.len == 0
     }
 
+    pub fn capacity(&self) -> usize {
+        self.slots.capacity()
+    }
+
     /// Removes the value stored at `id`.
     ///
     /// # Panics

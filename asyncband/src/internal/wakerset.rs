@@ -59,6 +59,11 @@ impl WakerSet {
         self.wakers.is_empty()
     }
 
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.wakers.capacity()
+    }
+
     /// Moves registered wakers into `batch`, retaining slot capacity for reuse.
     #[inline]
     pub fn drain_into(&mut self, batch: &mut WakerBatch) {

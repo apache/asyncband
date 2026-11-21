@@ -20,14 +20,21 @@ use std::future::Ready;
 use std::future::pending;
 use std::future::poll_fn;
 use std::future::ready;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
 
 use asyncband::once::LazyCell;
+use tests_integration::WakeCounter;
+use tests_integration::assert_completes_without_deadlock;
+use tests_integration::poll_once;
+use tests_integration::poll_with;
 use tokio::sync::Notify;
 
 struct DropPanic;
@@ -110,11 +117,14 @@ async fn cancellation_preserves_initialization_future() {
     started.notified().await;
     assert_eq!(LazyCell::get(&lazy), None);
 
+    let mut follower = Box::pin(LazyCell::force(&lazy));
+    assert!(poll_once(follower.as_mut()).is_pending());
+
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
 
     resume.notify_one();
-    assert_eq!(*LazyCell::force(&lazy).await, 42);
+    assert_eq!(*follower.await, 42);
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }
 
@@ -447,4 +457,69 @@ async fn cancellation_preserves_inline_initialization_future() {
     resume.notify_one();
     assert_eq!(*LazyCell::force_pin(lazy.as_ref()).await, 42);
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn paused_head_waiter_does_not_block_completion_or_poisoning() {
+    assert_completes_without_deadlock(|| {
+        let open = AtomicBool::new(false);
+        let lazy = pin!(LazyCell::from_future(poll_fn(|_| {
+            if open.load(Ordering::Acquire) {
+                Poll::Ready(92)
+            } else {
+                Poll::Pending
+            }
+        })));
+
+        let mut leader = pin!(LazyCell::force_pin(lazy.as_ref()));
+        assert!(poll_once(leader.as_mut()).is_pending());
+
+        let (paused_waker, paused_wakes) = WakeCounter::new();
+        let (active_waker, active_wakes) = WakeCounter::new();
+        let mut paused_waiter = pin!(LazyCell::force_pin(lazy.as_ref()));
+        let mut active_waiter = pin!(LazyCell::force_pin(lazy.as_ref()));
+        assert!(poll_with(paused_waiter.as_mut(), &paused_waker).is_pending());
+        assert!(poll_with(active_waiter.as_mut(), &active_waker).is_pending());
+
+        open.store(true, Ordering::Release);
+        assert_eq!(poll_once(leader.as_mut()), Poll::Ready(&92));
+        assert_eq!(paused_wakes.count(), 1);
+        assert_eq!(active_wakes.count(), 1);
+
+        // Leave `paused_waiter` suspended without dropping or polling it.
+        assert_eq!(
+            poll_with(active_waiter.as_mut(), &active_waker),
+            Poll::Ready(&92)
+        );
+
+        let should_panic = AtomicBool::new(false);
+        let poisoned = pin!(LazyCell::from_future(poll_fn(|_| {
+            if should_panic.load(Ordering::Acquire) {
+                panic!("boom");
+            }
+            Poll::<i32>::Pending
+        })));
+
+        let mut leader = pin!(LazyCell::force_pin(poisoned.as_ref()));
+        assert!(poll_once(leader.as_mut()).is_pending());
+
+        let (paused_waker, paused_wakes) = WakeCounter::new();
+        let (active_waker, active_wakes) = WakeCounter::new();
+        let mut paused_waiter = pin!(LazyCell::force_pin(poisoned.as_ref()));
+        let mut active_waiter = pin!(LazyCell::force_pin(poisoned.as_ref()));
+        assert!(poll_with(paused_waiter.as_mut(), &paused_waker).is_pending());
+        assert!(poll_with(active_waiter.as_mut(), &active_waker).is_pending());
+
+        should_panic.store(true, Ordering::Release);
+        assert!(catch_unwind(AssertUnwindSafe(|| poll_once(leader.as_mut()))).is_err());
+        assert_eq!(paused_wakes.count(), 1);
+        assert_eq!(active_wakes.count(), 1);
+
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                let _ = poll_with(active_waiter.as_mut(), &active_waker);
+            }))
+            .is_err()
+        );
+    });
 }

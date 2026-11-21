@@ -42,6 +42,7 @@ const UNINIT: u8 = 0;
 const RUNNING: u8 = 1 << 0;
 const HAS_WAITERS: u8 = 1 << 1;
 const COMPLETE: u8 = 1 << 2;
+const MAX_RETAINED_OVERFLOW_CAPACITY: usize = 8;
 
 enum TryBegin {
     Completed,
@@ -94,11 +95,37 @@ impl Waiters {
         }
     }
 
-    fn is_unused(&self) -> bool {
-        matches!(self.inline, InlineSlot::Empty)
-            && self.overflow.as_ref().is_none_or(|overflow| {
-                !overflow.initializers.has_occupied_slots() && overflow.observers.is_empty()
-            })
+    /// Returns `(has_no_waiters, retired_overflow)`.
+    ///
+    /// When the inline slot is also empty, any overflow allocation is reclaimed immediately so
+    /// idle or completed cells retain zero heap storage. While an inline waiter remains, small
+    /// empty overflow allocations are retained for reuse across repeated cancellations, while
+    /// burst allocations above `MAX_RETAINED_OVERFLOW_CAPACITY` are dropped immediately.
+    #[must_use = "drop any retired overflow storage after releasing the waiter lock"]
+    fn reclaim_unused(&mut self) -> (bool, Option<Box<OverflowWaiters>>) {
+        let inline_empty = matches!(self.inline, InlineSlot::Empty);
+        let overflow_empty = self.overflow.as_ref().is_none_or(|overflow| {
+            !overflow.initializers.has_occupied_slots() && overflow.observers.is_empty()
+        });
+
+        if !overflow_empty {
+            return (false, None);
+        }
+
+        if inline_empty {
+            return (true, self.overflow.take());
+        }
+
+        let should_drop_burst = self.overflow.as_ref().is_some_and(|overflow| {
+            overflow.initializers.capacity() > MAX_RETAINED_OVERFLOW_CAPACITY
+                || overflow.observers.capacity() > MAX_RETAINED_OVERFLOW_CAPACITY
+        });
+        let retired = if should_drop_burst {
+            self.overflow.take()
+        } else {
+            None
+        };
+        (false, retired)
     }
 
     fn has_no_overflow_initializers(&self) -> bool {
@@ -259,7 +286,8 @@ impl OnceState {
             else {
                 unreachable!();
             };
-            return (Some(waker), None);
+            let (_, retired_overflow) = waiters.reclaim_unused();
+            return (Some(waker), retired_overflow);
         }
 
         if let Some(overflow) = waiters.overflow.as_mut() {
@@ -275,24 +303,22 @@ impl OnceState {
 
         // `RUNNING` is currently held by the caller and `waiters` is locked, so no other thread
         // can transition `self.state` concurrently.
-        if waiters.is_unused() {
-            let retired_overflow = waiters.overflow.take();
+        let (all_empty, retired_overflow) = waiters.reclaim_unused();
+        if all_empty {
             self.state.store(UNINIT, Ordering::Release);
-            (None, retired_overflow)
         } else {
             self.state.store(HAS_WAITERS, Ordering::Release);
-            (None, None)
         }
+        (None, retired_overflow)
     }
 
     #[must_use = "drop any retired overflow storage after releasing the waiter lock"]
     fn reclaim_if_unused(&self, waiters: &mut Waiters) -> Option<Box<OverflowWaiters>> {
-        if waiters.is_unused() {
+        let (all_empty, retired_overflow) = waiters.reclaim_unused();
+        if all_empty {
             self.clear_has_waiters();
-            waiters.overflow.take()
-        } else {
-            None
         }
+        retired_overflow
     }
 
     fn clear_has_waiters(&self) {
@@ -347,6 +373,7 @@ struct AcquireInit<'a> {
 impl<'a> Future for AcquireInit<'a> {
     type Output = Option<InitGuard<'a>>;
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let once = this
@@ -373,22 +400,33 @@ impl<'a> Future for AcquireInit<'a> {
             }
         }
 
+        this.poll_contended(once, cx)
+    }
+}
+
+impl<'a> AcquireInit<'a> {
+    #[cold]
+    fn poll_contended(
+        &mut self,
+        once: &'a OnceState,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<InitGuard<'a>>> {
         let mut waiters = once.waiters.lock();
         if once.is_completed() {
-            this.once = None;
-            this.registration = InitRegistration::Unregistered;
+            self.once = None;
+            self.registration = InitRegistration::Unregistered;
             return Poll::Ready(None);
         }
 
-        match &this.registration {
+        match &self.registration {
             InitRegistration::Inline => match &mut waiters.inline {
                 InlineSlot::Granted => {
                     waiters.inline = InlineSlot::Empty;
                     let retired_overflow = once.reclaim_if_unused(&mut waiters);
                     drop(waiters);
                     drop(retired_overflow);
-                    this.once = None;
-                    this.registration = InitRegistration::Unregistered;
+                    self.once = None;
+                    self.registration = InitRegistration::Unregistered;
                     return Poll::Ready(Some(InitGuard { once }));
                 }
                 InlineSlot::Initializer(current) => {
@@ -410,8 +448,8 @@ impl<'a> Future for AcquireInit<'a> {
                         let retired_overflow = once.reclaim_if_unused(&mut waiters);
                         drop(waiters);
                         drop(retired_overflow);
-                        this.once = None;
-                        this.registration = InitRegistration::Unregistered;
+                        self.once = None;
+                        self.registration = InitRegistration::Unregistered;
                         return Poll::Ready(Some(InitGuard { once }));
                     }
                     OverflowInitWaiter::Waiting(current) => {
@@ -428,7 +466,7 @@ impl<'a> Future for AcquireInit<'a> {
         let mut s = once.state.load(Ordering::Acquire);
         loop {
             if s == COMPLETE {
-                this.once = None;
+                self.once = None;
                 return Poll::Ready(None);
             }
             if s & RUNNING == 0 {
@@ -439,7 +477,7 @@ impl<'a> Future for AcquireInit<'a> {
                     Ordering::Acquire,
                 ) {
                     Ok(_) => {
-                        this.once = None;
+                        self.once = None;
                         return Poll::Ready(Some(InitGuard { once }));
                     }
                     Err(actual) => {
@@ -464,31 +502,20 @@ impl<'a> Future for AcquireInit<'a> {
 
         if matches!(waiters.inline, InlineSlot::Empty) && waiters.has_no_overflow_initializers() {
             waiters.inline = InlineSlot::Initializer(cx.waker().clone());
-            this.registration = InitRegistration::Inline;
+            self.registration = InitRegistration::Inline;
         } else {
             let id = waiters
                 .overflow_or_init()
                 .initializers
                 .push_back(OverflowInitWaiter::Waiting(cx.waker().clone()));
-            this.registration = InitRegistration::Overflow(id);
+            self.registration = InitRegistration::Overflow(id);
         }
         drop(waiters);
         Poll::Pending
     }
-}
 
-impl Drop for AcquireInit<'_> {
-    fn drop(&mut self) {
-        let Some(once) = self.once else {
-            return;
-        };
-        if matches!(self.registration, InitRegistration::Unregistered) {
-            return;
-        }
-        if once.is_completed() {
-            return;
-        }
-
+    #[cold]
+    fn drop_registered(&mut self, once: &'a OnceState) {
         let mut waiters = once.waiters.lock();
         if once.is_completed() {
             return;
@@ -521,6 +548,21 @@ impl Drop for AcquireInit<'_> {
         drop(retired_overflow);
         if let Some(waker) = next_waker {
             waker.wake();
+        }
+    }
+}
+
+impl Drop for AcquireInit<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        let Some(once) = self.once else {
+            return;
+        };
+        if matches!(self.registration, InitRegistration::Unregistered) {
+            return;
+        }
+        if !once.is_completed() {
+            self.drop_registered(once);
         }
     }
 }
@@ -639,11 +681,24 @@ mod tests {
     fn reclaims_overflow_storage_when_all_waiters_leave() {
         let once = OnceState::new(false);
 
-        // Observer burst cancelling before any initializer runs must release overflow storage.
-        let mut observers = (0..8).map(|_| Box::pin(once.wait())).collect::<Vec<_>>();
+        // Burst overflow waiters cancelling while the inline waiter stays pending must release
+        // large overflow storage immediately while retaining `HAS_WAITERS` for the inline waiter.
+        let mut observers = (0..16).map(|_| Box::pin(once.wait())).collect::<Vec<_>>();
         for observer in &mut observers {
             assert!(poll_once(observer.as_mut()).is_pending());
         }
+        assert!(once.waiters.lock().overflow.is_some());
+        observers.truncate(1);
+        assert_eq!(once.state.load(Ordering::Acquire), HAS_WAITERS);
+        assert!(once.waiters.lock().overflow.is_none());
+
+        // Small overflow churn retains bounded capacity while the inline waiter remains, then
+        // releases all storage once the last waiter leaves.
+        let mut small_overflow = (0..2).map(|_| Box::pin(once.wait())).collect::<Vec<_>>();
+        for observer in &mut small_overflow {
+            assert!(poll_once(observer.as_mut()).is_pending());
+        }
+        drop(small_overflow);
         assert!(once.waiters.lock().overflow.is_some());
         drop(observers);
         assert_eq!(once.state.load(Ordering::Acquire), UNINIT);
