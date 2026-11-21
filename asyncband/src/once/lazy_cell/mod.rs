@@ -15,21 +15,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::UnsafeCell;
 use std::fmt;
+use std::future;
 use std::future::Future;
 use std::future::Pending;
 use std::future::Ready;
 use std::future::poll_fn;
-use std::future::ready;
+use std::mem;
 use std::panic::RefUnwindSafe;
 use std::panic::UnwindSafe;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::thread;
+use std::task::Context;
+use std::task::Poll;
+use std::task::ready;
 
+use crate::internal::once_state::InitGuard;
+use crate::internal::once_state::OnceState;
 use crate::internal::value_cell::ValueCell;
-use crate::mutex::Mutex;
 
 /// A thread-safe value initialized by a stored asynchronous function on first access.
 ///
@@ -111,9 +116,15 @@ use crate::mutex::Mutex;
 /// ```
 pub struct LazyCell<T, Fut, F = fn() -> Fut> {
     value: ValueCell<T>,
-    state: Mutex<State<F, Fut>>,
+    state: UnsafeCell<State<F, Fut>>,
+    once: OnceState,
     poisoned: AtomicBool,
 }
+
+// SAFETY: Shared references read `T` only after `ValueCell::publish` and access `state` only while
+// holding exclusive leadership from `OnceState`. Moving or resuming `F` and `Fut` across threads
+// requires `Send`, while concurrent `&T` access requires `T: Send + Sync`.
+unsafe impl<T: Send + Sync, Fut: Send, F: Send> Sync for LazyCell<T, Fut, F> {}
 
 // Keep mutually exclusive phases in an enum so an inline future shares storage with its
 // initializer instead of making the cell large enough to hold both at once.
@@ -162,7 +173,8 @@ impl<T, Fut, F> LazyCell<T, Fut, F> {
     {
         Self {
             value: ValueCell::empty(),
-            state: Mutex::new(State::Initializer(Some(initializer))),
+            state: UnsafeCell::new(State::Initializer(Some(initializer))),
+            once: OnceState::new(false),
             poisoned: AtomicBool::new(false),
         }
     }
@@ -171,6 +183,7 @@ impl<T, Fut, F> LazyCell<T, Fut, F> {
     ///
     /// This method never starts initialization or waits for an active attempt. It returns `None`
     /// when the cell is uninitialized, initializing, or poisoned.
+    #[inline]
     pub fn get(this: &Self) -> Option<&T> {
         this.value.get()
     }
@@ -179,13 +192,14 @@ impl<T, Fut, F> LazyCell<T, Fut, F> {
     ///
     /// This method never starts initialization. It returns `None` when the cell is uninitialized
     /// or poisoned.
+    #[inline]
     pub fn get_mut(this: &mut Self) -> Option<&mut T> {
         this.value.get_mut()
     }
 
+    #[inline]
     fn assert_unpoisoned(&self) {
-        // This flag does not publish any accompanying data, so it only needs atomicity.
-        if self.poisoned.load(Ordering::Relaxed) {
+        if self.poisoned.load(Ordering::Acquire) {
             panic_poisoned();
         }
     }
@@ -231,6 +245,7 @@ where
     /// assert_eq!(*LazyCell::force(&lazy).await, 92);
     /// # }
     /// ```
+    #[inline]
     pub async fn force(this: &Self) -> &T {
         Self::force_pin(Pin::new(this)).await
     }
@@ -308,6 +323,7 @@ where
     /// assert_eq!(*LazyCell::force_pin(lazy.as_ref()).await, 92);
     /// # }
     /// ```
+    #[inline]
     pub async fn force_pin<'a>(this: Pin<&'a Self>) -> &'a T {
         let this_ref: &'a Self = Pin::get_ref(this);
         if let Some(value) = Self::get(this_ref) {
@@ -315,20 +331,31 @@ where
         }
         this_ref.assert_unpoisoned();
 
-        let mut state = this_ref.state.lock().await;
-        if let Some(value) = Self::get(this_ref) {
-            return value;
-        }
-        this_ref.assert_unpoisoned();
+        let Some(guard) = this_ref.once.acquire_init().await else {
+            if let Some(value) = Self::get(this_ref) {
+                return value;
+            }
+            this_ref.assert_unpoisoned();
+            unreachable!("completed LazyCell must contain a value or be poisoned");
+        };
 
-        // SAFETY: `this` remains pinned for the duration of the returned future. The state is
-        // stored in that cell, and a mutex guard never relocates its protected value.
-        let state = unsafe { Pin::new_unchecked(&mut *state) };
-        let value = drive_pinned_attempt(state, &this_ref.poisoned).await;
+        let attempt_guard = AttemptGuard {
+            guard: Some(guard),
+            poisoned: &this_ref.poisoned,
+        };
+        let value = poll_fn(|cx| {
+            // SAFETY: `attempt_guard` holds exclusive ownership of `this_ref.state`, and `this`
+            // remains pinned for the duration of the returned future.
+            let state = unsafe { Pin::new_unchecked(&mut *this_ref.state.get()) };
+            poll_pinned_attempt(state, &this_ref.poisoned, cx)
+        })
+        .await;
 
-        // SAFETY: The state mutex serializes initialization, and the double check above verified
-        // that the value was not initialized by another caller.
-        unsafe { this_ref.value.publish(value) }
+        // SAFETY: `attempt_guard` still holds exclusive initialization ownership and no value has
+        // been published yet. Publishing before `complete()` ensures woken callers observe it.
+        let published = unsafe { this_ref.value.publish(value) };
+        attempt_guard.complete();
+        published
     }
 
     /// Initializes the pinned cell if needed and returns mutable access to its value.
@@ -366,6 +393,7 @@ where
         // value is not structurally pinned and may be accessed normally.
         let this: &'a mut Self = unsafe { Pin::get_unchecked_mut(this) };
         if this.value.has_value_mut() {
+            debug_assert!(this.once.is_completed());
             return this
                 .value
                 .get_mut()
@@ -375,17 +403,24 @@ where
             panic_poisoned();
         }
 
-        // SAFETY: Exclusive access to the pinned cell pins its state in place for this call.
-        let state = unsafe { Pin::new_unchecked(this.state.get_mut()) };
-        let value = drive_pinned_attempt(state, &this.poisoned).await;
-        this.value.write_mut(value)
+        this.once.reset_mut();
+        let value = poll_fn(|cx| {
+            // SAFETY: Exclusive access to the pinned cell pins its state in place for this call.
+            let state = unsafe { Pin::new_unchecked(this.state.get_mut()) };
+            poll_pinned_attempt(state, &this.poisoned, cx)
+        })
+        .await;
+        let stored = this.value.write_mut(value);
+        this.once.complete_mut();
+        stored
     }
 }
 
-async fn drive_pinned_attempt<T, F, Fut>(
+fn poll_pinned_attempt<T, F, Fut>(
     mut state: Pin<&mut State<F, Fut>>,
     poisoned: &AtomicBool,
-) -> T
+    cx: &mut Context<'_>,
+) -> Poll<T>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = T>,
@@ -403,31 +438,33 @@ where
     };
 
     if let Some(initializer) = initializer {
-        let future = {
-            let _poison = PoisonOnPanic(poisoned);
-            initializer()
-        };
+        let poison = PoisonOnUnwind(poisoned);
+        let future = initializer();
+        mem::forget(poison);
 
         state.set(State::Attempt(future));
     }
 
-    let value = poll_fn(|cx| {
-        let _poison = PoisonOnPanic(poisoned);
+    let poll = {
+        let poison = PoisonOnUnwind(poisoned);
         // SAFETY: The state remains pinned while this future is polled, and the attempt is never
         // moved after it is installed.
         let attempt = match unsafe { state.as_mut().get_unchecked_mut() } {
             State::Attempt(attempt) => attempt,
-            State::Initializer(_) => panic!("LazyCell attempt missing while initializing"),
-            State::Complete => panic!("LazyCell state complete while value is uninitialized"),
+            State::Initializer(_) => unreachable!(),
+            State::Complete => unreachable!(),
         };
-        unsafe { Pin::new_unchecked(attempt) }.poll(cx)
-    })
-    .await;
+        let poll = unsafe { Pin::new_unchecked(attempt) }.poll(cx);
+        mem::forget(poison);
+        poll
+    };
 
+    let value = ready!(poll);
     // A panic while dropping the completed future also poisons the cell.
-    let _poison = PoisonOnPanic(poisoned);
+    let poison = PoisonOnUnwind(poisoned);
     state.set(State::Complete);
-    value
+    mem::forget(poison);
+    Poll::Ready(value)
 }
 
 // A default cell starts empty, so `Ready<T>` is a real attempt type: forcing the cell creates
@@ -438,7 +475,7 @@ where
 {
     fn default() -> Self {
         fn initialize<T: Default>() -> Ready<T> {
-            ready(T::default())
+            future::ready(T::default())
         }
 
         Self::new(initialize::<T>)
@@ -458,7 +495,8 @@ where
     pub fn from_future(future: Fut) -> Self {
         Self {
             value: ValueCell::empty(),
-            state: Mutex::new(State::Attempt(future)),
+            state: UnsafeCell::new(State::Attempt(future)),
+            once: OnceState::new(false),
             poisoned: AtomicBool::new(false),
         }
     }
@@ -471,7 +509,8 @@ impl<T> LazyCell<T, Pending<T>> {
     pub const fn from_value(value: T) -> Self {
         Self {
             value: ValueCell::with_value(value),
-            state: Mutex::new(State::Complete),
+            state: UnsafeCell::new(State::Complete),
+            once: OnceState::new(true),
             poisoned: AtomicBool::new(false),
         }
     }
@@ -497,13 +536,39 @@ impl<T: RefUnwindSafe + UnwindSafe, Fut: UnwindSafe, F: UnwindSafe> RefUnwindSaf
 {
 }
 
-struct PoisonOnPanic<'a>(&'a AtomicBool);
+struct AttemptGuard<'a> {
+    guard: Option<InitGuard<'a>>,
+    poisoned: &'a AtomicBool,
+}
 
-impl Drop for PoisonOnPanic<'_> {
-    fn drop(&mut self) {
-        if thread::panicking() {
-            self.0.store(true, Ordering::Relaxed);
+impl AttemptGuard<'_> {
+    #[inline]
+    fn complete(mut self) {
+        if let Some(guard) = self.guard.take() {
+            guard.complete();
         }
+    }
+}
+
+impl Drop for AttemptGuard<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(guard) = self.guard.take() {
+            if self.poisoned.load(Ordering::Acquire) {
+                // Poisoning is terminal: broadcast completion so every queued caller wakes at once
+                // and observes the poisoned state rather than stalling behind one successor.
+                guard.complete();
+            }
+        }
+    }
+}
+
+struct PoisonOnUnwind<'a>(&'a AtomicBool);
+
+impl Drop for PoisonOnUnwind<'_> {
+    #[cold]
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 

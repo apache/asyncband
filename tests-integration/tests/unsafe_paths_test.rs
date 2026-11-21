@@ -19,12 +19,12 @@ use std::cell::Cell;
 use std::future::Future;
 use std::marker::PhantomPinned;
 use std::pin::Pin;
-use std::pin::pin;
 use std::ptr;
 use std::sync;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use std::thread;
 
 use asyncband::mutex::MappedMutexGuard;
 use asyncband::mutex::Mutex;
@@ -177,14 +177,14 @@ fn owned_downgraded_shared_projection_preserves_interior_mutability() {
 }
 
 struct AddressSensitiveFuture {
-    address: Cell<*const Self>,
+    address: Cell<usize>,
     _pin: PhantomPinned,
 }
 
 impl AddressSensitiveFuture {
     fn new() -> Self {
         Self {
-            address: Cell::new(ptr::null()),
+            address: Cell::new(0),
             _pin: PhantomPinned,
         }
     }
@@ -195,13 +195,13 @@ impl Future for AddressSensitiveFuture {
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_ref().get_ref();
-        let current = ptr::from_ref(this);
+        let current = ptr::from_ref(this).addr();
         let first = this.address.get();
-        if first.is_null() {
+        if first == 0 {
             this.address.set(current);
             Poll::Pending
         } else {
-            assert!(ptr::eq(first, current));
+            assert_eq!(first, current);
             Poll::Ready(42)
         }
     }
@@ -209,14 +209,22 @@ impl Future for AddressSensitiveFuture {
 
 #[test]
 fn lazy_cell_resumes_a_pinned_attempt_in_place() {
-    let lazy = LazyCell::from_future(AddressSensitiveFuture::new());
-    let lazy = pin!(lazy);
+    let lazy = Arc::pin(LazyCell::from_future(AddressSensitiveFuture::new()));
 
-    {
-        let mut force = pin!(LazyCell::force_pin(lazy.as_ref()));
-        assert!(poll_once(force.as_mut()).is_pending());
-    }
+    let mut first = Box::pin(LazyCell::force_pin(lazy.as_ref()));
+    assert!(poll_once(first.as_mut()).is_pending());
 
-    let mut force = pin!(LazyCell::force_pin(lazy.as_ref()));
-    assert_eq!(poll_once(force.as_mut()), Poll::Ready(&42));
+    let mut queued = Box::pin(LazyCell::force_pin(lazy.as_ref()));
+    assert!(poll_once(queued.as_mut()).is_pending());
+    drop(first);
+
+    thread::scope(|scope| {
+        let published = scope
+            .spawn(move || {
+                assert_eq!(poll_once(queued.as_mut()), Poll::Ready(&42));
+            })
+            .join();
+        published.unwrap();
+    });
+    assert_eq!(LazyCell::get(&lazy), Some(&42));
 }
