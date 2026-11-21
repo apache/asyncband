@@ -141,6 +141,10 @@ impl<T> WaitList<T> {
         !self.nodes.is_empty()
     }
 
+    pub fn capacity(&self) -> usize {
+        self.nodes.capacity()
+    }
+
     /// Consumes the list, yielding occupied waiter values in slot order and releasing storage.
     pub fn into_values(self) -> impl Iterator<Item = T> {
         self.nodes.into_iter().map(|node| node.value)
