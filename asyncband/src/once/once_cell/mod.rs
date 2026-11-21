@@ -314,7 +314,7 @@ impl<T> OnceCell<T> {
     {
         // Check the flag before borrowing so the fallback branch can call `set_value_mut`.
         if self.value.has_value_mut() {
-            self.state.complete_mut();
+            debug_assert!(self.state.is_completed());
             return Ok(self
                 .value
                 .get_mut()

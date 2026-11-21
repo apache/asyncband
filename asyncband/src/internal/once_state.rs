@@ -151,16 +151,20 @@ impl OnceState {
         self.state.load(Ordering::Acquire) == COMPLETE
     }
 
+    #[inline]
     pub fn complete_mut(&mut self) {
-        *self.state.get_mut() = COMPLETE;
-        let waiters = mem::take(self.waiters.get_mut());
-        waiters.wake_all();
+        let prev = mem::replace(self.state.get_mut(), COMPLETE);
+        if prev & HAS_WAITERS != 0 {
+            mem::take(self.waiters.get_mut()).wake_all();
+        }
     }
 
+    #[inline]
     pub fn reset_mut(&mut self) {
-        *self.state.get_mut() = UNINIT;
-        let waiters = mem::take(self.waiters.get_mut());
-        drop(waiters);
+        let prev = mem::replace(self.state.get_mut(), UNINIT);
+        if prev & HAS_WAITERS != 0 {
+            drop(mem::take(self.waiters.get_mut()));
+        }
     }
 
     pub fn acquire_init(&self) -> impl Future<Output = Option<InitGuard<'_>>> + '_ {
@@ -237,21 +241,25 @@ impl OnceState {
     #[cold]
     fn abort_init_slow(&self) {
         let mut waiters = self.waiters.lock();
-        let next_waker = self.pass_or_release_leadership(&mut waiters);
+        let (next_waker, retired_overflow) = self.pass_or_release_leadership(&mut waiters);
         drop(waiters);
+        drop(retired_overflow);
         if let Some(waker) = next_waker {
             waker.wake();
         }
     }
 
-    fn pass_or_release_leadership(&self, waiters: &mut Waiters) -> Option<Waker> {
+    fn pass_or_release_leadership(
+        &self,
+        waiters: &mut Waiters,
+    ) -> (Option<Waker>, Option<Box<OverflowWaiters>>) {
         if matches!(waiters.inline, InlineSlot::Initializer(_)) {
             let InlineSlot::Initializer(waker) =
                 mem::replace(&mut waiters.inline, InlineSlot::Granted)
             else {
                 unreachable!();
             };
-            return Some(waker);
+            return (Some(waker), None);
         }
 
         if let Some(overflow) = waiters.overflow.as_mut() {
@@ -261,19 +269,30 @@ impl OnceState {
                 else {
                     unreachable!("only waiting initializers remain linked");
                 };
-                return Some(waker);
+                return (Some(waker), None);
             }
         }
 
         // `RUNNING` is currently held by the caller and `waiters` is locked, so no other thread
         // can transition `self.state` concurrently.
-        let next_state = if waiters.is_unused() {
-            UNINIT
+        if waiters.is_unused() {
+            let retired_overflow = waiters.overflow.take();
+            self.state.store(UNINIT, Ordering::Release);
+            (None, retired_overflow)
         } else {
-            HAS_WAITERS
-        };
-        self.state.store(next_state, Ordering::Release);
-        None
+            self.state.store(HAS_WAITERS, Ordering::Release);
+            (None, None)
+        }
+    }
+
+    #[must_use = "drop any retired overflow storage after releasing the waiter lock"]
+    fn reclaim_if_unused(&self, waiters: &mut Waiters) -> Option<Box<OverflowWaiters>> {
+        if waiters.is_unused() {
+            self.clear_has_waiters();
+            waiters.overflow.take()
+        } else {
+            None
+        }
     }
 
     fn clear_has_waiters(&self) {
@@ -365,10 +384,9 @@ impl<'a> Future for AcquireInit<'a> {
             InitRegistration::Inline => match &mut waiters.inline {
                 InlineSlot::Granted => {
                     waiters.inline = InlineSlot::Empty;
-                    if waiters.is_unused() {
-                        once.clear_has_waiters();
-                    }
+                    let retired_overflow = once.reclaim_if_unused(&mut waiters);
                     drop(waiters);
+                    drop(retired_overflow);
                     this.once = None;
                     this.registration = InitRegistration::Unregistered;
                     return Poll::Ready(Some(InitGuard { once }));
@@ -389,10 +407,9 @@ impl<'a> Future for AcquireInit<'a> {
                             .overflow_mut()
                             .initializers
                             .remove_unlinked_waiter(id);
-                        if waiters.is_unused() {
-                            once.clear_has_waiters();
-                        }
+                        let retired_overflow = once.reclaim_if_unused(&mut waiters);
                         drop(waiters);
+                        drop(retired_overflow);
                         this.once = None;
                         this.registration = InitRegistration::Unregistered;
                         return Poll::Ready(Some(InitGuard { once }));
@@ -494,16 +511,14 @@ impl Drop for AcquireInit<'_> {
             }
         }
 
-        let next_waker = if was_granted {
+        let (next_waker, retired_overflow) = if was_granted {
             once.pass_or_release_leadership(&mut waiters)
         } else {
-            if waiters.is_unused() {
-                once.clear_has_waiters();
-            }
-            None
+            (None, once.reclaim_if_unused(&mut waiters))
         };
         drop(waiters);
         drop(removed_waker);
+        drop(retired_overflow);
         if let Some(waker) = next_waker {
             waker.wake();
         }
@@ -603,10 +618,58 @@ impl Drop for OnceWait<'_> {
             },
             ObserverRegistration::Overflow(token) => waiters.overflow_mut().observers.remove(token),
         };
-        if waiters.is_unused() {
-            self.once.clear_has_waiters();
-        }
+        let retired_overflow = self.once.reclaim_if_unused(&mut waiters);
         drop(waiters);
         drop(removed_waker);
+        drop(retired_overflow);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::pin::pin;
+
+    use super::*;
+
+    fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
+        future.poll(&mut Context::from_waker(Waker::noop()))
+    }
+
+    #[test]
+    fn reclaims_overflow_storage_when_all_waiters_leave() {
+        let once = OnceState::new(false);
+
+        // Observer burst cancelling before any initializer runs must release overflow storage.
+        let mut observers = (0..8).map(|_| Box::pin(once.wait())).collect::<Vec<_>>();
+        for observer in &mut observers {
+            assert!(poll_once(observer.as_mut()).is_pending());
+        }
+        assert!(once.waiters.lock().overflow.is_some());
+        drop(observers);
+        assert_eq!(once.state.load(Ordering::Acquire), UNINIT);
+        assert!(once.waiters.lock().overflow.is_none());
+
+        // Overflow candidate claiming a grant as the last waiter must also release overflow storage
+        // before completion takes the lock-free fast path.
+        let Poll::Ready(Some(first_guard)) = poll_once(pin!(once.acquire_init())) else {
+            panic!("first caller should acquire leadership");
+        };
+        let mut inline_candidate = Box::pin(once.acquire_init());
+        let mut overflow_candidate = pin!(once.acquire_init());
+        assert!(poll_once(inline_candidate.as_mut()).is_pending());
+        assert!(poll_once(overflow_candidate.as_mut()).is_pending());
+        assert!(once.waiters.lock().overflow.is_some());
+
+        drop(inline_candidate);
+        drop(first_guard);
+        let Poll::Ready(Some(second_guard)) = poll_once(overflow_candidate.as_mut()) else {
+            panic!("remaining candidate should receive leadership");
+        };
+        assert_eq!(once.state.load(Ordering::Acquire), RUNNING);
+        assert!(once.waiters.lock().overflow.is_none());
+
+        second_guard.complete();
+        assert!(once.is_completed());
+        assert!(once.waiters.lock().overflow.is_none());
     }
 }

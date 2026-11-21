@@ -241,12 +241,20 @@ fn registered_waiter_observes_completion_from_another_thread() {
         let (registered, registration) = mpsc::channel();
         thread::scope(|scope| {
             let cell = &cell;
+            let registered_observer = registered.clone();
             scope.spawn(move || {
                 let mut waiter = pin!(cell.get_or_init(async || unreachable!()));
                 assert!(poll_once(waiter.as_mut()).is_pending());
                 registered.send(()).unwrap();
                 assert_eq!(waiter.block_on(), &[42; 32]);
             });
+            scope.spawn(move || {
+                let mut observer = pin!(cell.wait());
+                assert!(poll_once(observer.as_mut()).is_pending());
+                registered_observer.send(()).unwrap();
+                assert_eq!(observer.block_on(), &[42; 32]);
+            });
+            registration.recv().unwrap();
             registration.recv().unwrap();
             finish.send(()).unwrap();
             assert_eq!(expect_ready(poll_once(first.as_mut())), &[42; 32]);

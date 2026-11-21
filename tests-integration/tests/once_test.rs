@@ -173,30 +173,36 @@ fn completion_wakes_all_queued_callers_even_when_the_first_follower_stays_paused
 fn cancelled_leader_hands_off_fifo_without_waking_observers() {
     let once = Once::new();
     let mut first = Box::pin(once.call_once(async || pending::<()>().await));
-    let mut observer = pin!(once.wait());
     let mut second = Box::pin(once.call_once(async || unreachable!()));
-    let mut third = pin!(once.call_once(async || {}));
-    let (observer_waker, observer_wakes) = WakeCounter::new();
+    let mut third = Box::pin(once.call_once(async || unreachable!()));
+    let mut observer = pin!(once.wait());
+    let mut fourth = pin!(once.call_once(async || {}));
     let (second_waker, second_wakes) = WakeCounter::new();
     let (third_waker, third_wakes) = WakeCounter::new();
+    let (observer_waker, observer_wakes) = WakeCounter::new();
+    let (fourth_waker, fourth_wakes) = WakeCounter::new();
 
-    // Register an observer into the inline slot before any initializer queues so `second` and
-    // `third` exercise the overflow queue and FIFO handoff across cancellations.
-    assert!(poll_with(observer.as_mut(), &observer_waker).is_pending());
+    // `second` occupies the inline slot while `third` and `observer` spill to overflow. Dropping
+    // `second` vacates the inline slot, and `fourth` must still queue behind `third` rather than
+    // jumping ahead through the empty inline slot.
     assert!(poll_once(first.as_mut()).is_pending());
     assert!(poll_with(second.as_mut(), &second_waker).is_pending());
     assert!(poll_with(third.as_mut(), &third_waker).is_pending());
+    assert!(poll_with(observer.as_mut(), &observer_waker).is_pending());
+    drop(second);
+    assert_eq!(second_wakes.count(), 0);
+    assert!(poll_with(fourth.as_mut(), &fourth_waker).is_pending());
 
     drop(first);
-    assert_eq!(second_wakes.count(), 1);
-    assert_eq!(third_wakes.count(), 0);
-    assert_eq!(observer_wakes.count(), 0);
-
-    drop(second);
     assert_eq!(third_wakes.count(), 1);
+    assert_eq!(fourth_wakes.count(), 0);
     assert_eq!(observer_wakes.count(), 0);
 
-    expect_ready(poll_with(third.as_mut(), &third_waker));
+    drop(third);
+    assert_eq!(fourth_wakes.count(), 1);
+    assert_eq!(observer_wakes.count(), 0);
+
+    expect_ready(poll_with(fourth.as_mut(), &fourth_waker));
     assert_eq!(observer_wakes.count(), 1);
     expect_ready(poll_with(observer.as_mut(), &observer_waker));
 }
