@@ -78,6 +78,7 @@ impl Semaphore {
     /// Claims `n` permits immediately if enough are available.
     ///
     /// Returns `false` without mutating the count when fewer than `n` permits are present.
+    #[inline]
     pub fn try_acquire(&self, n: usize) -> bool {
         let mut available = self.available_permits.load(Ordering::Acquire);
         loop {
@@ -127,6 +128,7 @@ impl Semaphore {
     }
 
     /// Returns a future that acquires `n` permits from the semaphore.
+    #[inline]
     pub fn acquire(&self, n: usize) -> Acquire<'_> {
         Acquire {
             requested_permits: n,
@@ -139,6 +141,7 @@ impl Semaphore {
     ///
     /// Acquires the queue lock if no permits are available, contention has been detected, or the
     /// compare-exchange fails.
+    #[inline]
     pub fn release(&self, n: usize) {
         if n == 0 {
             return;
@@ -159,6 +162,11 @@ impl Semaphore {
             return;
         }
 
+        self.release_slow(n);
+    }
+
+    #[cold]
+    fn release_slow(&self, n: usize) {
         self.distribute_permits(n, self.waiters.lock());
     }
 
@@ -173,6 +181,7 @@ impl Semaphore {
     ///
     /// ORDERING: Release publishes the work protected by the released permits to the Acquire
     /// load or exchange that next observes this permit count.
+    #[inline]
     fn try_update_permits(&self, expected: usize, released: usize) -> Result<(), usize> {
         let next = expected.checked_add(released).unwrap_or_else(|| {
             panic!(
@@ -210,23 +219,7 @@ impl Semaphore {
             }
 
             if remaining > 0 && waiters.is_empty() {
-                // Releases can add available permits without taking this lock, so the overflow
-                // check and addition must use the same count. If none are available, other threads
-                // cannot add any under this lock, but an RMW is still needed to extend the previous
-                // release sequence.
-                let mut available = self.available_permits.load(Ordering::Relaxed);
-                if available == 0 {
-                    self.available_permits
-                        .fetch_add(remaining, Ordering::Release);
-                } else {
-                    while let Err(actual) = self.try_update_permits(available, remaining) {
-                        // Another thread changed the available count despite our queue lock;
-                        // ask subsequent releases to acquire the lock as well.
-                        self.contention_detected.store(true, Ordering::Relaxed);
-                        available = actual;
-                    }
-                    self.contention_detected.store(false, Ordering::Relaxed);
-                }
+                self.restore_available_permits(remaining);
                 remaining = 0;
             }
 
@@ -236,6 +229,26 @@ impl Semaphore {
                 return;
             }
             waiters = self.waiters.lock();
+        }
+    }
+
+    /// Publishes `added` permits back to `available_permits` while the wait queue is locked and
+    /// empty.
+    fn restore_available_permits(&self, added: usize) {
+        // Releases can add available permits without taking this lock, so the overflow check and
+        // addition must use the same count. If none are available, other threads cannot add any
+        // under this lock, but an RMW is still needed to extend the previous release sequence.
+        let mut available = self.available_permits.load(Ordering::Relaxed);
+        if available == 0 {
+            self.available_permits.fetch_add(added, Ordering::Release);
+        } else {
+            while let Err(actual) = self.try_update_permits(available, added) {
+                // Another thread changed the available count despite our queue lock;
+                // ask subsequent releases to acquire the lock as well.
+                self.contention_detected.store(true, Ordering::Relaxed);
+                available = actual;
+            }
+            self.contention_detected.store(false, Ordering::Relaxed);
         }
     }
 }
@@ -249,6 +262,7 @@ pub struct Acquire<'a> {
 }
 
 impl Drop for Acquire<'_> {
+    #[inline]
     fn drop(&mut self) {
         if let Some(id) = self.waiter_id.take() {
             self.semaphore.cancel_acquire(self.requested_permits, id);
@@ -257,6 +271,7 @@ impl Drop for Acquire<'_> {
 }
 
 impl Acquire<'_> {
+    #[inline]
     pub fn poll_once(&mut self, waker: &Waker) -> Poll<()> {
         self.semaphore
             .poll_acquire(self.requested_permits, &mut self.waiter_id, waker)
@@ -265,20 +280,39 @@ impl Acquire<'_> {
 
 impl Semaphore {
     /// Cancels a queued acquisition and returns any permits already assigned to it.
+    #[cold]
     pub fn cancel_acquire(&self, requested: usize, id: WaiterId) {
         let mut waiters = self.waiters.lock();
         let waiter = waiters.remove(id);
         let acquired = requested - waiter.needed_permits;
-        if acquired > 0 {
-            self.distribute_permits(acquired, waiters);
-        } else {
+        if acquired == 0 {
             drop(waiters);
+        } else if waiters.is_empty() {
+            self.restore_available_permits(acquired);
+            drop(waiters);
+        } else {
+            self.distribute_permits(acquired, waiters);
         }
         drop(waiter);
     }
 
     /// Reuse the same count and registration until ready or cancelled.
+    #[inline]
     pub fn poll_acquire(
+        &self,
+        requested: usize,
+        waiter_id: &mut Option<WaiterId>,
+        waker: &Waker,
+    ) -> Poll<()> {
+        if waiter_id.is_none() && self.try_acquire(requested) {
+            return Poll::Ready(());
+        }
+
+        self.poll_acquire_slow(requested, waiter_id, waker)
+    }
+
+    #[cold]
+    fn poll_acquire_slow(
         &self,
         requested: usize,
         waiter_id: &mut Option<WaiterId>,
@@ -319,6 +353,7 @@ impl Semaphore {
 impl Future for Acquire<'_> {
     type Output = ();
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         this.poll_once(cx.waker())
