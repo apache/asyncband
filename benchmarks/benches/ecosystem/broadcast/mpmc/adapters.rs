@@ -16,6 +16,7 @@
 // under the License.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::task::Context;
 
 use asyncband::blocking::FutureExt;
@@ -23,6 +24,8 @@ use benchmarks::support::poll_ready;
 
 pub struct Asyncband;
 pub struct Tokio;
+/// Tokio publishing the per-message `Arc` that Asyncband's shared receive requires.
+pub struct TokioArc;
 pub struct AsyncBroadcast;
 
 pub trait BroadcastMpmc: Send + Sync + 'static {
@@ -96,6 +99,37 @@ impl BroadcastMpmc for Tokio {
 
     fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
         poll_ready(receiver.recv(), context).unwrap()
+    }
+}
+
+impl BroadcastMpmc for TokioArc {
+    type Receiver = tokio::sync::broadcast::Receiver<Arc<usize>>;
+    type Sender = tokio::sync::broadcast::Sender<Arc<usize>>;
+
+    fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
+        let (sender, receiver) = tokio::sync::broadcast::channel(capacity);
+        let mut receivers = Vec::with_capacity(receiver_count);
+        receivers.push(receiver);
+        for _ in 1..receiver_count {
+            receivers.push(sender.subscribe());
+        }
+        (sender, receivers)
+    }
+
+    fn send(sender: &Self::Sender, value: usize) {
+        sender.send(Arc::new(value)).unwrap();
+    }
+
+    fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
+        match receiver.try_recv() {
+            Ok(value) => Some(*value),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => None,
+            Err(error) => panic!("unexpected Tokio receive error: {error}"),
+        }
+    }
+
+    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
+        *poll_ready(receiver.recv(), context).unwrap()
     }
 }
 
