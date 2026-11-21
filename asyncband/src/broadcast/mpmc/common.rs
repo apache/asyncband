@@ -31,6 +31,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use crate::broadcast::mpmc::error::RecvError;
 use crate::broadcast::mpmc::error::TryRecvError;
@@ -363,39 +364,86 @@ impl<T> Backlog<T> {
     }
 }
 
-/// Buffer, receiver cursors, and parked receivers, all under one lock.
+/// Buffer, receiver cursors, and parked channel waiters, all under one lock.
 ///
 /// Checking the backlog and registering a waker share this lock with publishing and detaching
-/// registrations, so a message cannot be published between an empty check and registration.
-pub struct Inner<T> {
+/// registrations, so neither messages nor freed capacity can slip between a check and
+/// registration.
+pub struct Inner<T, S = ()> {
     pub log: Backlog<T>,
     pub waiters: WakerSet,
+    pub send_waiters: S,
 }
 
-impl<T> Inner<T> {
+impl<T, S> Inner<T, S> {
     /// Wraps `log` in the channel lock and registers the subscription every constructor hands out
     /// alongside its first sender.
-    pub fn with_first_subscription(mut log: Backlog<T>) -> (Mutex<Self>, SlotId) {
+    pub fn with_first_subscription(mut log: Backlog<T>, send_waiters: S) -> (Mutex<Self>, SlotId) {
         let key = log.subscribe();
         let inner = Mutex::new(Self {
             log,
             waiters: WakerSet::new(),
+            send_waiters,
         });
         (inner, key)
+    }
+
+    /// Receives without waiting while holding the channel lock.
+    #[inline]
+    pub fn try_receive(
+        &mut self,
+        senders: &AtomicUsize,
+        key: SlotId,
+    ) -> Result<Received<T>, TryRecvError> {
+        // Check this receiver's cursor while holding `inner` before observing the sender count.
+        // Senders append messages under the same lock before they can be dropped, so an empty
+        // result here means this receiver has no unread buffered message.
+        match self.log.receive(key) {
+            Some(received) => Ok(received),
+            None if senders.load(Ordering::Acquire) == 0 => Err(TryRecvError::Disconnected),
+            None => Err(TryRecvError::Empty),
+        }
+    }
+
+    /// Polls the shared receiving logic while holding the channel lock, returning any replaced
+    /// waker for unlocked destruction.
+    #[inline]
+    #[must_use = "drop the returned waker after releasing the channel lock"]
+    pub fn poll_receive(
+        &mut self,
+        senders: &AtomicUsize,
+        key: SlotId,
+        token: &mut Option<WakerToken>,
+        cx: &mut Context<'_>,
+    ) -> (Poll<Result<Received<T>, RecvError>>, Option<Waker>) {
+        match self.log.receive(key) {
+            Some(received) => {
+                *token = None;
+                (Poll::Ready(Ok(received)), None)
+            }
+            None if senders.load(Ordering::Acquire) == 0 => {
+                *token = None;
+                (Poll::Ready(Err(RecvError::Disconnected)), None)
+            }
+            None => {
+                let retired_waker = self.waiters.register(token, cx.waker());
+                (Poll::Pending, retired_waker)
+            }
+        }
     }
 }
 
 /// Wakes every parked receiver so it can observe the channel's disconnected state.
 ///
 /// Both families call this from the last sender's `Drop`.
-pub fn disconnect<T>(inner: &Mutex<Inner<T>>) {
+pub fn disconnect<T, S>(inner: &Mutex<Inner<T, S>>) {
     let wakers = mem::take(&mut inner.lock().waiters);
     wakers.wake_all();
 }
 
 /// Removes a cancelled `recv` future's waker registration, dropping the waker after unlocking.
-pub fn unregister<T>(
-    inner: &Mutex<Inner<T>>,
+pub fn unregister<T, S>(
+    inner: &Mutex<Inner<T, S>>,
     senders: &AtomicUsize,
     key: SlotId,
     token: &mut Option<WakerToken>,
@@ -412,31 +460,16 @@ pub fn unregister<T>(
     drop(waker);
 }
 
-/// Receives without waiting, returning the message and whether advancing the cursor vacated the
-/// head slot.
-///
-/// The caller owns what happens next: a bounded channel releases the freed slot to blocked
-/// producers before touching the payload.
+/// Receives without waiting on an unbounded channel.
 pub fn try_receive<T>(
     inner: &Mutex<Inner<T>>,
     senders: &AtomicUsize,
     key: SlotId,
 ) -> Result<Received<T>, TryRecvError> {
-    // Check this receiver's cursor while holding `inner` before observing the sender count.
-    // Senders append messages under the same lock before they can be dropped, so an empty result
-    // here means this receiver has no unread buffered message.
-    let mut inner = inner.lock();
-    match inner.log.receive(key) {
-        Some(received) => Ok(received),
-        None if senders.load(Ordering::Acquire) == 0 => Err(TryRecvError::Disconnected),
-        None => Err(TryRecvError::Empty),
-    }
+    inner.lock().try_receive(senders, key)
 }
 
-/// Polls the shared receiving logic for both channels' `recv` futures.
-///
-/// Publication and disconnection detach all registrations, so their ready paths clear the token
-/// without unregistering it.
+/// Polls the shared receiving logic on an unbounded channel.
 pub fn poll_receive<T>(
     inner: &Mutex<Inner<T>>,
     senders: &AtomicUsize,
@@ -444,24 +477,9 @@ pub fn poll_receive<T>(
     token: &mut Option<WakerToken>,
     cx: &mut Context<'_>,
 ) -> Poll<Result<Received<T>, RecvError>> {
-    let mut inner = inner.lock();
-    match inner.log.receive(key) {
-        Some(received) => {
-            *token = None;
-            Poll::Ready(Ok(received))
-        }
-        None => {
-            if senders.load(Ordering::Acquire) == 0 {
-                *token = None;
-                return Poll::Ready(Err(RecvError::Disconnected));
-            }
-
-            let retired_waker = inner.waiters.register(token, cx.waker());
-            drop(inner);
-            drop(retired_waker);
-            Poll::Pending
-        }
-    }
+    let (poll, retired_waker) = inner.lock().poll_receive(senders, key, token, cx);
+    drop(retired_waker);
+    poll
 }
 
 /// Yields the received message owned with the channel unlocked.

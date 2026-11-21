@@ -372,18 +372,23 @@ fn wakes_blocked_senders_as_capacity_frees() {
     let (tx, mut rx) = bounded(1);
     tx.try_send(0).unwrap();
 
+    let (first_waker, first_wakes) = WakeCounter::new();
+    let (second_waker, second_wakes) = WakeCounter::new();
     let mut first = pin!(tx.send(1));
     let mut second = pin!(tx.send(2));
-    assert!(poll_once(first.as_mut()).is_pending());
-    assert!(poll_once(second.as_mut()).is_pending());
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
 
-    // One freed slot admits exactly one producer.
+    // One freed slot wakes and admits only the first queued producer.
     assert_eq!(rx.try_recv().as_deref(), Ok(&0));
-    assert!(poll_once(first.as_mut()).is_ready());
-    assert!(poll_once(second.as_mut()).is_pending());
+    assert_eq!(first_wakes.count(), 1);
+    assert_eq!(second_wakes.count(), 0);
+    assert!(poll_with(first.as_mut(), &first_waker).is_ready());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
 
     assert_eq!(rx.try_recv().as_deref(), Ok(&1));
-    assert!(poll_once(second.as_mut()).is_ready());
+    assert_eq!(second_wakes.count(), 1);
+    assert!(poll_with(second.as_mut(), &second_waker).is_ready());
     assert_eq!(rx.try_recv().as_deref(), Ok(&2));
 }
 
@@ -393,14 +398,17 @@ fn dropping_a_lagging_receiver_wakes_blocked_senders() {
     let rx2 = tx.subscribe();
     tx.try_send(0).unwrap();
 
+    let (waker, wakes) = WakeCounter::new();
     let mut send = pin!(tx.send(1));
     assert_eq!(rx1.try_recv().as_deref(), Ok(&0));
-    assert!(poll_once(send.as_mut()).is_pending());
+    assert!(poll_with(send.as_mut(), &waker).is_pending());
+    assert_eq!(wakes.count(), 0);
 
-    // `rx2` is the one holding the backlog; dropping it releases the slot.
+    // `rx2` is the one holding the backlog; dropping it releases the slot and wakes the producer.
     drop(rx2);
     assert_eq!(tx.retained_message_count(), 0);
-    assert!(poll_once(send.as_mut()).is_ready());
+    assert_eq!(wakes.count(), 1);
+    assert!(poll_with(send.as_mut(), &waker).is_ready());
 }
 
 #[test]
@@ -529,6 +537,33 @@ fn cancelled_notified_sender_passes_capacity_to_the_next_sender() {
     assert_eq!(second_wakes.count(), 1);
     assert!(poll_with(second.as_mut(), &second_waker).is_ready());
     assert_eq!(rx.try_recv().as_deref(), Ok(&2));
+}
+
+#[test]
+fn cancelled_notified_sender_does_not_wake_follower_once_slot_is_refilled() {
+    let (tx, mut rx) = bounded(1);
+    tx.try_send(0).unwrap();
+
+    let (first_waker, first_wakes) = WakeCounter::new();
+    let (second_waker, second_wakes) = WakeCounter::new();
+    let mut first = Box::pin(tx.send(1));
+    let mut second = pin!(tx.send(2));
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+
+    assert_eq!(rx.try_recv().as_deref(), Ok(&0));
+    assert_eq!(first_wakes.count(), 1);
+
+    // Another producer claims the freed slot before `first` is dropped; no capacity remains to
+    // pass on to `second`.
+    tx.try_send(99).unwrap();
+    drop(first);
+    assert_eq!(second_wakes.count(), 0);
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+
+    assert_eq!(rx.try_recv().as_deref(), Ok(&99));
+    assert_eq!(second_wakes.count(), 1);
+    assert!(poll_with(second.as_mut(), &second_waker).is_ready());
 }
 
 #[test]
@@ -771,16 +806,18 @@ fn panicking_payload_destructor_still_releases_capacity() {
         rx1.try_recv().unwrap();
     }
 
+    let (waker, wakes) = WakeCounter::new();
     let mut send = pin!(tx.send(PanicOnDrop { armed: false }));
-    assert!(poll_once(send.as_mut()).is_pending());
+    assert!(poll_with(send.as_mut(), &waker).is_pending());
 
     // Dropping `rx2` reclaims all three retained messages and their destructors panic. The
-    // capacity they released must already have reached the parked producer by then.
+    // capacity they released must already have woken the parked producer by then.
     let result = catch_unwind(AssertUnwindSafe(|| drop(rx2)));
     assert!(result.is_err());
 
+    assert_eq!(wakes.count(), 1);
     assert!(
-        poll_once(send.as_mut()).is_ready(),
+        poll_with(send.as_mut(), &waker).is_ready(),
         "a panicking payload destructor must not strand a producer on capacity it already freed"
     );
 }

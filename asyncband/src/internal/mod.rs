@@ -92,22 +92,22 @@ pub(crate) mod value_cell;
 #[allow(dead_code)]
 pub(crate) mod mutex;
 
-#[cfg(any(feature = "mpmc", feature = "spmc"))]
+#[cfg(any(feature = "broadcast", feature = "mpmc", feature = "spmc"))]
+// Channel families use different subsets of single- and batch-wakeup helpers.
+#[allow(dead_code)]
 pub(crate) mod retry_waiter;
 
 #[cfg(feature = "waitgroup")]
 pub(crate) mod rwlock;
 
 #[cfg(any(
-    feature = "broadcast",
     feature = "mutex",
     feature = "pool",
     feature = "rwlock",
     feature = "semaphore",
 ))]
-// Broadcast uses waiter notifications; mutexes, pools, and rwlocks use acquire/release operations;
-// the public semaphore also exposes permit accounting. Single-primitive builds leave part of this
-// API unused.
+// Mutexes, pools, and rwlocks use acquire/release operations; the public semaphore also exposes
+// permit accounting. Single-primitive builds leave part of this API unused.
 #[allow(dead_code)]
 pub(crate) mod semaphore;
 
@@ -133,12 +133,14 @@ pub(crate) mod waitlist;
     feature = "completion",
     feature = "event",
     feature = "latch",
+    feature = "mpmc",
     feature = "mutex",
     feature = "once",
     feature = "phaser",
     feature = "pool",
     feature = "rwlock",
     feature = "semaphore",
+    feature = "spmc",
     feature = "waitgroup",
     feature = "watch",
 ))]
@@ -150,6 +152,7 @@ pub(crate) mod waker_batch;
     feature = "barrier",
     feature = "broadcast",
     feature = "completion",
+    feature = "event",
     feature = "latch",
     feature = "once",
     feature = "phaser",

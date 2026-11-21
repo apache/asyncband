@@ -21,6 +21,7 @@ use std::task::Waker;
 use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
+use crate::internal::waker_batch::WakerBatch;
 
 /// Notification state for an operation waiting to send or receive a value.
 ///
@@ -39,6 +40,21 @@ impl WaitList<RetryWaiter> {
             unreachable!("only waiting operations remain linked");
         };
         Some(waker)
+    }
+
+    pub fn notify_up_to(&mut self, limit: usize, batch: &mut WakerBatch) {
+        for _ in 0..limit {
+            let Some(waker) = self.notify_one() else {
+                break;
+            };
+            batch.push(waker);
+        }
+    }
+
+    pub fn notify_all(&mut self, batch: &mut WakerBatch) {
+        while let Some(waker) = self.notify_one() {
+            batch.push(waker);
+        }
     }
 
     /// Registers a pending operation's waker or refreshes an existing registration.

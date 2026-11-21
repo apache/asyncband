@@ -24,11 +24,24 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-use crate::event::Waiter;
 use crate::internal::mutex::Mutex;
 use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
+
+enum Waiter {
+    Waiting(Waker),
+    Notified,
+}
+
+impl Waiter {
+    fn mark_notified(&mut self) -> Waker {
+        let Self::Waiting(waker) = mem::replace(self, Self::Notified) else {
+            unreachable!("only waiting nodes remain queued");
+        };
+        waker
+    }
+}
 
 /// A reusable signal that releases one waiter and resets automatically.
 ///

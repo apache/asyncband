@@ -85,10 +85,10 @@ fn buffer_is_preallocated_and_never_shrinks() {
 }
 
 #[test]
-fn a_large_reclaim_leaves_no_permit_slack() {
+fn a_large_reclaim_leaves_no_sender_slack() {
     // Dropping a lagging subscription frees the whole backlog in one step, far more slots than the
-    // single parked producer can use. Permits beyond that producer would sit in the semaphore, and
-    // the next producer to wait would burn each one on a publication attempt that cannot succeed.
+    // single parked producer can use. Once that producer publishes, no unconsumed sender nodes or
+    // wakeups remain queued.
     let capacity = 64;
     let (tx, mut fast) = bounded(capacity);
     let lagging = tx.subscribe();
@@ -105,5 +105,5 @@ fn a_large_reclaim_leaves_no_permit_slack() {
 
     drop(lagging);
     assert!(send.as_mut().poll(&mut cx).is_ready());
-    assert_eq!(tx.shared.tx_permits.available_permits(), 0);
+    assert!(tx.shared.inner.lock().send_waiters.is_empty());
 }

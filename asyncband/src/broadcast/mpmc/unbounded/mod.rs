@@ -71,6 +71,7 @@ use crate::broadcast::mpmc::error::RecvError;
 use crate::broadcast::mpmc::error::TryRecvError;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
+use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerToken;
 
 #[cfg(test)]
@@ -91,7 +92,7 @@ mod tests;
 /// assert_eq!(*receiver.try_recv().unwrap(), "ready");
 /// ```
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
-    let (inner, key) = Inner::with_first_subscription(Backlog::elastic());
+    let (inner, key) = Inner::with_first_subscription(Backlog::elastic(), ());
     let shared = Arc::new(Shared {
         inner,
         senders: AtomicUsize::new(1),
@@ -169,14 +170,18 @@ impl<T> UnboundedSender<T> {
     /// ```
     pub fn send(&self, msg: T) {
         let mut payload = Some(Arc::new(msg));
-        let mut wakers = {
-            let mut inner = self.shared.inner.lock();
-            inner.log.publish(&mut payload, |msg| msg);
-            inner.waiters.take_all()
-        };
-
-        // Wake callbacks and payload destruction may reenter the channel.
-        wakers.wake_all();
+        let mut inner = self.shared.inner.lock();
+        inner.log.publish(&mut payload, |msg| msg);
+        if !inner.waiters.is_empty() {
+            let mut wakers = WakerBatch::new();
+            inner.waiters.drain_into(&mut wakers);
+            drop(inner);
+            // Wake callbacks and payload destruction may reenter the channel.
+            wakers.wake_all();
+            drop(payload);
+            return;
+        }
+        drop(inner);
         drop(payload);
     }
 
