@@ -110,6 +110,49 @@ impl<T> OnceCell<T> {
         self.value.get_mut()
     }
 
+    /// Waits until a value is published and returns a shared reference to it.
+    ///
+    /// This call does not start initialization. If the cell already contains a value, it returns
+    /// immediately; otherwise it suspends until another caller initializes the cell.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping a pending future unregisters only this wait. It does not cancel an active
+    /// initializer, alter the stored value, or affect other waiters.
+    ///
+    /// # Deadlocks
+    ///
+    /// An initializer must not await `wait` on the same cell: publication depends on that
+    /// initializer returning.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use std::sync::Arc;
+    ///
+    /// use asyncband::once::OnceCell;
+    ///
+    /// let cell = Arc::new(OnceCell::new());
+    /// let observer = {
+    ///     let cell = cell.clone();
+    ///     tokio::spawn(async move { *cell.wait().await })
+    /// };
+    ///
+    /// cell.set(42).await.unwrap();
+    /// assert_eq!(observer.await.unwrap(), 42);
+    /// # }
+    /// ```
+    pub async fn wait(&self) -> &T {
+        if let Some(value) = self.get() {
+            return value;
+        }
+
+        self.state.wait().await;
+        self.get().expect("completed OnceCell must contain a value")
+    }
+
     /// Returns a reference to the stored value, initializing the cell with `init` when needed.
     ///
     /// Concurrent callers wait for the active initializer. Once it publishes a value, all callers

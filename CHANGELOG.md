@@ -23,6 +23,10 @@ All significant changes to this project will be documented in this file.
 
 ## Unreleased
 
+### New features
+
+* Add `OnceCell::wait` to wait for another caller to initialize the cell without supplying an initializer.
+
 ### Improvements
 
 * Make `Barrier::new` and `Latch::new` `const fn` so barriers and latches can be initialized in `static` items and `const` contexts.

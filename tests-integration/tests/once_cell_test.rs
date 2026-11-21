@@ -315,3 +315,45 @@ async fn exclusive_initialization_returns_mutable_access() {
         .unwrap();
     assert_eq!(value, 42);
 }
+
+#[test]
+fn wait_stays_pending_across_aborted_attempts_and_wakes_on_publication() {
+    let mut cell = OnceCell::new();
+    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
+    let (observer_waker, observer_wakes) = WakeCounter::new();
+
+    {
+        let mut cancelled_observer = Box::pin(cell.wait());
+        let mut observer = pin!(cell.wait());
+        assert!(poll_with(cancelled_observer.as_mut(), &cancelled_waker).is_pending());
+        assert!(poll_with(observer.as_mut(), &observer_waker).is_pending());
+
+        // Failed and cancelled initializers must not wake pure observers.
+        assert_eq!(
+            expect_ready(poll_once(pin!(
+                cell.get_or_try_init(async || Err::<u32, _>("retry"))
+            ))),
+            Err("retry")
+        );
+        assert_eq!(observer_wakes.count(), 0);
+
+        let mut aborted = Box::pin(cell.get_or_init(async || pending::<u32>().await));
+        assert!(poll_once(aborted.as_mut()).is_pending());
+        drop(cancelled_observer);
+        assert_eq!(cancelled_wakes.count(), 0);
+        drop(aborted);
+        assert_eq!(observer_wakes.count(), 0);
+        assert!(poll_with(observer.as_mut(), &observer_waker).is_pending());
+
+        assert_eq!(expect_ready(poll_once(pin!(cell.set(77)))), Ok(()));
+        assert_eq!(observer_wakes.count(), 1);
+        assert_eq!(
+            expect_ready(poll_with(observer.as_mut(), &observer_waker)),
+            &77
+        );
+        assert_eq!(expect_ready(poll_once(pin!(cell.wait()))), &77);
+    }
+
+    assert_eq!(cell.take(), Some(77));
+    assert!(poll_once(pin!(cell.wait())).is_pending());
+}
