@@ -22,7 +22,10 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use asyncband::once::Once;
+use tests_integration::WakeCounter;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
+use tests_integration::poll_with;
 use tokio::sync::Barrier;
 
 #[tokio::test]
@@ -131,4 +134,69 @@ async fn wait_observes_completion() {
 
     let mut completed = pin!(once.wait());
     assert!(poll_once(completed.as_mut()).is_ready());
+}
+
+#[test]
+fn completion_wakes_all_queued_callers_even_when_the_first_follower_stays_paused() {
+    let once = Once::new();
+    let (finish, ready) = tokio::sync::oneshot::channel();
+    let mut leader = pin!(once.call_once(async || {
+        ready.await.unwrap();
+    }));
+    let mut paused_follower = Box::pin(once.call_once(async || unreachable!()));
+    let mut trailing_follower = pin!(once.call_once(async || unreachable!()));
+    let mut observer = pin!(once.wait());
+    let (paused_waker, paused_wakes) = WakeCounter::new();
+    let (trailing_waker, trailing_wakes) = WakeCounter::new();
+    let (observer_waker, observer_wakes) = WakeCounter::new();
+
+    assert!(poll_once(leader.as_mut()).is_pending());
+    assert!(poll_with(paused_follower.as_mut(), &paused_waker).is_pending());
+    assert!(poll_with(trailing_follower.as_mut(), &trailing_waker).is_pending());
+    assert!(poll_with(observer.as_mut(), &observer_waker).is_pending());
+
+    finish.send(()).unwrap();
+    expect_ready(poll_once(leader.as_mut()));
+
+    assert_eq!(paused_wakes.count(), 1);
+    assert_eq!(trailing_wakes.count(), 1);
+    assert_eq!(observer_wakes.count(), 1);
+
+    // `paused_follower` is neither polled nor dropped yet; trailing callers must still complete.
+    expect_ready(poll_with(trailing_follower.as_mut(), &trailing_waker));
+    expect_ready(poll_with(observer.as_mut(), &observer_waker));
+    drop(paused_follower);
+    assert_eq!(trailing_wakes.count(), 1);
+}
+
+#[test]
+fn cancelled_leader_hands_off_fifo_without_waking_observers() {
+    let once = Once::new();
+    let mut first = Box::pin(once.call_once(async || pending::<()>().await));
+    let mut observer = pin!(once.wait());
+    let mut second = Box::pin(once.call_once(async || unreachable!()));
+    let mut third = pin!(once.call_once(async || {}));
+    let (observer_waker, observer_wakes) = WakeCounter::new();
+    let (second_waker, second_wakes) = WakeCounter::new();
+    let (third_waker, third_wakes) = WakeCounter::new();
+
+    // Register an observer into the inline slot before any initializer queues so `second` and
+    // `third` exercise the overflow queue and FIFO handoff across cancellations.
+    assert!(poll_with(observer.as_mut(), &observer_waker).is_pending());
+    assert!(poll_once(first.as_mut()).is_pending());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+    assert!(poll_with(third.as_mut(), &third_waker).is_pending());
+
+    drop(first);
+    assert_eq!(second_wakes.count(), 1);
+    assert_eq!(third_wakes.count(), 0);
+    assert_eq!(observer_wakes.count(), 0);
+
+    drop(second);
+    assert_eq!(third_wakes.count(), 1);
+    assert_eq!(observer_wakes.count(), 0);
+
+    expect_ready(poll_with(third.as_mut(), &third_waker));
+    assert_eq!(observer_wakes.count(), 1);
+    expect_ready(poll_with(observer.as_mut(), &observer_waker));
 }
