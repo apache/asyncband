@@ -96,15 +96,26 @@ pub trait ExclusiveOwner: Owner {
     fn upgrade_permits(&self) -> usize;
 }
 
-impl Owner for &Semaphore {
+/// Single-holder reservation queue with one spare permit for lock-free uncontended release.
+pub struct Reservation(Semaphore);
+
+impl Reservation {
+    const PERMITS_PER_RESERVATION: usize = 2;
+
+    pub const fn new() -> Self {
+        Self(Semaphore::new(Self::PERMITS_PER_RESERVATION + 1))
+    }
+}
+
+impl Owner for &Reservation {
     #[inline]
     fn semaphore(&self) -> &Semaphore {
-        self
+        &self.0
     }
 
     #[inline]
     fn reader_permits(&self) -> usize {
-        1
+        Reservation::PERMITS_PER_RESERVATION
     }
 }
 

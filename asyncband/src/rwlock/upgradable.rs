@@ -20,11 +20,11 @@ use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 
-use crate::internal::semaphore::Semaphore;
 use crate::rwlock::RwLock;
 use crate::rwlock::RwLockReadGuard;
 use crate::rwlock::RwLockWriteGuard;
 use crate::rwlock::access::ReadAccess;
+use crate::rwlock::access::Reservation;
 use crate::rwlock::access::WriteAccess;
 use crate::rwlock::write_guard;
 
@@ -91,7 +91,7 @@ use crate::rwlock::write_guard;
 pub struct UpgradableRwLock<T: ?Sized> {
     // Every operation taking more than one data slot must first hold this reservation.
     // It is never exposed, nor is the inner lock, so writers cannot bypass it.
-    reservation: Semaphore,
+    reservation: Reservation,
     inner: RwLock<T>,
 }
 
@@ -107,7 +107,7 @@ impl<T> UpgradableRwLock<T> {
     /// accepted.
     pub const fn with_max_readers(value: T, max_readers: NonZeroUsize) -> Self {
         Self {
-            reservation: Semaphore::new(1),
+            reservation: Reservation::new(),
             inner: RwLock::with_max_readers(value, max_readers),
         }
     }
@@ -224,14 +224,14 @@ pub struct RwLockUpgradableReadGuard<'a, T: ?Sized> {
     // Unlike an ordinary read guard, this token must retain T: Send + Sync for Send: moving the
     // guard to another thread also moves the ability to acquire mutable access by upgrading.
     access: ReadAccess<&'a RwLock<T>>,
-    reservation: ReadAccess<&'a Semaphore>,
+    reservation: ReadAccess<&'a Reservation>,
 }
 
 impl<T: ?Sized> Deref for RwLockUpgradableReadGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // SAFETY: the token owns one data permit, excluding writers for this borrow's lifetime.
+        // SAFETY: the token owns one reader slot, excluding writers for this borrow's lifetime.
         // Upgrade consumes the guard, so it cannot overlap a shared reference borrowed from it.
         unsafe { &*self.access.owner().c.get() }
     }
