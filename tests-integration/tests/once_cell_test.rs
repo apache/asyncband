@@ -107,7 +107,6 @@ fn cancelling_a_partial_waiter_does_not_start_another_initializer() {
     let (waker, wakes) = WakeCounter::new();
 
     assert!(poll_once(first.as_mut()).is_pending());
-    // This waiter holds the spare permit, but still cannot initialize the cell.
     assert!(poll_once(cancelled.as_mut()).is_pending());
     assert!(poll_with(next.as_mut(), &waker).is_pending());
     drop(cancelled);
@@ -170,16 +169,19 @@ fn completed_initialization_survives_cancellation_of_a_notified_waiter() {
     }));
     let mut cancelled = Box::pin(cell.get_or_init(async || unreachable!()));
     let mut next = pin!(cell.get_or_init(async || unreachable!()));
+    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
     let (old_waker, old_wakes) = WakeCounter::new();
     let (waker, wakes) = WakeCounter::new();
 
     assert!(poll_once(first.as_mut()).is_pending());
-    assert!(poll_once(cancelled.as_mut()).is_pending());
+    assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
     assert!(poll_with(next.as_mut(), &old_waker).is_pending());
     assert!(poll_with(next.as_mut(), &waker).is_pending());
     finish.send(()).unwrap();
     assert_eq!(expect_ready(poll_once(first.as_mut())), &[42; 32]);
-    assert_eq!(wakes.count(), 0);
+    assert_eq!(cancelled_wakes.count(), 1);
+    assert_eq!(old_wakes.count(), 0);
+    assert_eq!(wakes.count(), 1);
 
     drop(cancelled);
     assert_eq!(old_wakes.count(), 0);
@@ -189,6 +191,39 @@ fn completed_initialization_survives_cancellation_of_a_notified_waiter() {
     assert_eq!(
         expect_ready(poll_once(pin!(cell.get_or_init(async || unreachable!())))),
         &[42; 32]
+    );
+}
+
+#[test]
+fn completion_unblocks_trailing_waiters_while_the_head_waiter_stays_paused() {
+    let cell = OnceCell::new();
+    let (finish, ready) = tokio::sync::oneshot::channel();
+    let mut leader = pin!(cell.get_or_init(async || {
+        ready.await.unwrap();
+        99_u32
+    }));
+    let mut paused_head = std::pin::pin!(cell.get_or_init(async || unreachable!()));
+    let mut trailing = pin!(cell.get_or_init(async || unreachable!()));
+    let (paused_waker, paused_wakes) = WakeCounter::new();
+    let (trailing_waker, trailing_wakes) = WakeCounter::new();
+
+    assert!(poll_once(leader.as_mut()).is_pending());
+    assert!(poll_with(paused_head.as_mut(), &paused_waker).is_pending());
+    assert!(poll_with(trailing.as_mut(), &trailing_waker).is_pending());
+
+    finish.send(()).unwrap();
+    assert_eq!(expect_ready(poll_once(leader.as_mut())), &99);
+    assert_eq!(paused_wakes.count(), 1);
+    assert_eq!(trailing_wakes.count(), 1);
+
+    // Poll `trailing` before `paused_head` is polled or dropped.
+    assert_eq!(
+        expect_ready(poll_with(trailing.as_mut(), &trailing_waker)),
+        &99
+    );
+    assert_eq!(
+        expect_ready(poll_with(paused_head.as_mut(), &paused_waker)),
+        &99
     );
 }
 

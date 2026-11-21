@@ -18,7 +18,8 @@
 // Portions of this file originated from Tokio 1.47.0's OnceCell implementation.
 // Copyright (c) Tokio Contributors
 // The Tokio-derived portions remain licensed under the MIT License.
-// Asyncband substantially changed the synchronization model: initialization does not close the
+// Asyncband substantially changed the synchronization model: exclusive initialization and
+// completion notification are delegated to Asyncband's own OnceState rather than a closed
 // semaphore, the cell can be emptied and initialized again, and value storage is delegated to
 // Asyncband's own ValueCell shared with LazyCell.
 // Upstream source:
@@ -27,13 +28,9 @@
 use std::convert::Infallible;
 use std::fmt;
 
+use crate::internal::once_state::InitGuard;
+use crate::internal::once_state::OnceState;
 use crate::internal::value_cell::ValueCell;
-use crate::semaphore::Semaphore;
-use crate::semaphore::SemaphorePermit;
-
-// One spare permit lets an uncontended release bypass the wait queue while leaving too few
-// permits for a second initializer.
-const PERMITS_PER_INITIALIZER: usize = 2;
 
 /// A thread-safe cell that stores one value from an initializer supplied at access time.
 ///
@@ -63,7 +60,7 @@ const PERMITS_PER_INITIALIZER: usize = 2;
 /// ```
 pub struct OnceCell<T> {
     value: ValueCell<T>,
-    semaphore: Semaphore,
+    state: OnceState,
 }
 
 impl<T> Default for OnceCell<T> {
@@ -77,7 +74,7 @@ impl<T> OnceCell<T> {
     pub const fn new() -> Self {
         Self {
             value: ValueCell::empty(),
-            semaphore: Semaphore::new(PERMITS_PER_INITIALIZER + 1),
+            state: OnceState::new(false),
         }
     }
 
@@ -85,7 +82,7 @@ impl<T> OnceCell<T> {
     pub const fn from_value(value: T) -> Self {
         Self {
             value: ValueCell::with_value(value),
-            semaphore: Semaphore::new(PERMITS_PER_INITIALIZER + 1),
+            state: OnceState::new(true),
         }
     }
 
@@ -181,15 +178,12 @@ impl<T> OnceCell<T> {
             return Ok(v);
         }
 
-        let permit = self.semaphore.acquire(PERMITS_PER_INITIALIZER).await;
-
-        if let Some(v) = self.get() {
-            // Another task initialized the cell while we waited for permits.
-            return Ok(v);
-        }
+        let Some(guard) = self.state.acquire_init().await else {
+            return Ok(self.get().expect("completed OnceCell must contain a value"));
+        };
 
         let value = init().await?;
-        Ok(self.set_value(value, permit))
+        Ok(self.set_value(value, guard))
     }
 
     /// Returns mutable access to the stored value, running `init` if the cell is empty.
@@ -277,12 +271,14 @@ impl<T> OnceCell<T> {
     {
         // Check the flag before borrowing so the fallback branch can call `set_value_mut`.
         if self.value.has_value_mut() {
+            self.state.complete_mut();
             return Ok(self
                 .value
                 .get_mut()
                 .expect("OnceCell initialized value missing"));
         }
 
+        self.state.reset_mut();
         let value = init().await?;
         Ok(self.set_value_mut(value))
     }
@@ -406,17 +402,23 @@ impl<T> OnceCell<T> {
     /// # }
     /// ```
     pub fn take(&mut self) -> Option<T> {
+        self.state.reset_mut();
         self.value.take()
     }
 
-    fn set_value(&self, value: T, _permit: SemaphorePermit<'_>) -> &T {
-        // SAFETY: The caller checked that the cell was empty while holding the initializer's
-        // permits. Holding them through publication excludes other initializers.
-        unsafe { self.value.publish(value) }
+    fn set_value(&self, value: T, guard: InitGuard<'_>) -> &T {
+        // SAFETY: `guard` holds exclusive initialization ownership and no value was published
+        // before this attempt began. Publishing before `guard.complete()` ensures woken callers
+        // observe the stored value.
+        let published = unsafe { self.value.publish(value) };
+        guard.complete();
+        published
     }
 
     fn set_value_mut(&mut self, value: T) -> &mut T {
-        self.value.write_mut(value)
+        let stored = self.value.write_mut(value);
+        self.state.complete_mut();
+        stored
     }
 }
 
