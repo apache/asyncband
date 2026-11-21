@@ -181,6 +181,12 @@ fn movable_public_types_are_send() {
     let (_completer, completion) = completion::new::<i64>();
     assert_send_value(completion.wait());
 
+    let once = Once::new();
+    assert_send_value(once.wait());
+
+    let once_cell = OnceCell::<i64>::new();
+    assert_send_value(once_cell.wait());
+
     let (unbounded_sender, unbounded_receiver) = mpmc::unbounded::<Cell<u8>>();
     assert_send_value(unbounded_receiver.recv());
     drop(unbounded_sender);

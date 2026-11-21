@@ -136,6 +136,16 @@ impl<T> WaitList<T> {
         self.head.is_none()
     }
 
+    /// Returns `true` if any linked or detached waiter still occupies a slot.
+    pub fn has_occupied_slots(&self) -> bool {
+        !self.nodes.is_empty()
+    }
+
+    /// Consumes the list, yielding occupied waiter values in slot order and releasing storage.
+    pub fn into_values(self) -> impl Iterator<Item = T> {
+        self.nodes.into_iter().map(|node| node.value)
+    }
+
     pub fn waiter_mut(&mut self, id: WaiterId) -> &mut T {
         &mut self.node_mut(id).value
     }

@@ -17,8 +17,7 @@
 
 use std::fmt;
 
-use crate::internal::countdown::CountdownState;
-use crate::semaphore::Semaphore;
+use crate::internal::once_state::OnceState;
 
 /// Coordinates a one-time asynchronous initialization step.
 ///
@@ -63,8 +62,7 @@ use crate::semaphore::Semaphore;
 /// # }
 /// ```
 pub struct Once {
-    done: CountdownState,
-    semaphore: Semaphore,
+    state: OnceState,
 }
 
 impl Default for Once {
@@ -92,8 +90,7 @@ impl Once {
     /// ```
     pub const fn new() -> Self {
         Self {
-            done: CountdownState::new(1),
-            semaphore: Semaphore::new(1),
+            state: OnceState::new(false),
         }
     }
 
@@ -116,7 +113,7 @@ impl Once {
     /// # }
     /// ```
     pub fn is_completed(&self) -> bool {
-        self.done.try_wait().is_ok()
+        self.state.is_completed()
     }
 
     /// Runs `f` if initialization has not completed.
@@ -173,16 +170,12 @@ impl Once {
             return;
         }
 
-        let _permit = self.semaphore.acquire(1).await;
-
-        if self.is_completed() {
-            // double-checked: another task completed the initialization while we waited.
+        let Some(guard) = self.state.acquire_init().await else {
             return;
-        }
+        };
 
         f().await;
-
-        assert!(self.done.arrive(1), "[BUG] Once completed more than once");
+        guard.complete();
     }
 
     /// Waits until an initializer passed to [`call_once`](Self::call_once) completes successfully.
@@ -216,6 +209,6 @@ impl Once {
     /// # }
     /// ```
     pub async fn wait(&self) {
-        self.done.wait().await
+        self.state.wait().await
     }
 }

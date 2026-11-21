@@ -280,11 +280,10 @@ OnceCell:
   https://github.com/tokio-rs/tokio/blob/3911cb8523f190142f61c64b66881c07c0d3e7be/tokio/src/sync/once_cell.rs
 
 Asyncband substantially changed this implementation. OnceCell delegates value
-storage to Asyncband's own ValueCell, uses permits only to serialize
-initialization, and does not close its semaphore when a value is published. It
-can remove a value and later initialize the cell again, and its set operation
-waits for an in-progress initializer instead of reporting a closed or
-initializing state.
+storage to Asyncband's own ValueCell and synchronization to Asyncband's own
+OnceState instead of a closed semaphore. It can remove a value and later
+initialize the cell again, and its set operation waits for an in-progress
+initializer instead of reporting a closed or initializing state.
 
 The standard ASF source header on asyncband/src/once/once_cell/mod.rs applies
 to the substantial modifications contributed to Apache Asyncband. It does not

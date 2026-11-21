@@ -51,6 +51,8 @@ pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> 
     feature = "spmc",
     feature = "mpsc",
     feature = "mutex",
+    feature = "once",
+    feature = "once-cell",
     feature = "phaser",
     feature = "pool",
     feature = "rwlock",
@@ -63,8 +65,14 @@ pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> 
 #[allow(dead_code)]
 pub(crate) mod arena;
 
-#[cfg(any(feature = "latch", feature = "once"))]
+#[cfg(feature = "latch")]
 pub(crate) mod countdown;
+
+#[cfg(any(feature = "once", feature = "once-cell"))]
+// `Once` does not reset or complete via `&mut self`, so a `once`-only build leaves those methods
+// unused.
+#[allow(dead_code)]
+pub(crate) mod once_state;
 
 #[cfg(any(feature = "lazy-cell", feature = "once-cell"))]
 // `LazyCell` and `OnceCell` use different subsets of `ValueCell`, so single-feature builds leave
@@ -82,6 +90,8 @@ pub(crate) mod value_cell;
     feature = "spmc",
     feature = "mpsc",
     feature = "mutex",
+    feature = "once",
+    feature = "once-cell",
     feature = "phaser",
     feature = "pool",
     feature = "rwlock",
@@ -118,6 +128,8 @@ pub(crate) mod semaphore;
     feature = "spmc",
     feature = "mpsc",
     feature = "mutex",
+    feature = "once",
+    feature = "once-cell",
     feature = "pool",
     feature = "rwlock",
     feature = "semaphore",
@@ -136,6 +148,7 @@ pub(crate) mod waitlist;
     feature = "mpmc",
     feature = "mutex",
     feature = "once",
+    feature = "once-cell",
     feature = "phaser",
     feature = "pool",
     feature = "rwlock",
@@ -155,6 +168,7 @@ pub(crate) mod waker_batch;
     feature = "event",
     feature = "latch",
     feature = "once",
+    feature = "once-cell",
     feature = "phaser",
     feature = "waitgroup",
     feature = "watch",

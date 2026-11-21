@@ -18,7 +18,8 @@
 // Portions of this file originated from Tokio 1.47.0's OnceCell implementation.
 // Copyright (c) Tokio Contributors
 // The Tokio-derived portions remain licensed under the MIT License.
-// Asyncband substantially changed the synchronization model: initialization does not close the
+// Asyncband substantially changed the synchronization model: exclusive initialization and
+// completion notification are delegated to Asyncband's own OnceState rather than a closed
 // semaphore, the cell can be emptied and initialized again, and value storage is delegated to
 // Asyncband's own ValueCell shared with LazyCell.
 // Upstream source:
@@ -27,13 +28,9 @@
 use std::convert::Infallible;
 use std::fmt;
 
+use crate::internal::once_state::InitGuard;
+use crate::internal::once_state::OnceState;
 use crate::internal::value_cell::ValueCell;
-use crate::semaphore::Semaphore;
-use crate::semaphore::SemaphorePermit;
-
-// One spare permit lets an uncontended release bypass the wait queue while leaving too few
-// permits for a second initializer.
-const PERMITS_PER_INITIALIZER: usize = 2;
 
 /// A thread-safe cell that stores one value from an initializer supplied at access time.
 ///
@@ -63,7 +60,7 @@ const PERMITS_PER_INITIALIZER: usize = 2;
 /// ```
 pub struct OnceCell<T> {
     value: ValueCell<T>,
-    semaphore: Semaphore,
+    state: OnceState,
 }
 
 impl<T> Default for OnceCell<T> {
@@ -77,7 +74,7 @@ impl<T> OnceCell<T> {
     pub const fn new() -> Self {
         Self {
             value: ValueCell::empty(),
-            semaphore: Semaphore::new(PERMITS_PER_INITIALIZER + 1),
+            state: OnceState::new(false),
         }
     }
 
@@ -85,7 +82,7 @@ impl<T> OnceCell<T> {
     pub const fn from_value(value: T) -> Self {
         Self {
             value: ValueCell::with_value(value),
-            semaphore: Semaphore::new(PERMITS_PER_INITIALIZER + 1),
+            state: OnceState::new(true),
         }
     }
 
@@ -111,6 +108,49 @@ impl<T> OnceCell<T> {
     /// asynchronous initialization can be in flight during this call.
     pub fn get_mut(&mut self) -> Option<&mut T> {
         self.value.get_mut()
+    }
+
+    /// Waits until a value is published and returns a shared reference to it.
+    ///
+    /// This call does not start initialization. If the cell already contains a value, it returns
+    /// immediately; otherwise it suspends until another caller initializes the cell.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping a pending future unregisters only this wait. It does not cancel an active
+    /// initializer, alter the stored value, or affect other waiters.
+    ///
+    /// # Deadlocks
+    ///
+    /// An initializer must not await `wait` on the same cell: publication depends on that
+    /// initializer returning.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use std::sync::Arc;
+    ///
+    /// use asyncband::once::OnceCell;
+    ///
+    /// let cell = Arc::new(OnceCell::new());
+    /// let observer = {
+    ///     let cell = cell.clone();
+    ///     tokio::spawn(async move { *cell.wait().await })
+    /// };
+    ///
+    /// cell.set(42).await.unwrap();
+    /// assert_eq!(observer.await.unwrap(), 42);
+    /// # }
+    /// ```
+    pub async fn wait(&self) -> &T {
+        if let Some(value) = self.get() {
+            return value;
+        }
+
+        self.state.wait().await;
+        self.get().expect("completed OnceCell must contain a value")
     }
 
     /// Returns a reference to the stored value, initializing the cell with `init` when needed.
@@ -181,15 +221,12 @@ impl<T> OnceCell<T> {
             return Ok(v);
         }
 
-        let permit = self.semaphore.acquire(PERMITS_PER_INITIALIZER).await;
-
-        if let Some(v) = self.get() {
-            // Another task initialized the cell while we waited for permits.
-            return Ok(v);
-        }
+        let Some(guard) = self.state.acquire_init().await else {
+            return Ok(self.get().expect("completed OnceCell must contain a value"));
+        };
 
         let value = init().await?;
-        Ok(self.set_value(value, permit))
+        Ok(self.set_value(value, guard))
     }
 
     /// Returns mutable access to the stored value, running `init` if the cell is empty.
@@ -277,12 +314,14 @@ impl<T> OnceCell<T> {
     {
         // Check the flag before borrowing so the fallback branch can call `set_value_mut`.
         if self.value.has_value_mut() {
+            debug_assert!(self.state.is_completed());
             return Ok(self
                 .value
                 .get_mut()
                 .expect("OnceCell initialized value missing"));
         }
 
+        self.state.reset_mut();
         let value = init().await?;
         Ok(self.set_value_mut(value))
     }
@@ -406,17 +445,23 @@ impl<T> OnceCell<T> {
     /// # }
     /// ```
     pub fn take(&mut self) -> Option<T> {
+        self.state.reset_mut();
         self.value.take()
     }
 
-    fn set_value(&self, value: T, _permit: SemaphorePermit<'_>) -> &T {
-        // SAFETY: The caller checked that the cell was empty while holding the initializer's
-        // permits. Holding them through publication excludes other initializers.
-        unsafe { self.value.publish(value) }
+    fn set_value(&self, value: T, guard: InitGuard<'_>) -> &T {
+        // SAFETY: `guard` holds exclusive initialization ownership and no value was published
+        // before this attempt began. Publishing before `guard.complete()` ensures woken callers
+        // observe the stored value.
+        let published = unsafe { self.value.publish(value) };
+        guard.complete();
+        published
     }
 
     fn set_value_mut(&mut self, value: T) -> &mut T {
-        self.value.write_mut(value)
+        let stored = self.value.write_mut(value);
+        self.state.complete_mut();
+        stored
     }
 }
 

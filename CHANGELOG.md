@@ -23,6 +23,10 @@ All significant changes to this project will be documented in this file.
 
 ## Unreleased
 
+### New features
+
+* Add `OnceCell::wait` to wait for another caller to initialize the cell without supplying an initializer.
+
 ### Improvements
 
 * Make `Barrier::new` and `Latch::new` `const fn` so barriers and latches can be initialized in `static` items and `const` contexts.
@@ -36,12 +40,14 @@ All significant changes to this project will be documented in this file.
 * Shrink `PhaserParticipant::wait` futures and speed up implicit arrival-and-wait handoffs by recording the arrival and checking or registering for completion under one lock acquisition.
 * Speed up `ManualResetEvent::{wait, wait_owned}` across already-set polls, single-waiter handoffs, multi-waiter fan-out, and cancellation reuse; empty `set`/`reset` cycles are unchanged.
 * Shrink `broadcast::mpmc::BoundedSender::send` futures and speed up waiting receiver deliveries and bounded sender backpressure handoffs and cancellations.
+* Shrink `Once` and `OnceCell` state and speed up single-waiter and multi-waiter completion fan-out across `Once`, `OnceCell`, `OnceMap`, and `singleflight::Group` by replacing semaphore permit queues with broadcast completion wakeups.
 
 ### Bug fixes
 
 * Allow payload destructors to reenter bounded and unbounded broadcast channels when a send panics on message version overflow.
 * Allow `blocking::FutureExt::{block_on, wait_timeout}` to run during thread-local destructor teardown after the thread's cached parker has been destroyed.
 * Avoid transiently draining semaphore permits for existing idle objects when `pool::bounded::Pool::replenish_to` needs no additional capacity.
+* Wake all queued callers at once when `Once::call_once` or `OnceCell::{get_or_init, get_or_try_init}` completes so a paused head waiter in `Once`, `OnceCell`, `OnceMap`, or `singleflight::Group` cannot block trailing callers.
 
 ## v0.8.0 (2026-11-15)
 
