@@ -43,8 +43,8 @@ fn get_hit_distributed(bencher: Bencher, ready_entries: usize) {
     });
 }
 
-// Negative get is still a read-only steady-state path: it traverses the ready index but never
-// creates pending state. Varying absent hashes avoids measuring one unusually cache-hot miss.
+// Negative get is still a read-only steady-state path: it probes the table but never creates
+// pending state. Varying absent hashes avoids measuring one unusually cache-hot miss.
 fn get_miss_distributed(bencher: Bencher, ready_entries: usize) {
     let map = ready_map(ready_entries);
     bencher.bench(|| {

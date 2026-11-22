@@ -31,8 +31,6 @@ use crate::once::OnceCell;
 #[cfg(test)]
 mod tests;
 
-type Entries<K, V> = HashTable<Arc<Entry<K, V>>>;
-
 struct Entry<K, V> {
     hash: u64,
     key: K,
@@ -54,7 +52,7 @@ where
 /// as `Arc<T>`, when entries are large or frequently shared.
 pub struct OnceMap<K, V, S = RandomState> {
     // Hashbrown allocates the table lazily, and computation always runs after releasing this lock.
-    entries: Mutex<Entries<K, V>>,
+    entries: Mutex<HashTable<Arc<Entry<K, V>>>>,
     hasher: S,
 }
 
@@ -139,9 +137,7 @@ where
         let occupied = entries
             .find_entry(hash, |entry| entry.key.borrow() == key)
             .ok()?;
-        let (entry, _) = occupied.remove();
-        drop(entries);
-        Some(entry)
+        Some(occupied.remove().0)
     }
 
     fn cleanup_abandoned_entry(&self, entry: Arc<Entry<K, V>>) {
@@ -160,31 +156,13 @@ where
                 Some(occupied.remove().0)
             } else {
                 // A waiting cleanup must observe this call's reference being released before it
-                // can inspect the count while holding the write lock.
+                // can inspect the count while holding the table lock.
                 drop(entry);
                 None
             }
         };
         // Key and value destructors must not run while the table is locked.
         drop(removed);
-    }
-
-    fn insert(&mut self, key: K, value: V) {
-        let hash = self.hasher.hash_one(&key);
-        let entry = Arc::new(Entry {
-            hash,
-            key,
-            cell: OnceCell::from_value(value),
-        });
-
-        let mut entries = self.entries.lock();
-        let replaced = entries
-            .find_entry(hash, |stored| stored.key.eq(&entry.key))
-            .ok()
-            .map(|occupied| occupied.remove().0);
-        entries.insert_unique(hash, entry, |entry| entry.hash);
-        drop(entries);
-        drop(replaced);
     }
 }
 
@@ -196,14 +174,31 @@ where
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let iter = iter.into_iter();
-        let mut map = Self {
-            entries: Mutex::new(HashTable::with_capacity(iter.size_hint().0)),
-            hasher: S::default(),
-        };
+        let hasher = S::default();
+        let mut entries = HashTable::<Arc<Entry<K, V>>>::with_capacity(iter.size_hint().0);
         for (key, value) in iter {
-            map.insert(key, value);
+            let hash = hasher.hash_one(&key);
+            if let Some(stored) = entries.find_mut(hash, |stored| stored.key.eq(&key)) {
+                let stored = Arc::get_mut(stored).expect("building entry must be unique");
+                stored.hash = hash;
+                stored.key = key;
+                stored.cell = OnceCell::from_value(value);
+            } else {
+                entries.insert_unique(
+                    hash,
+                    Arc::new(Entry {
+                        hash,
+                        key,
+                        cell: OnceCell::from_value(value),
+                    }),
+                    |stored| stored.hash,
+                );
+            }
         }
-        map
+        Self {
+            entries: Mutex::new(entries),
+            hasher,
+        }
     }
 }
 
