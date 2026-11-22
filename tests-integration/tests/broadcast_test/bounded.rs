@@ -1195,4 +1195,50 @@ fn dropping_last_receiver_wakes_blocked_sends_without_spuriously_waking_blocked_
     drop(r1);
     assert_eq!(r2_wakes.count(), 1);
     assert!(poll_with(r2.as_mut(), &r2_waker).is_ready());
+
+    // Case 3: once one freed slot has already woken `r1`, repeatedly subscribing and dropping the
+    // last receiver before `r1` polls must not wake trailing `reserve` waiters for that same slot.
+    let (tx, rx) = bounded::<i32>(1);
+    drop(rx);
+    let held = tx.try_reserve().unwrap();
+
+    let (r1_waker, r1_wakes) = WakeCounter::new();
+    let (r2_waker, r2_wakes) = WakeCounter::new();
+    let mut r1 = pin!(tx.reserve());
+    let mut r2 = pin!(tx.reserve());
+    assert!(poll_with(r1.as_mut(), &r1_waker).is_pending());
+    assert!(poll_with(r2.as_mut(), &r2_waker).is_pending());
+
+    drop(held);
+    assert_eq!(r1_wakes.count(), 1);
+    assert_eq!(r2_wakes.count(), 0);
+
+    for _ in 0..8 {
+        drop(tx.subscribe());
+    }
+    assert_eq!(r1_wakes.count(), 1);
+    assert_eq!(r2_wakes.count(), 0);
+    assert!(poll_with(r1.as_mut(), &r1_waker).is_ready());
+
+    // Case 4: a `send` woken for a slot before the last receiver drops finishes by discarding
+    // without using that slot, handing the unused slot notification to a trailing `reserve`.
+    let (tx, mut rx) = bounded(1);
+    tx.try_send(0).unwrap();
+
+    let (send_waker, send_wakes) = WakeCounter::new();
+    let (reserve_waker, reserve_wakes) = WakeCounter::new();
+    let mut send = pin!(tx.send(1));
+    let mut reserve = pin!(tx.reserve());
+    assert!(poll_with(send.as_mut(), &send_waker).is_pending());
+    assert!(poll_with(reserve.as_mut(), &reserve_waker).is_pending());
+
+    assert_eq!(*rx.try_recv().unwrap(), 0);
+    assert_eq!(send_wakes.count(), 1);
+    assert_eq!(reserve_wakes.count(), 0);
+
+    drop(rx);
+    assert_eq!(reserve_wakes.count(), 0);
+    assert!(poll_with(send.as_mut(), &send_waker).is_ready());
+    assert_eq!(reserve_wakes.count(), 1);
+    assert!(poll_with(reserve.as_mut(), &reserve_waker).is_ready());
 }
