@@ -34,6 +34,7 @@ use tests_integration::assert_completes_without_deadlock;
 use tests_integration::expect_ready;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
+use tests_integration::waker_on_clone;
 use tests_integration::waker_on_drop;
 use tests_integration::waker_on_wake;
 
@@ -61,6 +62,29 @@ fn bounded_receiver_drop_releases_registered_waker() {
     drop(waker);
     drop(rx);
     assert!(retained.upgrade().is_none());
+}
+
+#[test]
+fn bounded_ready_and_disconnected_receives_do_not_clone_waker() {
+    let waker = waker_on_clone(|| panic!("ready or disconnected receive should not clone waker"));
+
+    let (tx, mut rx) = mpsc::bounded(1);
+    tx.try_send(1usize).unwrap();
+    drop(tx);
+    assert_eq!(poll_with(pin!(rx.recv()), &waker), Poll::Ready(Ok(1)));
+    assert_eq!(
+        poll_with(pin!(rx.recv()), &waker),
+        Poll::Ready(Err(mpsc::RecvError::Disconnected))
+    );
+
+    let (zst_tx, mut zst_rx) = mpsc::bounded::<()>(1);
+    zst_tx.try_send(()).unwrap();
+    drop(zst_tx);
+    assert_eq!(poll_with(pin!(zst_rx.recv()), &waker), Poll::Ready(Ok(())));
+    assert_eq!(
+        poll_with(pin!(zst_rx.recv()), &waker),
+        Poll::Ready(Err(mpsc::RecvError::Disconnected))
+    );
 }
 
 #[test]

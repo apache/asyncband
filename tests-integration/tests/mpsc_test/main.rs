@@ -289,3 +289,10 @@ fn bounded_supports_full_usize_capacity_for_zero_sized_messages() {
     assert_eq!(rx.try_recv(), Ok(()));
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
 }
+
+#[test]
+fn bounded_large_inline_type_does_not_overflow_stack() {
+    let (tx, rx) = mpsc::bounded::<[u8; 8 * 1024 * 1024]>(1);
+    drop(rx);
+    assert!(tx.is_disconnected());
+}

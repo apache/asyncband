@@ -19,23 +19,41 @@ use std::fmt;
 use std::future::poll_fn;
 use std::mem;
 use std::sync::Arc;
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::internal::mutex::Mutex;
 use crate::internal::register_waker;
 use crate::internal::waitlist::WaitList;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
-use crate::mpsc::bounded::State;
+#[cfg(target_has_atomic = "64")]
+use crate::mpsc::bounded::CLOSED_BIT;
+use crate::mpsc::bounded::NO_SLOT;
+#[cfg(target_has_atomic = "64")]
+use crate::mpsc::bounded::RECV_WAITING_BIT;
+use crate::mpsc::bounded::Shared;
 use crate::mpsc::bounded::Waiter;
+#[cfg(target_has_atomic = "64")]
+use crate::mpsc::bounded::inbox_head;
 
 /// The receiving endpoint of a bounded mpsc channel.
 ///
 /// Instances are created by the [`bounded`](crate::mpsc::bounded) function. Dropping the receiver
 /// discards queued values and causes pending `send` and `reserve` operations to fail.
 pub struct BoundedReceiver<T> {
-    shared: Arc<Mutex<State<T>>>,
+    shared: Arc<Shared<T>>,
+    // Head of the receiver's private FIFO chain of detached slot indices (`NO_SLOT` when empty).
+    // Stored in `AtomicU32` so `is_empty(&self)` can inspect it lock-free while `&mut self`
+    // accesses it through `get_mut()`.
+    #[cfg(target_has_atomic = "64")]
+    local_head: AtomicU32,
+    // Uninitialized physical slot owned exclusively by this receiver and swapped back into
+    // `free_ring` (or the oldest waiting sender) on each receive.
+    #[cfg(target_has_atomic = "64")]
+    spare: u32,
 }
 
 impl<T> fmt::Debug for BoundedReceiver<T> {
@@ -46,15 +64,31 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        let (queue, recv_waker, mut waiters) = {
-            let mut state = self.shared.lock();
+        let (detached_lifo, locked_queue, recv_waker, mut waiters) = {
+            let mut state = self.shared.state.lock();
+            #[cfg(target_has_atomic = "64")]
+            let detached_lifo = if self.shared.use_slot_pool() {
+                inbox_head(
+                    self.shared
+                        .inbox
+                        .swap(CLOSED_BIT | u64::from(NO_SLOT), Ordering::AcqRel),
+                )
+            } else {
+                NO_SLOT
+            };
+            #[cfg(not(target_has_atomic = "64"))]
+            let detached_lifo = NO_SLOT;
             state.receiver = false;
-            let queue = mem::take(&mut state.queue);
+            self.shared.closed.store(true, Ordering::Release);
+            let locked_queue = mem::take(&mut state.locked_queue);
             let recv_waker = state.recv_waker.take();
             // The disconnected state invalidates both queued and granted waiter IDs.
             let waiters = mem::replace(&mut state.send_waiters, WaitList::new());
-            (queue, recv_waker, waiters)
+            (detached_lifo, locked_queue, recv_waker, waiters)
         };
+        #[cfg(not(target_has_atomic = "64"))]
+        let _ = detached_lifo;
+
         // Notify blocked senders before destroying buffered values, whose destructors may panic.
         while let Some((id, _)) = waiters.unlink_first_waiter() {
             let Waiter::Waiting(waker) = waiters.remove_unlinked_waiter(id) else {
@@ -63,13 +97,132 @@ impl<T> Drop for BoundedReceiver<T> {
             waker.wake();
         }
         drop(recv_waker);
-        drop(queue);
+
+        #[cfg(target_has_atomic = "64")]
+        if self.shared.use_slot_pool() {
+            struct LeavePool<'a, T>(&'a Shared<T>);
+
+            impl<T> Drop for LeavePool<'_, T> {
+                fn drop(&mut self) {
+                    self.0.leave_pool();
+                }
+            }
+
+            // Declare `_leave_pool` before `drop_guard` so reverse drop order keeps the receiver's
+            // pool lease alive until all queued values have been dropped, even during unwinding.
+            let _leave_pool = LeavePool(&self.shared);
+
+            let detached_fifo = if detached_lifo == NO_SLOT {
+                NO_SLOT
+            } else {
+                // SAFETY: `_leave_pool` holds the receiver's `pool_refs` lease.
+                unsafe { self.shared.reverse_msg_chain(detached_lifo) }
+            };
+
+            struct DropQueued<'a, T> {
+                shared: &'a Shared<T>,
+                local_head: u32,
+                detached_head: u32,
+            }
+
+            impl<T> DropQueued<'_, T> {
+                fn pop_next_slot(&mut self) -> Option<u32> {
+                    // SAFETY: `_leave_pool` outlives `DropQueued` and holds a `pool_refs` lease.
+                    let next_link = &unsafe { self.shared.pool() }.next_link;
+                    if self.local_head != NO_SLOT {
+                        let slot = self.local_head;
+                        self.local_head = next_link[slot as usize].load(Ordering::Relaxed);
+                        return Some(slot);
+                    }
+                    if self.detached_head != NO_SLOT {
+                        let slot = self.detached_head;
+                        self.detached_head = next_link[slot as usize].load(Ordering::Relaxed);
+                        return Some(slot);
+                    }
+                    None
+                }
+            }
+
+            impl<T> Drop for DropQueued<'_, T> {
+                fn drop(&mut self) {
+                    while let Some(slot) = self.pop_next_slot() {
+                        // SAFETY: Every slot in `local_head` and `detached_head` was initialized
+                        // before publication and is exclusively owned by this closing receiver.
+                        unsafe { self.shared.drop_slot(slot) };
+                    }
+                }
+            }
+
+            let mut drop_guard = DropQueued {
+                shared: &self.shared,
+                local_head: *self.local_head.get_mut(),
+                detached_head: detached_fifo,
+            };
+            *self.local_head.get_mut() = NO_SLOT;
+
+            while let Some(slot) = drop_guard.pop_next_slot() {
+                // SAFETY: Advancing the head before `drop_slot` ensures `drop_guard`'s Drop
+                // implementation drops the remaining queued values if a destructor panics.
+                unsafe { drop_guard.shared.drop_slot(slot) };
+            }
+        }
+
+        drop(locked_queue);
     }
 }
 
 impl<T> BoundedReceiver<T> {
-    pub(super) fn new(shared: Arc<Mutex<State<T>>>) -> Self {
-        Self { shared }
+    pub(super) fn new(shared: Arc<Shared<T>>, spare: u32) -> Self {
+        #[cfg(not(target_has_atomic = "64"))]
+        let _ = spare;
+        Self {
+            shared,
+            #[cfg(target_has_atomic = "64")]
+            local_head: AtomicU32::new(NO_SLOT),
+            #[cfg(target_has_atomic = "64")]
+            spare,
+        }
+    }
+
+    #[cfg(target_has_atomic = "64")]
+    #[inline]
+    fn pop_published_slot(&mut self) -> Option<u32> {
+        // SAFETY: `BoundedReceiver` holds its `pool_refs` lease throughout `&mut self`.
+        let next_link = &unsafe { self.shared.pool() }.next_link;
+        let local = *self.local_head.get_mut();
+        if local != NO_SLOT {
+            let next = next_link[local as usize].load(Ordering::Relaxed);
+            self.local_head.store(next, Ordering::Relaxed);
+            return Some(local);
+        }
+
+        let lifo_head = self.shared.detach_inbox();
+        if lifo_head == NO_SLOT {
+            return None;
+        }
+        let second = next_link[lifo_head as usize].load(Ordering::Relaxed);
+        if second == NO_SLOT {
+            return Some(lifo_head);
+        }
+
+        // SAFETY: `BoundedReceiver` holds its `pool_refs` lease.
+        let oldest = unsafe { self.shared.reverse_msg_chain(lifo_head) };
+        let next = next_link[oldest as usize].load(Ordering::Relaxed);
+        self.local_head.store(next, Ordering::Relaxed);
+        Some(oldest)
+    }
+
+    #[cfg(target_has_atomic = "64")]
+    #[inline]
+    fn finish_slot_recv(&mut self, slot: u32) -> T {
+        let old_spare = mem::replace(&mut self.spare, slot);
+        // SAFETY: `slot` was detached from `inbox` after a producer initialized it, and
+        // `self.spare` now owns `slot` exclusively until a later receive swaps it out.
+        let value = unsafe { self.shared.read_slot(slot) };
+        if let Some(waker) = self.shared.release_slot_from_receiver(old_spare) {
+            waker.wake();
+        }
+        value
     }
 
     /// Receives the next queued value without waiting for a message, freeing one capacity slot.
@@ -97,11 +250,42 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let (value, wake) = self.shared.lock().dequeue()?;
-        if let Some(waker) = wake {
-            waker.wake();
+        if !self.shared.use_slot_pool() {
+            let mut state = self.shared.state.lock();
+            if let Some(value) = state.locked_queue.pop_front() {
+                let wake = self.shared.release_slot_locked(&mut state, NO_SLOT);
+                drop(state);
+                if let Some(waker) = wake {
+                    waker.wake();
+                }
+                return Ok(value);
+            }
+            return if self.shared.senders.load(Ordering::Acquire) == 0 {
+                Err(TryRecvError::Disconnected)
+            } else {
+                Err(TryRecvError::Empty)
+            };
         }
-        Ok(value)
+
+        #[cfg(target_has_atomic = "64")]
+        {
+            if let Some(slot) = self.pop_published_slot() {
+                return Ok(self.finish_slot_recv(slot));
+            }
+            if self.shared.senders.load(Ordering::Acquire) == 0 {
+                // Re-check `inbox` in case the final sender published right before dropping.
+                if let Some(slot) = self.pop_published_slot() {
+                    return Ok(self.finish_slot_recv(slot));
+                }
+                Err(TryRecvError::Disconnected)
+            } else {
+                Err(TryRecvError::Empty)
+            }
+        }
+        #[cfg(not(target_has_atomic = "64"))]
+        {
+            unreachable!("slot pool requires 64-bit atomics")
+        }
     }
 
     /// Waits for and receives the next queued value, freeing one capacity slot.
@@ -159,7 +343,7 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Ok(1));
     /// ```
     pub fn is_disconnected(&self) -> bool {
-        self.shared.lock().senders == 0
+        self.shared.senders.load(Ordering::Acquire) == 0
     }
 
     /// Returns `true` if no queued value is waiting to be received.
@@ -181,31 +365,103 @@ impl<T> BoundedReceiver<T> {
     /// assert!(rx.is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
-        self.shared.lock().queue.is_empty()
+        if !self.shared.use_slot_pool() {
+            return self.shared.state.lock().locked_queue.is_empty();
+        }
+        #[cfg(target_has_atomic = "64")]
+        {
+            self.local_head.load(Ordering::Acquire) == NO_SLOT
+                && inbox_head(self.shared.inbox.load(Ordering::Acquire)) == NO_SLOT
+        }
+        #[cfg(not(target_has_atomic = "64"))]
+        {
+            unreachable!("slot pool requires 64-bit atomics")
+        }
     }
 
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
-        let mut state = self.shared.lock();
-        match state.dequeue() {
-            Ok((value, wake)) => {
+        if !self.shared.use_slot_pool() {
+            let mut state = self.shared.state.lock();
+            if let Some(value) = state.locked_queue.pop_front() {
+                let wake = self.shared.release_slot_locked(&mut state, NO_SLOT);
                 drop(state);
                 if let Some(waker) = wake {
                     waker.wake();
                 }
-                Poll::Ready(Ok(value))
+                return Poll::Ready(Ok(value));
             }
-            Err(TryRecvError::Disconnected) => {
+            if self.shared.senders.load(Ordering::Acquire) == 0 {
                 let old = state.recv_waker.take();
                 drop(state);
                 drop(old);
-                Poll::Ready(Err(RecvError::Disconnected))
+                return Poll::Ready(Err(RecvError::Disconnected));
             }
-            Err(TryRecvError::Empty) => {
-                let old = register_waker(&mut state.recv_waker, cx.waker());
-                drop(state);
-                drop(old);
-                Poll::Pending
+            let old = register_waker(&mut state.recv_waker, cx.waker());
+            drop(state);
+            drop(old);
+            return Poll::Pending;
+        }
+
+        #[cfg(target_has_atomic = "64")]
+        {
+            loop {
+                if let Some(slot) = self.pop_published_slot() {
+                    return Poll::Ready(Ok(self.finish_slot_recv(slot)));
+                }
+
+                let mut state = self.shared.state.lock();
+                if inbox_head(self.shared.inbox.load(Ordering::Acquire)) != NO_SLOT {
+                    drop(state);
+                    continue;
+                }
+                if self.shared.senders.load(Ordering::Acquire) == 0 {
+                    // Re-check `inbox` after observing `senders == 0` in case the final sender
+                    // published a message right before dropping its handle.
+                    if inbox_head(self.shared.inbox.load(Ordering::Acquire)) != NO_SLOT {
+                        drop(state);
+                        continue;
+                    }
+                    let stored = state.recv_waker.take();
+                    drop(state);
+                    drop(stored);
+                    return Poll::Ready(Err(RecvError::Disconnected));
+                }
+
+                let old_waker = register_waker(&mut state.recv_waker, cx.waker());
+                let mut old_inbox = self.shared.inbox.load(Ordering::Acquire);
+                loop {
+                    if inbox_head(old_inbox) != NO_SLOT {
+                        // A producer published while we registered; retry the lock-free pop.
+                        let stored = state.recv_waker.take();
+                        drop(state);
+                        drop(old_waker);
+                        drop(stored);
+                        break;
+                    }
+                    if (old_inbox & RECV_WAITING_BIT) != 0 {
+                        drop(state);
+                        drop(old_waker);
+                        return Poll::Pending;
+                    }
+                    match self.shared.inbox.compare_exchange_weak(
+                        old_inbox,
+                        old_inbox | RECV_WAITING_BIT,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => {
+                            drop(state);
+                            drop(old_waker);
+                            return Poll::Pending;
+                        }
+                        Err(actual) => old_inbox = actual,
+                    }
+                }
             }
+        }
+        #[cfg(not(target_has_atomic = "64"))]
+        {
+            unreachable!("slot pool requires 64-bit atomics")
         }
     }
 }

@@ -28,11 +28,13 @@ use std::task::Context;
 use std::task::Poll;
 use std::thread;
 
+use asyncband::blocking::FutureExt;
 use asyncband::mpsc;
 use asyncband::mpsc::RecvError;
 use asyncband::mpsc::TryRecvError;
 use asyncband::mpsc::TrySendError;
 use tests_integration::WakeCounter;
+use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
 use tests_integration::test_runtime;
@@ -249,12 +251,26 @@ fn publication_racing_with_receiver_registration_cannot_lose_wakeup() {
 
 #[test]
 fn last_sender_drop_racing_with_receiver_registration_cannot_lose_wakeup() {
-    for _ in 0..128 {
+    let rounds = if cfg!(miri) { 16 } else { 128 };
+    for _ in 0..rounds {
         let (tx, mut rx) = mpsc::bounded::<usize>(1);
         receive_racing_with(
             pin!(rx.recv()),
             move || drop(tx),
             Err(RecvError::Disconnected),
+        );
+        let (tx, mut rx) = mpsc::bounded::<usize>(1);
+        receive_racing_with(
+            pin!(rx.recv()),
+            move || {
+                tx.try_send(42).unwrap();
+                drop(tx);
+            },
+            Ok(42),
+        );
+        assert_eq!(
+            poll_once(pin!(rx.recv())),
+            Poll::Ready(Err(RecvError::Disconnected))
         );
         let (tx, mut rx) = mpsc::unbounded::<usize>();
         receive_racing_with(
@@ -262,6 +278,58 @@ fn last_sender_drop_racing_with_receiver_registration_cannot_lose_wakeup() {
             move || drop(tx),
             Err(RecvError::Disconnected),
         );
+    }
+}
+
+#[test]
+fn cancelling_sole_permit_racing_with_send_cannot_lose_wakeup() {
+    let rounds = if cfg!(miri) { 16 } else { 128 };
+    for _ in 0..rounds {
+        let (tx, mut rx) = mpsc::bounded(1);
+        let permit = tx.try_reserve().unwrap();
+        let (waker, counter) = WakeCounter::new();
+        let start = Barrier::new(2);
+        let poll = thread::scope(|scope| {
+            let releaser = scope.spawn(|| {
+                start.wait();
+                drop(permit);
+            });
+            let mut send = pin!(tx.send(7usize));
+            start.wait();
+            let poll = poll_with(send.as_mut(), &waker);
+            releaser.join().unwrap();
+            if poll.is_pending() {
+                assert!(
+                    counter.count() > 0,
+                    "cancelled permit stranded a waiting send"
+                );
+                assert_eq!(poll_with(send.as_mut(), &waker), Poll::Ready(Ok(())));
+            } else {
+                assert_eq!(poll, Poll::Ready(Ok(())));
+            }
+            poll
+        });
+        let _ = poll;
+        assert_eq!(rx.try_recv(), Ok(7));
+    }
+}
+
+#[test]
+fn zero_sized_disconnection_is_monotonic_under_concurrent_close() {
+    let rounds = if cfg!(miri) { 16 } else { 256 };
+    for _ in 0..rounds {
+        let (tx, rx) = mpsc::bounded::<()>(2);
+        let start = Barrier::new(2);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                start.wait();
+                drop(rx);
+            });
+            start.wait();
+            if tx.is_disconnected() {
+                assert_eq!(tx.try_send(()), Err(TrySendError::Disconnected(())));
+            }
+        });
     }
 }
 
@@ -338,4 +406,47 @@ fn selection_preserves_messages_across_cancelled_receives() {
 
     assert_eq!(bounded_rx.try_recv(), Ok(1));
     assert_eq!(unbounded_rx.try_recv(), Ok(2));
+}
+
+#[test]
+fn bounded_reused_batches_preserve_order_and_wakeups_under_backpressure() {
+    assert_completes_without_deadlock(|| {
+        const PRODUCERS: usize = 4;
+        const BATCHES: usize = if cfg!(miri) { 4 } else { 64 };
+        const PER_PRODUCER: usize = if cfg!(miri) { 12 } else { 128 };
+
+        let (tx, mut rx) = mpsc::bounded(4);
+        let start = Barrier::new(PRODUCERS + 1);
+
+        thread::scope(|scope| {
+            for producer in 0..PRODUCERS {
+                let tx = tx.clone();
+                let start = &start;
+                scope.spawn(move || {
+                    for _ in 0..BATCHES {
+                        start.wait();
+                        for seq in 0..PER_PRODUCER {
+                            if seq % 4 == 0 {
+                                // Interleave cancelled reservations with active backpressure.
+                                if let Ok(permit) = tx.try_reserve() {
+                                    drop(permit);
+                                }
+                            }
+                            tx.send((producer, seq)).block_on().unwrap();
+                        }
+                    }
+                });
+            }
+
+            for _ in 0..BATCHES {
+                start.wait();
+                let mut next = [0; PRODUCERS];
+                for _ in 0..(PRODUCERS * PER_PRODUCER) {
+                    let (producer, seq) = rx.recv().block_on().unwrap();
+                    assert_eq!(seq, next[producer]);
+                    next[producer] += 1;
+                }
+            }
+        });
+    });
 }

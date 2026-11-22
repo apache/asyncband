@@ -19,27 +19,30 @@ use std::fmt;
 use std::future::poll_fn;
 use std::mem;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::internal::mutex::Mutex;
 use crate::internal::update_waker;
 use crate::internal::waitlist::WaiterId;
 use crate::mpsc::SendError;
 use crate::mpsc::TrySendError;
-use crate::mpsc::bounded::State;
+use crate::mpsc::bounded::NO_SLOT;
+use crate::mpsc::bounded::Shared;
 use crate::mpsc::bounded::Waiter;
 
 /// The sending endpoint of a bounded mpsc channel.
 ///
 /// Instances are created by the [`bounded`](crate::mpsc::bounded) function.
 pub struct BoundedSender<T> {
-    shared: Arc<Mutex<State<T>>>,
+    pub(super) shared: Arc<Shared<T>>,
 }
 
 impl<T> Clone for BoundedSender<T> {
     fn clone(&self) -> Self {
-        self.shared.lock().senders += 1;
+        // Relaxed is sufficient because `&self` guarantees `senders >= 1`; final disconnection
+        // synchronizes via the `AcqRel` decrement chain in `Drop`.
+        self.shared.senders.fetch_add(1, Ordering::Relaxed);
         BoundedSender {
             shared: self.shared.clone(),
         }
@@ -54,23 +57,17 @@ impl<T> fmt::Debug for BoundedSender<T> {
 
 impl<T> Drop for BoundedSender<T> {
     fn drop(&mut self) {
-        let wake = {
-            let mut state = self.shared.lock();
-            state.senders -= 1;
-            if state.senders == 0 {
-                state.recv_waker.take()
-            } else {
-                None
+        if self.shared.senders.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let wake = self.shared.state.lock().recv_waker.take();
+            if let Some(waker) = wake {
+                waker.wake();
             }
-        };
-        if let Some(waker) = wake {
-            waker.wake();
         }
     }
 }
 
 impl<T> BoundedSender<T> {
-    pub(super) fn new(shared: Arc<Mutex<State<T>>>) -> Self {
+    pub(super) fn new(shared: Arc<Shared<T>>) -> Self {
         Self { shared }
     }
 
@@ -88,15 +85,30 @@ impl<T> BoundedSender<T> {
     /// unavailable, or [`reserve`](Self::reserve) to wait for capacity before constructing the
     /// message.
     pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
-        let value = match self.try_send(value) {
-            Ok(()) => return Ok(()),
-            Err(TrySendError::Disconnected(value)) => return Err(SendError::new(value)),
-            Err(TrySendError::Full(value)) => value,
-        };
-        match self.reserve().await {
-            Ok(permit) => permit.send(value),
-            Err(_) => Err(SendError::new(value)),
+        if !self.shared.use_slot_pool() {
+            let value = match self.shared.try_send_locked(value) {
+                Ok(()) => return Ok(()),
+                Err(TrySendError::Disconnected(value)) => return Err(SendError::new(value)),
+                Err(TrySendError::Full(value)) => value,
+            };
+            let Ok(permit) = self.reserve_slow().await else {
+                return Err(SendError::new(value));
+            };
+            return permit.send(value);
         }
+
+        let permit = match self.shared.acquire_slot() {
+            Ok(slot) => Permit {
+                shared: &self.shared,
+                slot,
+            },
+            Err(TrySendError::Disconnected(())) => return Err(SendError::new(value)),
+            Err(TrySendError::Full(())) => match self.reserve_slow().await {
+                Ok(permit) => permit,
+                Err(_) => return Err(SendError::new(value)),
+            },
+        };
+        permit.send(value)
     }
 
     /// Reserves capacity for one message before the caller supplies its value.
@@ -133,6 +145,17 @@ impl<T> BoundedSender<T> {
     /// # }
     /// ```
     pub async fn reserve(&self) -> Result<Permit<'_, T>, SendError<()>> {
+        match self.shared.acquire_slot() {
+            Ok(slot) => Ok(Permit {
+                shared: &self.shared,
+                slot,
+            }),
+            Err(TrySendError::Disconnected(())) => Err(SendError::new(())),
+            Err(TrySendError::Full(())) => self.reserve_slow().await,
+        }
+    }
+
+    async fn reserve_slow(&self) -> Result<Permit<'_, T>, SendError<()>> {
         let mut reserve = Reserve {
             shared: &self.shared,
             waiter: None,
@@ -151,9 +174,10 @@ impl<T> BoundedSender<T> {
     /// [`TrySendError::Disconnected`] if the receiver has been dropped. Errors carry `()`
     /// because no message has been supplied.
     pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
-        self.shared.lock().acquire()?;
+        let slot = self.shared.acquire_slot()?;
         Ok(Permit {
             shared: &self.shared,
+            slot,
         })
     }
 
@@ -181,20 +205,21 @@ impl<T> BoundedSender<T> {
     /// assert_eq!(tx.try_send(30), Err(TrySendError::Disconnected(30)));
     /// ```
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        let mut state = self.shared.lock();
-        match state.acquire() {
-            Ok(()) => {
-                state.queue.push_back(value);
-                let wake = state.recv_waker.take();
-                drop(state);
-                if let Some(waker) = wake {
-                    waker.wake();
-                }
-                Ok(())
-            }
-            Err(TrySendError::Full(())) => Err(TrySendError::Full(value)),
-            Err(TrySendError::Disconnected(())) => Err(TrySendError::Disconnected(value)),
+        if !self.shared.use_slot_pool() {
+            return self.shared.try_send_locked(value);
         }
+        let slot = match self.shared.acquire_slot() {
+            Ok(slot) => slot,
+            Err(TrySendError::Disconnected(())) => return Err(TrySendError::Disconnected(value)),
+            Err(TrySendError::Full(())) => return Err(TrySendError::Full(value)),
+        };
+        let permit = Permit {
+            shared: &self.shared,
+            slot,
+        };
+        permit
+            .send(value)
+            .map_err(|err| TrySendError::Disconnected(err.into_inner()))
     }
 
     /// Returns `true` if the receiver has been dropped.
@@ -215,7 +240,7 @@ impl<T> BoundedSender<T> {
     /// assert!(tx.is_disconnected());
     /// ```
     pub fn is_disconnected(&self) -> bool {
-        !self.shared.lock().receiver
+        self.shared.is_closed()
     }
 }
 
@@ -226,7 +251,8 @@ impl<T> BoundedSender<T> {
 /// it without sending releases capacity and notifies a waiting sender.
 #[must_use = "dropping the permit releases its reserved capacity"]
 pub struct Permit<'a, T> {
-    shared: &'a Mutex<State<T>>,
+    shared: &'a Shared<T>,
+    slot: u32,
 }
 
 impl<T> fmt::Debug for Permit<'_, T> {
@@ -244,62 +270,121 @@ impl<T> Permit<'_, T> {
     ///
     /// Returns [`SendError`] containing the unsent value if the receiver has been dropped.
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
-        let mut state = self.shared.lock();
-        if !state.receiver {
-            return Err(SendError::new(value));
-        }
-        state.queue.push_back(value);
-        // The queued message now owns capacity.
+        let shared = self.shared;
+        let slot = self.slot;
         mem::forget(self);
-        let wake = state.recv_waker.take();
-        drop(state);
-        if let Some(waker) = wake {
-            waker.wake();
+
+        if !shared.use_slot_pool() {
+            let mut state = shared.state.lock();
+            if !state.receiver {
+                return Err(SendError::new(value));
+            }
+            state.locked_queue.push_back(value);
+            let wake = state.recv_waker.take();
+            drop(state);
+            if let Some(waker) = wake {
+                waker.wake();
+            }
+            return Ok(());
         }
-        Ok(())
+
+        #[cfg(target_has_atomic = "64")]
+        {
+            // SAFETY: This `Permit` owns a `pool_refs` lease and exclusive ownership of `slot`,
+            // which is uninitialized. Writing before publishing to `inbox` keeps payload copies
+            // lock-free and ensures any slot visible in `inbox` is already initialized.
+            unsafe { shared.write_slot(slot, value) };
+
+            // SAFETY: This `Permit` still holds its `pool_refs` lease.
+            match unsafe { shared.publish_slot(slot) } {
+                Ok(wake) => {
+                    shared.leave_pool();
+                    if let Some(waker) = wake {
+                        waker.wake();
+                    }
+                    Ok(())
+                }
+                Err(()) => {
+                    // SAFETY: `CLOSED_BIT` was already set on `inbox`, so `slot` was never linked
+                    // into `inbox` and `BoundedReceiver::drop` will never touch it.
+                    let value = unsafe { shared.read_slot(slot) };
+                    shared.leave_pool();
+                    Err(SendError::new(value))
+                }
+            }
+        }
+        #[cfg(not(target_has_atomic = "64"))]
+        {
+            let _ = slot;
+            unreachable!("slot pool requires 64-bit atomics")
+        }
     }
 }
 
 impl<T> Drop for Permit<'_, T> {
     fn drop(&mut self) {
-        let wake = self.shared.lock().release();
-        if let Some(waker) = wake {
+        if let Some(waker) = self.shared.release_slot_from_permit(self.slot) {
             waker.wake();
         }
     }
 }
 
 struct Reserve<'a, T> {
-    shared: &'a Mutex<State<T>>,
+    shared: &'a Shared<T>,
     waiter: Option<WaiterId>,
 }
 
 impl<'a, T> Reserve<'a, T> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Permit<'a, T>, SendError<()>>> {
-        let mut state = self.shared.lock();
+        let mut state = self.shared.state.lock();
         if !state.receiver {
             self.waiter = None;
             return Poll::Ready(Err(SendError::new(())));
         }
-        if let Some(index) = self.waiter {
+        let slot = if let Some(index) = self.waiter {
             let waiter = state.send_waiters.waiter_mut(index);
-            if let Waiter::Waiting(waker) = waiter {
-                let old = update_waker(waker, cx.waker());
-                drop(state);
-                drop(old);
+            match waiter {
+                Waiter::Waiting(waker) => {
+                    let old = update_waker(waker, cx.waker());
+                    drop(state);
+                    drop(old);
+                    return Poll::Pending;
+                }
+                Waiter::Granted(slot) => {
+                    let slot = *slot;
+                    state.send_waiters.remove_unlinked_waiter(index);
+                    self.waiter = None;
+                    slot
+                }
+            }
+        } else if !self.shared.use_slot_pool() {
+            if state.locked_available != 0 {
+                state.locked_available -= 1;
+                NO_SLOT
+            } else {
+                let waiter = Waiter::Waiting(cx.waker().clone());
+                self.waiter = Some(state.send_waiters.push_back(waiter));
                 return Poll::Pending;
             }
-            state.send_waiters.remove_unlinked_waiter(index);
-            self.waiter = None;
-        } else if state.available != 0 {
-            state.available -= 1;
+        } else if !state.send_waiters.is_empty() {
+            let waiter = Waiter::Waiting(cx.waker().clone());
+            self.waiter = Some(state.send_waiters.push_back(waiter));
+            return Poll::Pending;
+        } else if let Some(slot) = self.shared.acquire_or_mark_waiting(&mut state) {
+            slot
         } else {
             let waiter = Waiter::Waiting(cx.waker().clone());
             self.waiter = Some(state.send_waiters.push_back(waiter));
             return Poll::Pending;
+        };
+
+        #[cfg(target_has_atomic = "64")]
+        if self.shared.use_slot_pool() {
+            self.shared.retain_pool_while_open();
         }
         Poll::Ready(Ok(Permit {
             shared: self.shared,
+            slot,
         }))
     }
 }
@@ -308,14 +393,17 @@ impl<T> Drop for Reserve<'_, T> {
     fn drop(&mut self) {
         let Some(index) = self.waiter else { return };
         let (waiter, wake) = {
-            let mut state = self.shared.lock();
+            let mut state = self.shared.state.lock();
             if !state.receiver {
                 return;
             }
             let waiter = state.send_waiters.remove(index);
             let wake = match waiter {
-                Waiter::Granted => state.release(),
-                Waiter::Waiting(_) => None,
+                Waiter::Granted(slot) => self.shared.release_slot_locked(&mut state, slot),
+                Waiter::Waiting(_) => {
+                    self.shared.clear_send_waiters_bit_if_empty(&state);
+                    None
+                }
             };
             (waiter, wake)
         };
