@@ -1017,3 +1017,182 @@ fn bounded_receiver_queries_track_sender_liveness_and_cursor_backlog() {
     assert_eq!(*slow.try_recv().unwrap(), 10);
     assert!(slow.is_empty());
 }
+
+#[test]
+fn try_reserve_and_permit_send_commit_in_send_order_without_sequence_gaps() {
+    let (tx, mut rx1) = bounded(2);
+    let mut rx2 = tx.subscribe();
+
+    let dropped_permit = tx.try_reserve().unwrap();
+    let first_permit = tx.try_reserve().unwrap();
+    assert_eq!(tx.retained_message_count(), 0);
+    assert!(rx1.is_empty());
+    assert_eq!(tx.try_send(99), Err(TrySendError::Full(99)));
+    assert_eq!(tx.try_reserve().unwrap_err(), TrySendError::Full(()));
+
+    // Dropping an unused permit frees one slot without publishing or advancing cursors.
+    drop(dropped_permit);
+    let second_permit = tx.try_reserve().unwrap();
+    assert_eq!(tx.try_reserve().unwrap_err(), TrySendError::Full(()));
+
+    // Publication order follows `Permit::send`, not reservation order.
+    second_permit.send(20);
+    first_permit.send(10);
+
+    assert_eq!(*rx1.try_recv().unwrap(), 20);
+    assert_eq!(*rx1.try_recv().unwrap(), 10);
+    assert_eq!(*rx2.try_recv().unwrap(), 20);
+    assert_eq!(*rx2.try_recv().unwrap(), 10);
+}
+
+#[test]
+fn reserve_waits_for_slowest_receiver_and_yields_usable_permit() {
+    let (tx, mut fast) = bounded(1);
+    let mut slow = tx.subscribe();
+    tx.try_send(1).unwrap();
+
+    let tracker = Arc::new(WakeCounter::default());
+    let waker = Waker::from(tracker.clone());
+    let mut reserve = pin!(tx.reserve());
+    assert!(poll_with(reserve.as_mut(), &waker).is_pending());
+
+    // Fast receiver draining does not free the shared slot while `slow` lags.
+    assert_eq!(*fast.try_recv().unwrap(), 1);
+    assert_eq!(tracker.count(), 0);
+    assert!(poll_with(reserve.as_mut(), &waker).is_pending());
+
+    // Once `slow` consumes the retained message, `reserve` wakes and acquires a usable permit.
+    assert_eq!(*slow.try_recv().unwrap(), 1);
+    assert_eq!(tracker.count(), 1);
+    let Poll::Ready(permit) = poll_with(reserve.as_mut(), &waker) else {
+        panic!("expected reserve to complete once the slowest receiver freed a slot");
+    };
+    permit.send(2);
+
+    assert_eq!(*fast.try_recv().unwrap(), 2);
+    assert_eq!(*slow.try_recv().unwrap(), 2);
+}
+
+#[test]
+fn cancelling_notified_reserve_forwards_wakeup_to_next_producer() {
+    let (tx, mut rx) = bounded(1);
+    tx.try_send(1).unwrap();
+
+    let first_tracker = Arc::new(WakeCounter::default());
+    let second_tracker = Arc::new(WakeCounter::default());
+    let first_waker = Waker::from(first_tracker.clone());
+    let second_waker = Waker::from(second_tracker.clone());
+
+    let mut first = Box::pin(tx.reserve());
+    let mut second = pin!(tx.reserve());
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+
+    assert_eq!(*rx.try_recv().unwrap(), 1);
+    assert_eq!(first_tracker.count(), 1);
+    assert_eq!(second_tracker.count(), 0);
+
+    // Dropping the woken `reserve` before it claims the slot forwards the wakeup to `second`.
+    drop(first);
+    assert_eq!(second_tracker.count(), 1);
+    let Poll::Ready(permit) = poll_with(second.as_mut(), &second_waker) else {
+        panic!("expected follower reserve to acquire the forwarded slot");
+    };
+    permit.send(2);
+    assert_eq!(*rx.try_recv().unwrap(), 2);
+}
+
+#[test]
+fn permits_cap_capacity_across_zero_receivers_and_late_subscriptions() {
+    let (tx, rx) = bounded(1);
+    drop(rx);
+
+    let held = tx.try_reserve().unwrap();
+    assert_eq!(tx.try_reserve().unwrap_err(), TrySendError::Full(()));
+
+    // Direct sends still discard without waiting when no receivers exist, even at full reservation.
+    tx.try_send(100).unwrap();
+    FutureExt::block_on(tx.send(101));
+
+    // A receiver subscribed before `Permit::send` receives the value within the channel's capacity.
+    let mut subscribed = tx.subscribe();
+    held.send(42);
+    assert_eq!(tx.retained_message_count(), 1);
+    assert_eq!(*subscribed.try_recv().unwrap(), 42);
+    drop(subscribed);
+
+    // Sending through a permit after all receivers have dropped discards the value and wakes any
+    // producer waiting to reserve that slot.
+    let held = tx.try_reserve().unwrap();
+    let tracker = Arc::new(WakeCounter::default());
+    let waker = Waker::from(tracker.clone());
+    let mut waiting = pin!(tx.reserve());
+    assert!(poll_with(waiting.as_mut(), &waker).is_pending());
+
+    held.send(99);
+    assert_eq!(tracker.count(), 1);
+    let Poll::Ready(next_permit) = poll_with(waiting.as_mut(), &waker) else {
+        panic!("expected permit discard to release capacity to the waiting reserve");
+    };
+    drop(next_permit);
+}
+
+#[test]
+fn dropping_last_receiver_wakes_blocked_sends_without_spuriously_waking_blocked_reserves() {
+    // Case 1: held permits consume every slot (`available == 0`), so dropping the last receiver
+    // wakes blocked `send` futures (which discard without a slot) without waking `reserve`
+    // futures that still cannot acquire capacity.
+    let (tx, rx) = bounded(1);
+    let held = tx.try_reserve().unwrap();
+
+    let (reserve_waker, reserve_wakes) = WakeCounter::new();
+    let (send_waker, send_wakes) = WakeCounter::new();
+    let mut reserve = pin!(tx.reserve());
+    let mut send = pin!(tx.send(7));
+    assert!(poll_with(reserve.as_mut(), &reserve_waker).is_pending());
+    assert!(poll_with(send.as_mut(), &send_waker).is_pending());
+
+    drop(rx);
+    assert_eq!(reserve_wakes.count(), 0);
+    assert_eq!(send_wakes.count(), 1);
+    assert!(poll_with(send.as_mut(), &send_waker).is_ready());
+    assert!(poll_with(reserve.as_mut(), &reserve_waker).is_pending());
+
+    drop(held);
+    assert_eq!(reserve_wakes.count(), 1);
+    let Poll::Ready(permit) = poll_with(reserve.as_mut(), &reserve_waker) else {
+        panic!("expected reserve to acquire the slot released by the dropped permit");
+    };
+    drop(permit);
+
+    // Case 2: one retained message frees one slot (`available == 1`) alongside a held permit.
+    // Dropping the last receiver wakes both `send` (no slot needed) and the first `reserve`
+    // (claiming the one slot notification), leaving the second `reserve` parked; cancelling
+    // `send` does not spuriously wake the second `reserve`, whereas cancelling the first
+    // `reserve` forwards the slot notification to the second.
+    let (tx, rx) = bounded(2);
+    let _held = tx.try_reserve().unwrap();
+    tx.try_send(0).unwrap();
+
+    let (send_waker, send_wakes) = WakeCounter::new();
+    let (r1_waker, r1_wakes) = WakeCounter::new();
+    let (r2_waker, r2_wakes) = WakeCounter::new();
+    let mut send = Box::pin(tx.send(1));
+    let mut r1 = Box::pin(tx.reserve());
+    let mut r2 = pin!(tx.reserve());
+    assert!(poll_with(send.as_mut(), &send_waker).is_pending());
+    assert!(poll_with(r1.as_mut(), &r1_waker).is_pending());
+    assert!(poll_with(r2.as_mut(), &r2_waker).is_pending());
+
+    drop(rx);
+    assert_eq!(send_wakes.count(), 1);
+    assert_eq!(r1_wakes.count(), 1);
+    assert_eq!(r2_wakes.count(), 0);
+
+    drop(send);
+    assert_eq!(r2_wakes.count(), 0);
+
+    drop(r1);
+    assert_eq!(r2_wakes.count(), 1);
+    assert!(poll_with(r2.as_mut(), &r2_waker).is_ready());
+}

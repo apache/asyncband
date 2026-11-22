@@ -104,7 +104,7 @@ pub(crate) mod value_cell;
 #[allow(dead_code)]
 pub(crate) mod mutex;
 
-#[cfg(any(feature = "broadcast", feature = "mpmc", feature = "spmc"))]
+#[cfg(any(feature = "mpmc", feature = "spmc"))]
 // Channel families use different subsets of single- and batch-wakeup helpers.
 #[allow(dead_code)]
 pub(crate) mod retry_waiter;

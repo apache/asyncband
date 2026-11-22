@@ -18,8 +18,8 @@
 //! A capacity-limited fan-out channel with multiple senders and receivers.
 //!
 //! Publishing delivers every accepted value to every receiver subscribed at that moment. Older
-//! values are never overwritten to make room, so receiving never reports lag; once the shared
-//! backlog reaches `capacity`, producers wait for the slowest active receiver.
+//! values are never overwritten to make room, so receiving never reports lag; once retained
+//! messages and held [`Permit`]s reach `capacity`, producers wait for a slot to free.
 //!
 //! # Capacity
 //!
@@ -32,11 +32,15 @@
 //! subscription exerts backpressure" means, and it is the trade a lossless bounded broadcast
 //! makes. Drop a receiver that will not drain, and its backlog is released immediately.
 //!
-//! If no receivers are active the channel retains nothing, so sending never waits.
+//! If no receivers are active the channel retains nothing, so [`BoundedSender::send`] and
+//! [`BoundedSender::try_send`] discard immediately without waiting, while
+//! [`BoundedSender::reserve`] and [`BoundedSender::try_reserve`] still cap held [`Permit`]s at
+//! `capacity`.
 //!
 //! Receiving a value releases the subscription's claim before returning that value; processing
-//! it afterward does not hold capacity. The capacity limit excludes values held by pending `send`
-//! futures and values already handed to application code.
+//! it afterward does not hold capacity. The capacity limit counts retained messages and held
+//! [`Permit`]s; it excludes values held by pending `send` futures and values already handed to
+//! application code.
 //!
 //! # Receivers
 //!
@@ -47,9 +51,10 @@
 //! # Fairness
 //!
 //! Waiting producers are woken as capacity frees, but capacity is not reserved for them: a
-//! producer calling [`BoundedSender::try_send`] can take a slot that a woken producer was about to
-//! use, and that producer then waits again. Publication itself is one indivisible step, so
-//! cancelling a `send` future can never leave a gap in the committed order.
+//! producer calling [`BoundedSender::try_send`] or [`BoundedSender::try_reserve`] can take a slot
+//! that a woken producer was about to use, and that producer then waits again. Publication itself
+//! is one indivisible step, so cancelling a `send` future or dropping a [`Permit`] can never leave
+//! a gap in the committed order.
 //!
 //! # Examples
 //!
@@ -101,12 +106,14 @@
 use std::fmt;
 use std::future::Future;
 use std::future::poll_fn;
+use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use crate::broadcast::mpmc::common;
 use crate::broadcast::mpmc::common::Backlog;
@@ -117,7 +124,7 @@ use crate::broadcast::mpmc::error::TryRecvError;
 use crate::broadcast::mpmc::error::TrySendError;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
-use crate::internal::retry_waiter::RetryWaiter;
+use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::waker_batch::WakerBatch;
@@ -129,9 +136,10 @@ mod tests;
 /// Creates a new broadcast channel that retains at most `capacity` messages.
 ///
 /// Every accepted value stays readable by every receiver that was active when it was accepted.
-/// Once `capacity` messages are retained, [`BoundedSender::send`] waits and
-/// [`BoundedSender::try_send`] reports [`TrySendError::Full`] until the slowest active receiver
-/// consumes a message or is dropped.
+/// Once retained messages and held [`Permit`]s fill `capacity`, [`BoundedSender::send`] and
+/// [`BoundedSender::reserve`] wait, and [`BoundedSender::try_send`] and
+/// [`BoundedSender::try_reserve`] report [`TrySendError::Full`] until the slowest active receiver
+/// frees a message or a held [`Permit`] is used or dropped.
 ///
 /// # Panics
 ///
@@ -153,7 +161,7 @@ pub fn bounded<T>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
         "broadcast bounded channel requires capacity > 0"
     );
 
-    let (inner, key) = Inner::with_first_subscription(Backlog::fixed(capacity), WaitList::new());
+    let (inner, key) = Inner::with_first_subscription(Backlog::fixed(capacity), SendQueue::new());
     let shared = Arc::new(Shared {
         inner,
         senders: AtomicUsize::new(1),
@@ -166,12 +174,176 @@ pub fn bounded<T>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     (sender, receiver)
 }
 
+enum SendWaiter {
+    Waiting {
+        waker: Waker,
+        /// `true` for `reserve`, which always requires a capacity slot; `false` for `send`, which
+        /// discards immediately without a slot once all receivers drop.
+        needs_slot: bool,
+    },
+    /// Woken for an available capacity slot; cancelling before polling forwards the wakeup if
+    /// capacity remains.
+    NotifiedSlot,
+    /// Woken because all receivers dropped, without assigning a capacity slot to this wakeup.
+    NotifiedNoReceivers,
+}
+
+struct SendQueue {
+    reserved: usize,
+    waiters: WaitList<SendWaiter>,
+}
+
+impl SendQueue {
+    const fn new() -> Self {
+        Self {
+            reserved: 0,
+            waiters: WaitList::new(),
+        }
+    }
+
+    fn notify_one(&mut self) -> Option<Waker> {
+        let (_, waiter) = self.waiters.unlink_first_waiter()?;
+        let SendWaiter::Waiting { waker, .. } = mem::replace(waiter, SendWaiter::NotifiedSlot)
+        else {
+            unreachable!("only waiting operations remain linked");
+        };
+        Some(waker)
+    }
+
+    fn notify_up_to(&mut self, limit: usize, batch: &mut WakerBatch) {
+        for _ in 0..limit {
+            let Some(waker) = self.notify_one() else {
+                break;
+            };
+            batch.push(waker);
+        }
+    }
+
+    fn notify_without_receivers(&mut self, mut available_slots: usize, batch: &mut WakerBatch) {
+        self.waiters.unlink_if(|waiter| match waiter {
+            SendWaiter::Waiting {
+                needs_slot: false, ..
+            } => {
+                let SendWaiter::Waiting { waker, .. } =
+                    mem::replace(waiter, SendWaiter::NotifiedNoReceivers)
+                else {
+                    unreachable!("only waiting operations remain linked");
+                };
+                batch.push(waker);
+                true
+            }
+            SendWaiter::Waiting {
+                needs_slot: true, ..
+            } if available_slots > 0 => {
+                available_slots -= 1;
+                let SendWaiter::Waiting { waker, .. } =
+                    mem::replace(waiter, SendWaiter::NotifiedSlot)
+                else {
+                    unreachable!("only waiting operations remain linked");
+                };
+                batch.push(waker);
+                true
+            }
+            SendWaiter::Waiting {
+                needs_slot: true, ..
+            } => false,
+            SendWaiter::NotifiedSlot | SendWaiter::NotifiedNoReceivers => {
+                unreachable!("only waiting operations remain linked")
+            }
+        });
+    }
+
+    #[must_use = "drop the replaced waker after releasing the channel lock"]
+    fn register(
+        &mut self,
+        id: &mut Option<WaiterId>,
+        current: &Waker,
+        needs_slot: bool,
+    ) -> Option<Waker> {
+        if let Some(queued) = *id {
+            if let SendWaiter::Waiting { waker, .. } = self.waiters.waiter_mut(queued) {
+                return update_waker(waker, current);
+            }
+        }
+        if let Some(notified) = id.take() {
+            // The notification already took this node's waker, so nothing is retired.
+            self.waiters.remove_unlinked_waiter(notified);
+        }
+        *id = Some(self.waiters.push_back(SendWaiter::Waiting {
+            waker: current.clone(),
+            needs_slot,
+        }));
+        None
+    }
+}
+
+impl<T> Inner<T, SendQueue> {
+    #[inline]
+    fn has_capacity(&self, capacity: usize) -> bool {
+        self.log.retained() + self.send_waiters.reserved < capacity
+    }
+}
+
 struct Shared<T> {
-    inner: Mutex<Inner<T, WaitList<RetryWaiter>>>,
+    inner: Mutex<Inner<T, SendQueue>>,
     /// Number of active senders.
     senders: AtomicUsize,
     /// The logical limit on the retained backlog.
     capacity: usize,
+}
+
+struct SendWait<'a, T> {
+    shared: &'a Shared<T>,
+    waiter: Option<WaiterId>,
+}
+
+impl<T> Drop for SendWait<'_, T> {
+    fn drop(&mut self) {
+        let Some(id) = self.waiter.take() else {
+            return;
+        };
+        let (retired, next_waker) = {
+            let mut inner = self.shared.inner.lock();
+            let retired = inner.send_waiters.waiters.remove(id);
+            // Hand an unconsumed slot notification to the next producer while capacity remains.
+            let next_waker = if matches!(retired, SendWaiter::NotifiedSlot)
+                && inner.has_capacity(self.shared.capacity)
+            {
+                inner.send_waiters.notify_one()
+            } else {
+                None
+            };
+            (retired, next_waker)
+        };
+        if let Some(waker) = next_waker {
+            waker.wake();
+        }
+        drop(retired);
+    }
+}
+
+impl<'a, T> SendWait<'a, T> {
+    fn poll_reserve(&mut self, cx: &mut Context<'_>) -> Poll<Permit<'a, T>> {
+        let mut inner = self.shared.inner.lock();
+        if !inner.has_capacity(self.shared.capacity) {
+            let retired_waker = inner
+                .send_waiters
+                .register(&mut self.waiter, cx.waker(), true);
+            drop(inner);
+            drop(retired_waker);
+            return Poll::Pending;
+        }
+        let retired_waiter = self
+            .waiter
+            .take()
+            .map(|id| inner.send_waiters.waiters.remove(id));
+        inner.send_waiters.reserved += 1;
+        drop(inner);
+        drop(retired_waiter);
+        Poll::Ready(Permit {
+            shared: Some(self.shared),
+        })
+    }
 }
 
 /// The sending side of a bounded broadcast channel.
@@ -212,14 +384,15 @@ impl<T> Drop for BoundedSender<T> {
 impl<T> BoundedSender<T> {
     /// Broadcasts a value to all active receivers, waiting for capacity if the channel is full.
     ///
-    /// The wait ends when the slowest active receiver consumes a retained message or is dropped.
-    /// If no receivers are active, the message is dropped immediately and this returns without
-    /// waiting.
+    /// The wait ends when the slowest active receiver consumes a retained message, a lagging
+    /// receiver is dropped, or an unused [`Permit`] is dropped. If no receivers are active, the
+    /// message is dropped immediately and this returns without waiting.
     ///
     /// # Cancellation
     ///
     /// Dropping a pending future does not publish the value and drops the unsent input. Publication
-    /// is indivisible: it cannot leave a reserved but unfilled position in the message order.
+    /// is indivisible: it cannot leave a reserved but unfilled position in the message order. Use
+    /// [`reserve`](Self::reserve) to wait for capacity before constructing a value.
     ///
     /// # Panics
     ///
@@ -245,37 +418,11 @@ impl<T> BoundedSender<T> {
         };
 
         struct SendState<'a, T> {
-            sender: &'a BoundedSender<T>,
-            waiter: Option<WaiterId>,
+            // Declared first so dropping a pending send releases its waiter and wakes any follower
+            // before running `value`'s destructor.
+            wait: SendWait<'a, T>,
             // Boxed once, out of the critical section, and reused by every retry.
             value: Option<Arc<T>>,
-        }
-
-        impl<T> Drop for SendState<'_, T> {
-            fn drop(&mut self) {
-                let Some(id) = self.waiter.take() else {
-                    return;
-                };
-                let (retired, next_waker) = {
-                    let mut inner = self.sender.shared.inner.lock();
-                    let retired = inner.send_waiters.remove(id);
-                    // Hand an unconsumed notification to the next producer while capacity remains.
-                    let next_waker = if matches!(retired, RetryWaiter::Notified)
-                        && inner.log.retained() < self.sender.shared.capacity
-                    {
-                        inner.send_waiters.notify_one()
-                    } else {
-                        None
-                    };
-                    (retired, next_waker)
-                };
-                // Wake the follower before `value` drops so a panicking payload destructor cannot
-                // strand a waiting producer on capacity that was already freed.
-                if let Some(waker) = next_waker {
-                    waker.wake();
-                }
-                drop(retired);
-            }
         }
 
         impl<T> SendState<'_, T> {
@@ -285,10 +432,12 @@ impl<T> BoundedSender<T> {
                 let mut retired_waiter = None;
                 let mut wakers = WakerBatch::new();
                 {
-                    let mut inner = self.sender.shared.inner.lock();
-                    if inner.log.retained() == self.sender.shared.capacity {
+                    let mut inner = self.wait.shared.inner.lock();
+                    if inner.log.has_receivers() && !inner.has_capacity(self.wait.shared.capacity) {
                         let retired_waker =
-                            inner.send_waiters.register(&mut self.waiter, cx.waker());
+                            inner
+                                .send_waiters
+                                .register(&mut self.wait.waiter, cx.waker(), false);
                         drop(inner);
                         drop(retired_waker);
                         return Poll::Pending;
@@ -297,7 +446,11 @@ impl<T> BoundedSender<T> {
                         .value
                         .take()
                         .expect("bounded broadcast send polled after completion");
-                    retired_waiter = self.waiter.take().map(|id| inner.send_waiters.remove(id));
+                    retired_waiter = self
+                        .wait
+                        .waiter
+                        .take()
+                        .map(|id| inner.send_waiters.waiters.remove(id));
                     unretained = Some(msg);
                     inner.log.publish(&mut unretained, |msg| msg);
                     inner.waiters.drain_into(&mut wakers);
@@ -310,11 +463,83 @@ impl<T> BoundedSender<T> {
         }
 
         let mut send = SendState {
-            sender: self,
-            waiter: None,
+            wait: SendWait {
+                shared: &self.shared,
+                waiter: None,
+            },
             value: Some(Arc::new(value)),
         };
         poll_fn(|cx| send.poll_send(cx)).await
+    }
+
+    /// Reserves capacity for one message before constructing its value.
+    ///
+    /// The returned [`Permit`] holds one capacity slot until it is used with [`Permit::send`] or
+    /// dropped. Holding a permit does not assign a broadcast sequence position: message order is
+    /// established only when [`Permit::send`] commits a value.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping a pending `reserve` future removes its waiter without retaining capacity. If this
+    /// waiter had been notified while capacity remains available, the notification is forwarded to
+    /// the next waiting producer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let (publisher, mut receiver) = mpmc::bounded(1);
+    /// let permit = publisher.reserve().await;
+    /// permit.send(String::from("constructed after capacity became available"));
+    /// assert_eq!(
+    ///     *receiver.recv().await.unwrap(),
+    ///     "constructed after capacity became available"
+    /// );
+    /// # }
+    /// ```
+    pub async fn reserve(&self) -> Permit<'_, T> {
+        let mut wait = SendWait {
+            shared: &self.shared,
+            waiter: None,
+        };
+        poll_fn(|cx| wait.poll_reserve(cx)).await
+    }
+
+    /// Reserves capacity for one message without waiting.
+    ///
+    /// Dropping the returned [`Permit`] releases its capacity slot. See [`reserve`](Self::reserve)
+    /// for how reservations interact with publication order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] carrying `()` if retained messages and held permits already
+    /// occupy the channel's full capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    /// use asyncband::broadcast::mpmc::TrySendError;
+    ///
+    /// let (publisher, mut receiver) = mpmc::bounded::<i32>(1);
+    /// let permit = publisher.try_reserve().unwrap();
+    /// assert_eq!(publisher.try_reserve().unwrap_err(), TrySendError::Full(()));
+    ///
+    /// permit.send(7);
+    /// assert_eq!(*receiver.try_recv().unwrap(), 7);
+    /// ```
+    pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
+        let mut inner = self.shared.inner.lock();
+        if !inner.has_capacity(self.shared.capacity) {
+            return Err(TrySendError::Full(()));
+        }
+        inner.send_waiters.reserved += 1;
+        Ok(Permit {
+            shared: Some(&self.shared),
+        })
     }
 
     /// Broadcasts a value to all active receivers without waiting for capacity.
@@ -356,8 +581,8 @@ impl<T> BoundedSender<T> {
         // boxes the value for real.
         let mut unretained;
         let mut inner = self.shared.inner.lock();
-        // A channel without receivers has an empty backlog and positive capacity.
-        if inner.log.retained() == self.shared.capacity {
+        // A channel without receivers discards immediately without occupying a backlog slot.
+        if inner.log.has_receivers() && !inner.has_capacity(self.shared.capacity) {
             return Err(TrySendError::Full(value));
         }
         unretained = Some(value);
@@ -378,8 +603,8 @@ impl<T> BoundedSender<T> {
     /// Returns the number of messages currently retained by the channel.
     ///
     /// This is not the number of messages any single receiver can still read. It is the shared
-    /// backlog kept alive by the slowest active receiver, and it is what this channel measures
-    /// against its [`capacity`](BoundedSender::capacity).
+    /// backlog kept alive by the slowest active receiver; held [`Permit`]s are not included here,
+    /// though they also occupy [`capacity`](BoundedSender::capacity).
     ///
     /// The returned value is an instantaneous snapshot. It is suitable for diagnostics and soft
     /// flow-control decisions, but other tasks may change it immediately by sending or receiving.
@@ -400,10 +625,12 @@ impl<T> BoundedSender<T> {
         self.shared.inner.lock().log.retained()
     }
 
-    /// Returns the number of messages this channel retains before producers wait.
+    /// Returns the maximum number of retained messages and held [`Permit`]s this channel allows
+    /// before producers wait.
     ///
-    /// This is the value passed to [`bounded`] and never changes. Pair it with
-    /// [`retained_message_count`](BoundedSender::retained_message_count) to compute headroom.
+    /// This is the value passed to [`bounded`] and never changes. Both
+    /// [`retained_message_count`](BoundedSender::retained_message_count) and outstanding
+    /// [`Permit`]s count against this limit.
     ///
     /// # Examples
     ///
@@ -472,7 +699,10 @@ impl<T> Drop for BoundedReceiver<T> {
             let mut inner = self.shared.inner.lock();
             let reclaimed = inner.log.remove_receiver(self.key);
             if !inner.log.has_receivers() {
-                inner.send_waiters.notify_all(&mut wakers);
+                let available = self.shared.capacity - inner.send_waiters.reserved;
+                inner
+                    .send_waiters
+                    .notify_without_receivers(available, &mut wakers);
             } else {
                 inner
                     .send_waiters
@@ -723,8 +953,8 @@ impl<T> BoundedReceiver<T> {
     /// Returns `true` if this receiver has no unread messages waiting in the backlog.
     ///
     /// Messages already consumed by this receiver that remain retained for slower receivers do not
-    /// count, nor do sends waiting for capacity. The result is an instantaneous snapshot and may
-    /// become stale as other tasks publish.
+    /// count, nor do held [`Permit`]s or sends waiting for capacity. The result is an instantaneous
+    /// snapshot and may become stale as other tasks publish.
     ///
     /// # Examples
     ///
@@ -798,5 +1028,95 @@ impl<T> Future for Recv<'_, T> {
             waker.wake();
         }
         poll
+    }
+}
+
+/// Capacity reserved for one message on a bounded broadcast channel.
+///
+/// Created by [`BoundedSender::reserve`] or [`BoundedSender::try_reserve`]. Holding a permit
+/// counts one slot against the channel's [`capacity`](BoundedSender::capacity) without assigning a
+/// message position in the broadcast sequence. Dropping the permit without sending releases that
+/// slot and notifies a waiting producer.
+#[must_use = "dropping the permit releases its reserved capacity"]
+pub struct Permit<'a, T> {
+    shared: Option<&'a Shared<T>>,
+}
+
+impl<T> fmt::Debug for Permit<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Permit").finish_non_exhaustive()
+    }
+}
+
+impl<T> Permit<'_, T> {
+    /// Broadcasts `value` to all active receivers using this reserved capacity without waiting.
+    ///
+    /// If no receivers are active when this method is called, `value` is discarded immediately and
+    /// the freed capacity notifies a waiting producer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the channel has already published `u64::MAX` messages. On panic, `value` is
+    /// dropped outside the channel lock and this permit's reserved capacity is released.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    ///
+    /// let (publisher, mut receiver) = mpmc::bounded(1);
+    /// let permit = publisher.try_reserve().unwrap();
+    /// permit.send("published");
+    /// assert_eq!(*receiver.try_recv().unwrap(), "published");
+    /// ```
+    pub fn send(self, value: T) {
+        // Bind `unretained` before `this` so on an overflow unwind `this` drops first, releasing
+        // the reserved slot and waking any waiting producer before `value`'s destructor runs.
+        let mut unretained = Some(value);
+        let mut this = self;
+        let shared = this
+            .shared
+            .expect("broadcast permit must hold a channel reference");
+        let mut inner = shared.inner.lock();
+        inner.log.publish(&mut unretained, Arc::new);
+        this.shared = None;
+        inner.send_waiters.reserved -= 1;
+        let sender_waker = if !inner.log.has_receivers() {
+            inner.send_waiters.notify_one()
+        } else {
+            None
+        };
+        if !inner.waiters.is_empty() {
+            let mut receiver_wakers = WakerBatch::new();
+            inner.waiters.drain_into(&mut receiver_wakers);
+            drop(inner);
+            if let Some(waker) = sender_waker {
+                waker.wake();
+            }
+            receiver_wakers.wake_all();
+            drop(unretained);
+            return;
+        }
+        drop(inner);
+        if let Some(waker) = sender_waker {
+            waker.wake();
+        }
+        drop(unretained);
+    }
+}
+
+impl<T> Drop for Permit<'_, T> {
+    fn drop(&mut self) {
+        let Some(shared) = self.shared.take() else {
+            return;
+        };
+        let next_waker = {
+            let mut inner = shared.inner.lock();
+            inner.send_waiters.reserved -= 1;
+            inner.send_waiters.notify_one()
+        };
+        if let Some(waker) = next_waker {
+            waker.wake();
+        }
     }
 }
