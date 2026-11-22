@@ -52,7 +52,6 @@ asyncband = { workspace = true, features = [
   "waitgroup",
   "watch",
 ] }
-tokio-test = { workspace = true }
 
 [lib]
 bench = false

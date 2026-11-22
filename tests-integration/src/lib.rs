@@ -33,6 +33,7 @@ use std::task::RawWakerVTable;
 use std::task::Wake;
 use std::task::Waker;
 use std::thread;
+#[cfg(not(miri))]
 use std::time::Duration;
 
 use tokio::runtime::Runtime;
@@ -48,6 +49,7 @@ pub fn test_runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| Runtime::new().unwrap())
 }
 
+#[track_caller]
 pub fn expect_ready<T>(poll: Poll<T>) -> T {
     match poll {
         Poll::Ready(value) => value,
@@ -84,6 +86,34 @@ impl Wake for WakeCounter {
 
     fn wake_by_ref(self: &Arc<Self>) {
         self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub struct TestTask<F> {
+    future: Pin<Box<F>>,
+    waker: Waker,
+    wakes: Arc<WakeCounter>,
+}
+
+impl<F: Future> TestTask<F> {
+    pub fn new(future: F) -> Self {
+        let (waker, wakes) = WakeCounter::new();
+        Self {
+            future: Box::pin(future),
+            waker,
+            wakes,
+        }
+    }
+
+    pub fn poll(&mut self) -> Poll<F::Output> {
+        self.wakes.take();
+        self.future
+            .as_mut()
+            .poll(&mut Context::from_waker(&self.waker))
+    }
+
+    pub fn is_woken(&self) -> bool {
+        self.wakes.count() > 0
     }
 }
 
