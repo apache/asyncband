@@ -31,7 +31,22 @@ impl<T> RwLock<T> {
         Self(std::sync::RwLock::new(t))
     }
 
+    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, T> {
+        self.0.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
     pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, T> {
         self.0.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
+    pub fn try_write(&self) -> Option<std::sync::RwLockWriteGuard<'_, T>> {
+        use std::sync::TryLockError;
+
+        match self.0.try_write() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(error)) => Some(error.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
     }
 }

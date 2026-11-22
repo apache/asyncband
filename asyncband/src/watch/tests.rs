@@ -30,7 +30,7 @@ use super::*;
 #[should_panic(expected = "watch channel version counter overflowed")]
 fn send_panics_on_version_overflow() {
     let (tx, _rx) = channel(0);
-    tx.shared.slot.lock().version = u64::MAX;
+    tx.shared.slot.write().version = u64::MAX;
     tx.shared.version.store(u64::MAX);
     tx.send(1).unwrap();
 }
@@ -39,7 +39,7 @@ fn send_panics_on_version_overflow() {
 #[should_panic(expected = "watch channel version counter overflowed")]
 fn send_replace_panics_on_version_overflow() {
     let (tx, _rx) = channel(0);
-    tx.shared.slot.lock().version = u64::MAX;
+    tx.shared.slot.write().version = u64::MAX;
     tx.shared.version.store(u64::MAX);
     tx.send_replace(1);
 }
@@ -72,7 +72,7 @@ fn version_overflow_drops_input_outside_locks_and_preserves_state() {
         id: 7,
         inspect: None,
     });
-    tx.shared.slot.lock().version = u64::MAX;
+    tx.shared.slot.write().version = u64::MAX;
     tx.shared.version.store(u64::MAX);
 
     for use_send_replace in [false, true] {
@@ -83,7 +83,7 @@ fn version_overflow_drops_input_outside_locks_and_preserves_state() {
             id: 8,
             inspect: Some(Box::new(move || {
                 let both_free =
-                    shared.slot.try_lock().is_some() && shared.waiters.try_lock().is_some();
+                    shared.slot.try_write().is_some() && shared.waiters.try_lock().is_some();
                 observed.set(Some(both_free));
             })),
         };
@@ -113,7 +113,7 @@ fn terminal_sender_drop_wakes_outside_locks() {
         fn wake(self: Arc<Self>) {
             let unlocked = self.shared.closed.load(Ordering::Acquire)
                 && self.shared.waiters.try_lock().is_some()
-                && self.shared.slot.try_lock().is_some();
+                && self.shared.slot.try_write().is_some();
             self.state
                 .store(if unlocked { 2 } else { 1 }, Ordering::Release);
         }
@@ -160,7 +160,7 @@ fn concurrent_senders_commit_every_version() {
     }
 
     let expected = (SENDERS * SENDS_PER_THREAD) as u64;
-    assert_eq!(tx.shared.slot.lock().version, expected);
+    assert_eq!(tx.shared.slot.read().version, expected);
     assert_eq!(tx.shared.version.load(), expected);
     assert!(rx.get() < SENDERS * SENDS_PER_THREAD);
 }

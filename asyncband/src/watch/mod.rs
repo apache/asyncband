@@ -78,6 +78,7 @@ use std::task::Waker;
 pub use self::error::RecvError;
 pub use self::error::SendError;
 use crate::internal::mutex::Mutex;
+use crate::internal::rwlock::RwLock;
 use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
@@ -101,7 +102,7 @@ pub fn channel<T>(initial: T) -> (Sender<T>, Receiver<T>) {
         senders: AtomicUsize::new(1),
         receivers: AtomicUsize::new(1),
         waiters: Mutex::new(WakerSet::new()),
-        slot: Mutex::new(Slot {
+        slot: RwLock::new(Slot {
             value: initial,
             version: 0,
         }),
@@ -159,7 +160,7 @@ struct Shared<T> {
     senders: AtomicUsize,
     receivers: AtomicUsize,
     waiters: Mutex<WakerSet>,
-    slot: Mutex<Slot<T>>,
+    slot: RwLock<Slot<T>>,
 }
 
 struct Slot<T> {
@@ -315,7 +316,7 @@ impl<T> Sender<T> {
     /// Panics if the channel has already published `u64::MAX` updates.
     pub fn send(&self, mut value: T) -> Result<(), SendError<T>> {
         let mut wakers = {
-            let mut slot = self.shared.slot.lock();
+            let mut slot = self.shared.slot.write();
             if self.shared.receivers.load(Ordering::Acquire) == 0 {
                 return Err(SendError::new(value));
             }
@@ -335,7 +336,7 @@ impl<T> Sender<T> {
     /// Panics if the channel has already published `u64::MAX` updates.
     pub fn send_replace(&self, mut value: T) -> T {
         let mut wakers = {
-            let mut slot = self.shared.slot.lock();
+            let mut slot = self.shared.slot.write();
             self.shared.publish(&mut slot, &mut value)
         };
         wakers.wake_all();
@@ -346,7 +347,7 @@ impl<T> Sender<T> {
     #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn subscribe(&self) -> Receiver<T> {
         let seen = {
-            let slot = self.shared.slot.lock();
+            let slot = self.shared.slot.read();
             self.shared.add_receiver();
             slot.version
         };
@@ -406,7 +407,7 @@ impl<T> Receiver<T> {
     where
         T: Clone,
     {
-        self.shared.slot.lock().value.clone()
+        self.shared.slot.read().value.clone()
     }
 
     /// Returns whether a version newer than the last observed version exists.
@@ -475,7 +476,7 @@ impl<T> Receiver<T> {
         T: Clone,
     {
         self.shared.wait_for_change(self.seen).await?;
-        let slot = self.shared.slot.lock();
+        let slot = self.shared.slot.read();
         let value = slot.value.clone();
         self.seen = slot.version;
         Ok(value)

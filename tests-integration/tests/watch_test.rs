@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
@@ -484,4 +485,75 @@ fn final_send_and_drop_race_never_skips_the_final_value() {
         assert_eq!(observed, Ok(round));
         assert_eq!(rx.has_changed(), Err(watch::RecvError::Disconnected));
     }
+}
+
+#[test]
+fn concurrent_readers_observe_coherent_snapshots_and_monotonic_updates() {
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Snapshot {
+        sequence: usize,
+        words: [usize; 16],
+    }
+
+    impl Snapshot {
+        fn new(sequence: usize) -> Self {
+            Self {
+                sequence,
+                words: std::array::from_fn(|idx| sequence.wrapping_mul(31).wrapping_add(idx)),
+            }
+        }
+
+        fn assert_coherent(&self) {
+            assert_eq!(*self, Self::new(self.sequence));
+        }
+    }
+
+    const READERS: usize = 4;
+    const UPDATES: usize = if cfg!(miri) { 24 } else { 512 };
+
+    let (tx, rx) = watch::channel(Snapshot::new(0));
+    let barrier = Barrier::new(READERS + 1);
+
+    thread::scope(|scope| {
+        for _ in 0..READERS {
+            let mut reader = rx.clone();
+            let barrier = &barrier;
+            scope.spawn(move || {
+                barrier.wait();
+                let mut last_received = 0;
+                loop {
+                    let snapshot = reader.get();
+                    snapshot.assert_coherent();
+
+                    match FutureExt::block_on(reader.recv()) {
+                        Ok(received) => {
+                            received.assert_coherent();
+                            assert!(received.sequence > last_received);
+                            last_received = received.sequence;
+                        }
+                        Err(watch::RecvError::Disconnected) => {
+                            assert_eq!(last_received, UPDATES);
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
+        drop(rx);
+        barrier.wait();
+        for sequence in 1..=UPDATES {
+            tx.send(Snapshot::new(sequence)).unwrap();
+        }
+        drop(tx);
+    });
+}
+
+#[test]
+fn non_sync_values_remain_usable_within_one_thread() {
+    let (tx, mut rx) = watch::channel(Cell::new(1usize));
+    assert_eq!(rx.get().get(), 1);
+
+    tx.send(Cell::new(2)).unwrap();
+    assert_eq!(FutureExt::block_on(rx.recv()).unwrap().get(), 2);
 }
