@@ -28,7 +28,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
 
-use crate::internal::semaphore::Semaphore;
+use crate::rwlock::access::LockState;
 use crate::rwlock::access::ReadAccess;
 
 /// Shared access to a projection of a locked value borrowed for the guard lifetime.
@@ -38,7 +38,7 @@ use crate::rwlock::access::ReadAccess;
 #[must_use = "dropping the guard releases its read access immediately"]
 pub struct MappedRwLockReadGuard<'a, T: ?Sized> {
     d: NonNull<T>,
-    access: ReadAccess<&'a Semaphore>,
+    access: ReadAccess<&'a LockState>,
     variance: PhantomData<fn() -> T>,
 }
 
@@ -57,7 +57,7 @@ impl<'a, T: ?Sized> MappedRwLockReadGuard<'a, T> {
     /// `d` must come from a shared reference into the locked value, created while `access` was
     /// held. A pointer derived from `&mut` access is not valid here, because other readers can
     /// change its target through interior mutability.
-    pub(crate) fn new(d: NonNull<T>, access: ReadAccess<&'a Semaphore>) -> Self {
+    pub(crate) fn new(d: NonNull<T>, access: ReadAccess<&'a LockState>) -> Self {
         Self {
             d,
             access,

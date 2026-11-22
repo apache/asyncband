@@ -102,7 +102,7 @@ impl<'a, T: ?Sized> RwLockReadGuard<'a, T> {
         U: ?Sized,
     {
         let d = NonNull::from(f(&*orig));
-        MappedRwLockReadGuard::new(d, orig.access.into_semaphore())
+        MappedRwLockReadGuard::new(d, orig.access.into_state())
     }
 
     /// Attempts to select a component while retaining the same lock access.
@@ -125,7 +125,7 @@ impl<'a, T: ?Sized> RwLockReadGuard<'a, T> {
         match f(&*orig) {
             Some(d) => {
                 let d = NonNull::from(d);
-                Ok(MappedRwLockReadGuard::new(d, orig.access.into_semaphore()))
+                Ok(MappedRwLockReadGuard::new(d, orig.access.into_state()))
             }
             None => Err(orig),
         }

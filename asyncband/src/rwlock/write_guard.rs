@@ -45,17 +45,24 @@ impl<T: ?Sized> RwLock<T> {
     /// Dropping a pending future removes the request and returns any permits already assigned to
     /// it. Retrying joins the back of the queue.
     pub async fn write(&self) -> RwLockWriteGuard<'_, T> {
-        self.s.acquire(self.max_readers).await;
+        self.state
+            .semaphore()
+            .acquire(self.state.writer_permits())
+            .await;
         RwLockWriteGuard {
-            access: WriteAccess::new(self, self.max_readers),
+            access: WriteAccess::new(self),
         }
     }
 
     /// Returns a write guard immediately, or `None` when exclusive access is unavailable.
     pub fn try_write(&self) -> Option<RwLockWriteGuard<'_, T>> {
-        if self.s.try_acquire(self.max_readers) {
+        if self
+            .state
+            .semaphore()
+            .try_acquire(self.state.writer_permits())
+        {
             Some(RwLockWriteGuard {
-                access: WriteAccess::new(self, self.max_readers),
+                access: WriteAccess::new(self),
             })
         } else {
             None
@@ -117,7 +124,7 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
         U: ?Sized,
     {
         let d = NonNull::from(f(&mut *orig));
-        MappedRwLockWriteGuard::new(d, orig.access.into_semaphore())
+        MappedRwLockWriteGuard::new(d, orig.access.into_state())
     }
 
     /// Attempts to select a component while retaining the same lock access.
@@ -141,7 +148,7 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
         match f(&mut *orig) {
             Some(d) => {
                 let d = NonNull::from(d);
-                Ok(MappedRwLockWriteGuard::new(d, orig.access.into_semaphore()))
+                Ok(MappedRwLockWriteGuard::new(d, orig.access.into_state()))
             }
             None => Err(orig),
         }

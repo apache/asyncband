@@ -22,6 +22,7 @@
 
 use std::future::poll_fn;
 use std::mem;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::task::Poll;
 use std::task::Waker;
@@ -31,36 +32,172 @@ use crate::internal::semaphore::Semaphore;
 use crate::internal::waitlist::WaiterId;
 use crate::rwlock::RwLock;
 
-/// Keeps the lock's semaphore alive while a token holds permits from it.
-pub trait Owner: Clone {
-    /// Returns the semaphore that the token's permits belong to.
-    fn semaphore(&self) -> &Semaphore;
+/// Semaphore state shared by a [`RwLock`] and its type-erased mapped guards.
+pub struct LockState {
+    max_readers: usize,
+    s: Semaphore,
 }
 
-impl Owner for &Semaphore {
+impl LockState {
+    const SPARE_PERMIT_MAX_READERS: usize = usize::MAX >> 1;
+
+    pub const fn new(max_readers: NonZeroUsize) -> Self {
+        let max_readers = max_readers.get();
+        // Scale reader slots to two permits and keep one spare permit whenever the sum fits in
+        // `usize`, so uncontended write unlocks and downgrades bypass the semaphore's wait-queue
+        // lock while still accepting every `NonZeroUsize` limit.
+        let initial_permits = if max_readers <= Self::SPARE_PERMIT_MAX_READERS {
+            (max_readers << 1) + 1
+        } else {
+            max_readers
+        };
+        Self {
+            max_readers,
+            s: Semaphore::new(initial_permits),
+        }
+    }
+
+    #[inline]
+    pub const fn semaphore(&self) -> &Semaphore {
+        &self.s
+    }
+
+    #[inline]
+    pub const fn reader_permits(&self) -> usize {
+        1 + ((self.max_readers <= Self::SPARE_PERMIT_MAX_READERS) as usize)
+    }
+
+    #[inline]
+    pub const fn writer_permits(&self) -> usize {
+        self.max_readers << ((self.max_readers <= Self::SPARE_PERMIT_MAX_READERS) as u32)
+    }
+
+    #[inline]
+    pub const fn upgrade_permits(&self) -> usize {
+        self.writer_permits() - self.reader_permits()
+    }
+}
+
+/// Keeps a semaphore alive while a token holds permits from it.
+pub trait Owner {
+    /// Returns the semaphore that the token's permits belong to.
+    fn semaphore(&self) -> &Semaphore;
+
+    /// Returns the permit count corresponding to one shared slot.
+    fn reader_permits(&self) -> usize;
+}
+
+/// Keeps a lock's semaphore alive while a token holds exclusive permits from it.
+pub trait ExclusiveOwner: Owner {
+    /// Returns the permit count corresponding to exclusive access.
+    fn writer_permits(&self) -> usize;
+
+    /// Returns the permit count released when downgrading exclusive access to one reader slot.
+    fn upgrade_permits(&self) -> usize;
+}
+
+/// Single-holder reservation queue with one spare permit for lock-free uncontended release.
+pub struct Reservation(Semaphore);
+
+impl Reservation {
+    const PERMITS_PER_RESERVATION: usize = 2;
+
+    pub const fn new() -> Self {
+        Self(Semaphore::new(Self::PERMITS_PER_RESERVATION + 1))
+    }
+}
+
+impl Owner for &Reservation {
+    #[inline]
     fn semaphore(&self) -> &Semaphore {
-        self
+        &self.0
+    }
+
+    #[inline]
+    fn reader_permits(&self) -> usize {
+        Reservation::PERMITS_PER_RESERVATION
+    }
+}
+
+impl Owner for &LockState {
+    #[inline]
+    fn semaphore(&self) -> &Semaphore {
+        LockState::semaphore(self)
+    }
+
+    #[inline]
+    fn reader_permits(&self) -> usize {
+        LockState::reader_permits(self)
+    }
+}
+
+impl ExclusiveOwner for &LockState {
+    #[inline]
+    fn writer_permits(&self) -> usize {
+        LockState::writer_permits(self)
+    }
+
+    #[inline]
+    fn upgrade_permits(&self) -> usize {
+        LockState::upgrade_permits(self)
     }
 }
 
 impl<T: ?Sized> Owner for &RwLock<T> {
+    #[inline]
     fn semaphore(&self) -> &Semaphore {
-        &self.s
+        self.state.semaphore()
+    }
+
+    #[inline]
+    fn reader_permits(&self) -> usize {
+        self.state.reader_permits()
+    }
+}
+
+impl<T: ?Sized> ExclusiveOwner for &RwLock<T> {
+    #[inline]
+    fn writer_permits(&self) -> usize {
+        self.state.writer_permits()
+    }
+
+    #[inline]
+    fn upgrade_permits(&self) -> usize {
+        self.state.upgrade_permits()
     }
 }
 
 impl<T: ?Sized> Owner for Arc<RwLock<T>> {
+    #[inline]
     fn semaphore(&self) -> &Semaphore {
-        &self.s
+        self.state.semaphore()
+    }
+
+    #[inline]
+    fn reader_permits(&self) -> usize {
+        self.state.reader_permits()
     }
 }
 
-/// Owns one read permit.
+impl<T: ?Sized> ExclusiveOwner for Arc<RwLock<T>> {
+    #[inline]
+    fn writer_permits(&self) -> usize {
+        self.state.writer_permits()
+    }
+
+    #[inline]
+    fn upgrade_permits(&self) -> usize {
+        self.state.upgrade_permits()
+    }
+}
+
+/// Owns one read slot.
 pub struct ReadAccess<O: Owner> {
     owner: O,
 }
 
 impl<O: Owner> ReadAccess<O> {
+    #[inline]
     pub fn acquire(owner: O) -> impl Future<Output = Self> {
         let mut request = ReadRequest {
             owner: Some(owner),
@@ -69,15 +206,17 @@ impl<O: Owner> ReadAccess<O> {
         poll_fn(move |cx| request.poll(cx.waker()))
     }
 
+    #[inline]
     pub fn try_acquire(owner: O) -> Option<Self> {
-        if owner.semaphore().try_acquire(1) {
+        if owner.semaphore().try_acquire(owner.reader_permits()) {
             Some(Self { owner })
         } else {
             None
         }
     }
 
-    /// Returns the owner that the permit was acquired from.
+    /// Returns the owner that the slot was acquired from.
+    #[inline]
     pub fn owner(&self) -> &O {
         &self.owner
     }
@@ -91,6 +230,7 @@ struct ReadRequest<O: Owner> {
 }
 
 impl<O: Owner> ReadRequest<O> {
+    #[inline]
     fn poll(&mut self, waker: &Waker) -> Poll<ReadAccess<O>> {
         let owner = self
             .owner
@@ -99,7 +239,7 @@ impl<O: Owner> ReadRequest<O> {
         ready!(
             owner
                 .semaphore()
-                .poll_acquire(1, &mut self.waiter_id, waker)
+                .poll_acquire(owner.reader_permits(), &mut self.waiter_id, waker)
         );
         Poll::Ready(ReadAccess {
             owner: self.owner.take().unwrap(),
@@ -108,79 +248,83 @@ impl<O: Owner> ReadRequest<O> {
 }
 
 impl<O: Owner> Drop for ReadRequest<O> {
+    #[inline]
     fn drop(&mut self) {
         if let Some(id) = self.waiter_id {
-            self.owner
-                .as_ref()
-                .unwrap()
-                .semaphore()
-                .cancel_acquire(1, id);
+            let owner = self.owner.as_ref().unwrap();
+            owner.semaphore().cancel_acquire(owner.reader_permits(), id);
         }
     }
 }
 
 impl<'a, T: ?Sized> ReadAccess<&'a RwLock<T>> {
     /// Drops the value type so that mapped guards need not name it.
-    pub fn into_semaphore(self) -> ReadAccess<&'a Semaphore> {
+    #[inline]
+    pub fn into_state(self) -> ReadAccess<&'a LockState> {
         let lock = self.owner;
-        // The new token takes over releasing the permit; forgetting this one avoids releasing it
+        // The new token takes over releasing the slot; forgetting this one avoids releasing it
         // during the transfer. Its borrowed owner needs no cleanup.
         mem::forget(self);
-        ReadAccess { owner: &lock.s }
+        ReadAccess { owner: &lock.state }
     }
 }
 
 impl<O: Owner> Drop for ReadAccess<O> {
+    #[inline]
     fn drop(&mut self) {
-        self.owner.semaphore().release(1);
+        self.owner.semaphore().release(self.owner.reader_permits());
     }
 }
 
-/// Owns every permit of a lock, which together grant write access.
-pub struct WriteAccess<O: Owner> {
-    owner: O,
-    permits_acquired: usize,
+/// Owns exclusive permits of a lock, which together grant write access.
+pub struct WriteAccess<O: ExclusiveOwner> {
+    owner: Option<O>,
 }
 
-impl<O: Owner> WriteAccess<O> {
-    /// Takes over `permits_acquired` permits already acquired from `owner`.
-    pub fn new(owner: O, permits_acquired: usize) -> Self {
-        Self {
-            owner,
-            permits_acquired,
-        }
+impl<O: ExclusiveOwner> WriteAccess<O> {
+    /// Takes over exclusive permits already acquired from `owner`.
+    #[inline]
+    pub fn new(owner: O) -> Self {
+        Self { owner: Some(owner) }
     }
 
     /// Returns the owner that the permits were acquired from.
+    #[inline]
     pub fn owner(&self) -> &O {
-        &self.owner
+        self.owner
+            .as_ref()
+            .expect("write access token must own a lock")
     }
 
-    /// Releases all permits but one, which the returned token keeps.
+    /// Releases all permits beyond one reader slot, which the returned token keeps.
+    #[inline]
     pub fn downgrade(mut self) -> ReadAccess<O> {
-        let read = ReadAccess {
-            owner: self.owner.clone(),
-        };
-        self.permits_acquired -= 1;
-        drop(self);
-        read
+        let owner = self
+            .owner
+            .take()
+            .expect("write access token must own a lock");
+        owner.semaphore().release(owner.upgrade_permits());
+        ReadAccess { owner }
     }
 }
 
 impl<'a, T: ?Sized> WriteAccess<&'a RwLock<T>> {
     /// Drops the value type so that mapped guards need not name it.
-    pub fn into_semaphore(self) -> WriteAccess<&'a Semaphore> {
-        let lock = self.owner;
-        let permits_acquired = self.permits_acquired;
-        // The new token takes over releasing the permits; forgetting this one avoids releasing them
-        // during the transfer. Its borrowed owner needs no cleanup.
-        mem::forget(self);
-        WriteAccess::new(&lock.s, permits_acquired)
+    #[inline]
+    pub fn into_state(mut self) -> WriteAccess<&'a LockState> {
+        let lock = self
+            .owner
+            .take()
+            .expect("write access token must own a lock");
+        WriteAccess::new(&lock.state)
     }
 }
 
-impl<O: Owner> Drop for WriteAccess<O> {
+impl<O: ExclusiveOwner> Drop for WriteAccess<O> {
+    #[inline]
     fn drop(&mut self) {
-        self.owner.semaphore().release(self.permits_acquired);
+        if let Some(owner) = self.owner.take() {
+            owner.semaphore().release(owner.writer_permits());
+        }
     }
 }

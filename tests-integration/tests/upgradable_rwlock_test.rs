@@ -392,7 +392,7 @@ fn try_upgrade_failure_preserves_guard_and_reservation() {
 
 #[test]
 fn reader_limits_and_repeated_cycles_include_one_and_usize_max() {
-    for limit in [1, 2, 5, usize::MAX] {
+    for limit in [1, 2, 5, usize::MAX >> 1, (usize::MAX >> 1) + 1, usize::MAX] {
         let lock = lock(limit);
         for value in 1..=20 {
             let upgradable = FutureExt::block_on(lock.upgradable_read());

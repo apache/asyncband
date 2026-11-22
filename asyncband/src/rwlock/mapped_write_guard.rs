@@ -28,7 +28,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ptr::NonNull;
 
-use crate::internal::semaphore::Semaphore;
+use crate::rwlock::access::LockState;
 use crate::rwlock::access::WriteAccess;
 
 /// Exclusive access to a projection of a locked value borrowed for the guard lifetime.
@@ -43,7 +43,7 @@ use crate::rwlock::access::WriteAccess;
 #[must_use = "dropping the guard releases its write access immediately"]
 pub struct MappedRwLockWriteGuard<'a, T: ?Sized> {
     d: NonNull<T>,
-    access: WriteAccess<&'a Semaphore>,
+    access: WriteAccess<&'a LockState>,
     // Mutable access requires invariance over T.
     variance: PhantomData<&'a mut T>,
 }
@@ -58,7 +58,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for MappedRwLockWriteGuard<'_, T> {}
 unsafe impl<T: ?Sized + Send> Send for MappedRwLockWriteGuard<'_, T> {}
 
 impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
-    pub(crate) fn new(d: NonNull<T>, access: WriteAccess<&'a Semaphore>) -> Self {
+    pub(crate) fn new(d: NonNull<T>, access: WriteAccess<&'a LockState>) -> Self {
         Self {
             d,
             access,
