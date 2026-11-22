@@ -41,6 +41,15 @@ fn try_send_and_try_recv(bencher: Bencher) {
     });
 }
 
+fn try_reserve_and_send_and_try_recv(bencher: Bencher) {
+    let (tx, mut rx) = mpmc::bounded(CAPACITY);
+
+    bencher.bench_local(|| {
+        tx.try_reserve().unwrap().send(black_box(1));
+        black_box(rx.try_recv().unwrap())
+    });
+}
+
 fn try_send_and_drain_fanout(bencher: Bencher, receiver_count: usize) {
     let (tx, rx) = mpmc::bounded(CAPACITY);
     let mut receivers = Vec::with_capacity(receiver_count);
@@ -128,6 +137,17 @@ fn cancel_blocked_send(bencher: Bencher) {
     });
 }
 
+fn cancel_blocked_reserve(bencher: Bencher) {
+    let mut context = bench_context();
+    let (tx, _rx) = mpmc::bounded::<usize>(1);
+    tx.try_send(0).unwrap();
+
+    bencher.bench_local(|| {
+        let reserve = pin!(tx.reserve());
+        poll_pending(reserve, &mut context);
+    });
+}
+
 fn drop_lagging_receiver_wakes_senders(bencher: Bencher, backlog: usize) {
     bencher.bench_local(|| {
         let (slow, fast, sends) = {
@@ -158,6 +178,7 @@ fn drop_lagging_receiver_wakes_senders(bencher: Bencher, backlog: usize) {
 
 pub fn register(runner: &mut Runner) {
     primitive!(runner, try_send_and_try_recv, 9_000_000);
+    primitive!(runner, try_reserve_and_send_and_try_recv, 9_000_000);
     for &arg in RECEIVER_COUNTS {
         primitive!(
             runner,
@@ -176,6 +197,7 @@ pub fn register(runner: &mut Runner) {
     primitive!(runner, send_without_receivers, 48_000_000);
     primitive!(runner, try_send_when_full, 60_000_000);
     primitive!(runner, cancel_blocked_send, 6_000_000);
+    primitive!(runner, cancel_blocked_reserve, 6_000_000);
     for &arg in &[1, 2, 32, 256] {
         primitive!(
             runner,

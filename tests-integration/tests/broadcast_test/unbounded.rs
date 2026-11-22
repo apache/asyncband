@@ -594,7 +594,29 @@ fn randomized_operations_track_the_reference_model() {
                     (tail - cursor) as usize,
                     "seed {seed}"
                 );
+                assert_eq!(receiver.is_empty(), *cursor == tail, "seed {seed}");
             }
         }
     }
+}
+
+#[test]
+fn unbounded_receiver_is_disconnected_tracks_final_sender_drop_with_backlog() {
+    let (tx1, mut rx) = unbounded();
+    let tx2 = tx1.clone();
+
+    assert!(!rx.is_disconnected());
+    assert!(rx.is_empty());
+
+    tx1.send(42);
+    drop(tx1);
+    assert!(!rx.is_disconnected());
+    assert!(!rx.is_empty());
+
+    drop(tx2);
+    assert!(rx.is_disconnected());
+    assert!(!rx.is_empty());
+    assert_eq!(*rx.try_recv().unwrap(), 42);
+    assert!(rx.is_empty());
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
 }

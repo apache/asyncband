@@ -30,6 +30,8 @@ All significant changes to this project will be documented in this file.
 * Add `MutexGuard::mutex` and `OwnedMutexGuard::mutex` to borrow the underlying `Mutex` or `Arc<Mutex<T>>` from an active guard, including before moving the guard into a cancellable operation.
 * Add `is_disconnected` to `spmc` senders and receivers and `is_empty` to `spmc` receivers to inspect endpoint liveness and buffered state without sending or receiving.
 * Add `spmc::BoundedSender::{reserve, try_reserve}` returning a borrowed `spmc::Permit` so the exclusive producer can wait for capacity before constructing a value.
+* Add `is_disconnected` and `is_empty` to `broadcast::mpmc::{BoundedReceiver, UnboundedReceiver}` to inspect sender liveness and per-receiver unread backlog without receiving.
+* Add `broadcast::mpmc::BoundedSender::{reserve, try_reserve}` returning a borrowed `broadcast::mpmc::Permit` so producers can wait for capacity before constructing a message without pre-assigning sequence numbers.
 
 ### Improvements
 

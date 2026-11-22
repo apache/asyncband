@@ -19,17 +19,18 @@ use std::any::type_name;
 use std::error::Error;
 use std::fmt;
 
-/// Error returned by [`BoundedSender::try_send`].
+/// Error returned by [`BoundedSender::try_send`] and [`BoundedSender::try_reserve`].
 ///
-/// A bounded broadcast channel is lossless, so a publication that would exceed the requested
-/// capacity is rejected rather than displacing a retained message. The message that could not be
-/// sent can be retrieved again with [`TrySendError::into_inner`].
+/// A bounded broadcast channel is lossless, so an operation that would exceed the configured
+/// capacity is rejected rather than displacing a retained message. An unsent message can be
+/// retrieved with [`TrySendError::into_inner`].
 ///
 /// [`BoundedSender::try_send`]: crate::broadcast::mpmc::BoundedSender::try_send
+/// [`BoundedSender::try_reserve`]: crate::broadcast::mpmc::BoundedSender::try_reserve
 #[derive(Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
-    /// The shared backlog is at capacity, so the message cannot be sent without waiting for the
-    /// slowest active receiver to release a retained message.
+    /// The channel is at capacity because retained messages and held
+    /// [`Permit`](crate::broadcast::mpmc::Permit)s occupy every slot.
     Full(T),
 }
 

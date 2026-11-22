@@ -54,6 +54,7 @@ mod unbounded;
 
 pub use self::bounded::BoundedReceiver;
 pub use self::bounded::BoundedSender;
+pub use self::bounded::Permit;
 pub use self::bounded::bounded;
 pub use self::error::RecvError;
 pub use self::error::TryRecvError;

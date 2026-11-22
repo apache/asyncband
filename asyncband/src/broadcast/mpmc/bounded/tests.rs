@@ -18,7 +18,11 @@
 // These run under Miri via `cargo x miri`, so they stay single-threaded and small. Behavior
 // reachable from the public API is covered in `tests-integration/tests/broadcast_test/bounded.rs`.
 
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::pin::pin;
+use std::sync::atomic::AtomicBool;
+use std::task::Wake;
 use std::task::Waker;
 
 use super::*;
@@ -105,5 +109,49 @@ fn a_large_reclaim_leaves_no_sender_slack() {
 
     drop(lagging);
     assert!(send.as_mut().poll(&mut cx).is_ready());
-    assert!(tx.shared.inner.lock().send_waiters.is_empty());
+    assert!(tx.shared.inner.lock().send_waiters.waiters.is_empty());
+}
+
+#[test]
+fn overflow_in_permit_and_pending_send_releases_slot_unlocked() {
+    #[derive(Default)]
+    struct Woke(AtomicBool);
+
+    impl Wake for Woke {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    let (tx, rx) = bounded(1);
+    drop(rx);
+    tx.shared.inner.lock().log.set_tail(u64::MAX);
+    let _receiver = tx.subscribe();
+
+    let permit = tx.try_reserve().unwrap();
+    let mut noop_cx = Context::from_waker(Waker::noop());
+    let mut send = pin!(tx.send(None));
+    assert!(send.as_mut().poll(&mut noop_cx).is_pending());
+
+    let woke = Arc::new(Woke::default());
+    let waker = Waker::from(woke.clone());
+    let mut cx = Context::from_waker(&waker);
+    let mut waiting = pin!(tx.reserve());
+    assert!(waiting.as_mut().poll(&mut cx).is_pending());
+
+    let shared = tx.shared.clone();
+    common::tests::assert_overflow_drops_unlocked(
+        move || {
+            shared
+                .inner
+                .try_lock()
+                .map(|inner| inner.log.retained() + inner.send_waiters.reserved)
+        },
+        |value| permit.send(Some(value)),
+    );
+
+    assert!(!woke.0.load(Ordering::Relaxed));
+    assert!(catch_unwind(AssertUnwindSafe(|| send.as_mut().poll(&mut noop_cx))).is_err());
+    assert!(woke.0.load(Ordering::Relaxed));
+    assert!(waiting.as_mut().poll(&mut cx).is_ready());
 }
