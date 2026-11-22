@@ -39,6 +39,7 @@ mod semaphore;
 mod shutdown;
 mod singleflight;
 mod waitgroup;
+mod watch;
 
 fn main() {
     let mut runner = Runner::from_args();
@@ -62,5 +63,6 @@ fn main() {
     shutdown::register(&mut runner);
     singleflight::register(&mut runner);
     waitgroup::register(&mut runner);
+    watch::register(&mut runner);
     runner.finish();
 }

@@ -140,6 +140,7 @@ impl CommandMiri {
             "broadcast_test",
             "phaser_test",
             "semaphore_ordering_test",
+            "watch_test",
         ] {
             run_command(make_miri_cmd("tests-integration", &["--test", target]));
         }

@@ -68,9 +68,12 @@ use std::future::Future;
 use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::MutexGuard;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 pub use self::error::RecvError;
 pub use self::error::SendError;
@@ -93,12 +96,14 @@ use crate::internal::wakerset::WakerToken;
 /// ```
 pub fn channel<T>(initial: T) -> (Sender<T>, Receiver<T>) {
     let shared = Arc::new(Shared {
-        state: Mutex::new(State {
+        version: Version::new(0),
+        closed: AtomicBool::new(false),
+        senders: AtomicUsize::new(1),
+        receivers: AtomicUsize::new(1),
+        waiters: Mutex::new(WakerSet::new()),
+        slot: Mutex::new(Slot {
             value: initial,
             version: 0,
-            senders: 1,
-            receivers: 1,
-            waiters: WakerSet::new(),
         }),
     });
     let sender = Sender {
@@ -108,11 +113,122 @@ pub fn channel<T>(initial: T) -> (Sender<T>, Receiver<T>) {
     (sender, receiver)
 }
 
+#[cfg(target_has_atomic = "64")]
+struct Version(std::sync::atomic::AtomicU64);
+
+#[cfg(target_has_atomic = "64")]
+impl Version {
+    const fn new(initial: u64) -> Self {
+        Self(std::sync::atomic::AtomicU64::new(initial))
+    }
+
+    #[inline]
+    fn load(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    fn store(&self, version: u64) {
+        self.0.store(version, Ordering::Release);
+    }
+}
+
+#[cfg(not(target_has_atomic = "64"))]
+struct Version(Mutex<u64>);
+
+#[cfg(not(target_has_atomic = "64"))]
+impl Version {
+    const fn new(initial: u64) -> Self {
+        Self(Mutex::new(initial))
+    }
+
+    #[inline]
+    fn load(&self) -> u64 {
+        *self.0.lock()
+    }
+
+    #[inline]
+    fn store(&self, version: u64) {
+        *self.0.lock() = version;
+    }
+}
+
 struct Shared<T> {
-    state: Mutex<State<T>>,
+    version: Version,
+    closed: AtomicBool,
+    senders: AtomicUsize,
+    receivers: AtomicUsize,
+    waiters: Mutex<WakerSet>,
+    slot: Mutex<Slot<T>>,
+}
+
+struct Slot<T> {
+    value: T,
+    version: u64,
 }
 
 impl<T> Shared<T> {
+    #[inline]
+    fn add_sender(&self) {
+        if self.senders.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
+            std::process::abort();
+        }
+    }
+
+    #[inline]
+    fn add_receiver(&self) {
+        if self.receivers.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
+            std::process::abort();
+        }
+    }
+
+    #[inline]
+    fn change_since(&self, seen: u64) -> Poll<Result<u64, RecvError>> {
+        let version = self.version.load();
+        if version != seen {
+            return Poll::Ready(Ok(version));
+        }
+        if self.closed.load(Ordering::Acquire) {
+            // Re-check `version` after acquiring `closed` so a final update published right before
+            // the last sender dropped is reported before disconnection.
+            let version = self.version.load();
+            if version != seen {
+                return Poll::Ready(Ok(version));
+            }
+            return Poll::Ready(Err(RecvError::Disconnected));
+        }
+        Poll::Pending
+    }
+
+    // Leave the old value with the caller so it can be dropped after unlocking. Borrowing the
+    // input also keeps its destructor outside the lock if the version counter overflows.
+    fn publish(&self, slot: &mut Slot<T>, value: &mut T) -> WakerBatch {
+        let next_version = slot
+            .version
+            .checked_add(1)
+            .expect("watch channel version counter overflowed");
+        slot.version = next_version;
+        mem::swap(&mut slot.value, value);
+
+        let mut waiters = self.waiters.lock();
+        // Detach registrations before publishing the new version to lock-free observers.
+        let wakers = waiters.take_all();
+        self.version.store(next_version);
+        wakers
+    }
+
+    #[cold]
+    fn close(&self) {
+        let wakers = {
+            let mut waiters = self.waiters.lock();
+            // Detach registrations before publishing `closed` to lock-free observers.
+            let wakers = mem::take(&mut *waiters);
+            self.closed.store(true, Ordering::Release);
+            wakers
+        };
+        wakers.wake_all();
+    }
+
     fn wait_for_change(&self, seen: u64) -> Change<'_, T> {
         Change {
             shared: self,
@@ -120,36 +236,34 @@ impl<T> Shared<T> {
             token: None,
         }
     }
-}
 
-struct State<T> {
-    value: T,
-    version: u64,
-    senders: usize,
-    receivers: usize,
-    waiters: WakerSet,
-}
-
-impl<T> State<T> {
-    fn change_since(&self, seen: u64) -> Poll<Result<(), RecvError>> {
-        if self.version != seen {
-            Poll::Ready(Ok(()))
-        } else if self.senders == 0 {
-            Poll::Ready(Err(RecvError::Disconnected))
-        } else {
-            Poll::Pending
+    fn register_change(
+        &self,
+        seen: u64,
+        token: &mut Option<WakerToken>,
+        waker: &Waker,
+    ) -> Poll<Result<u64, RecvError>> {
+        let mut waiters = self.waiters.lock();
+        if let Poll::Ready(result) = self.change_since(seen) {
+            // Publication and the final sender drop both detach registrations under this lock.
+            *token = None;
+            return Poll::Ready(result);
         }
+        let retired_waker = waiters.register(token, waker);
+        drop(waiters);
+        drop(retired_waker);
+        Poll::Pending
     }
 
-    // Leave the old value with the caller so it can be dropped after unlocking. Borrowing the
-    // input also keeps its destructor outside the lock if the version counter overflows.
-    fn publish(&mut self, value: &mut T) -> WakerBatch {
-        self.version = self
-            .version
-            .checked_add(1)
-            .expect("watch channel version counter overflowed");
-        mem::swap(&mut self.value, value);
-        self.waiters.take_all()
+    fn unregister_change(&self, seen: u64, token: &mut Option<WakerToken>) {
+        let mut waiters = self.waiters.lock();
+        if self.change_since(seen).is_ready() {
+            // A publication or terminal sender drop already detached this registration.
+            return;
+        }
+        let waker = waiters.unregister(token);
+        drop(waiters);
+        drop(waker);
     }
 }
 
@@ -159,13 +273,9 @@ pub struct Sender<T> {
 }
 
 impl<T> Clone for Sender<T> {
+    #[inline]
     fn clone(&self) -> Self {
-        let mut state = self.shared.state.lock();
-        state.senders = state
-            .senders
-            .checked_add(1)
-            .expect("watch sender count overflowed");
-        drop(state);
+        self.shared.add_sender();
         Self {
             shared: self.shared.clone(),
         }
@@ -179,16 +289,16 @@ impl<T> fmt::Debug for Sender<T> {
 }
 
 impl<T> Drop for Sender<T> {
+    #[inline]
     fn drop(&mut self) {
-        let wakers = {
-            let mut state = self.shared.state.lock();
-            state.senders -= 1;
-            if state.senders != 0 {
-                return;
-            }
-            mem::take(&mut state.waiters)
-        };
-        wakers.wake_all();
+        let previous = self.shared.senders.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(
+            previous > 0,
+            "a live watch sender must own one sender count"
+        );
+        if previous == 1 {
+            self.shared.close();
+        }
     }
 }
 
@@ -205,11 +315,11 @@ impl<T> Sender<T> {
     /// Panics if the channel has already published `u64::MAX` updates.
     pub fn send(&self, mut value: T) -> Result<(), SendError<T>> {
         let mut wakers = {
-            let mut state = self.shared.state.lock();
-            if state.receivers == 0 {
+            let mut slot = self.shared.slot.lock();
+            if self.shared.receivers.load(Ordering::Acquire) == 0 {
                 return Err(SendError::new(value));
             }
-            state.publish(&mut value)
+            self.shared.publish(&mut slot, &mut value)
         };
         wakers.wake_all();
         Ok(())
@@ -224,7 +334,10 @@ impl<T> Sender<T> {
     ///
     /// Panics if the channel has already published `u64::MAX` updates.
     pub fn send_replace(&self, mut value: T) -> T {
-        let mut wakers = self.shared.state.lock().publish(&mut value);
+        let mut wakers = {
+            let mut slot = self.shared.slot.lock();
+            self.shared.publish(&mut slot, &mut value)
+        };
         wakers.wake_all();
         value
     }
@@ -232,13 +345,11 @@ impl<T> Sender<T> {
     /// Creates a receiver that considers the current value already observed.
     #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn subscribe(&self) -> Receiver<T> {
-        let mut state = self.shared.state.lock();
-        state.receivers = state
-            .receivers
-            .checked_add(1)
-            .expect("watch receiver count overflowed");
-        let seen = state.version;
-        drop(state);
+        let seen = {
+            let slot = self.shared.slot.lock();
+            self.shared.add_receiver();
+            slot.version
+        };
         Receiver {
             shared: self.shared.clone(),
             seen,
@@ -255,13 +366,9 @@ pub struct Receiver<T> {
 }
 
 impl<T> Clone for Receiver<T> {
+    #[inline]
     fn clone(&self) -> Self {
-        let mut state = self.shared.state.lock();
-        state.receivers = state
-            .receivers
-            .checked_add(1)
-            .expect("watch receiver count overflowed");
-        drop(state);
+        self.shared.add_receiver();
         Self {
             shared: self.shared.clone(),
             seen: self.seen,
@@ -276,9 +383,13 @@ impl<T> fmt::Debug for Receiver<T> {
 }
 
 impl<T> Drop for Receiver<T> {
+    #[inline]
     fn drop(&mut self) {
-        let mut state = self.shared.state.lock();
-        state.receivers -= 1;
+        let previous = self.shared.receivers.fetch_sub(1, Ordering::Release);
+        debug_assert!(
+            previous > 0,
+            "a live watch receiver must own one receiver count"
+        );
     }
 }
 
@@ -295,7 +406,7 @@ impl<T> Receiver<T> {
     where
         T: Clone,
     {
-        self.shared.state.lock().value.clone()
+        self.shared.slot.lock().value.clone()
     }
 
     /// Returns whether a version newer than the last observed version exists.
@@ -309,7 +420,7 @@ impl<T> Receiver<T> {
     /// Returns [`RecvError::Disconnected`] when all senders have been dropped and no unseen
     /// version remains.
     pub fn has_changed(&self) -> Result<bool, RecvError> {
-        match self.shared.state.lock().change_since(self.seen) {
+        match self.shared.change_since(self.seen) {
             Poll::Ready(result) => result.map(|_| true),
             Poll::Pending => Ok(false),
         }
@@ -330,7 +441,7 @@ impl<T> Receiver<T> {
     /// Dropping a pending future leaves the observed version unchanged. A later call can still
     /// observe the latest unseen version.
     pub async fn changed(&mut self) -> Result<(), RecvError> {
-        self.seen = self.shared.wait_for_change(self.seen).await?.version;
+        self.seen = self.shared.wait_for_change(self.seen).await?;
         Ok(())
     }
 
@@ -363,9 +474,10 @@ impl<T> Receiver<T> {
     where
         T: Clone,
     {
-        let state = self.shared.wait_for_change(self.seen).await?;
-        let value = state.value.clone();
-        self.seen = state.version;
+        self.shared.wait_for_change(self.seen).await?;
+        let slot = self.shared.slot.lock();
+        let value = slot.value.clone();
+        self.seen = slot.version;
         Ok(value)
     }
 
@@ -374,7 +486,7 @@ impl<T> Receiver<T> {
     /// This does not mark the current version observed, so it may return `true` while a final
     /// unseen value is still available through [`Receiver::changed`].
     pub fn is_disconnected(&self) -> bool {
-        self.shared.state.lock().senders == 0
+        self.shared.closed.load(Ordering::Acquire)
     }
 }
 
@@ -384,39 +496,30 @@ struct Change<'a, T> {
     token: Option<WakerToken>,
 }
 
-impl<'a, T> Future for Change<'a, T> {
-    type Output = Result<MutexGuard<'a, State<T>>, RecvError>;
+impl<T> Future for Change<'_, T> {
+    type Output = Result<u64, RecvError>;
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let mut state = this.shared.state.lock();
-        if let Poll::Ready(result) = state.change_since(this.seen) {
-            // Publication and the final sender drop both detach registrations under this lock.
+        if let Poll::Ready(result) = this.shared.change_since(this.seen) {
             this.token = None;
-            return Poll::Ready(result.map(|()| state));
+            return Poll::Ready(result);
         }
-        let retired_waker = state.waiters.register(&mut this.token, cx.waker());
-        drop(state);
-        drop(retired_waker);
-        Poll::Pending
+        this.shared
+            .register_change(this.seen, &mut this.token, cx.waker())
     }
 }
 
 impl<T> Drop for Change<'_, T> {
+    #[inline]
     fn drop(&mut self) {
         if self.token.is_none() {
             return;
         }
-
-        let mut state = self.shared.state.lock();
-        if state.change_since(self.seen).is_ready() {
-            // A publication or terminal sender drop already detached this registration.
+        if self.shared.change_since(self.seen).is_ready() {
             return;
         }
-
-        let waker = state.waiters.unregister(&mut self.token);
-        drop(state);
-        drop(waker);
+        self.shared.unregister_change(self.seen, &mut self.token);
     }
 }
