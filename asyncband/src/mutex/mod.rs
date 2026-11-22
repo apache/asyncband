@@ -288,11 +288,6 @@ pub struct MutexGuard<'a, T: ?Sized> {
     lock: &'a Mutex<T>,
 }
 
-#[cfg(feature = "condvar")]
-pub(crate) fn guard_lock<'a, T: ?Sized>(guard: &MutexGuard<'a, T>) -> &'a Mutex<T> {
-    guard.lock
-}
-
 unsafe impl<T: ?Sized + Send + Sync> Sync for MutexGuard<'_, T> {}
 
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
@@ -327,6 +322,36 @@ impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
 }
 
 impl<'a, T: ?Sized> MutexGuard<'a, T> {
+    /// Returns the [`Mutex`] that this guard locks.
+    ///
+    /// The returned reference shares the guard's `'a` lifetime rather than borrowing the guard, so
+    /// callers can copy it before moving the guard into a cancellable operation. Call this as
+    /// `MutexGuard::mutex(&guard)` so a method named `mutex` on `T` remains accessible through
+    /// deref.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use std::ptr;
+    ///
+    /// use asyncband::mutex::Mutex;
+    /// use asyncband::mutex::MutexGuard;
+    ///
+    /// let lock = Mutex::new(1_u32);
+    /// let guard = lock.lock().await;
+    /// let mutex = MutexGuard::mutex(&guard);
+    /// assert!(ptr::eq(mutex, &lock));
+    /// drop(guard);
+    /// assert_eq!(*mutex.lock().await, 1);
+    /// # }
+    /// ```
+    #[inline]
+    pub fn mutex(this: &Self) -> &'a Mutex<T> {
+        this.lock
+    }
+
     /// Projects this guard to a mutable component of the protected value.
     ///
     /// The returned guard keeps the same mutex locked. Call this as
@@ -442,11 +467,6 @@ pub struct OwnedMutexGuard<T: ?Sized> {
     lock: Arc<Mutex<T>>,
 }
 
-#[cfg(feature = "condvar")]
-pub(crate) fn owned_guard_lock<T: ?Sized>(guard: &OwnedMutexGuard<T>) -> Arc<Mutex<T>> {
-    guard.lock.clone()
-}
-
 unsafe impl<T: ?Sized + Send + Sync> Sync for OwnedMutexGuard<T> {}
 
 impl<T: ?Sized> Drop for OwnedMutexGuard<T> {
@@ -481,6 +501,35 @@ impl<T: ?Sized> DerefMut for OwnedMutexGuard<T> {
 }
 
 impl<T: ?Sized> OwnedMutexGuard<T> {
+    /// Returns the [`Arc`] containing the [`Mutex`] that this guard locks.
+    ///
+    /// Cloning the returned `Arc` before moving the guard into a cancellable operation lets the
+    /// caller retain a handle to the mutex. Call this as `OwnedMutexGuard::mutex(&guard)` so a
+    /// method named `mutex` on `T` remains accessible through deref.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use std::sync::Arc;
+    ///
+    /// use asyncband::mutex::Mutex;
+    /// use asyncband::mutex::OwnedMutexGuard;
+    ///
+    /// let lock = Arc::new(Mutex::new(1_u32));
+    /// let guard = lock.clone().lock_owned().await;
+    /// let mutex = OwnedMutexGuard::mutex(&guard).clone();
+    /// assert!(Arc::ptr_eq(&mutex, &lock));
+    /// drop(guard);
+    /// assert_eq!(*mutex.lock().await, 1);
+    /// # }
+    /// ```
+    #[inline]
+    pub fn mutex(this: &Self) -> &Arc<Mutex<T>> {
+        &this.lock
+    }
+
     /// Projects this guard to a mutable component of the protected value.
     ///
     /// The returned guard retains the same `Arc` and keeps the mutex locked. Call this as

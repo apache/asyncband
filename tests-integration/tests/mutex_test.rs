@@ -17,6 +17,7 @@
 
 use std::panic::catch_unwind;
 use std::pin::pin;
+use std::ptr;
 use std::sync::Arc;
 use std::task::Poll;
 
@@ -184,4 +185,35 @@ async fn test_mapped_mutex_guard_send() {
 
     let result = handle.await.unwrap();
     assert_eq!(result, 2);
+}
+
+#[test]
+fn guard_mutex_returns_underlying_lock_without_shadowing_deref() {
+    struct HasMutexMethod(i32);
+
+    impl HasMutexMethod {
+        fn mutex(&self) -> i32 {
+            self.0
+        }
+    }
+
+    let lock = Mutex::new(HasMutexMethod(7));
+    let guard = lock.try_lock().unwrap();
+    assert_eq!(guard.mutex(), 7);
+    let recovered = MutexGuard::mutex(&guard);
+    assert!(ptr::eq(recovered, &lock));
+    drop(guard);
+    assert_eq!(recovered.try_lock().unwrap().0, 7);
+
+    let slice_lock: Arc<Mutex<[i32]>> = Arc::new(Mutex::new([1, 2, 3]));
+    let borrowed = slice_lock.try_lock().unwrap();
+    let borrowed_lock = MutexGuard::mutex(&borrowed);
+    assert!(ptr::eq(borrowed_lock, &*slice_lock));
+    drop(borrowed);
+
+    let owned = slice_lock.clone().try_lock_owned().unwrap();
+    let owned_lock = OwnedMutexGuard::mutex(&owned).clone();
+    assert!(Arc::ptr_eq(&owned_lock, &slice_lock));
+    drop(owned);
+    assert_eq!(&*owned_lock.try_lock().unwrap(), &[1, 2, 3]);
 }
