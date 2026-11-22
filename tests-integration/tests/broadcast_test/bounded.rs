@@ -985,3 +985,35 @@ fn bounded_concurrent_producers_commit_one_order_seen_by_every_receiver() {
         assert_eq!(sorted, (0..TOTAL).collect::<Vec<_>>());
     });
 }
+
+#[test]
+fn bounded_receiver_queries_track_sender_liveness_and_cursor_backlog() {
+    let (tx1, mut fast) = bounded(2);
+    let tx2 = tx1.clone();
+    let mut slow = tx1.subscribe();
+
+    assert!(!fast.is_disconnected());
+    assert!(fast.is_empty());
+    assert!(slow.is_empty());
+
+    tx1.try_send(10).unwrap();
+    assert!(!fast.is_empty());
+    assert!(!slow.is_empty());
+
+    // Consuming on `fast` makes `fast` empty even while `slow` still retains the message.
+    assert_eq!(*fast.try_recv().unwrap(), 10);
+    assert!(fast.is_empty());
+    assert!(!slow.is_empty());
+    assert_eq!(tx1.retained_message_count(), 1);
+
+    drop(tx1);
+    assert!(!fast.is_disconnected());
+    assert!(!slow.is_disconnected());
+
+    drop(tx2);
+    assert!(fast.is_disconnected());
+    assert!(slow.is_disconnected());
+    assert!(!slow.is_empty());
+    assert_eq!(*slow.try_recv().unwrap(), 10);
+    assert!(slow.is_empty());
+}

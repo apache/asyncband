@@ -184,9 +184,8 @@ pub struct BoundedSender<T> {
 
 impl<T> Clone for BoundedSender<T> {
     fn clone(&self) -> Self {
-        // Relaxed is enough because this count publishes nothing on its own: receivers read it
-        // only to decide whether any sender remains, and every message it could hide is published
-        // under `inner`, which a receiver holds before it observes the count.
+        // Relaxed is enough because borrowing `&self` keeps `senders > 0`; terminal disconnection
+        // synchronizes through the `AcqRel` decrement chain in `Drop`.
         self.shared.senders.fetch_add(1, Ordering::Relaxed);
         Self {
             shared: self.shared.clone(),
@@ -695,6 +694,55 @@ impl<T> BoundedReceiver<T> {
     /// ```
     pub fn unread_message_count(&self) -> usize {
         self.shared.inner.lock().log.unread(self.key)
+    }
+
+    /// Returns `true` if all senders have been dropped.
+    ///
+    /// Unread messages buffered for this receiver remain available after disconnection, so
+    /// [`recv`](Self::recv) and [`try_recv`](Self::try_recv) report disconnection only once this
+    /// receiver has drained its remaining backlog. A `false` result can become outdated immediately
+    /// if the last sender is dropped concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    ///
+    /// let (tx, mut rx) = mpmc::bounded(2);
+    /// tx.try_send(1).unwrap();
+    /// assert!(!rx.is_disconnected());
+    ///
+    /// drop(tx);
+    /// assert!(rx.is_disconnected());
+    /// assert_eq!(*rx.try_recv().unwrap(), 1);
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        self.shared.senders.load(Ordering::Acquire) == 0
+    }
+
+    /// Returns `true` if this receiver has no unread messages waiting in the backlog.
+    ///
+    /// Messages already consumed by this receiver that remain retained for slower receivers do not
+    /// count, nor do sends waiting for capacity. The result is an instantaneous snapshot and may
+    /// become stale as other tasks publish.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    ///
+    /// let (tx, mut fast) = mpmc::bounded(2);
+    /// let _slow = tx.subscribe();
+    /// assert!(fast.is_empty());
+    ///
+    /// tx.try_send(10).unwrap();
+    /// assert!(!fast.is_empty());
+    ///
+    /// assert_eq!(*fast.try_recv().unwrap(), 10);
+    /// assert!(fast.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.unread_message_count() == 0
     }
 
     fn wait_next(&mut self) -> Recv<'_, T> {
