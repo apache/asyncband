@@ -29,14 +29,13 @@ use asyncband::rwlock::MappedRwLockReadGuard;
 use asyncband::rwlock::RwLockReadGuard;
 use asyncband::rwlock::RwLockUpgradableReadGuard;
 use asyncband::rwlock::UpgradableRwLock;
+use tests_integration::TestTask;
 use tests_integration::assert_completes_without_deadlock;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
 use tests_integration::waker_on_drop;
 use tests_integration::waker_on_wake;
-use tokio_test::assert_pending;
-use tokio_test::assert_ready;
-use tokio_test::task::spawn;
 
 fn lock(limit: usize) -> UpgradableRwLock<usize> {
     UpgradableRwLock::with_max_readers(0, NonZeroUsize::new(limit).unwrap())
@@ -84,11 +83,11 @@ fn upgraded_writer_can_downgrade_then_map_shared_interior_mutability() {
                 1 => FutureExt::block_on(RwLockUpgradableReadGuard::upgrade(upgradable)),
                 _ => {
                     let reader = lock.try_read().unwrap();
-                    let mut upgrade = spawn(RwLockUpgradableReadGuard::upgrade(upgradable));
-                    assert_pending!(upgrade.poll());
+                    let mut upgrade = TestTask::new(RwLockUpgradableReadGuard::upgrade(upgradable));
+                    assert!(upgrade.poll().is_pending());
                     *reader.as_ref().unwrap().borrow_mut() = Box::new(7);
                     drop(reader);
-                    let write = assert_ready!(upgrade.poll());
+                    let write = expect_ready(upgrade.poll());
                     assert_eq!(**write.as_ref().unwrap().borrow(), 7);
                     write
                 }
@@ -104,11 +103,11 @@ fn upgraded_writer_can_downgrade_then_map_shared_interior_mutability() {
             drop(other);
 
             let next = lock.try_upgradable_read().unwrap();
-            let mut upgrade = spawn(RwLockUpgradableReadGuard::upgrade(next));
-            assert_pending!(upgrade.poll());
+            let mut upgrade = TestTask::new(RwLockUpgradableReadGuard::upgrade(next));
+            assert!(upgrade.poll().is_pending());
             assert_eq!(**shared.borrow(), 2);
             drop(read);
-            let mut write = assert_ready!(upgrade.poll());
+            let mut write = expect_ready(upgrade.poll());
             *write.as_mut().unwrap().get_mut() = Box::new(3);
             drop(write);
             assert_eq!(**lock.try_read().unwrap().as_ref().unwrap().borrow(), 3);
@@ -131,9 +130,9 @@ fn cancelling_upgrade_preserves_a_mapped_readers_reference_and_permit() {
     let read = RwLockReadGuard::filter_map(write.downgrade(), Option::as_ref).unwrap();
     let shared = &*read;
     let next = lock.try_upgradable_read().unwrap();
-    let mut upgrade = spawn(RwLockUpgradableReadGuard::upgrade(next));
+    let mut upgrade = TestTask::new(RwLockUpgradableReadGuard::upgrade(next));
     // The upgrade acquires one additional permit while the mapped reader retains the last.
-    assert_pending!(upgrade.poll());
+    assert!(upgrade.poll().is_pending());
     drop(upgrade);
     let next = lock.try_upgradable_read().unwrap();
     *next.as_ref().unwrap().borrow_mut() = Box::new(1);
@@ -148,15 +147,15 @@ fn cancelling_upgrade_preserves_a_mapped_readers_reference_and_permit() {
 fn reservation_is_unique_and_drop_wakes_the_next_upgradable_reader() {
     let lock = lock(2);
     let first = lock.try_upgradable_read().unwrap();
-    let mut second = spawn(lock.upgradable_read());
-    assert_pending!(second.poll());
+    let mut second = TestTask::new(lock.upgradable_read());
+    assert!(second.poll().is_pending());
     assert!(lock.try_upgradable_read().is_none());
     assert!(lock.try_read().is_some());
     drop(first);
     assert!(second.is_woken());
     // A granted reservation belongs to the queued future even before it is polled again.
     assert!(lock.try_upgradable_read().is_none());
-    let second = assert_ready!(second.poll());
+    let second = expect_ready(second.poll());
     assert!(lock.try_upgradable_read().is_none());
     drop(second);
     assert!(lock.try_write().is_some());
@@ -166,20 +165,20 @@ fn reservation_is_unique_and_drop_wakes_the_next_upgradable_reader() {
 fn writer_queued_before_upgradable_acquisition_goes_first() {
     let lock = lock(3);
     let read = lock.try_read().unwrap();
-    let mut writer = spawn(lock.write());
-    let mut upgradable = spawn(lock.upgradable_read());
-    assert_pending!(writer.poll());
-    assert_pending!(upgradable.poll());
+    let mut writer = TestTask::new(lock.write());
+    let mut upgradable = TestTask::new(lock.upgradable_read());
+    assert!(writer.poll().is_pending());
+    assert!(upgradable.poll().is_pending());
     assert!(lock.try_read().is_none());
     drop(read);
     assert!(writer.is_woken());
-    let mut write = assert_ready!(writer.poll());
+    let mut write = expect_ready(writer.poll());
     *write = 1;
     assert!(upgradable.is_woken());
-    assert_pending!(upgradable.poll());
+    assert!(upgradable.poll().is_pending());
     drop(write);
     assert!(upgradable.is_woken());
-    let upgradable = assert_ready!(upgradable.poll());
+    let upgradable = expect_ready(upgradable.poll());
     assert_eq!(*upgradable, 1);
     assert_eq!(
         *FutureExt::block_on(RwLockUpgradableReadGuard::upgrade(upgradable)),
@@ -192,29 +191,29 @@ fn upgrade_passes_a_writer_queued_after_its_reservation() {
     let lock = lock(3);
     let upgradable = lock.try_upgradable_read().unwrap();
     let reader = lock.try_read().unwrap();
-    let mut writer = spawn(lock.write());
-    assert_pending!(writer.poll());
+    let mut writer = TestTask::new(lock.write());
+    assert!(writer.poll().is_pending());
     // A writer waiting only for the reservation does not block ordinary readers.
     assert!(lock.try_read().is_some());
-    let mut upgrade = spawn(RwLockUpgradableReadGuard::upgrade(upgradable));
-    assert_pending!(upgrade.poll());
-    let mut later_reader = spawn(lock.read());
-    assert_pending!(later_reader.poll());
+    let mut upgrade = TestTask::new(RwLockUpgradableReadGuard::upgrade(upgradable));
+    assert!(upgrade.poll().is_pending());
+    let mut later_reader = TestTask::new(lock.read());
+    assert!(later_reader.poll().is_pending());
     assert!(lock.try_read().is_none());
     drop(reader);
     assert!(upgrade.is_woken());
-    assert_pending!(writer.poll());
-    let mut upgraded = assert_ready!(upgrade.poll());
+    assert!(writer.poll().is_pending());
+    let mut upgraded = expect_ready(upgrade.poll());
     *upgraded = 1;
-    assert_pending!(writer.poll());
-    assert_pending!(later_reader.poll());
+    assert!(writer.poll().is_pending());
+    assert!(later_reader.poll().is_pending());
     drop(upgraded);
     // This reader queued for data permits before the writer obtained the reservation.
-    let later_reader = assert_ready!(later_reader.poll());
+    let later_reader = expect_ready(later_reader.poll());
     assert_eq!(*later_reader, 1);
-    assert_pending!(writer.poll());
+    assert!(writer.poll().is_pending());
     drop(later_reader);
-    let mut writer = assert_ready!(writer.poll());
+    let mut writer = expect_ready(writer.poll());
     *writer = 2;
     drop(writer);
     assert_eq!(*lock.try_read().unwrap(), 2);
@@ -225,16 +224,16 @@ fn writer_queued_after_pending_upgrade_waits_for_exclusive_guard() {
     let lock = lock(2);
     let upgradable = lock.try_upgradable_read().unwrap();
     let read = lock.try_read().unwrap();
-    let mut upgrade = spawn(RwLockUpgradableReadGuard::upgrade(upgradable));
-    assert_pending!(upgrade.poll());
-    let mut writer = spawn(lock.write());
-    assert_pending!(writer.poll());
+    let mut upgrade = TestTask::new(RwLockUpgradableReadGuard::upgrade(upgradable));
+    assert!(upgrade.poll().is_pending());
+    let mut writer = TestTask::new(lock.write());
+    assert!(writer.poll().is_pending());
     drop(read);
-    let upgraded = assert_ready!(upgrade.poll());
-    assert_pending!(writer.poll());
+    let upgraded = expect_ready(upgrade.poll());
+    assert!(writer.poll().is_pending());
     drop(upgraded);
     assert!(writer.is_woken());
-    drop(assert_ready!(writer.poll()));
+    drop(expect_ready(writer.poll()));
 }
 
 #[test]
@@ -242,17 +241,17 @@ fn readers_queued_before_upgrade_finish_first() {
     let lock = lock(2);
     let upgradable = lock.try_upgradable_read().unwrap();
     let held = lock.try_read().unwrap();
-    let mut earlier = spawn(lock.read());
-    assert_pending!(earlier.poll());
-    let mut upgrade = spawn(RwLockUpgradableReadGuard::upgrade(upgradable));
-    assert_pending!(upgrade.poll());
+    let mut earlier = TestTask::new(lock.read());
+    assert!(earlier.poll().is_pending());
+    let mut upgrade = TestTask::new(RwLockUpgradableReadGuard::upgrade(upgradable));
+    assert!(upgrade.poll().is_pending());
     drop(held);
     assert!(earlier.is_woken());
-    assert_pending!(upgrade.poll());
-    let earlier = assert_ready!(earlier.poll());
+    assert!(upgrade.poll().is_pending());
+    let earlier = expect_ready(earlier.poll());
     drop(earlier);
     assert!(upgrade.is_woken());
-    drop(assert_ready!(upgrade.poll()));
+    drop(expect_ready(upgrade.poll()));
     assert!(lock.try_write().is_some());
 }
 
@@ -262,12 +261,12 @@ fn cancel_upgrade_before_poll_while_partial_and_after_grant() {
         let lock = lock(4);
         let upgradable = lock.try_upgradable_read().unwrap();
         let mut reader = Some(lock.try_read().unwrap());
-        let mut writer = spawn(lock.write());
-        assert_pending!(writer.poll());
-        let mut upgrade = spawn(RwLockUpgradableReadGuard::upgrade(upgradable));
+        let mut writer = TestTask::new(lock.write());
+        assert!(writer.poll().is_pending());
+        let mut upgrade = TestTask::new(RwLockUpgradableReadGuard::upgrade(upgradable));
         if stage > 0 {
             // Two of the three additional permits are assigned before returning Pending.
-            assert_pending!(upgrade.poll());
+            assert!(upgrade.poll().is_pending());
         }
         if stage == 2 {
             drop(reader.take());
@@ -276,10 +275,10 @@ fn cancel_upgrade_before_poll_while_partial_and_after_grant() {
         drop(upgrade);
         assert!(writer.is_woken());
         if stage < 2 {
-            assert_pending!(writer.poll());
+            assert!(writer.poll().is_pending());
         }
         drop(reader);
-        drop(assert_ready!(writer.poll()));
+        drop(expect_ready(writer.poll()));
         let upgradable = lock.try_upgradable_read().unwrap();
         let readers = (0..3).map(|_| lock.try_read().unwrap()).collect::<Vec<_>>();
         assert!(lock.try_read().is_none());
@@ -293,17 +292,17 @@ fn cancelling_upgrade_wakes_queued_reader_and_next_reservation() {
     let lock = lock(3);
     let upgradable = lock.try_upgradable_read().unwrap();
     let held = lock.try_read().unwrap();
-    let mut upgrade = spawn(RwLockUpgradableReadGuard::upgrade(upgradable));
-    assert_pending!(upgrade.poll());
-    let mut reader = spawn(lock.read());
-    let mut next = spawn(lock.upgradable_read());
-    assert_pending!(reader.poll());
-    assert_pending!(next.poll());
+    let mut upgrade = TestTask::new(RwLockUpgradableReadGuard::upgrade(upgradable));
+    assert!(upgrade.poll().is_pending());
+    let mut reader = TestTask::new(lock.read());
+    let mut next = TestTask::new(lock.upgradable_read());
+    assert!(reader.poll().is_pending());
+    assert!(next.poll().is_pending());
     drop(upgrade);
     assert!(reader.is_woken());
     assert!(next.is_woken());
-    let reader = assert_ready!(reader.poll());
-    let next = assert_ready!(next.poll());
+    let reader = expect_ready(reader.poll());
+    let next = expect_ready(next.poll());
     assert!(lock.try_read().is_none());
     drop((held, reader, next));
     assert!(lock.try_write().is_some());
@@ -322,13 +321,13 @@ fn cancellation_at_either_acquisition_queue_returns_all_resources() {
                     drop(lock.write().await);
                 }
             });
-            assert_pending!(poll_once(request.as_mut()));
+            assert!(poll_once(request.as_mut()).is_pending());
             // Release the reservation but retain one data permit.
             let read = held.downgrade();
             if stage > 0 {
                 // Fill the other slot so even an upgradable acquisition has to wait for data.
                 let other = lock.try_read().unwrap();
-                assert_pending!(poll_once(request.as_mut()));
+                assert!(poll_once(request.as_mut()).is_pending());
                 if stage == 2 {
                     drop((read, other));
                 } else {
@@ -353,12 +352,12 @@ fn dropping_and_downgrading_upgradable_guards_wake_writers() {
     for downgrade in [false, true] {
         let lock = lock(2);
         let upgradable = lock.try_upgradable_read().unwrap();
-        let mut writer = spawn(lock.write());
-        assert_pending!(writer.poll());
+        let mut writer = TestTask::new(lock.write());
+        assert!(writer.poll().is_pending());
         if downgrade {
             let read = upgradable.downgrade();
             assert!(writer.is_woken());
-            assert_pending!(writer.poll());
+            assert!(writer.poll().is_pending());
             assert!(lock.try_read().is_none());
             assert_eq!(*read, 0);
             drop(read);
@@ -366,7 +365,7 @@ fn dropping_and_downgrading_upgradable_guards_wake_writers() {
             drop(upgradable);
         }
         assert!(writer.is_woken());
-        drop(assert_ready!(writer.poll()));
+        drop(expect_ready(writer.poll()));
         assert!(lock.try_upgradable_read().is_some());
     }
 }
@@ -376,18 +375,18 @@ fn try_upgrade_failure_preserves_guard_and_reservation() {
     let lock = lock(3);
     let upgradable = lock.try_upgradable_read().unwrap();
     let read = lock.try_read().unwrap();
-    let mut writer = spawn(lock.write());
-    assert_pending!(writer.poll());
+    let mut writer = TestTask::new(lock.write());
+    assert!(writer.poll().is_pending());
     let upgradable = RwLockUpgradableReadGuard::try_upgrade(upgradable).unwrap_err();
     assert_eq!(*upgradable, 0);
     assert!(lock.try_upgradable_read().is_none());
     assert!(lock.try_read().is_some());
-    assert_pending!(writer.poll());
+    assert!(writer.poll().is_pending());
     drop(read);
     let write = RwLockUpgradableReadGuard::try_upgrade(upgradable).unwrap();
-    assert_pending!(writer.poll());
+    assert!(writer.poll().is_pending());
     drop(write);
-    drop(assert_ready!(writer.poll()));
+    drop(expect_ready(writer.poll()));
 }
 
 #[test]
@@ -425,25 +424,25 @@ fn one_reader_upgrade_does_not_wait_behind_queued_readers() {
     for try_upgrade in [false, true] {
         let lock = lock(1);
         let upgradable = lock.try_upgradable_read().unwrap();
-        let mut reader = spawn(lock.read());
-        let mut writer = spawn(lock.write());
-        assert_pending!(reader.poll());
-        assert_pending!(writer.poll());
+        let mut reader = TestTask::new(lock.read());
+        let mut writer = TestTask::new(lock.write());
+        assert!(reader.poll().is_pending());
+        assert!(writer.poll().is_pending());
         let mut write = if try_upgrade {
             RwLockUpgradableReadGuard::try_upgrade(upgradable).unwrap()
         } else {
             FutureExt::block_on(RwLockUpgradableReadGuard::upgrade(upgradable))
         };
         *write = 7;
-        assert_pending!(reader.poll());
+        assert!(reader.poll().is_pending());
         let retained = write.downgrade();
-        assert_pending!(reader.poll());
-        assert_pending!(writer.poll());
+        assert!(reader.poll().is_pending());
+        assert!(writer.poll().is_pending());
         drop(retained);
-        let read = assert_ready!(reader.poll());
+        let read = expect_ready(reader.poll());
         assert_eq!(*read, 7);
         drop(read);
-        drop(assert_ready!(writer.poll()));
+        drop(expect_ready(writer.poll()));
     }
 }
 
@@ -451,39 +450,39 @@ fn one_reader_upgrade_does_not_wait_behind_queued_readers() {
 fn reservation_requests_keep_fifo_order_without_upgradable_barging() {
     let lock = lock(2);
     let held = lock.try_upgradable_read().unwrap();
-    let mut first = spawn(lock.write());
-    let mut second = spawn(lock.upgradable_read());
-    let mut third = spawn(lock.write());
-    assert_pending!(first.poll());
-    assert_pending!(second.poll());
-    assert_pending!(third.poll());
+    let mut first = TestTask::new(lock.write());
+    let mut second = TestTask::new(lock.upgradable_read());
+    let mut third = TestTask::new(lock.write());
+    assert!(first.poll().is_pending());
+    assert!(second.poll().is_pending());
+    assert!(third.poll().is_pending());
     drop(held);
     assert!(lock.try_write().is_none());
     assert!(lock.try_upgradable_read().is_none());
-    assert_pending!(third.poll());
-    let first = assert_ready!(first.poll());
-    assert_pending!(second.poll());
+    assert!(third.poll().is_pending());
+    let first = expect_ready(first.poll());
+    assert!(second.poll().is_pending());
     drop(first);
-    let second = assert_ready!(second.poll());
-    assert_pending!(third.poll());
+    let second = expect_ready(second.poll());
+    assert!(third.poll().is_pending());
     drop(second);
-    drop(assert_ready!(third.poll()));
+    drop(expect_ready(third.poll()));
 }
 
 #[test]
 fn ordinary_writer_blocks_later_readers_once_waiting_for_data() {
     let lock = lock(3);
     let held = lock.try_read().unwrap();
-    let mut writer = spawn(lock.write());
-    let mut later = spawn(lock.read());
-    assert_pending!(writer.poll());
-    assert_pending!(later.poll());
+    let mut writer = TestTask::new(lock.write());
+    let mut later = TestTask::new(lock.read());
+    assert!(writer.poll().is_pending());
+    assert!(later.poll().is_pending());
     assert!(lock.try_read().is_none());
     drop(held);
-    let writer = assert_ready!(writer.poll());
-    assert_pending!(later.poll());
+    let writer = expect_ready(writer.poll());
+    assert!(later.poll().is_pending());
     drop(writer);
-    drop(assert_ready!(later.poll()));
+    drop(expect_ready(later.poll()));
 }
 
 #[test]
@@ -515,10 +514,10 @@ fn cross_thread_guard_transfer() {
         let upgradable = lock.try_upgradable_read().unwrap();
         assert_eq!(*upgradable, (1, 1));
         let read = upgradable.downgrade();
-        let mut writer = spawn(lock.write());
-        assert_pending!(writer.poll());
+        let mut writer = TestTask::new(lock.write());
+        assert!(writer.poll().is_pending());
         scope.spawn(move || drop(read)).join().unwrap();
-        let mut writer = assert_ready!(writer.poll());
+        let mut writer = expect_ready(writer.poll());
         *writer = (2, 2);
     });
     assert_eq!(*lock.try_read().unwrap(), (2, 2));
@@ -586,15 +585,15 @@ fn constructors_unsized_values_and_exclusive_borrows() {
 fn cancelled_reservation_waiter_does_not_block_its_successor() {
     let lock = lock(2);
     let held = lock.try_upgradable_read().unwrap();
-    let mut cancelled = spawn(lock.write());
-    let mut successor = spawn(lock.upgradable_read());
-    assert_pending!(cancelled.poll());
-    assert_pending!(successor.poll());
+    let mut cancelled = TestTask::new(lock.write());
+    let mut successor = TestTask::new(lock.upgradable_read());
+    assert!(cancelled.poll().is_pending());
+    assert!(successor.poll().is_pending());
     drop(cancelled);
-    assert_pending!(successor.poll());
+    assert!(successor.poll().is_pending());
     drop(held);
     assert!(successor.is_woken());
-    drop(assert_ready!(successor.poll()));
+    drop(expect_ready(successor.poll()));
     assert!(lock.try_write().is_some());
 }
 
@@ -605,10 +604,10 @@ fn cancelling_an_upgrade_races_with_the_last_readers_release() {
         let lock = lock(3);
         let upgradable = lock.try_upgradable_read().unwrap();
         let reader = lock.try_read().unwrap();
-        let mut upgrade = spawn(RwLockUpgradableReadGuard::upgrade(upgradable));
-        let mut writer = spawn(lock.write());
-        assert_pending!(upgrade.poll());
-        assert_pending!(writer.poll());
+        let mut upgrade = TestTask::new(RwLockUpgradableReadGuard::upgrade(upgradable));
+        let mut writer = TestTask::new(lock.write());
+        assert!(upgrade.poll().is_pending());
+        assert!(writer.poll().is_pending());
         let start = Barrier::new(2);
         thread::scope(|scope| {
             scope.spawn(|| {
@@ -619,7 +618,7 @@ fn cancelling_an_upgrade_races_with_the_last_readers_release() {
             drop(upgrade);
         });
         assert!(writer.is_woken());
-        drop(assert_ready!(writer.poll()));
+        drop(expect_ready(writer.poll()));
         let readers = (0..3).map(|_| lock.try_read().unwrap()).collect::<Vec<_>>();
         assert!(lock.try_read().is_none());
         drop(readers);
@@ -640,7 +639,7 @@ fn upgrade_observes_reader_writes_without_a_thread_join() {
             let released = AtomicBool::new(false);
             let mut upgrade = Box::pin(RwLockUpgradableReadGuard::upgrade(upgradable));
             if queued {
-                assert_pending!(poll_once(upgrade.as_mut()));
+                assert!(poll_once(upgrade.as_mut()).is_pending());
             }
             thread::scope(|scope| {
                 scope.spawn(|| {
@@ -653,7 +652,7 @@ fn upgrade_observes_reader_writes_without_a_thread_join() {
                 while !released.load(Ordering::Relaxed) {
                     thread::yield_now();
                 }
-                let mut write = assert_ready!(poll_once(upgrade.as_mut()));
+                let mut write = expect_ready(poll_once(upgrade.as_mut()));
                 // A non-atomic read lets Miri verify that the upgrade acquired the reader's
                 // release, both when permits were immediately available and when queued.
                 assert_eq!(*write.get_mut(), 42);
@@ -709,7 +708,7 @@ fn upgrade_waker_replacement_and_grant_allow_reentry() {
                 // All permits are assigned to the upgrader and the existing reader, or to the
                 // granted upgrade. Registering and cancelling a reader reenters the data queue.
                 let mut read = Box::pin(lock.read());
-                assert_pending!(poll_once(read.as_mut()));
+                assert!(poll_once(read.as_mut()).is_pending());
                 drop(read);
                 callbacks.fetch_add(1, Ordering::Relaxed);
             }
@@ -718,10 +717,10 @@ fn upgrade_waker_replacement_and_grant_allow_reentry() {
         let reader = lock.try_read().unwrap();
         let mut upgrade = Box::pin(RwLockUpgradableReadGuard::upgrade(upgradable));
         let old_waker = waker_on_drop(reenter());
-        assert_pending!(poll_with(upgrade.as_mut(), &old_waker));
+        assert!(poll_with(upgrade.as_mut(), &old_waker).is_pending());
         drop(old_waker);
         let new_waker = waker_on_wake(reenter());
-        assert_pending!(poll_with(upgrade.as_mut(), &new_waker));
+        assert!(poll_with(upgrade.as_mut(), &new_waker).is_pending());
         assert_eq!(callbacks.load(Ordering::Relaxed), 1);
         drop(reader);
         assert_eq!(callbacks.load(Ordering::Relaxed), 2);

@@ -16,9 +16,8 @@
 // under the License.
 
 use asyncband::barrier::Barrier;
-use tokio_test::assert_pending;
-use tokio_test::assert_ready;
-use tokio_test::task::spawn;
+use tests_integration::TestTask;
+use tests_integration::expect_ready;
 
 #[test]
 fn barrier_can_be_constructed_in_const_context() {
@@ -26,11 +25,11 @@ fn barrier_can_be_constructed_in_const_context() {
 
     let _ = Barrier::new(u32::MAX);
 
-    let mut first = spawn(BARRIER.wait());
-    assert_pending!(first.poll());
-    let mut second = spawn(BARRIER.wait());
-    assert!(assert_ready!(second.poll()).is_leader());
-    assert!(!assert_ready!(first.poll()).is_leader());
+    let mut first = TestTask::new(BARRIER.wait());
+    assert!(first.poll().is_pending());
+    let mut second = TestTask::new(BARRIER.wait());
+    assert!(expect_ready(second.poll()).is_leader());
+    assert!(!expect_ready(first.poll()).is_leader());
 }
 
 #[test]
@@ -38,8 +37,8 @@ fn zero_and_one_participant_generations_never_block() {
     for participants in [0, 1] {
         let barrier = Barrier::new(participants);
         for _ in 0..3 {
-            let mut wait = spawn(barrier.wait());
-            assert!(assert_ready!(wait.poll()).is_leader());
+            let mut wait = TestTask::new(barrier.wait());
+            assert!(expect_ready(wait.poll()).is_leader());
         }
     }
 }
@@ -48,12 +47,12 @@ fn zero_and_one_participant_generations_never_block() {
 fn one_leader_completes_each_two_participant_generation() {
     let b = Barrier::new(2);
 
-    let mut f1 = spawn(b.wait());
-    assert_pending!(f1.poll());
+    let mut f1 = TestTask::new(b.wait());
+    assert!(f1.poll().is_pending());
 
-    let mut f2 = spawn(b.wait());
-    let f2_leader = assert_ready!(f2.poll()).is_leader();
-    let f1_leader = assert_ready!(f1.poll()).is_leader();
+    let mut f2 = TestTask::new(b.wait());
+    let f2_leader = expect_ready(f2.poll()).is_leader();
+    let f1_leader = expect_ready(f1.poll()).is_leader();
 
     assert!(f1_leader || f2_leader);
     assert!(!(f1_leader && f2_leader));
@@ -63,31 +62,31 @@ fn one_leader_completes_each_two_participant_generation() {
 fn cancelled_wait_still_counts_as_arrival() {
     let b = Barrier::new(2);
 
-    let mut cancelled = spawn(b.wait());
-    assert_pending!(cancelled.poll());
+    let mut cancelled = TestTask::new(b.wait());
+    assert!(cancelled.poll().is_pending());
     drop(cancelled);
 
-    let mut remaining = spawn(b.wait());
-    assert!(assert_ready!(remaining.poll()).is_leader());
+    let mut remaining = TestTask::new(b.wait());
+    assert!(expect_ready(remaining.poll()).is_leader());
 }
 
 #[test]
 fn dropping_a_woken_wait_keeps_the_next_generation_registered() {
     let b = Barrier::new(2);
 
-    let mut old = spawn(b.wait());
-    assert_pending!(old.poll());
-    let mut old_leader = spawn(b.wait());
-    assert!(assert_ready!(old_leader.poll()).is_leader());
+    let mut old = TestTask::new(b.wait());
+    assert!(old.poll().is_pending());
+    let mut old_leader = TestTask::new(b.wait());
+    assert!(expect_ready(old_leader.poll()).is_leader());
 
-    let mut next = spawn(b.wait());
-    assert_pending!(next.poll());
+    let mut next = TestTask::new(b.wait());
+    assert!(next.poll().is_pending());
     drop(old);
 
-    let mut next_leader = spawn(b.wait());
-    assert!(assert_ready!(next_leader.poll()).is_leader());
+    let mut next_leader = TestTask::new(b.wait());
+    assert!(expect_ready(next_leader.poll()).is_leader());
     assert!(next.is_woken());
-    assert!(!assert_ready!(next.poll()).is_leader());
+    assert!(!expect_ready(next.poll()).is_leader());
 }
 
 #[test]
@@ -97,20 +96,20 @@ fn repeated_generations_elect_exactly_one_leader() {
     for _ in 0..10 {
         let mut wait = vec![];
         for _ in 0..99 {
-            let mut f = spawn(b.wait());
-            assert_pending!(f.poll());
+            let mut f = TestTask::new(b.wait());
+            assert!(f.poll().is_pending());
             wait.push(f);
         }
 
         for f in &mut wait {
-            assert_pending!(f.poll());
+            assert!(f.poll().is_pending());
         }
 
         // pass the barrier
-        let mut f = spawn(b.wait());
-        let mut found_leader = assert_ready!(f.poll()).is_leader();
+        let mut f = TestTask::new(b.wait());
+        let mut found_leader = expect_ready(f.poll()).is_leader();
         for mut f in wait {
-            let leader = assert_ready!(f.poll());
+            let leader = expect_ready(f.poll());
             if leader.is_leader() {
                 assert!(!found_leader);
                 found_leader = true;
