@@ -111,6 +111,18 @@ impl<T> Shared<T> {
         self.state.lock().receivers += 1;
     }
 
+    pub fn has_sender(&self) -> bool {
+        self.state.lock().sender_alive
+    }
+
+    pub fn has_receivers(&self) -> bool {
+        self.state.lock().receivers != 0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.state.lock().values.is_empty()
+    }
+
     pub fn drop_receiver(&self) {
         let (discarded, mut waiters) = {
             let mut state = self.state.lock();

@@ -28,6 +28,7 @@ All significant changes to this project will be documented in this file.
 * Add `OnceCell::wait` to wait for another caller to initialize the cell without supplying an initializer.
 * Add `Completion::get` and `Completer::is_disconnected` to inspect whether a shared completion has settled or lost all observers without waiting.
 * Add `MutexGuard::mutex` and `OwnedMutexGuard::mutex` to borrow the underlying `Mutex` or `Arc<Mutex<T>>` from an active guard, including before moving the guard into a cancellable operation.
+* Add `is_disconnected` to `spmc` senders and receivers and `is_empty` to `spmc` receivers to inspect endpoint liveness and buffered state without sending or receiving.
 
 ### Improvements
 

@@ -96,6 +96,28 @@ impl<T> BoundedSender<T> {
     pub fn try_send(&mut self, value: T) -> Result<(), TrySendError<T>> {
         self.shared.try_send(value)
     }
+
+    /// Returns `true` if every receiver has been dropped.
+    ///
+    /// Once this returns `true`, every later [`send`](Self::send) or [`try_send`](Self::try_send)
+    /// fails with a disconnection error. A `false` result can be outdated as soon as it is
+    /// returned, because the last receiver may be dropped concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::spmc;
+    ///
+    /// let (sender, receiver) = spmc::bounded::<u8>(1);
+    /// let competing = receiver.clone();
+    /// drop(receiver);
+    /// assert!(!sender.is_disconnected());
+    /// drop(competing);
+    /// assert!(sender.is_disconnected());
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        !self.shared.has_receivers()
+    }
 }
 
 /// Receives values from the associated [`BoundedSender`] handles.
@@ -153,5 +175,49 @@ impl<T> BoundedReceiver<T> {
     /// empty.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         self.shared.try_recv()
+    }
+
+    /// Returns `true` if the sender has been dropped.
+    ///
+    /// Buffered values stay receivable after disconnection, so [`recv`](Self::recv) and
+    /// [`try_recv`](Self::try_recv) report disconnection only once the queue has been drained. A
+    /// `false` result can be outdated as soon as it is returned, because the sender may be dropped
+    /// concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::spmc;
+    ///
+    /// let (mut sender, receiver) = spmc::bounded(1);
+    /// sender.try_send(1).unwrap();
+    /// assert!(!receiver.is_disconnected());
+    /// drop(sender);
+    /// assert!(receiver.is_disconnected());
+    /// assert_eq!(receiver.try_recv(), Ok(1));
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        !self.shared.has_sender()
+    }
+
+    /// Returns `true` if no queued value is waiting to be received.
+    ///
+    /// Sends still waiting for capacity are not queued values. The result is an instantaneous
+    /// observation and may become stale as other tasks send or receive.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::spmc;
+    ///
+    /// let (mut sender, receiver) = spmc::bounded(1);
+    /// assert!(receiver.is_empty());
+    /// sender.try_send(1).unwrap();
+    /// assert!(!receiver.is_empty());
+    /// assert_eq!(receiver.try_recv(), Ok(1));
+    /// assert!(receiver.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.shared.is_empty()
     }
 }
