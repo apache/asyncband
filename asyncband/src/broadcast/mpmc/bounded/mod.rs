@@ -106,14 +106,12 @@
 use std::fmt;
 use std::future::Future;
 use std::future::poll_fn;
-use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Waker;
 
 use crate::broadcast::mpmc::common;
 use crate::broadcast::mpmc::common::Backlog;
@@ -124,7 +122,7 @@ use crate::broadcast::mpmc::error::TryRecvError;
 use crate::broadcast::mpmc::error::TrySendError;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
-use crate::internal::update_waker;
+use crate::internal::retry_waiter::RetryWaiter;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::waker_batch::WakerBatch;
@@ -176,124 +174,17 @@ pub fn bounded<T>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     (sender, receiver)
 }
 
-enum SendWaiter {
-    Waiting {
-        waker: Waker,
-        /// `true` for `reserve`, which always requires a capacity slot; `false` for `send`, which
-        /// discards immediately without a slot once all receivers drop.
-        needs_slot: bool,
-    },
-    /// Woken for an available capacity slot; cancelling before polling forwards the wakeup if
-    /// capacity remains.
-    NotifiedSlot,
-    /// Woken because all receivers dropped, without assigning a capacity slot to this wakeup.
-    NotifiedNoReceivers,
-}
-
 struct SendQueue {
     reserved: usize,
-    /// Detached `SendWaiter::NotifiedSlot` nodes that have not yet been polled or dropped.
-    notified_slots: usize,
-    waiters: WaitList<SendWaiter>,
+    waiters: WaitList<RetryWaiter>,
 }
 
 impl SendQueue {
     const fn new() -> Self {
         Self {
             reserved: 0,
-            notified_slots: 0,
             waiters: WaitList::new(),
         }
-    }
-
-    fn notify_one(&mut self) -> Option<Waker> {
-        let (_, waiter) = self.waiters.unlink_first_waiter()?;
-        let SendWaiter::Waiting { waker, .. } = mem::replace(waiter, SendWaiter::NotifiedSlot)
-        else {
-            unreachable!("only waiting operations remain linked");
-        };
-        self.notified_slots += 1;
-        Some(waker)
-    }
-
-    fn notify_up_to(&mut self, limit: usize, batch: &mut WakerBatch) {
-        for _ in 0..limit {
-            let Some(waker) = self.notify_one() else {
-                break;
-            };
-            batch.push(waker);
-        }
-    }
-
-    fn notify_without_receivers(&mut self, mut unclaimed_slots: usize, batch: &mut WakerBatch) {
-        let mut newly_notified_slots = 0;
-        self.waiters.unlink_if(|waiter| match waiter {
-            SendWaiter::Waiting {
-                needs_slot: false, ..
-            } => {
-                let SendWaiter::Waiting { waker, .. } =
-                    mem::replace(waiter, SendWaiter::NotifiedNoReceivers)
-                else {
-                    unreachable!("only waiting operations remain linked");
-                };
-                batch.push(waker);
-                true
-            }
-            SendWaiter::Waiting {
-                needs_slot: true, ..
-            } if unclaimed_slots > 0 => {
-                unclaimed_slots -= 1;
-                newly_notified_slots += 1;
-                let SendWaiter::Waiting { waker, .. } =
-                    mem::replace(waiter, SendWaiter::NotifiedSlot)
-                else {
-                    unreachable!("only waiting operations remain linked");
-                };
-                batch.push(waker);
-                true
-            }
-            SendWaiter::Waiting {
-                needs_slot: true, ..
-            } => false,
-            SendWaiter::NotifiedSlot | SendWaiter::NotifiedNoReceivers => {
-                unreachable!("only waiting operations remain linked")
-            }
-        });
-        self.notified_slots += newly_notified_slots;
-    }
-
-    fn remove(&mut self, id: WaiterId) -> SendWaiter {
-        let retired = self.waiters.remove(id);
-        if matches!(retired, SendWaiter::NotifiedSlot) {
-            self.notified_slots -= 1;
-        }
-        retired
-    }
-
-    #[must_use = "drop the replaced waker after releasing the channel lock"]
-    fn register(
-        &mut self,
-        id: &mut Option<WaiterId>,
-        current: &Waker,
-        needs_slot: bool,
-    ) -> Option<Waker> {
-        if let Some(queued) = *id {
-            if let SendWaiter::Waiting { waker, .. } = self.waiters.waiter_mut(queued) {
-                return update_waker(waker, current);
-            }
-        }
-        if let Some(notified) = id.take() {
-            // The notification already took this node's waker, so nothing is retired.
-            let retired = self.waiters.remove_unlinked_waiter(notified);
-            if matches!(retired, SendWaiter::NotifiedSlot) {
-                self.notified_slots -= 1;
-            }
-        }
-        *id = Some(self.waiters.push_back(SendWaiter::Waiting {
-            waker: current.clone(),
-            needs_slot,
-        }));
-        None
     }
 }
 
@@ -301,13 +192,6 @@ impl<T> Inner<T, SendQueue> {
     #[inline]
     fn has_capacity(&self, capacity: usize) -> bool {
         self.log.retained() + self.send_waiters.reserved < capacity
-    }
-
-    /// Free capacity slots that do not already have an in-flight `NotifiedSlot` wakeup.
-    #[inline]
-    fn unclaimed_slots(&self, capacity: usize) -> usize {
-        (capacity - self.log.retained() - self.send_waiters.reserved)
-            .saturating_sub(self.send_waiters.notified_slots)
     }
 }
 
@@ -331,13 +215,12 @@ impl<T> Drop for SendWait<'_, T> {
         };
         let (retired, next_waker) = {
             let mut inner = self.shared.inner.lock();
-            let retired = inner.send_waiters.remove(id);
-            // Hand an unconsumed slot notification to the next producer if an unclaimed slot
-            // remains.
-            let next_waker = if matches!(retired, SendWaiter::NotifiedSlot)
-                && inner.unclaimed_slots(self.shared.capacity) > 0
+            let retired = inner.send_waiters.waiters.remove(id);
+            // Hand an unconsumed notification to the next producer while capacity remains.
+            let next_waker = if matches!(retired, RetryWaiter::Notified)
+                && inner.has_capacity(self.shared.capacity)
             {
-                inner.send_waiters.notify_one()
+                inner.send_waiters.waiters.notify_one()
             } else {
                 None
             };
@@ -356,12 +239,16 @@ impl<'a, T> SendWait<'a, T> {
         if !inner.has_capacity(self.shared.capacity) {
             let retired_waker = inner
                 .send_waiters
-                .register(&mut self.waiter, cx.waker(), true);
+                .waiters
+                .register(&mut self.waiter, cx.waker());
             drop(inner);
             drop(retired_waker);
             return Poll::Pending;
         }
-        let retired_waiter = self.waiter.take().map(|id| inner.send_waiters.remove(id));
+        let retired_waiter = self
+            .waiter
+            .take()
+            .map(|id| inner.send_waiters.waiters.remove(id));
         inner.send_waiters.reserved += 1;
         drop(inner);
         drop(retired_waiter);
@@ -454,15 +341,14 @@ impl<T> BoundedSender<T> {
             fn poll_send(&mut self, cx: &mut Context<'_>) -> Poll<()> {
                 let unretained;
                 let retired_waiter;
-                let sender_waker;
                 let mut wakers = WakerBatch::new();
                 {
                     let mut inner = self.wait.shared.inner.lock();
                     if inner.log.has_receivers() && !inner.has_capacity(self.wait.shared.capacity) {
-                        let retired_waker =
-                            inner
-                                .send_waiters
-                                .register(&mut self.wait.waiter, cx.waker(), false);
+                        let retired_waker = inner
+                            .send_waiters
+                            .waiters
+                            .register(&mut self.wait.waiter, cx.waker());
                         drop(inner);
                         drop(retired_waker);
                         return Poll::Pending;
@@ -472,26 +358,15 @@ impl<T> BoundedSender<T> {
                         "bounded broadcast send polled after completion"
                     );
                     // Retire the waiter only after `publish` succeeds so an overflow unwind leaves
-                    // `self.wait` intact to forward its slot notification outside the lock.
+                    // `self.wait` intact to forward its notification outside the lock.
                     inner.log.publish(&mut self.value, |msg| msg);
                     unretained = self.value.take();
                     retired_waiter = self
                         .wait
                         .waiter
                         .take()
-                        .map(|id| inner.send_waiters.remove(id));
-                    sender_waker = if matches!(retired_waiter, Some(SendWaiter::NotifiedSlot))
-                        && !inner.log.has_receivers()
-                        && inner.unclaimed_slots(self.wait.shared.capacity) > 0
-                    {
-                        inner.send_waiters.notify_one()
-                    } else {
-                        None
-                    };
+                        .map(|id| inner.send_waiters.waiters.remove(id));
                     inner.waiters.drain_into(&mut wakers);
-                }
-                if let Some(waker) = sender_waker {
-                    waker.wake();
                 }
                 wakers.wake_all();
                 drop(retired_waiter);
@@ -737,13 +612,11 @@ impl<T> Drop for BoundedReceiver<T> {
             let mut inner = self.shared.inner.lock();
             let reclaimed = inner.log.remove_receiver(self.key);
             if !inner.log.has_receivers() {
-                let unclaimed = inner.unclaimed_slots(self.shared.capacity);
-                inner
-                    .send_waiters
-                    .notify_without_receivers(unclaimed, &mut wakers);
+                inner.send_waiters.waiters.notify_all(&mut wakers);
             } else {
                 inner
                     .send_waiters
+                    .waiters
                     .notify_up_to(reclaimed.len(), &mut wakers);
             }
             reclaimed
@@ -898,7 +771,7 @@ impl<T> BoundedReceiver<T> {
         let mut inner = self.shared.inner.lock();
         let received = inner.try_receive(&self.shared.senders, self.key)?;
         if received.reclaimed {
-            if let Some(waker) = inner.send_waiters.notify_one() {
+            if let Some(waker) = inner.send_waiters.waiters.notify_one() {
                 drop(inner);
                 waker.wake();
                 return Ok(received);
@@ -1056,7 +929,9 @@ impl<T> Future for Recv<'_, T> {
             let (poll, retired_waker) =
                 inner.poll_receive(&receiver.shared.senders, receiver.key, token, cx);
             let sender_waker = match &poll {
-                Poll::Ready(Ok(received)) if received.reclaimed => inner.send_waiters.notify_one(),
+                Poll::Ready(Ok(received)) if received.reclaimed => {
+                    inner.send_waiters.waiters.notify_one()
+                }
                 _ => None,
             };
             (poll, retired_waker, sender_waker)
@@ -1120,24 +995,17 @@ impl<T> Permit<'_, T> {
         this.shared = None;
         inner.send_waiters.reserved -= 1;
         let sender_waker = if !inner.log.has_receivers() {
-            inner.send_waiters.notify_one()
+            inner.send_waiters.waiters.notify_one()
         } else {
             None
         };
-        if !inner.waiters.is_empty() {
-            let mut receiver_wakers = WakerBatch::new();
-            inner.waiters.drain_into(&mut receiver_wakers);
-            drop(inner);
-            if let Some(waker) = sender_waker {
-                waker.wake();
-            }
-            receiver_wakers.wake_all();
-            drop(unretained);
-            return;
-        }
+        let receiver_wakers = (!inner.waiters.is_empty()).then(|| inner.waiters.take_all());
         drop(inner);
         if let Some(waker) = sender_waker {
             waker.wake();
+        }
+        if let Some(mut wakers) = receiver_wakers {
+            wakers.wake_all();
         }
         drop(unretained);
     }
@@ -1151,7 +1019,7 @@ impl<T> Drop for Permit<'_, T> {
         let next_waker = {
             let mut inner = shared.inner.lock();
             inner.send_waiters.reserved -= 1;
-            inner.send_waiters.notify_one()
+            inner.send_waiters.waiters.notify_one()
         };
         if let Some(waker) = next_waker {
             waker.wake();

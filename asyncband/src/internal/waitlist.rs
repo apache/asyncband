@@ -130,19 +130,6 @@ impl<T> WaitList<T> {
         self.unlink_first_waiter()
     }
 
-    /// Updates each waiter in queue order, unlinking those for which `should_unlink` returns
-    /// `true`.
-    pub fn unlink_if(&mut self, mut should_unlink: impl FnMut(&mut T) -> bool) {
-        let mut cursor = self.head;
-        while let Some(id) = cursor {
-            let next = self.linked_node_mut(id).next;
-            if should_unlink(self.waiter_mut(id)) {
-                self.unlink_waiter(id);
-            }
-            cursor = next;
-        }
-    }
-
     /// Returns `true` if no linked waiters remain.
     pub fn is_empty(&self) -> bool {
         debug_assert_eq!(self.head.is_none(), self.tail.is_none());
@@ -264,35 +251,5 @@ mod tests {
             waiters.remove_unlinked_waiter(id);
         }
         assert!(waiters.is_empty());
-    }
-
-    #[test]
-    fn unlink_if_detaches_selected_nodes_in_order() {
-        let mut waiters = WaitList::new();
-        let a = waiters.push_back(1);
-        let b = waiters.push_back(2);
-        let c = waiters.push_back(3);
-        let d = waiters.push_back(4);
-
-        let mut detached = Vec::new();
-        waiters.unlink_if(|value| {
-            if *value % 2 == 0 {
-                detached.push(*value);
-                *value += 10;
-                true
-            } else {
-                false
-            }
-        });
-        assert_eq!(detached, [2, 4]);
-
-        for expected in [(a, 1), (c, 3)] {
-            let (id, value) = waiters.unlink_first_waiter().unwrap();
-            assert_eq!((id, *value), expected);
-            waiters.remove_unlinked_waiter(id);
-        }
-        assert!(waiters.is_empty());
-        assert_eq!(waiters.remove_unlinked_waiter(b), 12);
-        assert_eq!(waiters.remove_unlinked_waiter(d), 14);
     }
 }

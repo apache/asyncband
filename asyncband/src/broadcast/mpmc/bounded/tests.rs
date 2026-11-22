@@ -18,11 +18,10 @@
 // These run under Miri via `cargo x miri`, so they stay single-threaded and small. Behavior
 // reachable from the public API is covered in `tests-integration/tests/broadcast_test/bounded.rs`.
 
-use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
-use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
 use std::task::Wake;
 use std::task::Waker;
 
@@ -114,78 +113,13 @@ fn a_large_reclaim_leaves_no_sender_slack() {
 }
 
 #[test]
-fn permit_send_overflow_releases_slot_and_drops_payload_outside_lock() {
+fn overflow_in_permit_and_pending_send_releases_slot_unlocked() {
     #[derive(Default)]
-    struct CountingWaker(AtomicUsize);
+    struct Woke(AtomicBool);
 
-    impl Wake for CountingWaker {
+    impl Wake for Woke {
         fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    struct InspectOnDrop(Option<Box<dyn FnOnce()>>);
-
-    impl Drop for InspectOnDrop {
-        fn drop(&mut self) {
-            if let Some(inspect) = self.0.take() {
-                inspect();
-            }
-        }
-    }
-
-    for has_receiver in [false, true] {
-        let (tx, rx) = bounded(1);
-        drop(rx);
-        tx.shared.inner.lock().log.set_tail(u64::MAX);
-        let _receiver = has_receiver.then(|| tx.subscribe());
-
-        let permit = tx.try_reserve().unwrap();
-        let wakes = Arc::new(CountingWaker::default());
-        let waker = Waker::from(wakes.clone());
-        let mut cx = Context::from_waker(&waker);
-        let mut waiting = pin!(tx.reserve());
-        assert!(waiting.as_mut().poll(&mut cx).is_pending());
-
-        let shared = tx.shared.clone();
-        let wakes_in_drop = wakes.clone();
-        let observed = Rc::new(Cell::new(None));
-        let observed_in_drop = observed.clone();
-        let overflow = catch_unwind(AssertUnwindSafe(|| {
-            permit.send(InspectOnDrop(Some(Box::new(move || {
-                observed_in_drop.set(shared.inner.try_lock().map(|inner| {
-                    (
-                        inner.log.retained(),
-                        inner.send_waiters.reserved,
-                        wakes_in_drop.0.load(Ordering::Relaxed),
-                    )
-                }));
-            }))));
-        }));
-        assert!(overflow.is_err());
-        assert_eq!(observed.get(), Some((0, 0, 1)));
-        assert!(waiting.as_mut().poll(&mut cx).is_ready());
-    }
-}
-
-#[test]
-fn send_overflow_forwards_slot_wakeup_and_drops_payload_outside_lock() {
-    #[derive(Default)]
-    struct CountingWaker(AtomicUsize);
-
-    impl Wake for CountingWaker {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    struct InspectOnDrop(Option<Box<dyn FnOnce()>>);
-
-    impl Drop for InspectOnDrop {
-        fn drop(&mut self) {
-            if let Some(inspect) = self.0.take() {
-                inspect();
-            }
+            self.0.store(true, Ordering::Relaxed);
         }
     }
 
@@ -195,35 +129,29 @@ fn send_overflow_forwards_slot_wakeup_and_drops_payload_outside_lock() {
     let _receiver = tx.subscribe();
 
     let permit = tx.try_reserve().unwrap();
-    let shared = tx.shared.clone();
-    let wakes = Arc::new(CountingWaker::default());
-    let wakes_in_drop = wakes.clone();
-    let observed = Rc::new(Cell::new(None));
-    let observed_in_drop = observed.clone();
-
     let mut noop_cx = Context::from_waker(Waker::noop());
-    let mut send = pin!(tx.send(InspectOnDrop(Some(Box::new(move || {
-        observed_in_drop.set(shared.inner.try_lock().map(|inner| {
-            (
-                inner.log.retained(),
-                inner.send_waiters.reserved,
-                inner.send_waiters.notified_slots,
-                wakes_in_drop.0.load(Ordering::Relaxed),
-            )
-        }));
-    })))));
+    let mut send = pin!(tx.send(None));
     assert!(send.as_mut().poll(&mut noop_cx).is_pending());
 
-    let waker = Waker::from(wakes.clone());
+    let woke = Arc::new(Woke::default());
+    let waker = Waker::from(woke.clone());
     let mut cx = Context::from_waker(&waker);
     let mut waiting = pin!(tx.reserve());
     assert!(waiting.as_mut().poll(&mut cx).is_pending());
 
-    drop(permit);
-    assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
+    let shared = tx.shared.clone();
+    common::tests::assert_overflow_drops_unlocked(
+        move || {
+            shared
+                .inner
+                .try_lock()
+                .map(|inner| inner.log.retained() + inner.send_waiters.reserved)
+        },
+        |value| permit.send(Some(value)),
+    );
 
-    let overflow = catch_unwind(AssertUnwindSafe(|| send.as_mut().poll(&mut noop_cx)));
-    assert!(overflow.is_err());
-    assert_eq!(observed.get(), Some((0, 0, 1, 1)));
+    assert!(!woke.0.load(Ordering::Relaxed));
+    assert!(catch_unwind(AssertUnwindSafe(|| send.as_mut().poll(&mut noop_cx))).is_err());
+    assert!(woke.0.load(Ordering::Relaxed));
     assert!(waiting.as_mut().poll(&mut cx).is_ready());
 }
