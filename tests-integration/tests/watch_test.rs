@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
@@ -547,13 +546,4 @@ fn concurrent_readers_observe_coherent_snapshots_and_monotonic_updates() {
         }
         drop(tx);
     });
-}
-
-#[test]
-fn non_sync_values_remain_usable_within_one_thread() {
-    let (tx, mut rx) = watch::channel(Cell::new(1usize));
-    assert_eq!(rx.get().get(), 1);
-
-    tx.send(Cell::new(2)).unwrap();
-    assert_eq!(FutureExt::block_on(rx.recv()).unwrap().get(), 2);
 }

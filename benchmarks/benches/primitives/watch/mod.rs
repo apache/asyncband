@@ -39,17 +39,6 @@ impl Clone for Payload1k {
     }
 }
 
-struct Payload16k(Box<[u64; 2048]>);
-
-impl Clone for Payload16k {
-    #[inline(never)]
-    fn clone(&self) -> Self {
-        let mut copy = Box::new([0u64; 2048]);
-        copy.copy_from_slice(black_box(&*self.0));
-        Self(copy)
-    }
-}
-
 fn has_changed(bencher: Bencher) {
     let (sender, receiver) = watch::channel(0usize);
     sender.send(1).unwrap();
@@ -74,13 +63,6 @@ fn get_word(bencher: Bencher) {
 
 fn get_payload_1k(bencher: Bencher) {
     let (sender, receiver) = watch::channel(Payload1k([7; 128]));
-
-    bencher.bench(|| black_box(black_box(&receiver).get().0[0]));
-    black_box(sender);
-}
-
-fn get_payload_16k(bencher: Bencher) {
-    let (sender, receiver) = watch::channel(Payload16k(Box::new([7; 2048])));
 
     bencher.bench(|| black_box(black_box(&receiver).get().0[0]));
     black_box(sender);
@@ -142,16 +124,13 @@ pub fn register(runner: &mut Runner) {
         primitive!(runner, has_changed, 480_000_000, threads = threads);
     }
     for &threads in THREAD_COUNTS {
-        primitive!(runner, clone_drop_receiver, 12_000_000, threads = threads);
+        primitive!(runner, clone_drop_receiver, 24_000_000, threads = threads);
     }
     for &threads in THREAD_COUNTS {
-        primitive!(runner, get_word, 12_000_000, threads = threads);
+        primitive!(runner, get_word, 48_000_000, threads = threads);
     }
     for &threads in THREAD_COUNTS {
-        primitive!(runner, get_payload_1k, 6_000_000, threads = threads);
-    }
-    for &threads in THREAD_COUNTS {
-        primitive!(runner, get_payload_16k, 1_500_000, threads = threads);
+        primitive!(runner, get_payload_1k, 12_000_000, threads = threads);
     }
     primitive!(runner, publish_overwrite, 24_000_000);
     primitive!(runner, changed_ready, 24_000_000);

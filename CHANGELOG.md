@@ -23,10 +23,6 @@ All significant changes to this project will be documented in this file.
 
 ## Unreleased
 
-### Breaking changes
-
-* `watch::Sender<T>` and `watch::Receiver<T>` now require `T: Send + Sync` rather than `T: Send` to implement `Send` and `Sync`, because concurrent readers now clone `&T` in parallel without an exclusive lock. Single-threaded channels over `!Sync` values remain supported; for multi-threaded channels, publish a `Send + Sync + Clone` snapshot type when callers read values with `get` or `recv`, wrap non-`Sync` state in `Arc<Mutex<T>>` when shared interior state across receivers is intended, or wrap it in `Mutex<T>` when receivers only await `changed`.
-
 ### New features
 
 * Add `OnceCell::wait` to wait for another caller to initialize the cell without supplying an initializer.
@@ -43,7 +39,7 @@ All significant changes to this project will be documented in this file.
 
 * Speed up `WaitGroup` handle cloning, worker completion, and waiting across single- and multi-observer workloads, while avoiding extra heap allocations when at most one observer waits before completion.
 * Speed up unlocking an uncontended `Mutex` by avoiding its internal wait-queue lock.
-* Speed up `watch::Receiver::{has_changed, is_disconnected}`, single-threaded handle cloning and dropping, single-receiver publish-then-receive and ready `changed` cycles, pending fan-out notifications, and multi-threaded `watch::Receiver::get` snapshots over larger multi-kilobyte `Clone` payloads by moving channel metadata to atomics and reading values under a shared lock; tight multi-threaded `get` loops over scalar or ~1 KiB payloads and tight multi-threaded handle clone/drop loops contend more heavily on shared reference counts, and uncontended overwrite sends or pending wait cancellations cost slightly more.
+* Speed up `watch::Receiver::{has_changed, is_disconnected}`, single-threaded handle cloning and dropping, single-receiver publish-then-receive cycles, and multi-waiter pending notifications by moving channel metadata to atomics; tight multi-threaded handle clone/drop loops contend more heavily on shared reference counts, and uncontended overwrite sends or pending wait cancellations cost slightly more.
 * Speed up `blocking::FutureExt::wait_timeout` with `Duration::ZERO` by polling once without reading the clock or borrowing the thread-local parker.
 * Shrink `PhaserParticipant::wait` futures and speed up implicit arrival-and-wait handoffs by recording the arrival and checking or registering for completion under one lock acquisition.
 * Speed up `ManualResetEvent::{wait, wait_owned}` across already-set polls, single-waiter handoffs, multi-waiter fan-out, and cancellation reuse; empty `set`/`reset` cycles are unchanged.

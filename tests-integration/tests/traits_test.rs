@@ -170,6 +170,8 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<spmc::BoundedReceiver<Cell<u8>>>();
     assert_send_and_sync::<watch::Sender<i64>>();
     assert_send_and_sync::<watch::Receiver<i64>>();
+    assert_send_and_sync::<watch::Sender<Cell<u8>>>();
+    assert_send_and_sync::<watch::Receiver<Cell<u8>>>();
     assert_send_and_sync::<watch::SendError<i64>>();
     assert_send_and_sync::<watch::RecvError>();
 }

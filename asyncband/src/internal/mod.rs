@@ -109,10 +109,7 @@ pub(crate) mod mutex;
 #[allow(dead_code)]
 pub(crate) mod retry_waiter;
 
-#[cfg(any(feature = "waitgroup", feature = "watch"))]
-// `WaitGroup` uses only exclusive waiter access, leaving `RwLock::read` unused in a
-// `waitgroup`-only build.
-#[allow(dead_code)]
+#[cfg(feature = "waitgroup")]
 pub(crate) mod rwlock;
 
 #[cfg(any(
