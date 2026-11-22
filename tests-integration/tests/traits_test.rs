@@ -60,6 +60,7 @@ use asyncband::shutdown::Shutdown;
 use asyncband::shutdown::ShutdownGuard;
 use asyncband::shutdown::ShutdownWatch;
 use asyncband::singleflight;
+use asyncband::spmc;
 use asyncband::waitgroup::Wait;
 use asyncband::waitgroup::WaitGroup;
 use asyncband::watch;
@@ -133,19 +134,40 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<pool::unbounded::Object<i64>>();
     assert_send_and_sync::<pool::unbounded::Pool<Cell<u8>>>();
     assert_send_and_sync::<mpsc::SendError<i64>>();
+    assert_send_and_sync::<mpsc::TrySendError<i64>>();
+    assert_send_and_sync::<mpsc::RecvError>();
+    assert_send_and_sync::<mpsc::TryRecvError>();
     assert_send_and_sync::<mpsc::UnboundedSender<i64>>();
     assert_send_and_sync::<mpsc::UnboundedReceiver<i64>>();
     assert_send_and_sync::<mpsc::BoundedSender<i64>>();
     assert_send_and_sync::<mpsc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<mpsc::Permit<'_, i64>>();
     assert_send_and_sync::<mpmc::SendError<i64>>();
+    assert_send_and_sync::<mpmc::TrySendError<i64>>();
+    assert_send_and_sync::<mpmc::RecvError>();
+    assert_send_and_sync::<mpmc::TryRecvError>();
     assert_send_and_sync::<mpmc::UnboundedSender<i64>>();
     assert_send_and_sync::<mpmc::UnboundedReceiver<i64>>();
     assert_send_and_sync::<mpmc::BoundedSender<i64>>();
     assert_send_and_sync::<mpmc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<mpmc::Permit<'_, i64>>();
     assert_send_and_sync::<mpmc::UnboundedSender<Cell<u8>>>();
     assert_send_and_sync::<mpmc::UnboundedReceiver<Cell<u8>>>();
     assert_send_and_sync::<mpmc::BoundedSender<Cell<u8>>>();
     assert_send_and_sync::<mpmc::BoundedReceiver<Cell<u8>>>();
+    assert_send_and_sync::<spmc::SendError<i64>>();
+    assert_send_and_sync::<spmc::TrySendError<i64>>();
+    assert_send_and_sync::<spmc::RecvError>();
+    assert_send_and_sync::<spmc::TryRecvError>();
+    assert_send_and_sync::<spmc::UnboundedSender<i64>>();
+    assert_send_and_sync::<spmc::UnboundedReceiver<i64>>();
+    assert_send_and_sync::<spmc::BoundedSender<i64>>();
+    assert_send_and_sync::<spmc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<spmc::Permit<'_, i64>>();
+    assert_send_and_sync::<spmc::UnboundedSender<Cell<u8>>>();
+    assert_send_and_sync::<spmc::UnboundedReceiver<Cell<u8>>>();
+    assert_send_and_sync::<spmc::BoundedSender<Cell<u8>>>();
+    assert_send_and_sync::<spmc::BoundedReceiver<Cell<u8>>>();
     assert_send_and_sync::<watch::Sender<i64>>();
     assert_send_and_sync::<watch::Receiver<i64>>();
     assert_send_and_sync::<watch::SendError<i64>>();
@@ -193,6 +215,17 @@ fn movable_public_types_are_send() {
 
     let (bounded_sender, bounded_receiver) = mpmc::bounded::<Cell<u8>>(1);
     assert_send_value(bounded_sender.send(Cell::new(0)));
+    assert_send_value(bounded_sender.reserve());
+    assert_send_value(bounded_receiver.recv());
+
+    let (unbounded_sender, unbounded_receiver) = spmc::unbounded::<Cell<u8>>();
+    assert_send_value(unbounded_receiver.recv());
+    drop(unbounded_sender);
+
+    let (mut bounded_sender, bounded_receiver) = spmc::bounded::<Cell<u8>>(1);
+    assert_send_value(bounded_sender.send(Cell::new(0)));
+    let (mut bounded_sender, _bounded_receiver) = spmc::bounded::<Cell<u8>>(1);
+    assert_send_value(bounded_sender.reserve());
     assert_send_value(bounded_receiver.recv());
 
     struct CellPoolManager;
@@ -273,15 +306,32 @@ fn public_types_are_unpin() {
     assert_unpin::<pool::unbounded::Pool<i64>>();
     assert_unpin::<pool::unbounded::Object<i64>>();
     assert_unpin::<mpsc::SendError<i64>>();
+    assert_unpin::<mpsc::TrySendError<i64>>();
+    assert_unpin::<mpsc::RecvError>();
+    assert_unpin::<mpsc::TryRecvError>();
     assert_unpin::<mpsc::UnboundedSender<i64>>();
     assert_unpin::<mpsc::UnboundedReceiver<i64>>();
     assert_unpin::<mpsc::BoundedSender<i64>>();
     assert_unpin::<mpsc::BoundedReceiver<i64>>();
+    assert_unpin::<mpsc::Permit<'_, i64>>();
     assert_unpin::<mpmc::SendError<i64>>();
+    assert_unpin::<mpmc::TrySendError<i64>>();
+    assert_unpin::<mpmc::RecvError>();
+    assert_unpin::<mpmc::TryRecvError>();
     assert_unpin::<mpmc::UnboundedSender<i64>>();
     assert_unpin::<mpmc::UnboundedReceiver<i64>>();
     assert_unpin::<mpmc::BoundedSender<i64>>();
     assert_unpin::<mpmc::BoundedReceiver<i64>>();
+    assert_unpin::<mpmc::Permit<'_, i64>>();
+    assert_unpin::<spmc::SendError<i64>>();
+    assert_unpin::<spmc::TrySendError<i64>>();
+    assert_unpin::<spmc::RecvError>();
+    assert_unpin::<spmc::TryRecvError>();
+    assert_unpin::<spmc::UnboundedSender<i64>>();
+    assert_unpin::<spmc::UnboundedReceiver<i64>>();
+    assert_unpin::<spmc::BoundedSender<i64>>();
+    assert_unpin::<spmc::BoundedReceiver<i64>>();
+    assert_unpin::<spmc::Permit<'_, i64>>();
     assert_unpin::<watch::Sender<i64>>();
     assert_unpin::<watch::Receiver<i64>>();
     assert_unpin::<watch::SendError<i64>>();
@@ -289,37 +339,31 @@ fn public_types_are_unpin() {
 }
 
 #[test]
-fn mpsc_endpoints_keep_legacy_traits_regardless_of_payload() {
-    fn assert_send<T: Send>() {}
-    fn assert_sync<T: Sync>() {}
-    fn assert_unpin<T: Unpin>() {}
-    fn assert_unwind_safe<T: UnwindSafe>() {}
-    fn assert_ref_unwind_safe<T: RefUnwindSafe>() {}
+fn channel_endpoints_and_permits_preserve_traits_for_send_payloads() {
+    fn assert_traits<T: Send + Sync + Unpin + UnwindSafe + RefUnwindSafe>() {}
 
-    macro_rules! assert_endpoint_traits {
-        ($endpoint:ident, $payload:ty) => {
-            assert_send::<mpsc::$endpoint<$payload>>();
-            assert_sync::<mpsc::$endpoint<$payload>>();
-            assert_unpin::<mpsc::$endpoint<$payload>>();
-            assert_unwind_safe::<mpsc::$endpoint<$payload>>();
-            assert_ref_unwind_safe::<mpsc::$endpoint<$payload>>();
+    macro_rules! assert_channel_family {
+        ($module:ident, $payload:ty) => {
+            assert_traits::<$module::BoundedSender<$payload>>();
+            assert_traits::<$module::BoundedReceiver<$payload>>();
+            assert_traits::<$module::UnboundedSender<$payload>>();
+            assert_traits::<$module::UnboundedReceiver<$payload>>();
+            assert_traits::<$module::Permit<'static, $payload>>();
         };
     }
 
     macro_rules! assert_payload_traits {
-        ($endpoint:ident) => {
-            assert_endpoint_traits!($endpoint, i32);
-            assert_endpoint_traits!($endpoint, Cell<u8>);
-            assert_endpoint_traits!($endpoint, &'static mut i32);
-            assert_endpoint_traits!($endpoint, PhantomPinned);
+        ($payload:ty) => {
+            assert_channel_family!(mpsc, $payload);
+            assert_channel_family!(mpmc, $payload);
+            assert_channel_family!(spmc, $payload);
         };
     }
 
-    // Four endpoint types × four payloads × five traits = 80 compile-time assertions.
-    assert_payload_traits!(BoundedSender);
-    assert_payload_traits!(BoundedReceiver);
-    assert_payload_traits!(UnboundedSender);
-    assert_payload_traits!(UnboundedReceiver);
+    assert_payload_traits!(i32);
+    assert_payload_traits!(Cell<u8>);
+    assert_payload_traits!(&'static mut i32);
+    assert_payload_traits!(PhantomPinned);
 }
 
 #[test]

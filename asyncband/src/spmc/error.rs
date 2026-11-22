@@ -55,7 +55,8 @@ impl<T> fmt::Debug for SendError<T> {
 
 impl<T> Error for SendError<T> {}
 
-/// Error returned by [`BoundedSender::try_send`](crate::spmc::BoundedSender::try_send).
+/// Error returned by [`BoundedSender::try_send`](crate::spmc::BoundedSender::try_send) or
+/// [`BoundedSender::try_reserve`](crate::spmc::BoundedSender::try_reserve).
 #[derive(Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
     /// The queue is full, so the value cannot be sent without waiting for capacity.

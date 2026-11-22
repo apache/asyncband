@@ -80,10 +80,68 @@ impl<T> BoundedSender<T> {
     /// Dropping a pending `send` future removes its waiter and drops `value`. A future that has
     /// returned `Pending` has not sent the value. Cancellation releases the exclusive sender borrow
     /// and allows the next operation to use any available capacity. Use
-    /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is
-    /// unavailable.
+    /// [`reserve`](Self::reserve) to wait for capacity before constructing a value, or
+    /// [`try_send`](Self::try_send) when the caller must retain ownership immediately if capacity
+    /// is unavailable.
     pub async fn send(&mut self, value: T) -> Result<(), SendError<T>> {
         self.shared.send(value).await
+    }
+
+    /// Reserves capacity for one value before the caller supplies it.
+    ///
+    /// The returned [`Permit`] retains the exclusive borrow of this sender, keeping a slot
+    /// available until [`Permit::send`] publishes a value or the permit is dropped. Holding a
+    /// permit does not keep any receiver alive.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SendError(())` if all receivers have been dropped. A successful reservation can
+    /// still fail to send if disconnection happens before [`Permit::send`].
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping a pending `reserve` future removes its waiter and releases the exclusive sender
+    /// borrow so later operations can use any available capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// use asyncband::spmc;
+    ///
+    /// let (mut sender, receiver) = spmc::bounded(1);
+    /// let permit = sender.reserve().await.unwrap();
+    /// let message = String::from("constructed after capacity became available");
+    /// permit.send(message).unwrap();
+    /// assert_eq!(
+    ///     receiver.recv().await.unwrap(),
+    ///     "constructed after capacity became available"
+    /// );
+    /// # }
+    /// ```
+    pub async fn reserve(&mut self) -> Result<Permit<'_, T>, SendError<()>> {
+        self.shared.reserve().await?;
+        Ok(Permit {
+            shared: &self.shared,
+        })
+    }
+
+    /// Reserves capacity for one value without waiting.
+    ///
+    /// Dropping the returned [`Permit`] releases the exclusive sender borrow without sending. See
+    /// [`reserve`](Self::reserve) for reservation semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] if capacity is unavailable, or
+    /// [`TrySendError::Disconnected`] if all receivers have been dropped. Errors carry `()`
+    /// because no value has been supplied.
+    pub fn try_reserve(&mut self) -> Result<Permit<'_, T>, TrySendError<()>> {
+        self.shared.try_reserve()?;
+        Ok(Permit {
+            shared: &self.shared,
+        })
     }
 
     /// Sends a value without waiting for capacity.
@@ -95,6 +153,29 @@ impl<T> BoundedSender<T> {
     /// unsent value; nothing is enqueued on error.
     pub fn try_send(&mut self, value: T) -> Result<(), TrySendError<T>> {
         self.shared.try_send(value)
+    }
+
+    /// Returns `true` if every receiver has been dropped.
+    ///
+    /// Once this returns `true`, every later [`send`](Self::send), [`try_send`](Self::try_send),
+    /// [`reserve`](Self::reserve), or [`try_reserve`](Self::try_reserve) fails with a
+    /// disconnection error. A `false` result can be outdated as soon as it is returned, because
+    /// the last receiver may be dropped concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::spmc;
+    ///
+    /// let (sender, receiver) = spmc::bounded::<u8>(1);
+    /// let competing = receiver.clone();
+    /// drop(receiver);
+    /// assert!(!sender.is_disconnected());
+    /// drop(competing);
+    /// assert!(sender.is_disconnected());
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        !self.shared.has_receivers()
     }
 }
 
@@ -153,5 +234,79 @@ impl<T> BoundedReceiver<T> {
     /// empty.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         self.shared.try_recv()
+    }
+
+    /// Returns `true` if the sender has been dropped.
+    ///
+    /// Buffered values stay receivable after disconnection, so [`recv`](Self::recv) and
+    /// [`try_recv`](Self::try_recv) report disconnection only once the queue has been drained. A
+    /// `false` result can be outdated as soon as it is returned, because the sender may be dropped
+    /// concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::spmc;
+    ///
+    /// let (mut sender, receiver) = spmc::bounded(1);
+    /// sender.try_send(1).unwrap();
+    /// assert!(!receiver.is_disconnected());
+    /// drop(sender);
+    /// assert!(receiver.is_disconnected());
+    /// assert_eq!(receiver.try_recv(), Ok(1));
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        !self.shared.has_sender()
+    }
+
+    /// Returns `true` if no queued value is waiting to be received.
+    ///
+    /// Held permits and sends still waiting for capacity are not queued values. The result is an
+    /// instantaneous observation and may become stale as other tasks send or receive.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::spmc;
+    ///
+    /// let (mut sender, receiver) = spmc::bounded(1);
+    /// assert!(receiver.is_empty());
+    /// sender.try_send(1).unwrap();
+    /// assert!(!receiver.is_empty());
+    /// assert_eq!(receiver.try_recv(), Ok(1));
+    /// assert!(receiver.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.shared.is_empty()
+    }
+}
+
+/// Capacity reserved for one value on a bounded SPMC queue.
+///
+/// Created by [`BoundedSender::reserve`] or [`BoundedSender::try_reserve`]. Holding a permit
+/// retains the exclusive borrow of [`BoundedSender`], keeping a capacity slot available until
+/// [`Permit::send`] publishes a value or the permit is dropped. Holding a permit does not keep any
+/// receiver alive or block receivers from consuming already-queued values.
+#[must_use = "dropping the permit releases the exclusive sender borrow without sending"]
+pub struct Permit<'a, T> {
+    shared: &'a Shared<T>,
+}
+
+impl<T> fmt::Debug for Permit<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Permit").finish_non_exhaustive()
+    }
+}
+
+impl<T> Permit<'_, T> {
+    /// Publishes a value using this reserved capacity without waiting for space.
+    ///
+    /// This consumes the permit, including when sending fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError`] containing the unsent value if all receivers have been dropped.
+    pub fn send(self, value: T) -> Result<(), SendError<T>> {
+        self.shared.send_reserved(value)
     }
 }
