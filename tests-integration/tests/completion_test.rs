@@ -40,6 +40,7 @@ fn all_observers_borrow_the_same_non_clone_value() {
     let first = completion.clone();
     let second = completion.clone();
     drop(completion);
+    assert!(first.get().is_none());
 
     assert!(completer.complete(NotClone(String::from("ready"))).is_ok());
 
@@ -49,11 +50,13 @@ fn all_observers_borrow_the_same_non_clone_value() {
     assert_eq!(first_value.0.as_str(), "ready");
     assert!(ptr::eq(first_value, second_value));
     assert!(ptr::eq(first_value, repeated));
+    assert!(ptr::eq(first.get().unwrap().unwrap(), first_value));
 
     let late = first.clone();
     drop(first);
     let late_value = FutureExt::block_on(late.wait()).unwrap();
     assert!(ptr::eq(second_value, late_value));
+    assert!(ptr::eq(late.get().unwrap().unwrap(), late_value));
 }
 
 #[test]
@@ -69,7 +72,12 @@ fn completer_transfers_a_send_only_value_between_threads() {
 #[test]
 fn complete_returns_the_value_when_no_observers_remain() {
     let (completer, completion) = completion::new();
+    let extra = completion.clone();
+    assert!(!completer.is_disconnected());
     drop(completion);
+    assert!(!completer.is_disconnected());
+    drop(extra);
+    assert!(completer.is_disconnected());
     assert_eq!(
         completer.complete(String::from("unobserved")).unwrap_err(),
         "unobserved"
@@ -101,10 +109,12 @@ fn abandonment_wakes_registered_waits_and_is_visible_to_late_observers() {
 
     assert!(poll_with(first_wait.as_mut(), &first_waker).is_pending());
     assert!(poll_with(second_wait.as_mut(), &second_waker).is_pending());
+    assert_eq!(first.get(), None);
     drop(completer);
 
     assert_eq!(first_tracker.count(), 1);
     assert_eq!(second_tracker.count(), 1);
+    assert!(matches!(first.get(), Some(Err(_))));
     assert!(matches!(
         poll_with(first_wait.as_mut(), &first_waker),
         Poll::Ready(Err(_))
@@ -115,6 +125,7 @@ fn abandonment_wakes_registered_waits_and_is_visible_to_late_observers() {
     ));
 
     let late = first.clone();
+    assert!(matches!(late.get(), Some(Err(_))));
     assert!(FutureExt::block_on(late.wait()).is_err());
 }
 
@@ -122,6 +133,7 @@ fn abandonment_wakes_registered_waits_and_is_visible_to_late_observers() {
 fn payload_errors_remain_distinct_from_abandonment() {
     let (completer, completion) = completion::new::<Result<u8, &'static str>>();
     completer.complete(Err("domain error")).unwrap();
+    assert_eq!(completion.get(), Some(Ok(&Err("domain error"))));
     assert_eq!(
         FutureExt::block_on(completion.wait()),
         Ok(&Err("domain error"))
@@ -129,6 +141,7 @@ fn payload_errors_remain_distinct_from_abandonment() {
 
     let (completer, completion) = completion::new::<Result<u8, &'static str>>();
     drop(completer);
+    assert!(matches!(completion.get(), Some(Err(_))));
     assert!(FutureExt::block_on(completion.wait()).is_err());
 }
 
