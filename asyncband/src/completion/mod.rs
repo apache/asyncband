@@ -26,7 +26,7 @@
 //! Unlike `oneshot`, which transfers one value to one receiver, completion can fan one result out
 //! to many current and future observers without creating and managing one channel per observer.
 //! Unlike `OnceCell`, initialization is controlled only by the distinct completer capability;
-//! observers can only wait.
+//! observers can only inspect or wait for the result.
 //!
 //! # Examples
 //!
@@ -145,6 +145,26 @@ impl<T> Completer<T> {
         wakers.wake_all();
         Ok(())
     }
+
+    /// Returns `true` if all [`Completion`] observers have been dropped.
+    ///
+    /// Once this returns `true`, a later call to [`complete`](Self::complete) is guaranteed to
+    /// return `Err(value)`. A `false` result can become outdated immediately if the last observer
+    /// is dropped concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::completion;
+    ///
+    /// let (completer, completion) = completion::new::<u8>();
+    /// assert!(!completer.is_disconnected());
+    /// drop(completion);
+    /// assert!(completer.is_disconnected());
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        self.shared.strong_count() == 0
+    }
 }
 
 impl<T> Drop for Completer<T> {
@@ -181,6 +201,32 @@ impl<T> fmt::Debug for Completion<T> {
 }
 
 impl<T> Completion<T> {
+    /// Returns the settled result without waiting, or `None` while the completer is still alive
+    /// and has not published a value.
+    ///
+    /// Returns `Some(Ok(&value))` after [`Completer::complete`] publishes a value, and
+    /// `Some(Err(Abandoned))` if the completer was dropped without publishing one. Once this
+    /// returns `Some(...)`, every subsequent call on any observer of this completion returns the
+    /// same outcome.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::completion;
+    ///
+    /// let (completer, completion) = completion::new();
+    /// assert_eq!(completion.get(), None);
+    ///
+    /// completer.complete("ready").unwrap();
+    /// assert_eq!(completion.get(), Some(Ok(&"ready")));
+    /// ```
+    pub fn get(&self) -> Option<Result<&T, Abandoned>> {
+        self.shared
+            .result
+            .get()
+            .map(|result| result.as_ref().ok_or(Abandoned(())))
+    }
+
     /// Waits for the shared value and returns a reference to it.
     ///
     /// # Errors

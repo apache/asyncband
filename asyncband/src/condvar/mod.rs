@@ -22,7 +22,7 @@
 //! state again. Notifications are not buffered, so calling [`Condvar::notify_one`] or
 //! [`Condvar::notify_all`] when no task is waiting has no effect.
 //!
-//! [`Mutex`]: mutex::Mutex
+//! [`Mutex`]: crate::mutex::Mutex
 //!
 //! Always check the predicate while holding the mutex and wait in a loop. [`Condvar::wait`]
 //! registers the task before releasing the mutex, so a notifier that updates the predicate under
@@ -70,7 +70,6 @@ use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::waker_batch::WakerBatch;
-use crate::mutex;
 use crate::mutex::MutexGuard;
 use crate::mutex::OwnedMutexGuard;
 
@@ -179,7 +178,7 @@ impl Condvar {
     /// passed to another task that is waiting at that point, if one exists. It is never buffered
     /// for a future waiter.
     pub async fn wait<'a, T: ?Sized>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
-        let mutex = mutex::guard_lock(&guard);
+        let mutex = MutexGuard::mutex(&guard);
         let notify_one_baton = Wait {
             condvar: self,
             phase: WaitPhase::Holding(guard),
@@ -203,7 +202,7 @@ impl Condvar {
     /// Notifications are transferred to another current waiter under the same conditions as
     /// [`wait`](Self::wait); they are never saved for a future waiter.
     pub async fn wait_owned<T: ?Sized>(&self, guard: OwnedMutexGuard<T>) -> OwnedMutexGuard<T> {
-        let mutex = mutex::owned_guard_lock(&guard);
+        let mutex = OwnedMutexGuard::mutex(&guard).clone();
         let notify_one_baton = Wait {
             condvar: self,
             phase: WaitPhase::Holding(guard),

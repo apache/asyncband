@@ -60,6 +60,7 @@ fn wait_is_pending_until_the_last_handle_drops() {
     assert!(poll_once(wait.as_mut()).is_pending());
     drop(worker);
     assert!(poll_once(wait.as_mut()).is_ready());
+    assert!(poll_once(wait.as_mut()).is_ready());
 }
 
 #[test]

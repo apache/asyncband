@@ -92,7 +92,8 @@ pub fn new() -> (Shutdown, ShutdownGuard) {
 
 /// A future that requests shutdown and waits for all completion guards to be dropped.
 ///
-/// See the [module level documentation](self) for more.
+/// Once this future returns [`Poll::Ready`], polling it again continues to return
+/// `Poll::Ready(())`. See the [module level documentation](self) for more.
 ///
 /// # Cancellation
 ///

@@ -78,6 +78,9 @@ impl<T> IntoFuture for Receiver<T> {
 
     /// Converts this receiver into a future that owns the receiving endpoint.
     ///
+    /// The returned future is not fused and must not be polled again after returning
+    /// [`Poll::Ready`].
+    ///
     /// # Errors
     ///
     /// The future reports [`RecvError::Disconnected`] if the sender drops without sending or
@@ -191,8 +194,8 @@ impl<T> Drop for Receiver<T> {
 
 /// A future that receives the channel's only message.
 ///
-/// Created by [`Receiver::into_future`], this future owns the receiving endpoint. A completed
-/// future must not be polled again.
+/// Created by [`Receiver::into_future`], this future owns the receiving endpoint. This future is
+/// not fused and must not be polled again after returning [`Poll::Ready`].
 ///
 /// # Errors
 ///

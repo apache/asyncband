@@ -361,6 +361,8 @@ impl IntoFuture for WaitGroup {
 ///
 /// Converting a [`WaitGroup`] into this future immediately marks that participant complete,
 /// even before the future is polled. Cloning `Wait` adds an observer without a participant.
+/// Once this future returns [`Poll::Ready`], polling it again continues to return `Poll::Ready(())`
+/// without side effects.
 ///
 /// # Cancellation
 ///
