@@ -23,10 +23,11 @@
 //! receiver while receivers remain. Values leave the queue in FIFO order, but consumer completion
 //! order and an equal distribution of work are not guaranteed.
 //!
-//! The sender cannot be cloned, and sending requires `&mut self`, including for the lifetime of a
-//! bounded `send` future. The sender can move between tasks, but shared references cannot send.
-//! Dropping the sender lets receivers drain buffered messages before observing disconnection.
-//! Dropping the last receiver releases buffered messages and makes sending return the unsent value.
+//! The sender cannot be cloned, and sending or reserving capacity requires `&mut self`, including
+//! for the lifetime of a bounded `send` or `reserve` future and any returned [`Permit`]. The
+//! sender can move between tasks, but shared references cannot send. Dropping the sender lets
+//! receivers drain buffered messages before observing disconnection. Dropping the last receiver
+//! releases buffered messages and makes sending return the unsent value.
 //!
 //! # Example
 //!
@@ -83,7 +84,8 @@
 //! }
 //! ```
 //!
-//! A bounded `send` future retains the exclusive borrow until completion or cancellation:
+//! A bounded `send` future or reserved [`Permit`] retains the exclusive borrow until completion,
+//! publication, or drop:
 //!
 //! ```compile_fail,E0499
 //! use asyncband::spmc;
@@ -93,6 +95,15 @@
 //! let _ = sender.try_send(2);
 //! drop(pending);
 //! ```
+//!
+//! ```compile_fail,E0499
+//! use asyncband::spmc;
+//!
+//! let (mut sender, _receiver) = spmc::bounded::<u8>(1);
+//! let permit = sender.try_reserve().unwrap();
+//! let _ = sender.try_send(1);
+//! drop(permit);
+//! ```
 
 mod bounded;
 mod error;
@@ -101,6 +112,7 @@ mod unbounded;
 
 pub use self::bounded::BoundedReceiver;
 pub use self::bounded::BoundedSender;
+pub use self::bounded::Permit;
 pub use self::bounded::bounded;
 pub use self::error::RecvError;
 pub use self::error::SendError;
