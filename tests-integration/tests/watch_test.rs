@@ -19,10 +19,12 @@ use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::task::Waker;
+use std::thread;
 
 use asyncband::blocking::FutureExt;
 use asyncband::watch;
@@ -362,7 +364,9 @@ fn wake_callbacks_run_outside_the_channel_lock() {
         let (tx, mut rx) = watch::channel(0);
         let callback_sender = tx.clone();
         let waker = waker_on_wake(move || {
-            drop(callback_sender.subscribe());
+            let mut sub = callback_sender.subscribe();
+            let mut sub_changed = pin!(sub.changed());
+            assert!(poll_with(sub_changed.as_mut(), Waker::noop()).is_pending());
         });
         let mut changed = Box::pin(rx.changed());
 
@@ -389,15 +393,95 @@ fn wake_callbacks_run_outside_the_channel_lock() {
 fn replaced_wakers_are_dropped_outside_the_channel_lock() {
     assert_completes_without_deadlock(|| {
         let (tx, mut rx) = watch::channel(0);
-        let callback_sender = tx.clone();
+        let replace_sender = tx.clone();
         let old_waker = waker_on_drop(move || {
-            drop(callback_sender.subscribe());
+            let mut sub = replace_sender.subscribe();
+            let mut sub_changed = pin!(sub.changed());
+            assert!(poll_with(sub_changed.as_mut(), Waker::noop()).is_pending());
         });
         let mut changed = pin!(rx.changed());
         assert!(poll_with(changed.as_mut(), &old_waker).is_pending());
         drop(old_waker);
 
-        let replacement = Waker::from(Arc::new(WakeCounter::default()));
-        assert!(poll_with(changed.as_mut(), &replacement).is_pending());
+        let cancel_sender = tx.clone();
+        let cancelled_waker = waker_on_drop(move || {
+            let mut sub = cancel_sender.subscribe();
+            let mut sub_changed = pin!(sub.changed());
+            assert!(poll_with(sub_changed.as_mut(), Waker::noop()).is_pending());
+        });
+        assert!(poll_with(changed.as_mut(), &cancelled_waker).is_pending());
+        drop(cancelled_waker);
     });
+}
+
+#[test]
+fn concurrent_subscribe_and_send_from_zero_receivers_linearize() {
+    const ROUNDS: usize = if cfg!(miri) { 16 } else { 256 };
+
+    for round in 1..=ROUNDS {
+        let (tx, rx) = watch::channel(0usize);
+        drop(rx);
+
+        let barrier = Barrier::new(2);
+        let (send_result, mut subscribed) = thread::scope(|scope| {
+            let sender = scope.spawn(|| {
+                barrier.wait();
+                tx.send(round)
+            });
+            let subscriber = scope.spawn(|| {
+                barrier.wait();
+                tx.subscribe()
+            });
+            (sender.join().unwrap(), subscriber.join().unwrap())
+        });
+
+        match send_result {
+            Ok(()) => {
+                // `send` observed the new receiver, so `subscribe` must have linearized before
+                // `send` and must still observe `round` as unseen.
+                assert_eq!(subscribed.has_changed(), Ok(true));
+                assert_eq!(FutureExt::block_on(subscribed.recv()), Ok(round));
+                assert_eq!(subscribed.has_changed(), Ok(false));
+            }
+            Err(error) => {
+                assert_eq!(error.into_inner(), round);
+                assert_eq!(subscribed.get(), 0);
+                assert_eq!(subscribed.has_changed(), Ok(false));
+            }
+        }
+    }
+}
+
+#[test]
+fn final_send_and_drop_race_never_skips_the_final_value() {
+    const ROUNDS: usize = if cfg!(miri) { 16 } else { 256 };
+
+    for round in 1..=ROUNDS {
+        let (tx, mut rx) = watch::channel(0usize);
+        let barrier = Barrier::new(2);
+
+        let observed = thread::scope(|scope| {
+            scope.spawn(|| {
+                barrier.wait();
+                tx.send(round).unwrap();
+                drop(tx);
+            });
+            scope
+                .spawn(|| {
+                    barrier.wait();
+                    loop {
+                        match rx.has_changed() {
+                            Ok(true) => break FutureExt::block_on(rx.recv()),
+                            Ok(false) => thread::yield_now(),
+                            Err(err) => break Err(err),
+                        }
+                    }
+                })
+                .join()
+                .unwrap()
+        });
+
+        assert_eq!(observed, Ok(round));
+        assert_eq!(rx.has_changed(), Err(watch::RecvError::Disconnected));
+    }
 }
