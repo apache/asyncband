@@ -100,6 +100,7 @@ fn test_polling_shutdown_requests_and_waits_for_completion() {
 
     drop(guard);
     assert!(poll_once(shutdown.as_mut()).is_ready());
+    assert!(poll_once(shutdown.as_mut()).is_ready());
 }
 
 #[test]
