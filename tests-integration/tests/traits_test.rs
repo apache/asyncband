@@ -119,6 +119,7 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<broadcast::mpmc::UnboundedReceiver<i64>>();
     assert_send_and_sync::<broadcast::mpmc::BoundedSender<i64>>();
     assert_send_and_sync::<broadcast::mpmc::BoundedReceiver<i64>>();
+    assert_send_and_sync::<broadcast::mpmc::Permit<'_, i64>>();
     assert_send_and_sync::<broadcast::mpmc::RecvError>();
     assert_send_and_sync::<broadcast::mpmc::TryRecvError>();
     assert_send_and_sync::<broadcast::mpmc::TrySendError<i64>>();
@@ -230,6 +231,18 @@ fn movable_public_types_are_send() {
     assert_send_value(bounded_sender.reserve());
     assert_send_value(bounded_receiver.recv());
 
+    let (broadcast_unbounded_tx, mut broadcast_unbounded_rx) = broadcast::mpmc::unbounded::<i64>();
+    assert_send_value(broadcast_unbounded_rx.recv());
+    let mut broadcast_unbounded_rx2 = broadcast_unbounded_tx.subscribe();
+    assert_send_value(broadcast_unbounded_rx2.recv_cloned());
+
+    let (broadcast_bounded_tx, mut broadcast_bounded_rx) = broadcast::mpmc::bounded::<i64>(1);
+    assert_send_value(broadcast_bounded_tx.send(0));
+    assert_send_value(broadcast_bounded_tx.reserve());
+    assert_send_value(broadcast_bounded_rx.recv());
+    let mut broadcast_bounded_rx2 = broadcast_bounded_tx.subscribe();
+    assert_send_value(broadcast_bounded_rx2.recv_cloned());
+
     struct CellPoolManager;
 
     impl ManageObject for CellPoolManager {
@@ -292,6 +305,7 @@ fn public_types_are_unpin() {
     assert_unpin::<broadcast::mpmc::UnboundedReceiver<i64>>();
     assert_unpin::<broadcast::mpmc::BoundedSender<i64>>();
     assert_unpin::<broadcast::mpmc::BoundedReceiver<i64>>();
+    assert_unpin::<broadcast::mpmc::Permit<'_, i64>>();
     assert_unpin::<broadcast::mpmc::RecvError>();
     assert_unpin::<broadcast::mpmc::TryRecvError>();
     assert_unpin::<broadcast::mpmc::TrySendError<i64>>();
@@ -345,12 +359,12 @@ fn channel_endpoints_and_permits_preserve_traits_for_send_payloads() {
     fn assert_traits<T: Send + Sync + Unpin + UnwindSafe + RefUnwindSafe>() {}
 
     macro_rules! assert_channel_family {
-        ($module:ident, $payload:ty) => {
-            assert_traits::<$module::BoundedSender<$payload>>();
-            assert_traits::<$module::BoundedReceiver<$payload>>();
-            assert_traits::<$module::UnboundedSender<$payload>>();
-            assert_traits::<$module::UnboundedReceiver<$payload>>();
-            assert_traits::<$module::Permit<'static, $payload>>();
+        ($($path:ident)::+, $payload:ty) => {
+            assert_traits::<$($path)::+::BoundedSender<$payload>>();
+            assert_traits::<$($path)::+::BoundedReceiver<$payload>>();
+            assert_traits::<$($path)::+::UnboundedSender<$payload>>();
+            assert_traits::<$($path)::+::UnboundedReceiver<$payload>>();
+            assert_traits::<$($path)::+::Permit<'static, $payload>>();
         };
     }
 
@@ -366,6 +380,10 @@ fn channel_endpoints_and_permits_preserve_traits_for_send_payloads() {
     assert_payload_traits!(Cell<u8>);
     assert_payload_traits!(&'static mut i32);
     assert_payload_traits!(PhantomPinned);
+
+    assert_channel_family!(broadcast::mpmc, i32);
+    assert_channel_family!(broadcast::mpmc, &'static mut i32);
+    assert_channel_family!(broadcast::mpmc, PhantomPinned);
 }
 
 #[test]
