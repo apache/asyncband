@@ -16,8 +16,9 @@
 // under the License.
 
 //! Uses usize keys, a deterministic hasher, and trivial initializers.
-//! Lookups use threads; coalescing uses controlled polling.
+//! Lookups use threads; coalescing uses controlled polling; builds collect prepared slices.
 
+mod build;
 mod initialize;
 mod lookup;
 mod maintenance;
@@ -26,6 +27,7 @@ mod support;
 use benchmarks::harness::Runner;
 
 pub fn register(runner: &mut Runner) {
+    build::register(runner);
     initialize::register(runner);
     lookup::register(runner);
     maintenance::register(runner);

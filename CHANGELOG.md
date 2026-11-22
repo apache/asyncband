@@ -48,6 +48,7 @@ All significant changes to this project will be documented in this file.
 * Shrink `broadcast::mpmc::BoundedSender::send` futures and speed up waiting receiver deliveries and bounded sender backpressure handoffs and cancellations.
 * Shrink `Once`, `OnceCell`, and `LazyCell` state and `LazyCell` forcing futures, and speed up fresh `LazyCell` forcing and single- and multi-waiter completion fan-out across `Once`, `OnceCell`, `LazyCell`, `OnceMap`, and `singleflight::Group` by replacing semaphore and mutex queues with broadcast completion wakeups; already-initialized reads are unchanged.
 * Shrink `RwLock` write guards and speed up `RwLock` and `UpgradableRwLock` read, write, upgradable-read, upgrade, and downgrade operations by outlining contended semaphore paths and avoiding internal wait-queue locks on uncontended reservation releases and on uncontended write releases up to reader limits of `usize::MAX >> 1`; cancelling the first request queued behind a held lock is slightly slower.
+* Speed up `OnceMap::from_iter` across distinct and duplicate keys by avoiding per-element lock acquisitions and updating duplicate keys in place without extra allocations.
 
 ### Bug fixes
 
