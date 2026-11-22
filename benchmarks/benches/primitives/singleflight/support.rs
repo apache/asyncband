@@ -24,3 +24,4 @@ pub const BATCH_SIZES: &[usize] = &[2, 4, 16];
 pub const THREAD_COUNTS: &[usize] = &[1, 2, 4, 8];
 
 pub type BenchGroup = Group<usize, usize, BuildHasherDefault<DefaultHasher>>;
+pub type BenchOwnedGroup = Group<usize, Vec<u8>, BuildHasherDefault<DefaultHasher>>;
