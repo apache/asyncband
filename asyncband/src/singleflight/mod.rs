@@ -17,9 +17,9 @@
 
 //! Coalesce concurrent work that uses the same key.
 //!
-//! While work for a key is in flight, later callers wait and share its successful value. Completed
-//! values are not cached: the entry is removed when the work succeeds, so a non-overlapping later
-//! call executes its own function.
+//! While work for a key is in flight, later callers wait and clone its successful value. A
+//! completed value is not cached: the entry is removed when the work succeeds, so a non-overlapping
+//! later call executes its own function.
 //!
 //! If the active call is cancelled or panics, a waiting caller may run its own function. `try_work`
 //! also lets a waiter retry after the active function returns an error. Use `OnceMap` instead when
@@ -174,8 +174,8 @@ where
         self.entry.as_ref().unwrap()
     }
 
-    fn into_entry(mut self) -> Arc<Entry<K, V>> {
-        self.entry.take().expect("work guard must hold an entry")
+    fn dismiss(mut self) {
+        drop(self.entry.take());
     }
 }
 
@@ -229,13 +229,11 @@ where
         }
     }
 
-    /// Executes `func` or joins an in-flight call for `key` and returns its value.
+    /// Returns a clone of the shared computation's value for `key`.
     ///
-    /// Callers that join the same in-flight entry share its successful result: a caller that holds
-    /// the sole remaining reference when taking the result moves `V` out without cloning, while
-    /// shared callers receive clones. Once `func` completes successfully, the entry is removed so
-    /// later calls can start new work. [`forget`](Self::forget) lets new calls start independently
-    /// of an existing entry.
+    /// Callers that join the same in-flight entry share its successful result. Once `func`
+    /// completes successfully, the entry is removed so later calls can start new work.
+    /// [`forget`](Self::forget) lets new calls start independently of an existing entry.
     ///
     /// # Cancellation
     ///
@@ -323,13 +321,11 @@ where
         }
     }
 
-    /// Executes `func` or joins an in-flight call for `key` and returns its value.
+    /// Returns a clone of the shared computation's value for `key`.
     ///
-    /// Callers that join the same in-flight entry share its successful result: a caller that holds
-    /// the sole remaining reference when taking the result moves `V` out without cloning, while
-    /// shared callers receive clones. Once `func` completes successfully, the entry is removed so
-    /// later calls can start new work. [`forget`](Self::forget) lets new calls start independently
-    /// of an existing entry.
+    /// Callers that join the same in-flight entry share its successful result. Once `func`
+    /// completes successfully, the entry is removed so later calls can start new work.
+    /// [`forget`](Self::forget) lets new calls start independently of an existing entry.
     ///
     /// # Errors
     ///
@@ -404,25 +400,17 @@ where
     {
         let guard = self.get_or_insert(key);
         let entry = guard.entry();
-        entry
+        let result = entry
             .cell
             .get_or_try_init(async || {
                 let result = func().await?;
                 self.remove_if_current(entry);
                 Ok(result)
             })
-            .await?;
-        match Arc::try_unwrap(guard.into_entry()) {
-            Ok(mut entry) => Ok(entry
-                .cell
-                .take()
-                .expect("completed singleflight entry must contain a value")),
-            Err(entry) => Ok(entry
-                .cell
-                .get()
-                .expect("completed singleflight entry must contain a value")
-                .clone()),
-        }
+            .await?
+            .clone();
+        guard.dismiss();
+        Ok(result)
     }
 
     /// Detaches any in-flight entry for `key` from the group.

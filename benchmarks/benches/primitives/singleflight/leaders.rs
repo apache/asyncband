@@ -30,7 +30,6 @@ use benchmarks::support::wait_until_open;
 
 use crate::singleflight::support::BATCH_SIZES;
 use crate::singleflight::support::BenchGroup;
-use crate::singleflight::support::BenchOwnedGroup;
 use crate::singleflight::support::THREAD_COUNTS;
 
 // Reuse the group so table capacity survives completed calls.
@@ -40,17 +39,6 @@ fn leader_success(bencher: Bencher) {
     bencher.bench_local(|| {
         black_box(poll_ready(
             group.work(black_box(0), || async { black_box(1) }),
-            &mut context,
-        ))
-    });
-}
-
-fn leader_success_owned_1k(bencher: Bencher) {
-    let group = BenchOwnedGroup::default();
-    let mut context = bench_context();
-    bencher.bench_local(|| {
-        black_box(poll_ready(
-            group.work(black_box(0), || async { black_box(vec![1_u8; 1024]) }),
             &mut context,
         ))
     });
@@ -108,7 +96,6 @@ fn leader_error(bencher: Bencher) {
 
 pub fn register(runner: &mut Runner) {
     primitive!(runner, leader_success, 3_000_000);
-    primitive!(runner, leader_success_owned_1k, 3_000_000);
     for &arg in BATCH_SIZES {
         primitive!(runner, distinct_keys(arg), (2_000_000 / arg).max(1));
     }
