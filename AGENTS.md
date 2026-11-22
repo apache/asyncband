@@ -19,9 +19,35 @@ under the License.
 
 # Repository Guidelines
 
+This document is the single source of truth for workspace structure, development commands, Rust style, waker and API documentation contracts, changelog rules, and pull request conventions for both human contributors and coding agents. Keep documented workflows synchronized with structural changes, and run the applicable `cargo x check`, `cargo x test`, and `cargo x lint` commands before submitting or handing work back.
+
+For first-time setup (`rustup`, MSRV, nightly toolchain) and community policies, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Workspace Layout
+
+| Crate               | Purpose                                                                                              |
+| ------------------- | ---------------------------------------------------------------------------------------------------- |
+| `asyncband`         | Core library crate (`--no-default-features` by default; each primitive family is an opt-in feature). |
+| `tests-integration` | End-to-end concurrency and primitive behavior integration tests (`asyncband` with all features).     |
+| `benchmarks`        | Fixed-workload benchmark suite and runner; see [benchmarks/README.md](benchmarks/README.md).         |
+| `examples`          | Standalone runnable end-to-end scenarios; see [examples/AGENTS.md](examples/AGENTS.md).              |
+| `xtask` (`x`)       | Workspace automation entrypoint exposed via the `cargo x` alias defined in `.cargo/config.toml`.     |
+
 ## Workflows
 
-Use `cargo x` as the source of truth for repository workflows. Read `cargo x --help` and the relevant subcommand's `--help` before running build, test, lint, or formatting commands.
+Use `cargo x` as the single entrypoint for repository checks and automation (read `cargo x --help` and `<subcommand> --help` for options):
+
+```shell
+cargo x build              # Compile all workspace packages and targets with all features
+cargo x check              # Check asyncband across --no-default-features, each feature, and all features
+cargo x test               # Run workspace tests with all asyncband features enabled (--no-capture supported)
+cargo x lint               # Run nightly clippy, rustfmt, taplo, typos, hawkeye, and docsrs rustdoc checks
+cargo x lint --fix         # Automatically apply clippy, rustfmt, taplo, and hawkeye fixes
+cargo x miri               # Run Miri memory-safety checks on unit and integration tests
+cargo x bench -- --test    # Smoke-test default fixed-workload benchmarks (see benchmarks/README.md)
+```
+
+`cargo x check`, `cargo x lint`, and `cargo x miri` require a nightly toolchain; CI also verifies the workspace MSRV declared in `Cargo.toml`.
 
 Use the shared [release skill](.agents/skills/release/SKILL.md) for release preparation, status checks, publication, and recovery. Its phase guides are the maintained release procedure; resume from the established candidate and completed steps. For an independent candidate check, use the [`release_verifier`](.codex/agents/release_verifier.toml) agent or follow the same verification guide directly.
 

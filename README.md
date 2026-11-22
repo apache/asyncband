@@ -157,9 +157,15 @@ This crate is built against the latest stable release, and its minimum supported
 
 The policy is that the minimum Rust version required to use this crate can be increased in minor version updates. For example, if Asyncband 1.0 requires Rust 1.20.0, then Asyncband 1.0.z for all values of z will also require Rust 1.20.0 or newer. However, Asyncband 1.y for y > 0 may require a newer minimum version of Rust.
 
+## Community and contributing
+
+Questions, bug reports, and feature requests are welcome through [GitHub issues](https://github.com/apache/asyncband/issues) and [GitHub discussions](https://github.com/apache/asyncband/discussions). Visit the [Apache Asyncband website](https://asyncband.apache.org/) for engineering blog posts and verified downloads, and the [community guide](https://asyncband.apache.org/community/) for public mailing lists, governance, voting rules, and other ways to participate.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to build, test, and contribute to Asyncband. All project participation is governed by the [Apache Software Foundation Code of Conduct](https://www.apache.org/foundation/policies/conduct.html).
+
 ## Security
 
-Report suspected vulnerabilities privately to [security@apache.org](mailto:security@apache.org), with "Asyncband" in the subject. Follow the [ASF vulnerability reporting process](https://security.apache.org/report/).
+Report suspected vulnerabilities privately to [security@apache.org](mailto:security@apache.org), with "Asyncband" in the subject. Follow the [ASF vulnerability reporting process](https://security.apache.org/report/) and see [SECURITY-THREAT-MODEL.md](SECURITY-THREAT-MODEL.md) for scope details.
 
 ## License and Trademarks
 
