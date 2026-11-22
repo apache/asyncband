@@ -17,26 +17,39 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Contributing to Apache Asyncband (Incubating)
+# Contributing
 
-Contributions of all kinds are welcome, including bug reports, benchmark cases, documentation improvements, code reviews, and concurrency primitive implementations.
+Thank you for contributing to Apache Asyncband (Incubating)!
 
-## Communication and governance
+Workspace structure, development commands, Rust style, waker and API documentation contracts, changelog rules, and pull request conventions for all contributors (human and AI) live in [AGENTS.md](AGENTS.md). Read it before planning or submitting changes.
 
-* **Community guide and governance**: See [asyncband.apache.org/community](https://asyncband.apache.org/community/) for mailing lists, project roster, consensus and Apache voting rules, and how contributors become committers and PPMC members.
-* **Design and roadmap discussions**: Discuss new primitives, API contracts, and roadmap slices on [`dev@asyncband.apache.org`](https://lists.apache.org/list.html?dev@asyncband.apache.org) ([subscribe](mailto:dev-subscribe@asyncband.apache.org)), [GitHub Issues](https://github.com/apache/asyncband/issues), or [GitHub Discussions](https://github.com/apache/asyncband/discussions).
-* **Project scope**: Reusable executor-independent coordination mechanisms belong in the library; task spawning, timers, retries, and runtime scheduling policy remain with the caller.
+## Your First Contribution
 
-## Workflow and conventions
+1. [Fork the Asyncband repository](https://github.com/apache/asyncband/fork) in your own GitHub account (issues are not assigned or reserved, so you can pick up an open issue directly).
+2. [Create a new Git branch](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-and-deleting-branches-within-your-repository).
+3. Make your changes following [AGENTS.md](AGENTS.md), and run `cargo x check`, `cargo x test`, and `cargo x lint`.
+4. [Submit the branch as a pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork) to the upstream repository.
 
-Issues are not assigned or reserved; anyone can open a pull request directly for review. Follow [AGENTS.md](AGENTS.md) for Rust module and import style, waker contracts, public rustdoc structure, and changelog rules, and run the workspace checks before submitting:
+## Setup
+
+We recommend [rustup](https://rustup.rs/) to install Rust. On Linux or macOS:
 
 ```shell
-cargo x lint
-cargo x check
-cargo x test
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-## Security
+On Windows, download `rustup-init.exe` from [win.rustup.rs](https://win.rustup.rs/x86_64).
 
-Do not report suspected security vulnerabilities in public issues or mailing lists. Report them privately to [security@apache.org](mailto:security@apache.org) with `Asyncband` in the subject line; see [SECURITY-THREAT-MODEL.md](SECURITY-THREAT-MODEL.md) for scope details.
+The workspace declares its minimum supported Rust version (MSRV) via `rust-version` in the root `Cargo.toml`; CI verifies it explicitly. Any toolchain at or above the MSRV works for building, testing, and benchmarking.
+
+Feature-matrix checks, linting, and documentation checks additionally require a nightly toolchain (add `miri` as well when running `cargo x miri`):
+
+```shell
+rustup toolchain install --component rustfmt,clippy nightly
+```
+
+`cargo x lint` installs extra formatting and check tools (`taplo-cli`, `typos-cli`, `hawkeye`) automatically when missing.
+
+## Community and Code of Conduct
+
+See the [community guide](https://asyncband.apache.org/community/) for mailing lists, consensus and voting rules, and committer and PPMC guidelines. All community participation is governed by the [Apache Software Foundation Code of Conduct](https://www.apache.org/foundation/policies/conduct.html).

@@ -159,15 +159,13 @@ The policy is that the minimum Rust version required to use this crate can be in
 
 ## Community and contributing
 
-Visit the [project website](https://asyncband.apache.org/) and [community guide](https://asyncband.apache.org/community/) for engineering blog posts, verified source downloads, project governance, voting rules, and committer and PPMC guidelines.
+Questions, bug reports, and feature requests are welcome through [GitHub issues](https://github.com/apache/asyncband/issues) and [GitHub discussions](https://github.com/apache/asyncband/discussions). Visit the [Apache Asyncband website](https://asyncband.apache.org/) for engineering blog posts and verified downloads, and the [community guide](https://asyncband.apache.org/community/) for public mailing lists, governance, voting rules, and other ways to participate.
 
-* Design proposals, roadmap discussions, and release votes take place on [`dev@asyncband.apache.org`](https://lists.apache.org/list.html?dev@asyncband.apache.org) ([subscribe](mailto:dev-subscribe@asyncband.apache.org)).
-* Bug reports, concrete feature requests, and usage questions use [GitHub Issues](https://github.com/apache/asyncband/issues) and [GitHub Discussions](https://github.com/apache/asyncband/discussions).
-* Contributions are open without issue reservation; see [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for local verification commands, Rust style, and documentation conventions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) to build, test, and contribute to Asyncband. All project participation is governed by the [Apache Software Foundation Code of Conduct](https://www.apache.org/foundation/policies/conduct.html).
 
 ## Security
 
-Report suspected vulnerabilities privately to [security@apache.org](mailto:security@apache.org), with "Asyncband" in the subject. Follow the [ASF vulnerability reporting process](https://security.apache.org/report/).
+Report suspected vulnerabilities privately to [security@apache.org](mailto:security@apache.org), with "Asyncband" in the subject. Follow the [ASF vulnerability reporting process](https://security.apache.org/report/) and see [SECURITY-THREAT-MODEL.md](SECURITY-THREAT-MODEL.md) for scope details.
 
 ## License and Trademarks
 
