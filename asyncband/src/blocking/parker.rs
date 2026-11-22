@@ -9,13 +9,15 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Condvar;
-use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
 use std::task::Wake;
 use std::task::Waker;
 use std::thread;
 use std::time::Duration;
+
+use crate::internal::mutex::Mutex;
 
 const EMPTY: usize = 0;
 const PARKED: usize = 1;
@@ -93,7 +95,7 @@ impl ParkerState {
         }
 
         // The mutex only closes the race between publishing PARKED and entering the condvar wait.
-        let mut guard = self.lock.lock().unwrap();
+        let mut guard = self.lock.lock();
         match self.state.compare_exchange(EMPTY, PARKED, SeqCst, SeqCst) {
             Ok(_) => {}
             Err(NOTIFIED) => {
@@ -106,13 +108,19 @@ impl ParkerState {
 
         match timeout {
             None => loop {
-                guard = self.condvar.wait(guard).unwrap();
+                guard = self
+                    .condvar
+                    .wait(guard)
+                    .unwrap_or_else(PoisonError::into_inner);
                 if self.try_consume_notification() {
                     return;
                 }
             },
             Some(timeout) => {
-                let (_guard, _wait_result) = self.condvar.wait_timeout(guard, timeout).unwrap();
+                let (_guard, _wait_result) = self
+                    .condvar
+                    .wait_timeout(guard, timeout)
+                    .unwrap_or_else(PoisonError::into_inner);
                 match self.state.swap(EMPTY, SeqCst) {
                     NOTIFIED | PARKED => {}
                     state => panic!("inconsistent timed park state: {state}"),
@@ -129,7 +137,7 @@ impl ParkerState {
         }
 
         // Waiting for this lock ensures the parker has entered Condvar::wait before notification.
-        drop(self.lock.lock().unwrap());
+        drop(self.lock.lock());
         self.condvar.notify_one();
     }
 }

@@ -83,6 +83,7 @@ pub(crate) mod value_cell;
 
 #[cfg(any(
     feature = "barrier",
+    feature = "blocking",
     feature = "broadcast",
     feature = "event",
     feature = "completion",
