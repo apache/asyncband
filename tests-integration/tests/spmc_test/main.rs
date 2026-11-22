@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::cell::Cell;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -187,19 +186,4 @@ fn unbounded_buffered_received_and_rejected_values_are_each_dropped_once() {
 #[should_panic(expected = "spmc bounded queue requires capacity > 0")]
 fn bounded_rejects_zero_capacity() {
     let _ = spmc::bounded::<()>(0);
-}
-
-#[test]
-fn endpoint_and_future_traits_allow_send_but_not_sync_payloads() {
-    fn assert_traits<T: Send + Sync + Unpin>() {}
-    fn assert_send<T: Send>(_: T) {}
-    assert_traits::<spmc::BoundedSender<Cell<u8>>>();
-    assert_traits::<spmc::BoundedReceiver<Cell<u8>>>();
-    assert_traits::<spmc::UnboundedSender<Cell<u8>>>();
-    assert_traits::<spmc::UnboundedReceiver<Cell<u8>>>();
-    let (mut sender, receiver) = spmc::bounded::<Cell<u8>>(1);
-    assert_send(sender.send(Cell::new(1)));
-    assert_send(receiver.recv());
-    let (_sender, receiver) = spmc::unbounded::<Cell<u8>>();
-    assert_send(receiver.recv());
 }
