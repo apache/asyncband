@@ -72,9 +72,6 @@ pub(crate) mod arena;
 #[allow(dead_code)]
 pub(crate) mod coalesce;
 
-#[cfg(feature = "latch")]
-pub(crate) mod countdown;
-
 #[cfg(any(feature = "lazy-cell", feature = "once", feature = "once-cell"))]
 // `Once` does not reset or complete via `&mut self`, and `LazyCell` does not register pure
 // observers, so single-feature builds leave parts of `OnceState` unused.

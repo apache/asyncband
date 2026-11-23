@@ -48,16 +48,25 @@
 //! # }
 //! ```
 
+use std::mem;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Poll;
 
-use crate::internal::countdown::CountdownState;
+use crate::internal::mutex::Mutex;
+use crate::internal::wakerset::WakerSet;
+use crate::internal::wakerset::WakerToken;
 
 /// A one-shot countdown that can wake any number of waiting tasks.
 ///
 /// See the [module level documentation](self) for more.
 #[derive(Debug)]
 pub struct Latch {
-    state: CountdownState,
+    state: AtomicU32,
+    waiters: Mutex<WakerSet>,
 }
 
 impl Latch {
@@ -72,7 +81,8 @@ impl Latch {
     /// ```
     pub const fn new(count: u32) -> Self {
         Self {
-            state: CountdownState::new(count),
+            state: AtomicU32::new(count),
+            waiters: Mutex::new(WakerSet::new()),
         }
     }
 
@@ -87,7 +97,7 @@ impl Latch {
     /// assert_eq!(latch.count(), 5);
     /// ```
     pub fn count(&self) -> u32 {
-        self.state.state()
+        self.state.load(Ordering::Acquire)
     }
 
     /// Decrements the latch count by one, waking up all pending tasks if the counter reaches zero.
@@ -124,7 +134,32 @@ impl Latch {
     /// assert_eq!(latch.count(), 0);
     /// ```
     pub fn arrive(&self, n: u32) {
-        self.state.arrive(n);
+        if n == 0 {
+            return;
+        }
+        let mut cnt = self.count();
+        loop {
+            if cnt == 0 {
+                return;
+            }
+
+            let new_cnt = cnt.saturating_sub(n);
+            match self.state.compare_exchange_weak(
+                cnt,
+                new_cnt,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    if new_cnt == 0 {
+                        let wakers = mem::take(&mut *self.waiters.lock());
+                        wakers.wake_all();
+                    }
+                    return;
+                }
+                Err(observed) => cnt = observed,
+            }
+        }
     }
 
     /// Checks whether the countdown has reached zero without waiting.
@@ -147,7 +182,10 @@ impl Latch {
     /// assert_eq!(latch.try_wait(), Ok(()));
     /// ```
     pub fn try_wait(&self) -> Result<(), u32> {
-        self.state.try_wait()
+        match self.count() {
+            0 => Ok(()),
+            count => Err(count),
+        }
     }
 
     /// Waits until the countdown reaches zero.
@@ -170,7 +208,11 @@ impl Latch {
     /// # }
     /// ```
     pub async fn wait(&self) {
-        self.state.wait().await
+        LatchWait {
+            latch: self,
+            token: None,
+        }
+        .await;
     }
 
     /// Waits until the countdown reaches zero while owning this [`Arc`].
@@ -198,6 +240,55 @@ impl Latch {
     /// # }
     /// ```
     pub async fn wait_owned(self: Arc<Self>) {
-        self.wait().await
+        self.wait().await;
+    }
+}
+
+struct LatchWait<'a> {
+    latch: &'a Latch,
+    token: Option<WakerToken>,
+}
+
+impl Future for LatchWait<'_> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let Self { latch, token } = self.get_mut();
+        if latch.try_wait().is_ok() {
+            // The zero transition owns detaching every registration. Avoid taking the waiter lock
+            // again when the completed future is dropped.
+            *token = None;
+            return Poll::Ready(());
+        }
+
+        let mut waiters = latch.waiters.lock();
+        if latch.count() == 0 {
+            // A concurrent zero transition detaches the registrations under this same lock.
+            *token = None;
+            return Poll::Ready(());
+        }
+
+        let retired_waker = waiters.register(token, cx.waker());
+        drop(waiters);
+        drop(retired_waker);
+        Poll::Pending
+    }
+}
+
+impl Drop for LatchWait<'_> {
+    fn drop(&mut self) {
+        if self.token.is_none() {
+            return;
+        }
+
+        let mut waiters = self.latch.waiters.lock();
+        if self.latch.count() == 0 {
+            // The terminal zero transition owns this registration or has already detached it.
+            return;
+        }
+
+        let removed_waker = waiters.unregister(&mut self.token);
+        drop(waiters);
+        drop(removed_waker);
     }
 }
