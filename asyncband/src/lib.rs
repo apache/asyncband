@@ -30,7 +30,7 @@
 //! Enable the APIs your application needs:
 //!
 //! ```toml
-//! asyncband = { version = "0.7", features = ["mutex", "oneshot"] }
+//! asyncband = { version = "0.8", features = ["mutex", "oneshot"] }
 //! ```
 //!
 //! Then use the selected APIs directly:

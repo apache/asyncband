@@ -38,7 +38,7 @@ Find an existing `Tracking Issue to Release ${VERSION}` before creating one. Oth
 
 Audit the selected checkout with the `license-audit` skill.
 
-Prepare a release PR from the chosen scope: update `asyncband/Cargo.toml`, refresh `Cargo.lock` with Cargo, and move the final user-visible changelog entries from `Unreleased` into an undated `v${VERSION}` section, leaving `Unreleased` empty. Include necessary audit corrections; defer unrelated source changes. Respect required CI and merge authorization.
+Prepare a release PR from the chosen scope: update `asyncband/Cargo.toml` (and the getting-started dependency version in `asyncband/src/lib.rs` when advancing a semver-breaking series), refresh `Cargo.lock` with Cargo, and move the final user-visible changelog entries from `Unreleased` into an undated `v${VERSION}` section, leaving `Unreleased` empty. Include necessary audit corrections; defer unrelated source changes. Respect required CI and merge authorization.
 
 Review the merged PR's tree, including any changes added since the source cutoff, and update affected audit results. Record its merge commit as `RELEASE_COMMIT` in the issue. Use a detached checkout of this frozen snapshot for all remaining checks and tags:
 
