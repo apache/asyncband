@@ -23,6 +23,8 @@ All significant changes to this project will be documented in this file.
 
 ## Unreleased
 
+## v0.8.1
+
 ### New features
 
 * Add `OnceCell::wait` to wait for another caller to initialize the cell without supplying an initializer.
