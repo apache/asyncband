@@ -128,22 +128,34 @@ struct CommandMiri;
 
 impl CommandMiri {
     fn run(self) {
-        run_command(make_miri_cmd(PACKAGE_NAME, &["--lib", "--all-features"]));
+        run_command(make_miri_cmd(&[
+            "--package",
+            PACKAGE_NAME,
+            "--lib",
+            "--all-features",
+        ]));
+        let mut args = vec!["--package", "tests-integration"];
         for target in [
+            "barrier_test",
+            "broadcast_test",
+            "completion_test",
+            "event_test",
+            "mpmc_test",
+            "mpsc_test",
             "oneshot_test",
+            "phaser_test",
+            "pool_test",
+            "semaphore_ordering_test",
+            "spmc_test",
+            "traits_test",
             "unsafe_paths_test",
             "upgradable_rwlock_test",
-            "mpsc_test",
-            "mpmc_test",
-            "spmc_test",
             "waitgroup_test",
-            "broadcast_test",
-            "phaser_test",
-            "semaphore_ordering_test",
             "watch_test",
         ] {
-            run_command(make_miri_cmd("tests-integration", &["--test", target]));
+            args.extend(["--test", target]);
         }
+        run_command(make_miri_cmd(&args));
     }
 }
 
@@ -155,7 +167,7 @@ struct CommandTest {
 
 impl CommandTest {
     fn run(self) {
-        run_command(make_test_cmd(self.no_capture, &asyncband_features()));
+        run_command(make_test_cmd(self.no_capture));
     }
 }
 
@@ -415,12 +427,9 @@ fn make_build_cmd(locked: bool) -> StdCommand {
     cmd
 }
 
-fn make_test_cmd(no_capture: bool, features: &[String]) -> StdCommand {
+fn make_test_cmd(no_capture: bool) -> StdCommand {
     let mut cmd = find_command("cargo");
-    cmd.args(["test", "--workspace", "--no-default-features"]);
-    for feature in features {
-        cmd.args(["--features", feature]);
-    }
+    cmd.args(["test", "--workspace", "--all-features"]);
     if no_capture {
         cmd.args(["--", "--nocapture"]);
     }
@@ -444,10 +453,10 @@ fn make_check_cmd(features: &[String]) -> StdCommand {
     cmd
 }
 
-fn make_miri_cmd(package: &str, target: &[&str]) -> StdCommand {
+fn make_miri_cmd(args: &[&str]) -> StdCommand {
     let mut cmd = find_command("cargo");
-    cmd.args(["+nightly", "miri", "test", "--package", package]);
-    cmd.args(target);
+    cmd.args(["+nightly", "miri", "test"]);
+    cmd.args(args);
     cmd
 }
 
