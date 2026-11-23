@@ -19,39 +19,38 @@ under the License.
 
 # Architectural Design Guidelines
 
-This document sets the top-down architectural direction and decision criteria for Apache Asyncband (Incubating). Concrete data layouts and state transitions belong in the code; workspace workflows and coding conventions live in [AGENTS.md](AGENTS.md), and security boundaries live in [SECURITY-THREAT-MODEL.md](SECURITY-THREAT-MODEL.md).
+This document states the high-level architectural direction for Apache Asyncband (Incubating). Concrete layouts, naming, and state transitions belong in the code; workspace conventions live in [AGENTS.md](AGENTS.md), and security boundaries live in [SECURITY-THREAT-MODEL.md](SECURITY-THREAT-MODEL.md).
 
 ## Scope and Composition
 
-- Build exclusively on standard Rust `Future` and `Waker` contracts without binding to any concrete I/O reactor, timer driver, or executor.
-- Treat any concurrency building block that stays independent of I/O reactors and timers as in scope, from locks, channels, initialization, and pools to direct multi-future coordination such as `join` or `select`; keep reactor- and clock-bound facilities (such as I/O drivers, sleeps, timeouts, and rate limiters) outside this crate.
-- Prefer direct `async`/`await` control flow over callback chains and combinator pipelines (`map`, `and_then`, or `Stream`-style adapter nesting): add `Future`-level operations only when they express genuine concurrency rather than sequential wrapper layers that obscure control flow and inflate state or allocation cost.
+- Decouple concurrency building blocks from concrete executors, I/O reactors, and OS timer drivers by building on standard Rust `Future` and `Waker` contracts.
+- Treat native `async`/`await` as the primary model for sequential control flow in Rust: introduce abstractions where execution genuinely coordinates or races concurrently, avoiding callback chains and nested combinator layers that obscure control flow and inflate state or allocation cost.
 
-## Async First, Modular Surface
+## Modular, Async-First Surface
 
-- Shape public APIs around `async` operations, RAII guards and permits, and explicit `try_*` non-waiting operations rather than synchronous ports or exposed `poll_*` plumbing.
-- Adapt synchronous callers at the boundary through the optional `blocking` module instead of duplicating blocking methods across primitive types.
-- Gate every primitive family behind an opt-in Cargo feature with `default = []` and minimal dependencies so downstream builds pay only for what they enable.
+- Center public APIs on idiomatic `async` operations, RAII resource ownership, and explicit non-waiting operations rather than synchronous ports or low-level polling plumbing.
+- Isolate synchronous adaptation at the boundary instead of duplicating blocking methods across primitives.
+- Keep capabilities modular and opt-in with minimal dependencies so downstream builds pay only for what they enable.
 
 ## Cancellation and Failure Semantics
 
-- Treat future cancellation (dropping a future at any suspension point) as ordinary control flow: waiting, reservation, and handoff protocols must conserve capacity, permits, documented ordering, and wakeups across cancellation.
-- Uphold memory safety even when safe callers leak guards, permits, or futures with `mem::forget`.
-- Do not poison locks or coordination primitives on panic by default, because both panics and future cancellations can interrupt multi-step caller work; reserve poisoning for APIs that consume a single-use initializer that cannot be retried.
+- Treat future cancellation at any suspension point as ordinary control flow: dropping an in-flight future must preserve resource accounting, ordering guarantees, and liveness.
+- Maintain memory safety even when safe callers leak values without running their destructors.
+- Do not poison shared state on panic by default, since both panics and future cancellations can interrupt multi-step caller work; reserve poisoning for single-use initialization that consumes an unrepeatable closure.
 
 ## State Machines, Contention, and `unsafe` Restraint
 
-- Separate uncontended transitions from contended wait queues: use direct atomic fast paths when they remove real synchronization work across workloads, avoiding busy-spin loops and arbitrary workload-tuned thresholds.
-- Prefer safe, index-addressed, `Unpin`-friendly wait structures on contended paths so futures remain movable and cancellation stays local and predictable.
-- Require every `unsafe` block to justify the invariant or ownership guarantee that safe Rust cannot express cleanly, keeping aliasing, lifetime, and variance boundaries small and explicit.
+- Separate uncontended fast paths from contended wait queues, avoiding busy-spin loops and workload-tuned magic constants.
+- Keep futures `Unpin`-friendly and wait structures safe by default so waiting state remains movable and cancellation stays local.
+- Use `unsafe` only where safe Rust cannot express a necessary ownership or performance invariant, keeping aliasing, lifetime, and variance boundaries small and explicit.
 
 ## Lock and Callback Boundaries
 
-- Hold internal locks only across short, deterministic state transitions, and bound any cleanup work performed on hot operations so latency stays predictable without stop-the-world spikes.
-- Always wake tasks and drop replaced or cancelled wakers outside internal locks; normal executor `Waker::clone` is permitted inside short critical sections (see the Waker Contract in [AGENTS.md](AGENTS.md)).
-- Run caller closures, trait methods, and payload destructors outside internal locks by default; when an operation must inspect or clone state under an internal lock, keep the critical section minimal and document the non-reentrancy constraint under `# Deadlocks`.
+- Hold internal locks only across short, deterministic state transitions, keeping hot-path work bounded and predictable.
+- Wake tasks and drop replaced or cancelled wakers outside internal locks; cloning an active waker inside a short critical section is acceptable (see [AGENTS.md](AGENTS.md)).
+- Run user code and value destructors outside internal locks by default; when an API intentionally invokes caller logic under a lock, keep the critical section minimal and document the reentrancy constraint.
 
 ## Cohesion Over Patchwork
 
-- Extract shared internal components only when multiple primitives share the same state machine or ownership invariant, not merely superficial code similarity.
-- Prefer tightening a state representation or ownership boundary so whole classes of glue states, redundant flags, and special cases disappear rather than adding defensive layers around them.
+- Share internal abstractions around common invariants and state machines rather than superficial code similarity.
+- Prefer cleaner state representations and ownership boundaries that eliminate edge cases at the root over defensive glue layers.
