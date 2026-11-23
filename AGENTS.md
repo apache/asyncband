@@ -21,7 +21,7 @@ under the License.
 
 This document is the single source of truth for workspace structure, development commands, Rust style, waker and API documentation contracts, changelog rules, and pull request conventions for both human contributors and coding agents. Keep documented workflows synchronized with structural changes, and run the applicable `cargo x check`, `cargo x test`, and `cargo x lint` commands before submitting or handing work back.
 
-For first-time setup (`rustup`, MSRV, nightly toolchain) and community policies, see [CONTRIBUTING.md](CONTRIBUTING.md).
+For architectural direction and design principles, see [DESIGN.md](DESIGN.md). For first-time setup (`rustup`, MSRV, nightly toolchain) and community policies, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Workspace Layout
 
