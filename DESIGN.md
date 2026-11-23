@@ -21,11 +21,11 @@ under the License.
 
 This document sets the top-down architectural direction and decision criteria for Apache Asyncband (Incubating). Concrete data layouts and state transitions belong in the code; workspace workflows and coding conventions live in [AGENTS.md](AGENTS.md), and security boundaries live in [SECURITY-THREAT-MODEL.md](SECURITY-THREAT-MODEL.md).
 
-## Mechanism Over Policy
+## Scope and Composition
 
-- Build exclusively on standard Rust `Future` and `Waker` contracts so every async primitive runs unchanged on any standards-compliant executor.
-- Keep policy with the caller: Asyncband does not spawn tasks, own worker threads, install timers, or embed retry, deadline, or scheduling policy.
-- Admit stateful utilities (such as work-coalescing maps or object pools) when they capture a reusable coordination mechanism without assuming an executor or application lifecycle.
+- Build exclusively on standard Rust `Future` and `Waker` contracts without binding to any concrete I/O reactor, timer driver, or executor.
+- Treat any concurrency building block that stays independent of I/O reactors and timers as in scope, from locks, channels, initialization, and pools to direct multi-future coordination such as `join` or `select`; keep reactor- and clock-bound facilities (such as I/O drivers, sleeps, timeouts, and rate limiters) outside this crate.
+- Prefer direct `async`/`await` control flow over callback chains and combinator pipelines (`map`, `and_then`, or `Stream`-style adapter nesting): add `Future`-level operations only when they express genuine concurrency rather than sequential wrapper layers that obscure control flow and inflate state or allocation cost.
 
 ## Async First, Modular Surface
 
