@@ -180,10 +180,12 @@ impl OnceState {
 
     #[inline]
     pub fn complete_mut(&mut self) {
-        let prev = mem::replace(self.state.get_mut(), COMPLETE);
-        if prev & HAS_WAITERS != 0 {
-            mem::take(self.waiters.get_mut()).wake_all();
-        }
+        debug_assert_eq!(
+            *self.state.get_mut() & HAS_WAITERS,
+            0,
+            "exclusive initialization must reset queued waiters before completing"
+        );
+        *self.state.get_mut() = COMPLETE;
     }
 
     #[inline]
