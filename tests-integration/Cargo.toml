@@ -22,15 +22,6 @@ publish = false
 edition.workspace = true
 rust-version.workspace = true
 
-[dependencies]
-tokio = { workspace = true, features = [
-  "macros",
-  "rt",
-  "rt-multi-thread",
-  "sync",
-  "time",
-] }
-
 [dev-dependencies]
 asyncband = { workspace = true, features = [
   "barrier",
@@ -57,6 +48,13 @@ asyncband = { workspace = true, features = [
   "spmc",
   "waitgroup",
   "watch",
+] }
+tokio = { workspace = true, features = [
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "sync",
+  "time",
 ] }
 
 [lib]

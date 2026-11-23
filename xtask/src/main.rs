@@ -146,6 +146,7 @@ impl CommandMiri {
             "phaser_test",
             "pool_test",
             "semaphore_ordering_test",
+            "shutdown_test",
             "spmc_test",
             "traits_test",
             "unsafe_paths_test",

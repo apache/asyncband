@@ -451,8 +451,12 @@ fn parked_recv_wakes_when_the_last_sender_drops() {
 
     drop(extra);
     assert_eq!(tracker.count(), 1);
-
+    assert_eq!(
+        expect_ready(recv.as_mut().poll(&mut context)),
+        Err(RecvError::Disconnected)
+    );
     drop(recv);
+
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
 }
 
