@@ -47,13 +47,7 @@ under the License.
 
 Asyncband is a focused collection of composable, runtime-agnostic concurrency building blocks for async Rust. It provides synchronization, initialization, task coordination, channels, resource reuse, and workload control without choosing an executor for the application.
 
-Asyncband's async APIs are built on standard futures and wakers. The library does not spawn tasks, own worker threads, install timers, or require a reactor or I/O driver. Applications can poll its futures with Tokio, async-std, smol, a custom executor, or any other standards-based runtime, and compose runtime services such as deadlines around them.
-
-### Project scope
-
-The project is not limited to small or stateless synchronization primitives. Stateful utilities such as a singleflight group or an object pool fit when they provide a generally reusable coordination mechanism and remain independent of executor policy.
-
-The boundary is mechanism versus policy. Task placement, timers, deadlines, retries, periodic maintenance, and application lifecycle orchestration stay with the caller and its runtime. Potential future-concurrency or scheduling APIs are evaluated against the same boundary: they must remain executor-independent and compose with caller-owned execution and timing.
+Asyncband's async APIs build on standard Rust `Future` and `Waker` contracts without binding to a concrete executor, I/O reactor, or OS timer driver, and compose directly with native `async`/`await` control flow rather than callback or combinator chains. Applications can poll its futures on Tokio, async-std, smol, or a custom executor; see [DESIGN.md](DESIGN.md) for the project's architectural guidelines.
 
 ## Getting started
 
