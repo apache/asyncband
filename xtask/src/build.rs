@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::process::Command as StdCommand;
+use std::process;
 
 use clap::Parser;
 
@@ -34,7 +34,7 @@ impl CommandBuild {
     }
 }
 
-fn make_build_cmd(locked: bool) -> StdCommand {
+fn make_build_cmd(locked: bool) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.args([
         "build",

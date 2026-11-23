@@ -16,7 +16,7 @@
 // under the License.
 
 use std::path::Path;
-use std::process::Command as StdCommand;
+use std::process;
 
 use cargo_metadata::Metadata;
 use cargo_metadata::MetadataCommand;
@@ -61,7 +61,7 @@ fn asyncband_features() -> Vec<String> {
     features
 }
 
-fn make_check_cmd(features: &[String]) -> StdCommand {
+fn make_check_cmd(features: &[String]) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.env("RUSTFLAGS", "-Dwarnings");
     cmd.args([

@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::process::Command as StdCommand;
+use std::process;
 use std::time::Duration;
 
 use clap::Parser;
@@ -184,7 +184,7 @@ fn classify_release_type(baseline: &Version, release: &Version) -> SemverRelease
 fn make_semver_check_cmd(
     baseline_version: &Version,
     release_type: SemverReleaseType,
-) -> StdCommand {
+) -> process::Command {
     ensure_installed("cargo-semver-checks", "cargo-semver-checks");
     let mut cmd = find_command("cargo");
     cmd.args([

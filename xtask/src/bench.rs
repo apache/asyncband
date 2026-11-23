@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::process::Command as StdCommand;
+use std::process;
 
 use clap::Parser;
 
@@ -51,7 +51,7 @@ impl CommandBench {
     }
 }
 
-fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> StdCommand {
+fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.args(["bench", "--workspace", "--all-features"]);
     match bench {

@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::process::Command as StdCommand;
+use std::process;
 
 use clap::Parser;
 
@@ -34,7 +34,7 @@ impl CommandTest {
     }
 }
 
-fn make_test_cmd(no_capture: bool) -> StdCommand {
+fn make_test_cmd(no_capture: bool) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.args(["test", "--workspace", "--all-features"]);
     if no_capture {

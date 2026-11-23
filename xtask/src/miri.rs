@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::process::Command as StdCommand;
+use std::process;
 
 use clap::Parser;
 
@@ -60,7 +60,7 @@ impl CommandMiri {
     }
 }
 
-fn make_miri_cmd(args: &[&str]) -> StdCommand {
+fn make_miri_cmd(args: &[&str]) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.args(["+nightly", "miri", "test"]);
     cmd.args(args);

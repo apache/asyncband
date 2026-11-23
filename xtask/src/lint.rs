@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::process::Command as StdCommand;
+use std::process;
 
 use clap::Parser;
 
@@ -40,7 +40,7 @@ impl CommandLint {
     }
 }
 
-fn make_format_cmd(fix: bool) -> StdCommand {
+fn make_format_cmd(fix: bool) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.args(["+nightly", "fmt", "--all"]);
     if !fix {
@@ -49,7 +49,7 @@ fn make_format_cmd(fix: bool) -> StdCommand {
     cmd
 }
 
-fn make_clippy_cmd(fix: bool) -> StdCommand {
+fn make_clippy_cmd(fix: bool) -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.args([
         "+nightly",
@@ -67,7 +67,7 @@ fn make_clippy_cmd(fix: bool) -> StdCommand {
     cmd
 }
 
-fn make_doc_cmd() -> StdCommand {
+fn make_doc_cmd() -> process::Command {
     let mut cmd = find_command("cargo");
     cmd.env("RUSTDOCFLAGS", "-D warnings --cfg docsrs");
     cmd.args([
@@ -80,7 +80,7 @@ fn make_doc_cmd() -> StdCommand {
     cmd
 }
 
-fn make_hawkeye_cmd(fix: bool) -> StdCommand {
+fn make_hawkeye_cmd(fix: bool) -> process::Command {
     ensure_installed("hawkeye", "hawkeye");
     let mut cmd = find_command("hawkeye");
     if fix {
@@ -91,12 +91,12 @@ fn make_hawkeye_cmd(fix: bool) -> StdCommand {
     cmd
 }
 
-fn make_typos_cmd() -> StdCommand {
+fn make_typos_cmd() -> process::Command {
     ensure_installed("typos", "typos-cli");
     find_command("typos")
 }
 
-fn make_taplo_cmd(fix: bool) -> StdCommand {
+fn make_taplo_cmd(fix: bool) -> process::Command {
     ensure_installed("taplo", "taplo-cli");
     let mut cmd = find_command("taplo");
     if fix {

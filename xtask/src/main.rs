@@ -23,8 +23,7 @@ mod miri;
 mod semver;
 mod test;
 
-use std::process::Command as StdCommand;
-use std::process::ExitStatus;
+use std::process;
 
 use clap::Parser;
 use clap::Subcommand;
@@ -82,10 +81,10 @@ enum SubCommand {
     Test(CommandTest),
 }
 
-fn find_command(cmd: &str) -> StdCommand {
+fn find_command(cmd: &str) -> process::Command {
     match which::which(cmd) {
         Ok(exe) => {
-            let mut cmd = StdCommand::new(exe);
+            let mut cmd = process::Command::new(exe);
             cmd.current_dir(env!("CARGO_WORKSPACE_DIR"));
             cmd
         }
@@ -103,12 +102,12 @@ fn ensure_installed(bin: &str, crate_name: &str) {
     }
 }
 
-fn run_command(cmd: StdCommand) {
+fn run_command(cmd: process::Command) {
     let status = command_status(cmd);
     assert!(status.success(), "command failed: {status}");
 }
 
-fn command_status(mut cmd: StdCommand) -> ExitStatus {
+fn command_status(mut cmd: process::Command) -> process::ExitStatus {
     println!("{cmd:?}");
     cmd.status().expect("failed to execute process")
 }
