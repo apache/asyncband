@@ -22,7 +22,6 @@ use std::panic::resume_unwind;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -36,17 +35,9 @@ use std::thread;
 #[cfg(not(miri))]
 use std::time::Duration;
 
-use tokio::runtime::Runtime;
-
 /// Polls a pinned future once with a no-op waker.
 pub fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(Waker::noop()))
-}
-
-/// Returns the runtime shared by synchronous integration tests.
-pub fn test_runtime() -> &'static Runtime {
-    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| Runtime::new().unwrap())
 }
 
 #[track_caller]

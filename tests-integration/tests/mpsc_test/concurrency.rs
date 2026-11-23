@@ -35,7 +35,6 @@ use asyncband::mpsc::TrySendError;
 use tests_integration::WakeCounter;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
-use tests_integration::test_runtime;
 use tokio::sync::oneshot;
 
 #[test]
@@ -265,27 +264,30 @@ fn last_sender_drop_racing_with_receiver_registration_cannot_lose_wakeup() {
     }
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
-fn unbounded_collects_from_multiple_producers() {
+async fn unbounded_collects_from_multiple_producers() {
     let (tx, mut rx) = mpsc::unbounded();
 
-    test_runtime().block_on(async move {
-        for i in 0..8 {
+    let producers = (0..8)
+        .map(|i| {
             let tx = tx.clone();
             tokio::spawn(async move {
                 tx.send(i).unwrap();
-            });
-        }
-        drop(tx);
+            })
+        })
+        .collect::<Vec<_>>();
+    drop(tx);
 
-        let mut received = vec![];
-        while let Ok(i) = rx.recv().await {
-            received.push(i);
-        }
-        received.sort_unstable();
-        assert_eq!(received, (0..8).collect::<Vec<_>>());
-    });
+    let mut received = vec![];
+    while let Ok(i) = rx.recv().await {
+        received.push(i);
+    }
+    for producer in producers {
+        producer.await.unwrap();
+    }
+    received.sort_unstable();
+    assert_eq!(received, (0..8).collect::<Vec<_>>());
 }
 
 #[tokio::test]

@@ -199,6 +199,11 @@ impl Semaphore {
         mut remaining: usize,
         mut waiters: MutexGuard<'a, WaitList<WaitNode>>,
     ) {
+        if waiters.is_empty() {
+            self.restore_available_permits(remaining);
+            return;
+        }
+
         let mut batch = WakerBatch::new();
 
         loop {
@@ -286,9 +291,6 @@ impl Semaphore {
         let waiter = waiters.remove(id);
         let acquired = requested - waiter.needed_permits;
         if acquired == 0 {
-            drop(waiters);
-        } else if waiters.is_empty() {
-            self.restore_available_permits(acquired);
             drop(waiters);
         } else {
             self.distribute_permits(acquired, waiters);

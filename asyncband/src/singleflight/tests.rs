@@ -32,7 +32,7 @@ use crate::test_support::poll_once;
 // These tests stay next to the implementation because they inspect private state.
 
 fn entry_count<K, V, S>(group: &Group<K, V, S>) -> usize {
-    group.entries.lock().len()
+    group.table.len()
 }
 
 #[test]

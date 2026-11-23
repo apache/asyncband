@@ -31,165 +31,25 @@ use std::fmt;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::RandomState;
-use std::sync::Arc;
 
-use hashbrown::HashTable;
-
-use crate::internal::mutex::Mutex;
-use crate::once::OnceCell;
+use crate::internal::coalesce::EntryTable;
 
 #[cfg(test)]
 mod tests;
-
-struct Entry<K, V> {
-    hash: u64,
-    key: K,
-    cell: OnceCell<V>,
-}
 
 /// A namespace that coalesces concurrent work by key.
 ///
 /// Different keys run independently. A group neither caches completed results nor limits overall
 /// concurrency.
 pub struct Group<K, V, S = RandomState> {
-    // This lock protects only entry lookup, insertion, and removal.
-    // User work is always run after releasing it.
-    entries: Mutex<HashTable<Arc<Entry<K, V>>>>,
-    hasher: S,
+    table: EntryTable<K, V, S>,
 }
 
 impl<K, V, S> fmt::Debug for Group<K, V, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let in_flight = self.entries.lock().len();
         f.debug_struct("Group")
-            .field("in_flight", &in_flight)
+            .field("in_flight", &self.table.len())
             .finish()
-    }
-}
-
-impl<K, V, S> Group<K, V, S>
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    fn get_or_insert(&self, key: K) -> WorkCleanupGuard<'_, K, V, S> {
-        let hash = self.hasher.hash_one(&key);
-        let mut entries = self.entries.lock();
-        if let Some(entry) = entries.find(hash, |entry| entry.key.eq(&key)) {
-            let entry = Arc::clone(entry);
-            drop(entries);
-            let guard = WorkCleanupGuard::new(self, entry);
-            // Establish cleanup before a duplicate key can unwind or reenter the group.
-            drop(key);
-            return guard;
-        }
-
-        let entry = Arc::new(Entry {
-            hash,
-            key,
-            cell: OnceCell::new(),
-        });
-        entries.insert_unique(hash, entry.clone(), |entry| entry.hash);
-        drop(entries);
-        WorkCleanupGuard::new(self, entry)
-    }
-
-    fn remove<Q>(&self, key: &Q)
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        let hash = self.hasher.hash_one(key);
-        let removed = {
-            let mut entries = self.entries.lock();
-            let Ok(occupied) = entries.find_entry(hash, |entry| entry.key.borrow() == key) else {
-                return;
-            };
-            occupied.remove().0
-        };
-        drop(removed);
-    }
-
-    fn remove_if_current(&self, entry: &Arc<Entry<K, V>>) {
-        let removed = {
-            let mut entries = self.entries.lock();
-            let Ok(occupied) = entries.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, entry))
-            else {
-                return;
-            };
-            occupied.remove().0
-        };
-        drop(removed);
-    }
-
-    fn cleanup_abandoned_entry(&self, entry: Arc<Entry<K, V>>) {
-        let mut entries = self.entries.lock();
-        let Ok(occupied) = entries.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, &entry))
-        else {
-            // `forget` detached the entry. It may be the final owner, so release it after
-            // unlocking rather than running user destructors under the table lock.
-            drop(entries);
-            drop(entry);
-            return;
-        };
-
-        // With group ownership confirmed and the table locked against new callers, two owners
-        // means the group and this cleanup guard are the only remaining references.
-        if Arc::strong_count(&entry) == 2 && !entry.cell.initialized() {
-            let (stored, _) = occupied.remove();
-            drop(entries);
-            drop(entry);
-            drop(stored);
-        } else {
-            // A waiting cleanup must observe this call's reference being released while no new
-            // caller can clone the group's reference.
-            drop(entry);
-        }
-    }
-}
-
-// Holds one call's entry so Drop can clean it up if the work is abandoned.
-struct WorkCleanupGuard<'a, K, V, S>
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    group: &'a Group<K, V, S>,
-    entry: Option<Arc<Entry<K, V>>>,
-}
-
-impl<'a, K, V, S> WorkCleanupGuard<'a, K, V, S>
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    fn new(group: &'a Group<K, V, S>, entry: Arc<Entry<K, V>>) -> Self {
-        Self {
-            group,
-            entry: Some(entry),
-        }
-    }
-
-    fn entry(&self) -> &Arc<Entry<K, V>> {
-        self.entry.as_ref().unwrap()
-    }
-
-    fn dismiss(mut self) {
-        drop(self.entry.take());
-    }
-}
-
-impl<K, V, S> Drop for WorkCleanupGuard<'_, K, V, S>
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    fn drop(&mut self) {
-        let Some(entry) = self.entry.take() else {
-            return;
-        };
-
-        self.group.cleanup_abandoned_entry(entry);
     }
 }
 
@@ -224,8 +84,7 @@ where
     /// Creates a new Group with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
         Self {
-            entries: Mutex::new(HashTable::new()),
-            hasher,
+            table: EntryTable::with_hasher(hasher),
         }
     }
 
@@ -398,19 +257,17 @@ where
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        let guard = self.get_or_insert(key);
+        let guard = self.table.get_or_insert(key);
         let entry = guard.entry();
-        let result = entry
+        Ok(entry
             .cell
             .get_or_try_init(async || {
                 let result = func().await?;
-                self.remove_if_current(entry);
+                self.table.remove_if_current(entry);
                 Ok(result)
             })
             .await?
-            .clone();
-        guard.dismiss();
-        Ok(result)
+            .clone())
     }
 
     /// Detaches any in-flight entry for `key` from the group.
@@ -423,6 +280,6 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.remove(key);
+        drop(self.table.remove(key));
     }
 }

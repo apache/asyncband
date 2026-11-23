@@ -21,148 +21,27 @@ use std::fmt;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::RandomState;
-use std::sync::Arc;
 
-use hashbrown::HashTable;
-
-use crate::internal::mutex::Mutex;
-use crate::once::OnceCell;
+use crate::internal::coalesce::EntryTable;
 
 #[cfg(test)]
 mod tests;
-
-struct Entry<K, V> {
-    hash: u64,
-    key: K,
-    cell: OnceCell<V>,
-}
-
-enum Lookup<'a, K, V, S>
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    Ready(V),
-    Pending(ComputeCleanupGuard<'a, K, V, S>),
-}
 
 /// A hash map that runs computation only once for each key and stores the result.
 ///
 /// Every successful lookup returns an owned clone of `V`. Choose a cheaply cloned value type, such
 /// as `Arc<T>`, when entries are large or frequently shared.
 pub struct OnceMap<K, V, S = RandomState> {
-    // Hashbrown allocates the table lazily, and computation always runs after releasing this lock.
-    entries: Mutex<HashTable<Arc<Entry<K, V>>>>,
-    hasher: S,
+    table: EntryTable<K, V, S>,
 }
 
 impl<K, V, S> fmt::Debug for OnceMap<K, V, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (len, pending) = {
-            let entries = self.entries.lock();
-            let pending = entries
-                .iter()
-                .filter(|entry| !entry.cell.initialized())
-                .count();
-            (entries.len(), pending)
-        };
+        let (len, pending) = self.table.len_and_pending();
         f.debug_struct("OnceMap")
             .field("len", &len)
             .field("pending", &pending)
             .finish()
-    }
-}
-
-impl<K, V, S> OnceMap<K, V, S>
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    fn get_or_insert(&self, key: K) -> Lookup<'_, K, V, S>
-    where
-        V: Clone,
-    {
-        let hash = self.hasher.hash_one(&key);
-        let mut entries = self.entries.lock();
-        if let Some(entry) = entries.find(hash, |entry| entry.key.eq(&key)) {
-            let entry = Arc::clone(entry);
-            drop(entries);
-            let lookup = self.classify(entry);
-            // Own the value or cleanup guard before a duplicate key can unwind or reenter.
-            drop(key);
-            return lookup;
-        }
-
-        let entry = Arc::new(Entry {
-            hash,
-            key,
-            cell: OnceCell::new(),
-        });
-        entries.insert_unique(hash, Arc::clone(&entry), |entry| entry.hash);
-        drop(entries);
-        self.classify(entry)
-    }
-
-    fn classify(&self, entry: Arc<Entry<K, V>>) -> Lookup<'_, K, V, S>
-    where
-        V: Clone,
-    {
-        match entry.cell.get().cloned() {
-            Some(value) => Lookup::Ready(value),
-            None => Lookup::Pending(ComputeCleanupGuard::new(self, entry)),
-        }
-    }
-
-    fn find_ready_entry<Q>(&self, key: &Q) -> Option<Arc<Entry<K, V>>>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        let hash = self.hasher.hash_one(key);
-        // A reader holding a pending entry would stop an abandoned computation from reclaiming it.
-        self.entries
-            .lock()
-            .find(hash, |entry| entry.key.borrow() == key)
-            .filter(|entry| entry.cell.initialized())
-            .cloned()
-    }
-
-    fn remove_entry<Q>(&self, key: &Q) -> Option<Arc<Entry<K, V>>>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        let hash = self.hasher.hash_one(key);
-        let mut entries = self.entries.lock();
-        let occupied = entries
-            .find_entry(hash, |entry| entry.key.borrow() == key)
-            .ok()?;
-        Some(occupied.remove().0)
-    }
-
-    fn cleanup_abandoned_entry(&self, entry: Arc<Entry<K, V>>) {
-        let removed = {
-            let mut entries = self.entries.lock();
-            let Ok(occupied) = entries.find_entry(entry.hash, |stored| Arc::ptr_eq(stored, &entry))
-            else {
-                drop(entries);
-                drop(entry);
-                return;
-            };
-
-            // With table ownership confirmed and new callers excluded, two owners means the table
-            // and this cleanup guard are the only remaining references.
-            if Arc::strong_count(&entry) == 2 && !entry.cell.initialized() {
-                Some(occupied.remove().0)
-            } else {
-                // A waiting cleanup must observe this call's reference being released before it
-                // can inspect the count while holding the table lock.
-                drop(entry);
-                None
-            }
-        };
-        // Key and value destructors must not run while the table is locked.
-        drop(removed);
     }
 }
 
@@ -173,76 +52,9 @@ where
     S: BuildHasher + Default,
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
-        let iter = iter.into_iter();
-        let hasher = S::default();
-        let mut entries = HashTable::<Arc<Entry<K, V>>>::with_capacity(iter.size_hint().0);
-        for (key, value) in iter {
-            let hash = hasher.hash_one(&key);
-            if let Some(stored) = entries.find_mut(hash, |stored| stored.key.eq(&key)) {
-                let stored = Arc::get_mut(stored).expect("building entry must be unique");
-                stored.hash = hash;
-                stored.key = key;
-                stored.cell = OnceCell::from_value(value);
-            } else {
-                entries.insert_unique(
-                    hash,
-                    Arc::new(Entry {
-                        hash,
-                        key,
-                        cell: OnceCell::from_value(value),
-                    }),
-                    |stored| stored.hash,
-                );
-            }
-        }
         Self {
-            entries: Mutex::new(entries),
-            hasher,
+            table: EntryTable::from_populated_iter(iter),
         }
-    }
-}
-
-// Holds one call's entry so Drop can clean it up if the computation is abandoned.
-struct ComputeCleanupGuard<'a, K, V, S>
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    once_map: &'a OnceMap<K, V, S>,
-    entry: Option<Arc<Entry<K, V>>>,
-}
-
-impl<'a, K, V, S> ComputeCleanupGuard<'a, K, V, S>
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    fn new(once_map: &'a OnceMap<K, V, S>, entry: Arc<Entry<K, V>>) -> Self {
-        Self {
-            once_map,
-            entry: Some(entry),
-        }
-    }
-
-    fn entry(&self) -> &Arc<Entry<K, V>> {
-        self.entry.as_ref().unwrap()
-    }
-
-    fn dismiss(mut self) {
-        drop(self.entry.take());
-    }
-}
-
-impl<K, V, S> Drop for ComputeCleanupGuard<'_, K, V, S>
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    fn drop(&mut self) {
-        let Some(entry) = self.entry.take() else {
-            return;
-        };
-        self.once_map.cleanup_abandoned_entry(entry);
     }
 }
 
@@ -277,8 +89,7 @@ where
     /// Creates a new OnceMap with the given hasher.
     pub fn with_hasher(hasher: S) -> Self {
         Self {
-            entries: Mutex::new(HashTable::new()),
-            hasher,
+            table: EntryTable::with_hasher(hasher),
         }
     }
 
@@ -349,14 +160,11 @@ where
     where
         F: AsyncFnOnce() -> Result<V, E>,
     {
-        let guard = match self.get_or_insert(key) {
-            Lookup::Ready(value) => return Ok(value),
-            Lookup::Pending(guard) => guard,
+        let guard = match self.table.get_or_insert_cached(key) {
+            Ok(value) => return Ok(value),
+            Err(guard) => guard,
         };
-
-        let result = guard.entry().cell.get_or_try_init(func).await?.clone();
-        guard.dismiss();
-        Ok(result)
+        Ok(guard.entry().cell.get_or_try_init(func).await?.clone())
     }
 
     /// Returns a clone of the value for the given key without waiting.
@@ -367,7 +175,7 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let entry = self.find_ready_entry(key)?;
+        let entry = self.table.find_ready(key)?;
         entry.cell.get().cloned()
     }
 
@@ -381,7 +189,7 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        drop(self.remove_entry(key));
+        drop(self.table.remove(key));
     }
 
     /// Evicts `key` from the map, returning a clone of its value if computation had completed.
@@ -395,7 +203,7 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let entry = self.remove_entry(key)?;
+        let entry = self.table.remove(key)?;
         entry.cell.get().cloned()
     }
 }

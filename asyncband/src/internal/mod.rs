@@ -66,8 +66,11 @@ pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> 
 #[allow(dead_code)]
 pub(crate) mod arena;
 
-#[cfg(feature = "latch")]
-pub(crate) mod countdown;
+#[cfg(any(feature = "once-map", feature = "singleflight"))]
+// `OnceMap` caches completed entries while `singleflight` detaches them on completion, so single-
+// feature builds leave the other primitive's table helpers unused.
+#[allow(dead_code)]
+pub(crate) mod coalesce;
 
 #[cfg(any(feature = "lazy-cell", feature = "once", feature = "once-cell"))]
 // `Once` does not reset or complete via `&mut self`, and `LazyCell` does not register pure

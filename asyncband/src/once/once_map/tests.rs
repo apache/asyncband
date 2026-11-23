@@ -25,6 +25,7 @@ use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::task::Poll;
 
 use super::*;
@@ -35,7 +36,7 @@ use crate::test_support::poll_once;
 
 impl<K, V, S> OnceMap<K, V, S> {
     fn len(&self) -> usize {
-        self.entries.lock().len()
+        self.table.len()
     }
 }
 
@@ -96,7 +97,7 @@ fn cancelled_compute_removes_empty_entry_during_get() {
 
     // A concurrent `get` holds its lookup result after releasing the table lock. Cancel the
     // computation inside that window.
-    let held_by_get = map.find_ready_entry("key");
+    let held_by_get = map.table.find_ready("key");
     drop(compute);
     drop(held_by_get);
 
@@ -150,15 +151,9 @@ fn failed_compute_preserves_entry_for_waiter_retry() {
 #[test]
 fn colliding_pending_entries_are_tracked_independently() {
     let map: OnceMap<usize, usize, BuildHasherDefault<ConstantHasher>> = OnceMap::default();
-    let Lookup::Pending(first) = map.get_or_insert(1) else {
-        unreachable!()
-    };
-    let Lookup::Pending(first_waiter) = map.get_or_insert(1) else {
-        unreachable!()
-    };
-    let Lookup::Pending(second) = map.get_or_insert(2) else {
-        unreachable!()
-    };
+    let first = map.table.get_or_insert(1);
+    let first_waiter = map.table.get_or_insert(1);
+    let second = map.table.get_or_insert(2);
 
     assert!(Arc::ptr_eq(first.entry(), first_waiter.entry()));
     assert!(!Arc::ptr_eq(first.entry(), second.entry()));
