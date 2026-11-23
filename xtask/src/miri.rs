@@ -1,0 +1,68 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+use std::process;
+
+use clap::Parser;
+
+use crate::PACKAGE_NAME;
+use crate::find_command;
+use crate::run_command;
+
+#[derive(Parser)]
+pub struct CommandMiri;
+
+impl CommandMiri {
+    pub fn run(self) {
+        run_command(make_miri_cmd(&[
+            "--package",
+            PACKAGE_NAME,
+            "--lib",
+            "--all-features",
+        ]));
+        let mut args = vec!["--package", "tests-integration"];
+        for target in [
+            "barrier_test",
+            "broadcast_test",
+            "completion_test",
+            "event_test",
+            "mpmc_test",
+            "mpsc_test",
+            "oneshot_test",
+            "phaser_test",
+            "pool_test",
+            "semaphore_ordering_test",
+            "shutdown_test",
+            "spmc_test",
+            "traits_test",
+            "unsafe_paths_test",
+            "upgradable_rwlock_test",
+            "waitgroup_test",
+            "watch_test",
+        ] {
+            args.extend(["--test", target]);
+        }
+        run_command(make_miri_cmd(&args));
+    }
+}
+
+fn make_miri_cmd(args: &[&str]) -> process::Command {
+    let mut cmd = find_command("cargo");
+    cmd.args(["+nightly", "miri", "test"]);
+    cmd.args(args);
+    cmd
+}
