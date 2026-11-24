@@ -202,3 +202,78 @@ fn concurrent_cancellation_preserves_capacity_and_message_order() {
     assert!(matches!(tx.try_reserve(), Err(TrySendError::Full(()))));
     drop(permits);
 }
+
+#[test]
+fn concurrent_try_send_cannot_barge_when_waiter_enqueues_during_release() {
+    use std::sync::Barrier;
+    use std::sync::atomic::AtomicU8;
+    use std::sync::atomic::Ordering;
+
+    let rounds = if cfg!(miri) { 12 } else { 512 };
+    for round in 0..rounds {
+        let (tx, mut rx) = mpsc::bounded(1);
+        let held_permit = if round % 2 == 0 {
+            tx.try_send(0).unwrap();
+            None
+        } else {
+            Some(tx.try_reserve().unwrap())
+        };
+
+        let mut waiting = pin!(tx.reserve());
+        let (waker, wakes) = WakeCounter::new();
+        let state = AtomicU8::new(0);
+        let start = Barrier::new(3);
+        let state_ref = &state;
+        let start_ref = &start;
+        let barge_tx = tx.clone();
+
+        thread::scope(|scope| {
+            let barger = scope.spawn(move || {
+                start_ref.wait();
+                loop {
+                    match state_ref.load(Ordering::Acquire) {
+                        0 => thread::yield_now(),
+                        1 => {
+                            for _ in 0..8 {
+                                assert_eq!(barge_tx.try_send(99), Err(TrySendError::Full(99)));
+                            }
+                            break;
+                        }
+                        2 => break,
+                        _ => unreachable!(),
+                    }
+                }
+            });
+
+            let releaser = scope.spawn(|| {
+                start_ref.wait();
+                if let Some(permit) = held_permit {
+                    drop(permit);
+                } else {
+                    assert_eq!(rx.try_recv(), Ok(0));
+                }
+            });
+
+            start.wait();
+            match poll_with(waiting.as_mut(), &waker) {
+                std::task::Poll::Pending => {
+                    state.store(1, Ordering::Release);
+                }
+                std::task::Poll::Ready(res) => {
+                    state.store(2, Ordering::Release);
+                    res.unwrap().send(1).unwrap();
+                }
+            }
+
+            releaser.join().unwrap();
+            barger.join().unwrap();
+        });
+
+        if state.load(Ordering::Acquire) == 1 {
+            assert_eq!(wakes.count(), 1);
+            let permit = expect_ready(poll_with(waiting.as_mut(), &waker)).unwrap();
+            permit.send(1).unwrap();
+        }
+        assert_eq!(rx.try_recv(), Ok(1));
+    }
+}

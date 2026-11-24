@@ -198,7 +198,7 @@ fn large_pending_send_preserves_ownership_on_cancel_and_disconnect() {
 }
 
 #[test]
-fn bounded_grants_capacity_in_fifo_order_past_inline_waker_batch_limit() {
+fn bounded_grants_capacity_in_fifo_order_across_many_waiters() {
     const CAPACITY: usize = 64;
     const WAITERS: usize = 40;
 

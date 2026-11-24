@@ -154,7 +154,6 @@ pub(crate) mod waitlist;
     feature = "latch",
     feature = "lazy-cell",
     feature = "mpmc",
-    feature = "mpsc",
     feature = "mutex",
     feature = "once",
     feature = "once-cell",

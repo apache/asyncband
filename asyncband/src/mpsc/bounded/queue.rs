@@ -42,7 +42,6 @@ use crate::internal::register_waker;
 use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
-use crate::internal::waker_batch::WakerBatch;
 use crate::mpsc::RecvError;
 use crate::mpsc::SendError;
 use crate::mpsc::TryRecvError;
@@ -52,20 +51,168 @@ const CACHE_LINE: usize = 128;
 const CLOSED_BIT: u64 = 1 << 63;
 const RX_WAITING_BIT: u64 = 1 << 62;
 const TICKET_MASK: u64 = (1 << 62) - 1;
-const MAX_FAST_CAPACITY: usize = (isize::MAX as usize) >> 1;
-const DISCONNECTED_BIAS: usize = MAX_FAST_CAPACITY + 1;
-const RX_CREDIT_WAITERS_BIT: usize = 1usize << (usize::BITS - 1);
+const ACQ_CLOSED_BIT: u64 = 1 << 63;
+const ACQ_WAITERS_BIT: u64 = 1 << 62;
+const ACQ_COUNT_MASK: u64 = (1 << 62) - 1;
+const RX_WAITERS_BIT: u64 = 1 << 63;
+const RX_REL_MASK: u64 = (1 << 63) - 1;
 
 #[repr(align(128))]
 struct CachePadded<T>(T);
 
 #[cfg(target_has_atomic = "64")]
-struct Tail(AtomicU64);
+struct Atomic64(AtomicU64);
 
 #[cfg(target_has_atomic = "64")]
+impl Atomic64 {
+    const fn new(val: u64) -> Self {
+        Self(AtomicU64::new(val))
+    }
+
+    #[inline]
+    fn load(&self, ordering: Ordering) -> u64 {
+        self.0.load(ordering)
+    }
+
+    #[inline]
+    fn fetch_add(&self, delta: u64, ordering: Ordering) -> u64 {
+        self.0.fetch_add(delta, ordering)
+    }
+
+    #[inline]
+    fn fetch_sub(&self, delta: u64, ordering: Ordering) -> u64 {
+        self.0.fetch_sub(delta, ordering)
+    }
+
+    #[inline]
+    fn fetch_or(&self, bits: u64, ordering: Ordering) -> u64 {
+        self.0.fetch_or(bits, ordering)
+    }
+
+    #[inline]
+    fn fetch_and(&self, mask: u64, ordering: Ordering) -> u64 {
+        self.0.fetch_and(mask, ordering)
+    }
+
+    #[inline]
+    fn fetch_max(&self, val: u64, ordering: Ordering) -> u64 {
+        self.0.fetch_max(val, ordering)
+    }
+
+    #[inline]
+    fn compare_exchange(
+        &self,
+        current: u64,
+        new: u64,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<u64, u64> {
+        self.0.compare_exchange(current, new, success, failure)
+    }
+
+    #[inline]
+    fn compare_exchange_weak(
+        &self,
+        current: u64,
+        new: u64,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<u64, u64> {
+        self.0.compare_exchange_weak(current, new, success, failure)
+    }
+}
+
+#[cfg(not(target_has_atomic = "64"))]
+struct Atomic64(Mutex<u64>);
+
+#[cfg(not(target_has_atomic = "64"))]
+impl Atomic64 {
+    const fn new(val: u64) -> Self {
+        Self(Mutex::new(val))
+    }
+
+    #[inline]
+    fn load(&self, _ordering: Ordering) -> u64 {
+        *self.0.lock()
+    }
+
+    #[inline]
+    fn fetch_add(&self, delta: u64, _ordering: Ordering) -> u64 {
+        let mut guard = self.0.lock();
+        let prev = *guard;
+        *guard = prev.wrapping_add(delta);
+        prev
+    }
+
+    #[inline]
+    fn fetch_sub(&self, delta: u64, _ordering: Ordering) -> u64 {
+        let mut guard = self.0.lock();
+        let prev = *guard;
+        *guard = prev.wrapping_sub(delta);
+        prev
+    }
+
+    #[inline]
+    fn fetch_or(&self, bits: u64, _ordering: Ordering) -> u64 {
+        let mut guard = self.0.lock();
+        let prev = *guard;
+        *guard = prev | bits;
+        prev
+    }
+
+    #[inline]
+    fn fetch_and(&self, mask: u64, _ordering: Ordering) -> u64 {
+        let mut guard = self.0.lock();
+        let prev = *guard;
+        *guard = prev & mask;
+        prev
+    }
+
+    #[inline]
+    fn fetch_max(&self, val: u64, _ordering: Ordering) -> u64 {
+        let mut guard = self.0.lock();
+        let prev = *guard;
+        if val > prev {
+            *guard = val;
+        }
+        prev
+    }
+
+    #[inline]
+    fn compare_exchange(
+        &self,
+        current: u64,
+        new: u64,
+        _success: Ordering,
+        _failure: Ordering,
+    ) -> Result<u64, u64> {
+        let mut guard = self.0.lock();
+        let actual = *guard;
+        if actual == current {
+            *guard = new;
+            Ok(actual)
+        } else {
+            Err(actual)
+        }
+    }
+
+    #[inline]
+    fn compare_exchange_weak(
+        &self,
+        current: u64,
+        new: u64,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<u64, u64> {
+        self.compare_exchange(current, new, success, failure)
+    }
+}
+
+struct Tail(Atomic64);
+
 impl Tail {
     const fn new() -> Self {
-        Self(AtomicU64::new(0))
+        Self(Atomic64::new(0))
     }
 
     #[inline]
@@ -78,7 +225,11 @@ impl Tail {
         // A sender or `Permit` may acquire capacity before an earlier occupant of the same ring
         // slot is consumed while other permits cycle `tail` forward by `capacity`, so claiming a
         // ticket must be `AcqRel` to carry slot-reuse happens-before edges across `tail`.
-        self.0.fetch_add(1, Ordering::AcqRel)
+        let raw = self.0.fetch_add(1, Ordering::AcqRel);
+        if (raw & TICKET_MASK) >= TICKET_MASK - 1 {
+            process::abort();
+        }
+        raw
     }
 
     #[inline]
@@ -97,48 +248,9 @@ impl Tail {
     }
 }
 
-#[cfg(not(target_has_atomic = "64"))]
-struct Tail(Mutex<u64>);
-
-#[cfg(not(target_has_atomic = "64"))]
-impl Tail {
-    const fn new() -> Self {
-        Self(Mutex::new(0))
-    }
-
-    #[inline]
-    fn load(&self, _ordering: Ordering) -> u64 {
-        *self.0.lock()
-    }
-
-    #[inline]
-    fn claim(&self) -> u64 {
-        let mut guard = self.0.lock();
-        let prev = *guard;
-        *guard = prev + 1;
-        prev
-    }
-
-    #[inline]
-    fn set_rx_waiting(&self) -> u64 {
-        let mut guard = self.0.lock();
-        let prev = *guard;
-        *guard = prev | RX_WAITING_BIT;
-        prev
-    }
-
-    #[inline]
-    fn clear_rx_waiting(&self) {
-        *self.0.lock() &= !RX_WAITING_BIT;
-    }
-
-    #[inline]
-    fn close(&self) -> u64 {
-        let mut guard = self.0.lock();
-        let prev = *guard;
-        *guard = prev | CLOSED_BIT;
-        prev
-    }
+struct ProducerPermits {
+    acquired: Atomic64,
+    cached_rx_rel: Atomic64,
 }
 
 struct SlotLayout {
@@ -286,7 +398,6 @@ impl<T> SlotRing<T> {
 struct EndpointState {
     senders: AtomicUsize,
     rx_alive: AtomicBool,
-    has_waiting_senders: AtomicBool,
     control: Mutex<Control>,
 }
 
@@ -355,13 +466,12 @@ impl<T> Drop for DrainGuard<'_, T> {
 }
 
 // `#[repr(C)]` keeps immutable ring geometry on the leading cache line, separate from contended
-// permit, receiver-credit, producer-tail, and endpoint lines.
+// producer-permit, receiver-release, producer-tail, and endpoint lines.
 #[repr(C)]
 pub struct Shared<T> {
     ring: SlotRing<T>,
-    credit_limit: usize,
-    permits: CachePadded<AtomicUsize>,
-    rx_credit: CachePadded<AtomicUsize>,
+    permits: CachePadded<ProducerPermits>,
+    rx_state: CachePadded<Atomic64>,
     tail: CachePadded<Tail>,
     endpoint: CachePadded<EndpointState>,
 }
@@ -376,23 +486,18 @@ impl<T> RefUnwindSafe for Shared<T> {}
 impl<T> Shared<T> {
     #[track_caller]
     pub fn new(capacity: NonZeroUsize) -> Arc<Self> {
-        let buffer = capacity.get();
         let ring = SlotRing::new(capacity);
-        let credit_limit = if (8..=MAX_FAST_CAPACITY).contains(&buffer) {
-            (buffer / 4).min(32)
-        } else {
-            0
-        };
         Arc::new(Self {
             ring,
-            credit_limit,
-            permits: CachePadded(AtomicUsize::new(buffer)),
-            rx_credit: CachePadded(AtomicUsize::new(0)),
+            permits: CachePadded(ProducerPermits {
+                acquired: Atomic64::new(0),
+                cached_rx_rel: Atomic64::new(0),
+            }),
+            rx_state: CachePadded(Atomic64::new(0)),
             tail: CachePadded(Tail::new()),
             endpoint: CachePadded(EndpointState {
                 senders: AtomicUsize::new(1),
                 rx_alive: AtomicBool::new(true),
-                has_waiting_senders: AtomicBool::new(false),
                 control: Mutex::new(Control {
                     rx_alive: true,
                     recv_waker: None,
@@ -404,9 +509,9 @@ impl<T> Shared<T> {
 
     #[inline]
     pub fn clone_sender(&self) {
-        if self.endpoint.0.senders.fetch_add(1, Ordering::Relaxed) >= MAX_FAST_CAPACITY {
-            process::abort();
-        }
+        // `BoundedSender::clone` clones `Arc<Shared<T>>` first, which already aborts at
+        // `isize::MAX` before `senders` can overflow.
+        self.endpoint.0.senders.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
@@ -436,22 +541,20 @@ impl<T> Shared<T> {
         let (final_tail, recv_waker, mut waiters) = {
             let mut control = self.endpoint.0.control.lock();
             control.rx_alive = false;
-            // Seal `tail` and poison `permits` under `control` before storing `rx_alive = false`
-            // so any caller observing disconnection immediately sees `has_receiver() == false`.
+            // Seal `acquired` and `tail` under `control` before storing `rx_alive = false` so no
+            // concurrent send on a non-full channel can report `Full` during teardown, and any
+            // caller observing disconnection immediately observes `has_receiver() == false`.
+            self.permits
+                .0
+                .acquired
+                .fetch_or(ACQ_CLOSED_BIT, Ordering::SeqCst);
+            self.permits
+                .0
+                .acquired
+                .fetch_and(!ACQ_WAITERS_BIT, Ordering::SeqCst);
+            self.rx_state.0.fetch_and(!RX_WAITERS_BIT, Ordering::SeqCst);
             let final_tail = self.tail.0.close() & TICKET_MASK;
             self.tail.0.clear_rx_waiting();
-            self.rx_credit.0.store(0, Ordering::SeqCst);
-            if self.uses_cas_permits() {
-                self.permits.0.store(0, Ordering::SeqCst);
-            } else {
-                self.permits
-                    .0
-                    .fetch_sub(DISCONNECTED_BIAS, Ordering::SeqCst);
-            }
-            self.endpoint
-                .0
-                .has_waiting_senders
-                .store(false, Ordering::Release);
             self.endpoint.0.rx_alive.store(false, Ordering::Release);
             let recv_waker = control.recv_waker.take();
             let waiters = mem::replace(&mut control.send_waiters, WaitList::new());
@@ -488,132 +591,132 @@ impl<T> Shared<T> {
         (self.tail.0.load(Ordering::Acquire) & TICKET_MASK) == head
     }
 
-    #[inline(always)]
-    fn uses_cas_permits(&self) -> bool {
-        size_of::<T>() == 0 && self.ring.capacity.get() > MAX_FAST_CAPACITY
-    }
-
-    #[inline]
-    fn has_positive_permits(&self, raw: usize) -> bool {
-        if self.uses_cas_permits() {
-            raw != 0
-        } else {
-            (raw as isize) > 0
-        }
-    }
-
     #[inline]
     fn sync_waiting_flag_locked(&self, control: &Control) {
         if control.send_waiters.is_empty() {
-            if self.credit_limit != 0 {
-                self.rx_credit
-                    .0
-                    .fetch_and(!RX_CREDIT_WAITERS_BIT, Ordering::Release);
-            }
-            self.endpoint
+            self.rx_state
                 .0
-                .has_waiting_senders
-                .store(false, Ordering::Release);
-        }
-    }
-
-    #[inline]
-    fn flush_rx_credit_raw(&self) -> (isize, bool) {
-        let prev = self
-            .rx_credit
-            .0
-            .fetch_and(RX_CREDIT_WAITERS_BIT, Ordering::SeqCst);
-        let had_waiters = (prev & RX_CREDIT_WAITERS_BIT) != 0;
-        let credit = prev & !RX_CREDIT_WAITERS_BIT;
-        if credit == 0 {
-            return (0, had_waiters);
-        }
-        let after = self
-            .permits
-            .0
-            .fetch_add(credit, Ordering::SeqCst)
-            .wrapping_add(credit) as isize;
-        (after, had_waiters)
-    }
-
-    #[inline]
-    fn flush_rx_credit(&self) {
-        let (after, had_waiters) = self.flush_rx_credit_raw();
-        if after > 0 && (had_waiters || self.endpoint.0.has_waiting_senders.load(Ordering::SeqCst))
-        {
-            self.reclaim_for_waiters();
+                .fetch_and(!RX_WAITERS_BIT, Ordering::Release);
+            self.permits
+                .0
+                .acquired
+                .fetch_and(!ACQ_WAITERS_BIT, Ordering::Release);
         }
     }
 
     #[inline]
     pub fn try_acquire_capacity(&self) -> Result<(), TrySendError<()>> {
-        if self.uses_cas_permits() {
-            return self.try_acquire_cas();
-        }
-        if (self.permits.0.load(Ordering::Relaxed) as isize) <= 0
-            && !self.try_refill_from_rx_credit()
-        {
-            return Err(self.full_or_disconnected());
-        }
-        if (self.permits.0.fetch_sub(1, Ordering::Acquire) as isize) > 0 {
-            Ok(())
-        } else {
-            self.rollback_failed_acquire()
-        }
-    }
-
-    #[inline]
-    fn try_refill_from_rx_credit(&self) -> bool {
-        if self.credit_limit == 0
-            || (self.rx_credit.0.load(Ordering::Acquire) & !RX_CREDIT_WAITERS_BIT) == 0
-        {
-            return false;
-        }
-        self.flush_rx_credit();
-        (self.permits.0.load(Ordering::Relaxed) as isize) > 0
-    }
-
-    #[inline]
-    fn full_or_disconnected(&self) -> TrySendError<()> {
-        if self.has_receiver() {
-            TrySendError::Full(())
-        } else {
-            TrySendError::Disconnected(())
-        }
-    }
-
-    #[cold]
-    fn rollback_failed_acquire(&self) -> Result<(), TrySendError<()>> {
-        let restored = self.permits.0.fetch_add(1, Ordering::SeqCst) as isize;
-        if restored >= 0 && self.endpoint.0.has_waiting_senders.load(Ordering::SeqCst) {
-            self.reclaim_for_waiters();
-        }
-        Err(self.full_or_disconnected())
-    }
-
-    #[cold]
-    fn try_acquire_cas(&self) -> Result<(), TrySendError<()>> {
-        if self.has_receiver() && self.try_decrement_permits(Ordering::AcqRel, Ordering::Acquire) {
-            Ok(())
-        } else {
-            Err(self.full_or_disconnected())
-        }
-    }
-
-    #[inline]
-    fn try_decrement_permits(&self, success: Ordering, failure: Ordering) -> bool {
-        let mut cur = self.permits.0.load(failure);
+        let cap = self.ring.capacity.get() as u64;
+        let cached_rx = self.permits.0.cached_rx_rel.load(Ordering::Acquire);
+        let mut raw_acq = self.permits.0.acquired.load(Ordering::Relaxed);
         loop {
-            if !self.has_positive_permits(cur) {
+            if raw_acq & ACQ_CLOSED_BIT != 0 {
+                self.on_closed_tail();
+                return Err(TrySendError::Disconnected(()));
+            }
+            let acq = raw_acq & ACQ_COUNT_MASK;
+            if acq.saturating_sub(cached_rx) >= cap {
+                return self.try_acquire_capacity_reload(cap, cached_rx, raw_acq);
+            }
+            if acq >= ACQ_COUNT_MASK - 1 {
+                process::abort();
+            }
+            match self.permits.0.acquired.compare_exchange_weak(
+                raw_acq,
+                raw_acq + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(actual) => raw_acq = actual,
+            }
+        }
+    }
+
+    #[cold]
+    fn try_acquire_capacity_reload(
+        &self,
+        cap: u64,
+        mut cached_rx: u64,
+        mut raw_acq: u64,
+    ) -> Result<(), TrySendError<()>> {
+        loop {
+            let true_rx = self.rx_state.0.load(Ordering::Acquire) & RX_REL_MASK;
+            if true_rx != cached_rx {
+                self.permits
+                    .0
+                    .cached_rx_rel
+                    .fetch_max(true_rx, Ordering::Release);
+                cached_rx = true_rx;
+            }
+            let fresh_acq = self.permits.0.acquired.load(Ordering::Acquire);
+            if fresh_acq & ACQ_CLOSED_BIT != 0 {
+                self.on_closed_tail();
+                return Err(TrySendError::Disconnected(()));
+            }
+            let acq = fresh_acq & ACQ_COUNT_MASK;
+            if acq.saturating_sub(cached_rx) < cap {
+                if acq >= ACQ_COUNT_MASK - 1 {
+                    process::abort();
+                }
+                match self.permits.0.acquired.compare_exchange(
+                    fresh_acq,
+                    fresh_acq + 1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => return Ok(()),
+                    Err(actual) => {
+                        raw_acq = actual;
+                        continue;
+                    }
+                }
+            }
+            if fresh_acq != raw_acq {
+                raw_acq = fresh_acq;
+                continue;
+            }
+            let verify_rx = self.rx_state.0.load(Ordering::Acquire) & RX_REL_MASK;
+            if verify_rx == cached_rx {
+                return Err(TrySendError::Full(()));
+            }
+            self.permits
+                .0
+                .cached_rx_rel
+                .fetch_max(verify_rx, Ordering::Release);
+            cached_rx = verify_rx;
+        }
+    }
+
+    fn try_acquire_permit_seqcst(&self) -> bool {
+        let cap = self.ring.capacity.get() as u64;
+        let mut true_rx = self.rx_state.0.load(Ordering::SeqCst) & RX_REL_MASK;
+        let mut raw_acq = self.permits.0.acquired.load(Ordering::SeqCst);
+        loop {
+            if raw_acq & ACQ_CLOSED_BIT != 0 {
                 return false;
             }
-            match self
-                .permits
-                .0
-                .compare_exchange_weak(cur, cur.wrapping_sub(1), success, failure)
-            {
+            let acq = raw_acq & ACQ_COUNT_MASK;
+            if acq.saturating_sub(true_rx) >= cap {
+                let latest_rx = self.rx_state.0.load(Ordering::SeqCst) & RX_REL_MASK;
+                if latest_rx != true_rx {
+                    true_rx = latest_rx;
+                    raw_acq = self.permits.0.acquired.load(Ordering::SeqCst);
+                    continue;
+                }
+                return false;
+            }
+            if acq >= ACQ_COUNT_MASK - 1 {
+                process::abort();
+            }
+            match self.permits.0.acquired.compare_exchange(
+                raw_acq,
+                raw_acq + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
                 Ok(_) => return true,
-                Err(actual) => cur = actual,
+                Err(actual) => raw_acq = actual,
             }
         }
     }
@@ -642,33 +745,20 @@ impl<T> Shared<T> {
         }
 
         if control.send_waiters.is_empty() {
-            self.endpoint
+            self.rx_state.0.fetch_or(RX_WAITERS_BIT, Ordering::SeqCst);
+            self.permits
                 .0
-                .has_waiting_senders
-                .store(true, Ordering::SeqCst);
-            if self.credit_limit != 0 {
-                self.rx_credit
-                    .0
-                    .fetch_or(RX_CREDIT_WAITERS_BIT, Ordering::SeqCst);
+                .acquired
+                .fetch_or(ACQ_WAITERS_BIT, Ordering::SeqCst);
+            if self.try_acquire_permit_seqcst() {
+                self.sync_waiting_flag_locked(&control);
+                return Poll::Ready(Ok(()));
             }
-        }
-        if self.credit_limit != 0 {
-            self.flush_rx_credit_raw();
-        }
-        if control.send_waiters.is_empty()
-            && self.try_decrement_permits(Ordering::SeqCst, Ordering::SeqCst)
-        {
-            self.sync_waiting_flag_locked(&control);
-            return Poll::Ready(Ok(()));
         }
 
         let waiter = SendWaiter::Waiting(cx.waker().clone());
         *waiter_slot = Some(control.send_waiters.push_back(waiter));
-        let need_reclaim = self.has_positive_permits(self.permits.0.load(Ordering::SeqCst));
         drop(control);
-        if need_reclaim {
-            self.reclaim_for_waiters();
-        }
         Poll::Pending
     }
 
@@ -697,35 +787,73 @@ impl<T> Shared<T> {
 
     #[inline]
     fn release_from_receiver(&self) {
-        if self.credit_limit == 0 {
-            self.release_capacity();
-            return;
+        let mut cur = self.rx_state.0.load(Ordering::Relaxed);
+        loop {
+            if (cur & RX_WAITERS_BIT) != 0 {
+                self.release_from_receiver_slow();
+                return;
+            }
+            if (cur & RX_REL_MASK) >= RX_REL_MASK - 1 {
+                process::abort();
+            }
+            match self.rx_state.0.compare_exchange_weak(
+                cur,
+                cur + 1,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(actual) => cur = actual,
+            }
         }
-        // `RX_CREDIT_WAITERS_BIT` occupies the high bit, so one unsigned check flushes both at
-        // `credit_limit` and immediately whenever any sender is waiting for capacity.
-        let prev = self.rx_credit.0.fetch_add(1, Ordering::Release);
-        if prev.wrapping_add(1) >= self.credit_limit {
-            self.flush_rx_credit();
+    }
+
+    #[cold]
+    fn release_from_receiver_slow(&self) {
+        let wake = {
+            let mut control = self.endpoint.0.control.lock();
+            if !control.rx_alive {
+                None
+            } else if let Some(waker) = control.send_waiters.grant_one() {
+                // Transfer the consumed message's `acquired` unit directly to the oldest queued
+                // waiter without exposing free capacity to concurrent `try_send` callers.
+                self.sync_waiting_flag_locked(&control);
+                Some(waker)
+            } else {
+                self.sync_waiting_flag_locked(&control);
+                let prev = self.rx_state.0.fetch_add(1, Ordering::Release);
+                if (prev & RX_REL_MASK) >= RX_REL_MASK - 1 {
+                    process::abort();
+                }
+                None
+            }
+        };
+        if let Some(waker) = wake {
+            waker.wake();
         }
     }
 
     #[inline]
     pub fn release_capacity(&self) {
-        if !self.has_receiver() {
-            return;
-        }
-        if self.endpoint.0.has_waiting_senders.load(Ordering::Acquire) {
-            self.release_capacity_slow();
-            return;
-        }
-        let prev = self.permits.0.fetch_add(1, Ordering::SeqCst);
-        let became_available = if self.uses_cas_permits() {
-            prev == 0
-        } else {
-            (prev as isize) >= 0
-        };
-        if became_available && self.endpoint.0.has_waiting_senders.load(Ordering::SeqCst) {
-            self.reclaim_for_waiters();
+        let mut cur = self.permits.0.acquired.load(Ordering::Relaxed);
+        loop {
+            if cur & ACQ_CLOSED_BIT != 0 {
+                return;
+            }
+            if cur & ACQ_WAITERS_BIT != 0 {
+                self.release_capacity_slow();
+                return;
+            }
+            debug_assert!((cur & ACQ_COUNT_MASK) > 0);
+            match self.permits.0.acquired.compare_exchange_weak(
+                cur,
+                cur - 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(actual) => cur = actual,
+            }
         }
     }
 
@@ -740,36 +868,6 @@ impl<T> Shared<T> {
         }
     }
 
-    #[cold]
-    fn reclaim_for_waiters(&self) {
-        loop {
-            let mut batch = WakerBatch::new();
-            let done = {
-                let mut control = self.endpoint.0.control.lock();
-                if !control.rx_alive {
-                    return;
-                }
-                while !batch.will_spill() && !control.send_waiters.is_empty() {
-                    if !self.try_decrement_permits(Ordering::SeqCst, Ordering::SeqCst) {
-                        break;
-                    }
-                    let waker = control
-                        .send_waiters
-                        .grant_one()
-                        .expect("checked non-empty send_waiters");
-                    self.sync_waiting_flag_locked(&control);
-                    batch.push(waker);
-                }
-                control.send_waiters.is_empty()
-                    || !self.has_positive_permits(self.permits.0.load(Ordering::SeqCst))
-            };
-            batch.wake_all();
-            if done {
-                return;
-            }
-        }
-    }
-
     fn release_capacity_locked(&self, control: &mut Control) -> Option<Waker> {
         if !control.rx_alive {
             return None;
@@ -778,7 +876,8 @@ impl<T> Shared<T> {
             self.sync_waiting_flag_locked(control);
             return Some(waker);
         }
-        self.permits.0.fetch_add(1, Ordering::SeqCst);
+        self.sync_waiting_flag_locked(control);
+        self.permits.0.acquired.fetch_sub(1, Ordering::AcqRel);
         None
     }
 

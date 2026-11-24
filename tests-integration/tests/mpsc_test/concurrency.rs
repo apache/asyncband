@@ -341,3 +341,76 @@ fn selection_preserves_messages_across_cancelled_receives() {
     assert_eq!(bounded_rx.try_recv(), Ok(1));
     assert_eq!(unbounded_rx.try_recv(), Ok(2));
 }
+
+#[test]
+fn bounded_receiver_drop_never_reports_full_on_non_full_channel() {
+    let rounds = if cfg!(miri) { 16 } else { 512 };
+    for _ in 0..rounds {
+        let (tx, rx) = mpsc::bounded::<usize>(8);
+        let start = Barrier::new(4);
+        thread::scope(|scope| {
+            for worker in 0..3 {
+                let tx = tx.clone();
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    if worker % 2 == 0 {
+                        match tx.try_send(worker) {
+                            Ok(()) => {}
+                            Err(TrySendError::Disconnected(_)) => {
+                                assert!(tx.is_disconnected());
+                            }
+                            Err(TrySendError::Full(_)) => {
+                                panic!("3 sends into capacity 8 cannot fill the channel");
+                            }
+                        }
+                    } else {
+                        match tx.try_reserve() {
+                            Ok(permit) => {
+                                let _ = permit.send(worker);
+                            }
+                            Err(TrySendError::Disconnected(())) => {
+                                assert!(tx.is_disconnected());
+                            }
+                            Err(TrySendError::Full(())) => {
+                                panic!("3 reservations on capacity 8 cannot fill the channel");
+                            }
+                        }
+                    }
+                });
+            }
+            start.wait();
+            drop(rx);
+        });
+    }
+}
+
+#[test]
+fn bounded_completed_receives_free_exact_capacity_under_concurrent_try_sends() {
+    let rounds = if cfg!(miri) { 8 } else { 256 };
+    for _ in 0..rounds {
+        let (tx, mut rx) = mpsc::bounded(64);
+        for i in 0..64 {
+            tx.try_send(i).unwrap();
+        }
+        // Free 15 slots (below a typical batch threshold) before launching 12 concurrent sends, so
+        // total occupancy never exceeds 61 / 64 slots and no `try_send` may report `Full`.
+        for i in 0..15 {
+            assert_eq!(rx.try_recv(), Ok(i));
+        }
+
+        let start = Barrier::new(4);
+        thread::scope(|scope| {
+            for producer in 0..4 {
+                let tx = tx.clone();
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    for offset in 0..3 {
+                        tx.try_send(100 + producer * 3 + offset).unwrap();
+                    }
+                });
+            }
+        });
+    }
+}

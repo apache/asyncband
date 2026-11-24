@@ -41,10 +41,9 @@ pub struct BoundedSender<T> {
 impl<T> Clone for BoundedSender<T> {
     #[inline]
     fn clone(&self) -> Self {
-        self.shared.clone_sender();
-        BoundedSender {
-            shared: self.shared.clone(),
-        }
+        let shared = self.shared.clone();
+        shared.clone_sender();
+        BoundedSender { shared }
     }
 }
 
