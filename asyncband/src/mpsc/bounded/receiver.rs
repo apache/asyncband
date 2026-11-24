@@ -16,26 +16,23 @@
 // under the License.
 
 use std::fmt;
-use std::future::poll_fn;
-use std::mem;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::internal::mutex::Mutex;
-use crate::internal::register_waker;
-use crate::internal::waitlist::WaitList;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
-use crate::mpsc::bounded::State;
-use crate::mpsc::bounded::Waiter;
+use crate::mpsc::bounded::queue::Shared;
 
 /// The receiving endpoint of a bounded mpsc channel.
 ///
 /// Instances are created by the [`bounded`](crate::mpsc::bounded) function. Dropping the receiver
 /// discards queued values and causes pending `send` and `reserve` operations to fail.
 pub struct BoundedReceiver<T> {
-    shared: Arc<Mutex<State<T>>>,
+    shared: Arc<Shared<T>>,
+    head: u64,
 }
 
 impl<T> fmt::Debug for BoundedReceiver<T> {
@@ -46,33 +43,22 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        let (queue, recv_waker, mut waiters) = {
-            let mut state = self.shared.lock();
-            state.receiver = false;
-            let queue = mem::take(&mut state.queue);
-            let recv_waker = state.recv_waker.take();
-            // The disconnected state invalidates both queued and granted waiter IDs.
-            let waiters = mem::replace(&mut state.send_waiters, WaitList::new());
-            (queue, recv_waker, waiters)
-        };
-        // Notify blocked senders before destroying buffered values, whose destructors may panic.
-        while let Some((id, _)) = waiters.unlink_first_waiter() {
-            let Waiter::Waiting(waker) = waiters.remove_unlinked_waiter(id) else {
-                unreachable!("only waiting senders remain linked");
-            };
-            waker.wake();
-        }
-        drop(recv_waker);
-        drop(queue);
+        self.shared.drop_receiver(self.head);
     }
 }
 
 impl<T> BoundedReceiver<T> {
-    pub(super) fn new(shared: Arc<Mutex<State<T>>>) -> Self {
-        Self { shared }
+    pub(in crate::mpsc::bounded) fn new(shared: Arc<Shared<T>>) -> Self {
+        Self { shared, head: 0 }
     }
 
-    /// Receives the next queued value without waiting for a message, freeing one capacity slot.
+    /// Receives the next queued value without waiting for future sends, freeing one capacity slot.
+    ///
+    /// Only messages that have already claimed a queue slot are visible; held
+    /// [`Permit`](super::Permit)s and concurrent sends that have acquired capacity but not yet
+    /// claimed a slot are not queued values, so [`TryRecvError::Empty`] may be returned while
+    /// capacity is already full. If the sender that claimed the head slot is still copying its
+    /// value, this call briefly waits for that slot write to finish before returning the message.
     ///
     /// # Errors
     ///
@@ -96,12 +82,13 @@ impl<T> BoundedReceiver<T> {
     /// drop(tx);
     /// assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
+    #[inline]
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let (value, wake) = self.shared.lock().dequeue()?;
-        if let Some(waker) = wake {
-            waker.wake();
-        }
-        Ok(value)
+        let head = self.head;
+        let base = self.shared.claim_read_slot(head)?;
+        self.head = head + 1;
+        // SAFETY: `claim_read_slot` confirmed readiness of `base` at `head`.
+        Ok(unsafe { self.shared.read_claimed_slot(base) })
     }
 
     /// Waits for and receives the next queued value, freeing one capacity slot.
@@ -117,6 +104,10 @@ impl<T> BoundedReceiver<T> {
     ///
     /// Dropping a pending future does not remove a value from the queue. A later call on this
     /// receiver can still receive the next value.
+    ///
+    /// # Panics
+    ///
+    /// Polling the returned future after it has returned [`Poll::Ready`] panics.
     ///
     /// # Examples
     ///
@@ -135,8 +126,11 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(rx.recv().await, Err(mpsc::RecvError::Disconnected));
     /// # }
     /// ```
-    pub async fn recv(&mut self) -> Result<T, RecvError> {
-        poll_fn(|cx| self.poll_recv(cx)).await
+    #[inline]
+    pub fn recv(&mut self) -> impl Future<Output = Result<T, RecvError>> {
+        Recv {
+            receiver: Some(self),
+        }
     }
 
     /// Returns `true` if every sender has been dropped.
@@ -158,15 +152,19 @@ impl<T> BoundedReceiver<T> {
     /// assert!(rx.is_disconnected());
     /// assert_eq!(rx.try_recv(), Ok(1));
     /// ```
+    #[inline]
     pub fn is_disconnected(&self) -> bool {
-        self.shared.lock().senders == 0
+        !self.shared.has_senders()
     }
 
-    /// Returns `true` if no queued value is waiting to be received.
+    /// Returns `true` if no queued value has claimed a slot for delivery.
     ///
-    /// Held permits and sends still waiting for capacity are not queued values. A `true` result
-    /// may become stale as senders add values. A `false` result guarantees that the next receive
-    /// on this receiver finds a value, because receiving requires `&mut self`.
+    /// Held [`Permit`](super::Permit)s, sends waiting for capacity, and concurrent sends that have
+    /// acquired capacity but not yet claimed a queue slot are not queued values. A `true` result
+    /// may become stale as senders publish values. A `false` result means the head slot has been
+    /// claimed, so the next receive on this receiver will observe a message, though
+    /// [`recv`](Self::recv) may suspend once and [`try_recv`](Self::try_recv) may briefly wait if
+    /// the sender is still copying its value into that slot.
     ///
     /// # Examples
     ///
@@ -180,32 +178,40 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Ok(1));
     /// assert!(rx.is_empty());
     /// ```
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.shared.lock().queue.is_empty()
+        self.shared.is_empty_at(self.head)
     }
+}
 
-    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
-        let mut state = self.shared.lock();
-        match state.dequeue() {
-            Ok((value, wake)) => {
-                drop(state);
-                if let Some(waker) = wake {
-                    waker.wake();
-                }
-                Poll::Ready(Ok(value))
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+struct Recv<'a, T> {
+    receiver: Option<&'a mut BoundedReceiver<T>>,
+}
+
+impl<T> Future for Recv<'_, T> {
+    type Output = Result<T, RecvError>;
+
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let Some(receiver) = this.receiver.as_deref_mut() else {
+            panic!("bounded mpsc recv polled after completion");
+        };
+        let head = receiver.head;
+        match receiver.shared.poll_claim_read_slot(head, cx) {
+            Poll::Ready(Ok(base)) => {
+                receiver.head = head + 1;
+                // SAFETY: `poll_claim_read_slot` confirmed readiness of `base` at `head`.
+                let out = unsafe { receiver.shared.read_claimed_slot_poll(base) };
+                this.receiver = None;
+                out
             }
-            Err(TryRecvError::Disconnected) => {
-                let old = state.recv_waker.take();
-                drop(state);
-                drop(old);
-                Poll::Ready(Err(RecvError::Disconnected))
+            Poll::Ready(Err(err)) => {
+                this.receiver = None;
+                Poll::Ready(Err(err))
             }
-            Err(TryRecvError::Empty) => {
-                let old = register_waker(&mut state.recv_waker, cx.waker());
-                drop(state);
-                drop(old);
-                Poll::Pending
-            }
+            Poll::Pending => Poll::Pending,
         }
     }
 }

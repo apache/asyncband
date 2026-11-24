@@ -53,7 +53,7 @@ fn unbounded_try_recv_preserves_order_and_reports_state() {
 
 #[test]
 fn bounded_try_send_respects_capacity_and_order() {
-    for capacity in [1, 3, 4, 16] {
+    for capacity in [1, 3, 4, 8, 16, 64, 65, 128] {
         let (tx, mut rx) = mpsc::bounded(capacity);
 
         for i in 0..capacity {
@@ -62,7 +62,16 @@ fn bounded_try_send_respects_capacity_and_order() {
 
         assert_eq!(tx.try_send(capacity), Err(TrySendError::Full(capacity)));
 
-        for i in 0..capacity {
+        // Consuming a single slot from a full channel must immediately make room for one send
+        // even when receiver capacity credits are batched internally.
+        assert_eq!(rx.try_recv(), Ok(0));
+        tx.try_send(capacity).unwrap();
+        assert_eq!(
+            tx.try_send(capacity + 1),
+            Err(TrySendError::Full(capacity + 1))
+        );
+
+        for i in 1..=capacity {
             assert_eq!(rx.try_recv(), Ok(i));
         }
 
@@ -288,4 +297,110 @@ fn bounded_supports_full_usize_capacity_for_zero_sized_messages() {
     tx.try_reserve().unwrap().send(()).unwrap();
     assert_eq!(rx.try_recv(), Ok(()));
     assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[test]
+#[should_panic(expected = "polled after completion")]
+fn bounded_send_future_panics_if_polled_after_completion() {
+    let (tx, _rx) = mpsc::bounded(2);
+    let mut send = pin!(tx.send(1));
+    assert_eq!(expect_ready(poll_once(send.as_mut())), Ok(()));
+    let _ = poll_once(send.as_mut());
+}
+
+#[test]
+#[should_panic(expected = "polled after completion")]
+fn bounded_reserve_future_panics_if_polled_after_completion() {
+    let (tx, _rx) = mpsc::bounded::<usize>(2);
+    let mut reserve = pin!(tx.reserve());
+    let _permit = expect_ready(poll_once(reserve.as_mut())).unwrap();
+    let _ = poll_once(reserve.as_mut());
+}
+
+#[test]
+#[should_panic(expected = "polled after completion")]
+fn bounded_recv_future_panics_if_polled_after_completion() {
+    let (tx, mut rx) = mpsc::bounded(2);
+    tx.try_send(1).unwrap();
+    tx.try_send(2).unwrap();
+    let mut recv = pin!(rx.recv());
+    assert_eq!(expect_ready(poll_once(recv.as_mut())), Ok(1));
+    let _ = poll_once(recv.as_mut());
+}
+
+#[test]
+fn zero_sized_payloads_run_destructors_once_across_all_paths() {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct TrackedZst;
+
+    impl Drop for TrackedZst {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    assert_eq!(size_of::<TrackedZst>(), 0);
+    DROPS.store(0, Ordering::Relaxed);
+
+    let (tx, mut rx) = mpsc::bounded(4);
+    for _ in 0..4 {
+        tx.try_send(TrackedZst).unwrap();
+    }
+    assert!(rx.try_recv().is_ok());
+    assert_eq!(DROPS.load(Ordering::Relaxed), 1);
+
+    tx.try_send(TrackedZst).unwrap();
+    let mut cancelled = Box::pin(tx.send(TrackedZst));
+    assert!(poll_once(cancelled.as_mut()).is_pending());
+    drop(cancelled);
+    assert_eq!(DROPS.load(Ordering::Relaxed), 2);
+
+    let mut blocked = pin!(tx.send(TrackedZst));
+    assert!(poll_once(blocked.as_mut()).is_pending());
+
+    drop(rx);
+    assert_eq!(DROPS.load(Ordering::Relaxed), 6);
+
+    drop(expect_ready(poll_once(blocked.as_mut())).unwrap_err());
+    assert_eq!(DROPS.load(Ordering::Relaxed), 7);
+
+    let Err(TrySendError::Disconnected(unsent)) = tx.try_send(TrackedZst) else {
+        panic!("expected disconnected send");
+    };
+    assert!(tx.is_disconnected());
+    assert!(matches!(
+        tx.try_reserve(),
+        Err(TrySendError::Disconnected(()))
+    ));
+    drop(unsent);
+    assert_eq!(DROPS.load(Ordering::Relaxed), 8);
+}
+
+#[test]
+fn completed_send_future_can_move_by_value_after_payload_is_consumed() {
+    use std::pin::Pin;
+
+    let (tx, mut rx) = mpsc::bounded(2);
+    let mut boxed_send = tx.send(Box::new(42usize));
+    assert_eq!(expect_ready(poll_once(Pin::new(&mut boxed_send))), Ok(()));
+    assert_eq!(*rx.try_recv().unwrap(), 42);
+    let moved_boxed_send = boxed_send;
+    drop(moved_boxed_send);
+
+    let mut target = 7usize;
+    {
+        let (ref_tx, mut ref_rx) = mpsc::bounded(2);
+        let mut ref_send = ref_tx.send(&mut target);
+        assert_eq!(expect_ready(poll_once(Pin::new(&mut ref_send))), Ok(()));
+        let received = ref_rx.try_recv().unwrap();
+        *received = 99;
+        let moved_ref_send = ref_send;
+        drop(moved_ref_send);
+    }
+    assert_eq!(target, 99);
 }

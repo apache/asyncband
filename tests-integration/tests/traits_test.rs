@@ -212,6 +212,15 @@ fn movable_public_types_are_send() {
     let once_cell = OnceCell::<i64>::new();
     assert_send_value(once_cell.wait());
 
+    let (unbounded_sender, mut unbounded_receiver) = mpsc::unbounded::<Cell<u8>>();
+    assert_send_value(unbounded_receiver.recv());
+    drop(unbounded_sender);
+
+    let (bounded_sender, mut bounded_receiver) = mpsc::bounded::<Cell<u8>>(1);
+    assert_send_value(bounded_sender.send(Cell::new(0)));
+    assert_send_value(bounded_sender.reserve());
+    assert_send_value(bounded_receiver.recv());
+
     let (unbounded_sender, unbounded_receiver) = mpmc::unbounded::<Cell<u8>>();
     assert_send_value(unbounded_receiver.recv());
     drop(unbounded_sender);
@@ -274,6 +283,7 @@ fn movable_public_types_are_send() {
 #[test]
 fn public_types_are_unpin() {
     fn assert_unpin<T: Unpin>() {}
+    fn assert_unpin_value<T: Unpin>(_: T) {}
 
     assert_unpin::<Barrier>();
     assert_unpin::<Condvar>();
@@ -352,6 +362,11 @@ fn public_types_are_unpin() {
     assert_unpin::<watch::Receiver<i64>>();
     assert_unpin::<watch::SendError<i64>>();
     assert_unpin::<watch::RecvError>();
+
+    let (bounded_tx, mut bounded_rx) = mpsc::bounded::<PhantomPinned>(1);
+    assert_unpin_value(bounded_tx.send(PhantomPinned));
+    assert_unpin_value(bounded_tx.reserve());
+    assert_unpin_value(bounded_rx.recv());
 }
 
 #[test]

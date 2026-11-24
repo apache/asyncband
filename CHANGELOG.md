@@ -23,6 +23,10 @@ All significant changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Performance improvements
+
+* Shrink `mpsc::BoundedSender::{send, reserve}` and `mpsc::BoundedReceiver::recv` futures, make them `Unpin`, and speed up `mpsc::bounded` across multi-producer inline 1 KiB and boxed transfers, single- and multi-producer task and OS-thread queues, uncontended send/receive and reservation roundtrips, and backpressure handoffs and cancellations; capacity-1 task handoffs are roughly unchanged, direct sends now acquire capacity before claiming a queue slot (so a concurrent sender can briefly observe `Full` before the message is visible to `try_recv` or `is_empty`, and `!is_empty()` means the head slot is claimed even if `recv` suspends once or `try_recv` briefly waits while its payload copy finishes), each channel uses a larger cache-line-isolated shared allocation (`768 B` on `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`) plus per-slot readiness and alignment padding on non-zero-sized buffers, and dropping a receiver while senders remain alive scans any unconsumed backlog before freeing the ring.
+
 ## v0.8.1
 
 ### New features
