@@ -16,9 +16,12 @@
 // under the License.
 
 use std::fmt;
-use std::future::poll_fn;
+use std::future::Future;
+use std::hint;
+use std::marker::PhantomPinned;
 use std::mem;
 use std::mem::ManuallyDrop;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -76,15 +79,17 @@ impl<T> BoundedSender<T> {
     /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is
     /// unavailable, or [`reserve`](Self::reserve) to wait for capacity before constructing the
     /// message.
-    pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
-        let value = match self.try_send(value) {
-            Ok(()) => return Ok(()),
-            Err(TrySendError::Disconnected(value)) => return Err(SendError::new(value)),
-            Err(TrySendError::Full(value)) => value,
-        };
-        match self.reserve().await {
-            Ok(permit) => permit.send(value),
-            Err(_) => Err(SendError::new(value)),
+    ///
+    /// # Panics
+    ///
+    /// Polling the returned future after it has returned [`Poll::Ready`] panics.
+    #[inline]
+    pub fn send(&self, value: T) -> impl Future<Output = Result<(), SendError<T>>> {
+        SendValue {
+            shared: Some(&self.shared),
+            waiter: None,
+            value: ManuallyDrop::new(value),
+            _pinned: PhantomPinned,
         }
     }
 
@@ -104,6 +109,10 @@ impl<T> BoundedSender<T> {
     /// Dropping a pending `reserve` future loses its place in the wait queue. If capacity has
     /// already been granted, it is released to the next waiter or made available to a new sender.
     ///
+    /// # Panics
+    ///
+    /// Polling the returned future after it has returned [`Poll::Ready`] panics.
+    ///
     /// # Examples
     ///
     /// ```
@@ -121,15 +130,13 @@ impl<T> BoundedSender<T> {
     /// );
     /// # }
     /// ```
-    pub async fn reserve(&self) -> Result<Permit<'_, T>, SendError<()>> {
-        if let Ok(permit) = self.try_reserve() {
-            return Ok(permit);
-        }
-        let mut reserve = Reserve {
+    #[inline]
+    pub fn reserve(&self) -> impl Future<Output = Result<Permit<'_, T>, SendError<()>>> {
+        Reserve {
             shared: Some(&self.shared),
             waiter: None,
-        };
-        poll_fn(|cx| reserve.poll(cx)).await
+            _pinned: PhantomPinned,
+        }
     }
 
     /// Reserves capacity for one message without waiting.
@@ -260,22 +267,132 @@ impl<T> Drop for Permit<'_, T> {
     }
 }
 
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+struct SendValue<'a, T> {
+    shared: Option<&'a Shared<T>>,
+    waiter: Option<WaiterId>,
+    value: ManuallyDrop<T>,
+    _pinned: PhantomPinned,
+}
+
+impl<T> SendValue<'_, T> {
+    #[inline(always)]
+    fn publish_acquired(&mut self, shared: &Shared<T>) -> Poll<Result<(), SendError<T>>> {
+        self.shared = None;
+        // SAFETY: `self.value` is initialized and `self.shared = None` prevents `Drop` from
+        // dropping it again. On `true`, `publish_from_ptr` took ownership; asserting `None` lets
+        // LLVM fold the caller's post-await `Drop` and skip staging a `Result` stack union.
+        if unsafe { shared.publish_from_ptr(&*self.value) } {
+            unsafe {
+                hint::assert_unchecked(self.shared.is_none());
+            }
+            Poll::Ready(Ok(()))
+        } else {
+            unsafe { self.finish_disconnected() }
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    unsafe fn finish_disconnected(&mut self) -> Poll<Result<(), SendError<T>>> {
+        self.shared = None;
+        // SAFETY: Caller guarantees `self.value` has not been moved or dropped.
+        Poll::Ready(Err(SendError::new(unsafe {
+            ManuallyDrop::take(&mut self.value)
+        })))
+    }
+}
+
+impl<T> Future for SendValue<'_, T> {
+    type Output = Result<(), SendError<T>>;
+
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: `SendValue` never stores self-referential pointers; `PhantomPinned` only keeps
+        // `!Unpin` parity on the opaque `send` future.
+        let this = unsafe { self.get_unchecked_mut() };
+        let shared = this
+            .shared
+            .expect("bounded mpsc send polled after completion");
+
+        if this.waiter.is_none() {
+            match shared.try_acquire_capacity() {
+                Ok(()) => return this.publish_acquired(shared),
+                Err(TrySendError::Disconnected(())) => {
+                    // SAFETY: `this.value` has not been moved or dropped.
+                    return unsafe { this.finish_disconnected() };
+                }
+                Err(TrySendError::Full(())) => {}
+            }
+        }
+
+        match shared.poll_acquire_capacity_slow(&mut this.waiter, cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(())) => this.publish_acquired(shared),
+            // SAFETY: `this.value` has not been moved or dropped.
+            Poll::Ready(Err(_)) => unsafe { this.finish_disconnected() },
+        }
+    }
+}
+
+impl<T> Drop for SendValue<'_, T> {
+    #[inline]
+    fn drop(&mut self) {
+        let Some(shared) = self.shared else {
+            return;
+        };
+        if let Some(id) = self.waiter.take() {
+            shared.cancel_waiter_id(id);
+        }
+        if mem::needs_drop::<T>() {
+            // SAFETY: `self.shared.is_some()` means `self.value` was never published or returned.
+            unsafe {
+                ManuallyDrop::drop(&mut self.value);
+            }
+        }
+    }
+}
+
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 struct Reserve<'a, T> {
     shared: Option<&'a Shared<T>>,
     waiter: Option<WaiterId>,
+    _pinned: PhantomPinned,
 }
 
-impl<'a, T> Reserve<'a, T> {
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Permit<'a, T>, SendError<()>>> {
-        let shared = self.shared.expect("reserve polled after completion");
-        match shared.poll_acquire_capacity_slow(&mut self.waiter, cx) {
+impl<'a, T> Future for Reserve<'a, T> {
+    type Output = Result<Permit<'a, T>, SendError<()>>;
+
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: `Reserve` never stores self-referential pointers; `PhantomPinned` only keeps
+        // `!Unpin` parity on the opaque `reserve` future.
+        let this = unsafe { self.get_unchecked_mut() };
+        let shared = this
+            .shared
+            .expect("bounded mpsc reserve polled after completion");
+
+        if this.waiter.is_none() {
+            match shared.try_acquire_capacity() {
+                Ok(()) => {
+                    this.shared = None;
+                    return Poll::Ready(Ok(Permit { shared }));
+                }
+                Err(TrySendError::Disconnected(())) => {
+                    this.shared = None;
+                    return Poll::Ready(Err(SendError::new(())));
+                }
+                Err(TrySendError::Full(())) => {}
+            }
+        }
+        match shared.poll_acquire_capacity_slow(&mut this.waiter, cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Ok(())) => {
-                self.shared = None;
+                this.shared = None;
                 Poll::Ready(Ok(Permit { shared }))
             }
             Poll::Ready(Err(error)) => {
-                self.shared = None;
+                this.shared = None;
                 Poll::Ready(Err(error))
             }
         }
@@ -283,6 +400,7 @@ impl<'a, T> Reserve<'a, T> {
 }
 
 impl<T> Drop for Reserve<'_, T> {
+    #[inline]
     fn drop(&mut self) {
         if let Some((shared, id)) = self.shared.zip(self.waiter.take()) {
             shared.cancel_waiter_id(id);

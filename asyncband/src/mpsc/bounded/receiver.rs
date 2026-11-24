@@ -16,7 +16,9 @@
 // under the License.
 
 use std::fmt;
-use std::future::poll_fn;
+use std::future::Future;
+use std::marker::PhantomPinned;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -98,6 +100,10 @@ impl<T> BoundedReceiver<T> {
     /// Dropping a pending future does not remove a value from the queue. A later call on this
     /// receiver can still receive the next value.
     ///
+    /// # Panics
+    ///
+    /// Polling the returned future after it has returned [`Poll::Ready`] panics.
+    ///
     /// # Examples
     ///
     /// ```
@@ -115,8 +121,12 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(rx.recv().await, Err(mpsc::RecvError::Disconnected));
     /// # }
     /// ```
-    pub async fn recv(&mut self) -> Result<T, RecvError> {
-        poll_fn(|cx| self.poll_recv(cx)).await
+    #[inline]
+    pub fn recv(&mut self) -> impl Future<Output = Result<T, RecvError>> {
+        Recv {
+            receiver: Some(self),
+            _pinned: PhantomPinned,
+        }
     }
 
     /// Returns `true` if every sender has been dropped.
@@ -165,22 +175,42 @@ impl<T> BoundedReceiver<T> {
     pub fn is_empty(&self) -> bool {
         self.shared.is_empty_at(self.head)
     }
+}
 
-    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+struct Recv<'a, T> {
+    receiver: Option<&'a mut BoundedReceiver<T>>,
+    _pinned: PhantomPinned,
+}
+
+impl<T> Future for Recv<'_, T> {
+    type Output = Result<T, RecvError>;
+
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: `Recv` never stores self-referential pointers; `PhantomPinned` only keeps
+        // `!Unpin` parity on the opaque `recv` future.
+        let this = unsafe { self.get_unchecked_mut() };
+        let Some(receiver) = this.receiver.as_deref_mut() else {
+            panic!("bounded mpsc recv polled after completion");
+        };
         loop {
-            let head = self.head;
-            match self.shared.claim_read_slot(head) {
+            let head = receiver.head;
+            match receiver.shared.claim_read_slot(head) {
                 Ok(base) => {
-                    self.head = head + 1;
+                    receiver.head = head + 1;
                     // SAFETY: `claim_read_slot` confirmed readiness of `base` at `head`.
-                    return unsafe { self.shared.read_claimed_slot_poll(base) };
+                    let out = unsafe { receiver.shared.read_claimed_slot_poll(base) };
+                    this.receiver = None;
+                    return out;
                 }
                 Err(TryRecvError::Disconnected) => {
-                    self.shared.clear_recv_waker_if_waiting();
+                    receiver.shared.clear_recv_waker_if_waiting();
+                    this.receiver = None;
                     return Poll::Ready(Err(RecvError::Disconnected));
                 }
                 Err(TryRecvError::Empty) => {
-                    if !self.shared.register_recv_wait(head, cx) {
+                    if !receiver.shared.register_recv_wait(head, cx) {
                         return Poll::Pending;
                     }
                 }

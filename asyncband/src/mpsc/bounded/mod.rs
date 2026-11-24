@@ -56,3 +56,36 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
         BoundedReceiver::new(shared),
     )
 }
+
+#[cfg(doctest)]
+mod compile_fail_tests {
+    /// ```compile_fail
+    /// use asyncband::mpsc;
+    ///
+    /// fn assert_unpin<T: Unpin>(_: T) {}
+    ///
+    /// let (tx, _rx) = mpsc::bounded(1);
+    /// assert_unpin(tx.send(1));
+    /// ```
+    struct SendFutureIsNotUnpin;
+
+    /// ```compile_fail
+    /// use asyncband::mpsc;
+    ///
+    /// fn assert_unpin<T: Unpin>(_: T) {}
+    ///
+    /// let (tx, _rx) = mpsc::bounded::<usize>(1);
+    /// assert_unpin(tx.reserve());
+    /// ```
+    struct ReserveFutureIsNotUnpin;
+
+    /// ```compile_fail
+    /// use asyncband::mpsc;
+    ///
+    /// fn assert_unpin<T: Unpin>(_: T) {}
+    ///
+    /// let (_tx, mut rx) = mpsc::bounded::<usize>(1);
+    /// assert_unpin(rx.recv());
+    /// ```
+    struct RecvFutureIsNotUnpin;
+}
