@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::PoisonError;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU8;
 #[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64;
@@ -264,8 +265,9 @@ struct SlotLayout {
     stride: usize,
 }
 
-// Keep `ready: AtomicBool` at byte offset 0 of every slot for zero-offset `ldarb`/`stlrb`
-// addressing while aligning payloads `>= 64 B` (such as `[u8; 1024]`) to a dedicated 128B line.
+// Keep `state: AtomicU8` at byte offset 0 of every slot while isolating slots of payloads
+// `>= 64 B` (such as `[u8; 1024]`) onto dedicated 128B cache-line multiples without wasting an
+// extra 128B line before `T`.
 const fn compute_slot_layout<T>() -> SlotLayout {
     if size_of::<T>() == 0 {
         return SlotLayout {
@@ -275,12 +277,18 @@ const fn compute_slot_layout<T>() -> SlotLayout {
         };
     }
     let raw_align = align_of::<T>();
-    let align = if size_of::<T>() >= 64 && raw_align < CACHE_LINE {
-        CACHE_LINE
+    let (align, value_offset) = if size_of::<T>() >= 64 {
+        let align = if raw_align < CACHE_LINE {
+            CACHE_LINE
+        } else {
+            raw_align
+        };
+        let value_offset = if raw_align < 16 { 16 } else { raw_align };
+        (align, value_offset)
     } else {
-        raw_align
+        (raw_align, raw_align)
     };
-    let Some(end) = align.checked_add(size_of::<T>()) else {
+    let Some(end) = value_offset.checked_add(size_of::<T>()) else {
         panic!("mpsc bounded channel slot size exceeds allocation size limit");
     };
     let Some(stride) = end.checked_next_multiple_of(align) else {
@@ -288,18 +296,27 @@ const fn compute_slot_layout<T>() -> SlotLayout {
     };
     SlotLayout {
         align,
-        value_offset: align,
+        value_offset,
         stride,
     }
 }
 
 #[track_caller]
-fn slot_buffer_layout<T>(buffer: usize) -> alloc::Layout {
+fn slot_alloc_layout<T>(buffer: usize) -> alloc::Layout {
     let slot = compute_slot_layout::<T>();
-    let Some(total_size) = slot.stride.checked_mul(buffer) else {
+    let Some(slots_bytes) = slot.stride.checked_mul(buffer) else {
         panic!("mpsc bounded channel capacity exceeds allocation size limit");
     };
-    let Ok(layout) = alloc::Layout::from_size_align(total_size, slot.align) else {
+    // Request `align_of::<T>()` from the allocator so Miri's symbolic alignment check proves every
+    // `T` access is aligned, while manually offsetting any extra 128-byte cache-line padding so
+    // `std::alloc::System::alloc_zeroed` still delegates `align_of::<T>() <= MIN_ALIGN` types
+    // directly to OS zero-page `calloc` instead of faulting every page with `write_bytes`.
+    let alloc_align = align_of::<T>();
+    let extra_align = slot.align - alloc_align;
+    let Some(alloc_bytes) = slots_bytes.checked_add(extra_align) else {
+        panic!("mpsc bounded channel capacity exceeds allocation size limit");
+    };
+    let Ok(layout) = alloc::Layout::from_size_align(alloc_bytes, alloc_align) else {
         panic!("mpsc bounded channel capacity exceeds allocation size limit");
     };
     layout
@@ -307,7 +324,8 @@ fn slot_buffer_layout<T>(buffer: usize) -> alloc::Layout {
 
 #[repr(C)]
 struct SlotRing<T> {
-    slots_ptr: NonNull<u8>,
+    slots_ptr: AtomicPtr<u8>,
+    raw_ptr: AtomicPtr<u8>,
     capacity: NonZeroUsize,
     index_mask: usize,
     _marker: PhantomData<UnsafeCell<T>>,
@@ -315,15 +333,7 @@ struct SlotRing<T> {
 
 impl<T> Drop for SlotRing<T> {
     fn drop(&mut self) {
-        if size_of::<T>() == 0 {
-            return;
-        }
-        let layout = slot_buffer_layout::<T>(self.capacity.get());
-        // SAFETY: `slots_ptr` was allocated with `layout`, and all initialized payloads were
-        // drained when `BoundedReceiver` dropped before the final `Arc<Shared<T>>` drop.
-        unsafe {
-            alloc::dealloc(self.slots_ptr.as_ptr(), layout);
-        }
+        self.dealloc_slots();
     }
 }
 
@@ -333,14 +343,20 @@ impl<T> SlotRing<T> {
     #[track_caller]
     fn new(capacity: NonZeroUsize) -> Self {
         let buffer = capacity.get();
-        let slots_ptr = if size_of::<T>() == 0 {
-            NonNull::dangling()
+        let (slots_ptr, raw_ptr) = if size_of::<T>() == 0 {
+            (ptr::null_mut(), ptr::null_mut())
         } else {
-            let layout = slot_buffer_layout::<T>(buffer);
-            // SAFETY: `buffer > 0` and `size_of::<T>() > 0`, so `layout.size() > 0`. Zeroed bytes
-            // initialize `ready: AtomicBool` at offset 0 to `false` without staging `T` on stack.
-            let ptr = unsafe { alloc::alloc_zeroed(layout) };
-            NonNull::new(ptr).unwrap_or_else(|| alloc::handle_alloc_error(layout))
+            let layout = slot_alloc_layout::<T>(buffer);
+            // SAFETY: `buffer > 0` and `size_of::<T>() > 0`, so `layout.size() > 0`.
+            let raw = unsafe { alloc::alloc_zeroed(layout) };
+            if raw.is_null() {
+                alloc::handle_alloc_error(layout);
+            }
+            let offset = raw.addr().wrapping_neg() & (Self::LAYOUT.align - 1);
+            // SAFETY: `offset < Self::LAYOUT.align`, so `aligned` and all `buffer` slots lie
+            // within the `layout` allocation while preserving `raw`'s provenance.
+            let aligned = unsafe { raw.add(offset) };
+            (aligned, raw)
         };
         let index_mask = if buffer.is_power_of_two() {
             buffer - 1
@@ -348,30 +364,43 @@ impl<T> SlotRing<T> {
             usize::MAX
         };
         Self {
-            slots_ptr,
+            slots_ptr: AtomicPtr::new(slots_ptr),
+            raw_ptr: AtomicPtr::new(raw_ptr),
             capacity,
             index_mask,
             _marker: PhantomData,
         }
     }
 
+    fn dealloc_slots(&self) {
+        if size_of::<T>() == 0 {
+            return;
+        }
+        let raw = self.raw_ptr.swap(ptr::null_mut(), Ordering::AcqRel);
+        if !raw.is_null() {
+            self.slots_ptr.store(ptr::null_mut(), Ordering::Release);
+            let layout = slot_alloc_layout::<T>(self.capacity.get());
+            // SAFETY: `raw` was allocated with `layout` in `SlotRing::new`, all pre-close
+            // producers synchronized with `DrainGuard` before `dealloc_slots` ran, and swapping
+            // `raw_ptr` with null ensures the allocation is freed at most once.
+            unsafe {
+                alloc::dealloc(raw, layout);
+            }
+        }
+    }
+
     #[inline(always)]
     fn slot_base(&self, ticket: u64) -> *mut u8 {
         let idx = if self.index_mask != usize::MAX {
-            let raw = (ticket as usize) & self.index_mask;
-            // Swapping bits `0..3` and `3..6` spreads consecutive small-slot tickets across
-            // distinct 128B cache lines on power-of-two rings `>= 64`.
-            if Self::LAYOUT.stride <= 64 && self.capacity.get() >= 64 {
-                ((raw & 0b00_0111) << 3) | ((raw & 0b11_1000) >> 3) | (raw & !0b11_1111)
-            } else {
-                raw
-            }
+            (ticket as usize) & self.index_mask
         } else {
             (ticket % (self.capacity.get() as u64)) as usize
         };
-        debug_assert!(idx < self.capacity.get());
-        // SAFETY: `idx < self.capacity` and `SlotRing::new` allocated `capacity * stride` bytes.
-        unsafe { self.slots_ptr.as_ptr().add(idx * Self::LAYOUT.stride) }
+        let ptr = self.slots_ptr.load(Ordering::Relaxed);
+        debug_assert!(!ptr.is_null() && idx < self.capacity.get());
+        // SAFETY: `slot_base` is only called while the receiver is alive or draining pre-close
+        // tickets before `dealloc_slots`, and `idx < self.capacity`.
+        unsafe { ptr.add(idx * Self::LAYOUT.stride) }
     }
 
     #[inline(always)]
@@ -461,6 +490,9 @@ struct DrainGuard<'a, T> {
 
 impl<T> DrainGuard<'_, T> {
     fn drain(&mut self) {
+        if !mem::needs_drop::<T>() && (size_of::<T>() == 0 || !self.shared.has_senders()) {
+            self.cursor = self.end;
+        }
         while self.cursor < self.end {
             let ticket = self.cursor;
             self.cursor += 1;
@@ -480,6 +512,7 @@ impl<T> DrainGuard<'_, T> {
                 }
             }
         }
+        self.shared.ring.dealloc_slots();
     }
 }
 
@@ -1243,6 +1276,8 @@ impl<T> Shared<T> {
 #[cfg(test)]
 mod tests {
     use std::future::Future;
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
     use std::pin::pin;
     use std::thread;
 
@@ -1362,5 +1397,47 @@ mod tests {
 
         tx.try_send(100).unwrap();
         assert_eq!(rx.try_recv(), Ok(100));
+    }
+
+    #[test]
+    fn slot_layout_packs_cache_line_payloads_without_extra_line_padding() {
+        assert_eq!(compute_slot_layout::<[u64; 8]>().stride, CACHE_LINE);
+        assert_eq!(compute_slot_layout::<Option<[u64; 8]>>().stride, CACHE_LINE);
+        assert_eq!(compute_slot_layout::<[u8; 1024]>().stride, 9 * CACHE_LINE);
+    }
+
+    #[test]
+    fn receiver_drop_deallocates_slot_ring_while_senders_survive() {
+        let shared = Shared::<[u8; 1024]>::new(NonZeroUsize::new(16).unwrap());
+        let tx = BoundedSender::new(shared.clone());
+        let rx = BoundedReceiver::new(shared.clone());
+        tx.try_send([1u8; 1024]).unwrap();
+        assert!(!shared.ring.slots_ptr.load(Ordering::Acquire).is_null());
+        drop(rx);
+        assert!(shared.ring.slots_ptr.load(Ordering::Acquire).is_null());
+        assert_eq!(
+            tx.try_send([2u8; 1024]),
+            Err(TrySendError::Disconnected([2u8; 1024]))
+        );
+    }
+
+    #[cfg(panic = "unwind")]
+    #[test]
+    fn receiver_drop_deallocates_slot_ring_after_destructor_panic() {
+        struct PanicOnFirstDrop(bool);
+
+        impl Drop for PanicOnFirstDrop {
+            fn drop(&mut self) {
+                assert!(!self.0, "first queued destructor panicked");
+            }
+        }
+
+        let shared = Shared::new(NonZeroUsize::new(4).unwrap());
+        let tx = BoundedSender::new(shared.clone());
+        let rx = BoundedReceiver::new(shared.clone());
+        tx.try_send(PanicOnFirstDrop(true)).unwrap();
+        tx.try_send(PanicOnFirstDrop(false)).unwrap();
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(rx))).is_err());
+        assert!(shared.ring.slots_ptr.load(Ordering::Acquire).is_null());
     }
 }
