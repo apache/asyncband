@@ -17,25 +17,21 @@
 
 use std::fmt;
 use std::future::poll_fn;
-use std::mem;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::internal::mutex::Mutex;
-use crate::internal::register_waker;
-use crate::internal::waitlist::WaitList;
 use crate::mpsc::RecvError;
 use crate::mpsc::TryRecvError;
-use crate::mpsc::bounded::State;
-use crate::mpsc::bounded::Waiter;
+use crate::mpsc::bounded::queue::Shared;
 
 /// The receiving endpoint of a bounded mpsc channel.
 ///
 /// Instances are created by the [`bounded`](crate::mpsc::bounded) function. Dropping the receiver
 /// discards queued values and causes pending `send` and `reserve` operations to fail.
 pub struct BoundedReceiver<T> {
-    shared: Arc<Mutex<State<T>>>,
+    shared: Arc<Shared<T>>,
+    head: u64,
 }
 
 impl<T> fmt::Debug for BoundedReceiver<T> {
@@ -46,30 +42,13 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        let (queue, recv_waker, mut waiters) = {
-            let mut state = self.shared.lock();
-            state.receiver = false;
-            let queue = mem::take(&mut state.queue);
-            let recv_waker = state.recv_waker.take();
-            // The disconnected state invalidates both queued and granted waiter IDs.
-            let waiters = mem::replace(&mut state.send_waiters, WaitList::new());
-            (queue, recv_waker, waiters)
-        };
-        // Notify blocked senders before destroying buffered values, whose destructors may panic.
-        while let Some((id, _)) = waiters.unlink_first_waiter() {
-            let Waiter::Waiting(waker) = waiters.remove_unlinked_waiter(id) else {
-                unreachable!("only waiting senders remain linked");
-            };
-            waker.wake();
-        }
-        drop(recv_waker);
-        drop(queue);
+        self.shared.drop_receiver(self.head);
     }
 }
 
 impl<T> BoundedReceiver<T> {
-    pub(super) fn new(shared: Arc<Mutex<State<T>>>) -> Self {
-        Self { shared }
+    pub(in crate::mpsc::bounded) fn new(shared: Arc<Shared<T>>) -> Self {
+        Self { shared, head: 0 }
     }
 
     /// Receives the next queued value without waiting for a message, freeing one capacity slot.
@@ -96,12 +75,13 @@ impl<T> BoundedReceiver<T> {
     /// drop(tx);
     /// assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
     /// ```
+    #[inline]
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let (value, wake) = self.shared.lock().dequeue()?;
-        if let Some(waker) = wake {
-            waker.wake();
-        }
-        Ok(value)
+        let head = self.head;
+        let base = self.shared.claim_read_slot(head)?;
+        self.head = head + 1;
+        // SAFETY: `claim_read_slot` confirmed readiness of `base` at `head`.
+        Ok(unsafe { self.shared.read_claimed_slot(base) })
     }
 
     /// Waits for and receives the next queued value, freeing one capacity slot.
@@ -158,8 +138,9 @@ impl<T> BoundedReceiver<T> {
     /// assert!(rx.is_disconnected());
     /// assert_eq!(rx.try_recv(), Ok(1));
     /// ```
+    #[inline]
     pub fn is_disconnected(&self) -> bool {
-        self.shared.lock().senders == 0
+        !self.shared.has_senders()
     }
 
     /// Returns `true` if no queued value is waiting to be received.
@@ -180,31 +161,29 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(rx.try_recv(), Ok(1));
     /// assert!(rx.is_empty());
     /// ```
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.shared.lock().queue.is_empty()
+        self.shared.is_empty_at(self.head)
     }
 
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
-        let mut state = self.shared.lock();
-        match state.dequeue() {
-            Ok((value, wake)) => {
-                drop(state);
-                if let Some(waker) = wake {
-                    waker.wake();
+        loop {
+            let head = self.head;
+            match self.shared.claim_read_slot(head) {
+                Ok(base) => {
+                    self.head = head + 1;
+                    // SAFETY: `claim_read_slot` confirmed readiness of `base` at `head`.
+                    return unsafe { self.shared.read_claimed_slot_poll(base) };
                 }
-                Poll::Ready(Ok(value))
-            }
-            Err(TryRecvError::Disconnected) => {
-                let old = state.recv_waker.take();
-                drop(state);
-                drop(old);
-                Poll::Ready(Err(RecvError::Disconnected))
-            }
-            Err(TryRecvError::Empty) => {
-                let old = register_waker(&mut state.recv_waker, cx.waker());
-                drop(state);
-                drop(old);
-                Poll::Pending
+                Err(TryRecvError::Disconnected) => {
+                    self.shared.clear_recv_waker_if_waiting();
+                    return Poll::Ready(Err(RecvError::Disconnected));
+                }
+                Err(TryRecvError::Empty) => {
+                    if !self.shared.register_recv_wait(head, cx) {
+                        return Poll::Pending;
+                    }
+                }
             }
         }
     }

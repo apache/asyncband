@@ -18,28 +18,27 @@
 use std::fmt;
 use std::future::poll_fn;
 use std::mem;
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::internal::mutex::Mutex;
-use crate::internal::update_waker;
 use crate::internal::waitlist::WaiterId;
 use crate::mpsc::SendError;
 use crate::mpsc::TrySendError;
-use crate::mpsc::bounded::State;
-use crate::mpsc::bounded::Waiter;
+use crate::mpsc::bounded::queue::Shared;
 
 /// The sending endpoint of a bounded mpsc channel.
 ///
 /// Instances are created by the [`bounded`](crate::mpsc::bounded) function.
 pub struct BoundedSender<T> {
-    shared: Arc<Mutex<State<T>>>,
+    shared: Arc<Shared<T>>,
 }
 
 impl<T> Clone for BoundedSender<T> {
+    #[inline]
     fn clone(&self) -> Self {
-        self.shared.lock().senders += 1;
+        self.shared.clone_sender();
         BoundedSender {
             shared: self.shared.clone(),
         }
@@ -53,24 +52,14 @@ impl<T> fmt::Debug for BoundedSender<T> {
 }
 
 impl<T> Drop for BoundedSender<T> {
+    #[inline]
     fn drop(&mut self) {
-        let wake = {
-            let mut state = self.shared.lock();
-            state.senders -= 1;
-            if state.senders == 0 {
-                state.recv_waker.take()
-            } else {
-                None
-            }
-        };
-        if let Some(waker) = wake {
-            waker.wake();
-        }
+        self.shared.drop_sender();
     }
 }
 
 impl<T> BoundedSender<T> {
-    pub(super) fn new(shared: Arc<Mutex<State<T>>>) -> Self {
+    pub(in crate::mpsc::bounded) fn new(shared: Arc<Shared<T>>) -> Self {
         Self { shared }
     }
 
@@ -133,8 +122,11 @@ impl<T> BoundedSender<T> {
     /// # }
     /// ```
     pub async fn reserve(&self) -> Result<Permit<'_, T>, SendError<()>> {
+        if let Ok(permit) = self.try_reserve() {
+            return Ok(permit);
+        }
         let mut reserve = Reserve {
-            shared: &self.shared,
+            shared: Some(&self.shared),
             waiter: None,
         };
         poll_fn(|cx| reserve.poll(cx)).await
@@ -150,8 +142,9 @@ impl<T> BoundedSender<T> {
     /// Returns [`TrySendError::Full`] if capacity is unavailable, or
     /// [`TrySendError::Disconnected`] if the receiver has been dropped. Errors carry `()`
     /// because no message has been supplied.
+    #[inline]
     pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
-        self.shared.lock().acquire()?;
+        self.shared.try_acquire_capacity()?;
         Ok(Permit {
             shared: &self.shared,
         })
@@ -180,17 +173,18 @@ impl<T> BoundedSender<T> {
     /// drop(rx);
     /// assert_eq!(tx.try_send(30), Err(TrySendError::Disconnected(30)));
     /// ```
+    #[inline]
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        let mut state = self.shared.lock();
-        match state.acquire() {
+        match self.shared.try_acquire_capacity() {
             Ok(()) => {
-                state.queue.push_back(value);
-                let wake = state.recv_waker.take();
-                drop(state);
-                if let Some(waker) = wake {
-                    waker.wake();
+                let value = ManuallyDrop::new(value);
+                // SAFETY: `value` is initialized; `publish_from_ptr` takes logical ownership on
+                // `true` and leaves `value` untouched on `false`.
+                if unsafe { self.shared.publish_from_ptr(&*value) } {
+                    Ok(())
+                } else {
+                    Err(TrySendError::Disconnected(ManuallyDrop::into_inner(value)))
                 }
-                Ok(())
             }
             Err(TrySendError::Full(())) => Err(TrySendError::Full(value)),
             Err(TrySendError::Disconnected(())) => Err(TrySendError::Disconnected(value)),
@@ -214,8 +208,9 @@ impl<T> BoundedSender<T> {
     /// drop(rx);
     /// assert!(tx.is_disconnected());
     /// ```
+    #[inline]
     pub fn is_disconnected(&self) -> bool {
-        !self.shared.lock().receiver
+        !self.shared.has_receiver()
     }
 }
 
@@ -226,7 +221,7 @@ impl<T> BoundedSender<T> {
 /// it without sending releases capacity and notifies a waiting sender.
 #[must_use = "dropping the permit releases its reserved capacity"]
 pub struct Permit<'a, T> {
-    shared: &'a Mutex<State<T>>,
+    shared: &'a Shared<T>,
 }
 
 impl<T> fmt::Debug for Permit<'_, T> {
@@ -243,85 +238,54 @@ impl<T> Permit<'_, T> {
     /// # Errors
     ///
     /// Returns [`SendError`] containing the unsent value if the receiver has been dropped.
+    #[inline]
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
-        let mut state = self.shared.lock();
-        if !state.receiver {
-            return Err(SendError::new(value));
-        }
-        state.queue.push_back(value);
-        // The queued message now owns capacity.
+        let shared = self.shared;
         mem::forget(self);
-        let wake = state.recv_waker.take();
-        drop(state);
-        if let Some(waker) = wake {
-            waker.wake();
+        let value = ManuallyDrop::new(value);
+        // SAFETY: `value` is initialized; `publish_from_ptr` takes logical ownership on `true` and
+        // leaves `value` untouched on `false`.
+        if unsafe { shared.publish_from_ptr(&*value) } {
+            Ok(())
+        } else {
+            Err(SendError::new(ManuallyDrop::into_inner(value)))
         }
-        Ok(())
     }
 }
 
 impl<T> Drop for Permit<'_, T> {
+    #[inline]
     fn drop(&mut self) {
-        let wake = self.shared.lock().release();
-        if let Some(waker) = wake {
-            waker.wake();
-        }
+        self.shared.release_capacity();
     }
 }
 
 struct Reserve<'a, T> {
-    shared: &'a Mutex<State<T>>,
+    shared: Option<&'a Shared<T>>,
     waiter: Option<WaiterId>,
 }
 
 impl<'a, T> Reserve<'a, T> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Permit<'a, T>, SendError<()>>> {
-        let mut state = self.shared.lock();
-        if !state.receiver {
-            self.waiter = None;
-            return Poll::Ready(Err(SendError::new(())));
-        }
-        if let Some(index) = self.waiter {
-            let waiter = state.send_waiters.waiter_mut(index);
-            if let Waiter::Waiting(waker) = waiter {
-                let old = update_waker(waker, cx.waker());
-                drop(state);
-                drop(old);
-                return Poll::Pending;
+        let shared = self.shared.expect("reserve polled after completion");
+        match shared.poll_acquire_capacity_slow(&mut self.waiter, cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(())) => {
+                self.shared = None;
+                Poll::Ready(Ok(Permit { shared }))
             }
-            state.send_waiters.remove_unlinked_waiter(index);
-            self.waiter = None;
-        } else if state.available != 0 {
-            state.available -= 1;
-        } else {
-            let waiter = Waiter::Waiting(cx.waker().clone());
-            self.waiter = Some(state.send_waiters.push_back(waiter));
-            return Poll::Pending;
+            Poll::Ready(Err(error)) => {
+                self.shared = None;
+                Poll::Ready(Err(error))
+            }
         }
-        Poll::Ready(Ok(Permit {
-            shared: self.shared,
-        }))
     }
 }
 
 impl<T> Drop for Reserve<'_, T> {
     fn drop(&mut self) {
-        let Some(index) = self.waiter else { return };
-        let (waiter, wake) = {
-            let mut state = self.shared.lock();
-            if !state.receiver {
-                return;
-            }
-            let waiter = state.send_waiters.remove(index);
-            let wake = match waiter {
-                Waiter::Granted => state.release(),
-                Waiter::Waiting(_) => None,
-            };
-            (waiter, wake)
-        };
-        if let Some(waker) = wake {
-            waker.wake();
+        if let Some((shared, id)) = self.shared.zip(self.waiter.take()) {
+            shared.cancel_waiter_id(id);
         }
-        drop(waiter);
     }
 }
