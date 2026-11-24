@@ -51,10 +51,10 @@ use crate::broadcast::mpmc::unbounded::segment::Segment;
 use crate::broadcast::mpmc::unbounded::segment::SegmentPool;
 use crate::broadcast::mpmc::unbounded::segment::Shard;
 use crate::broadcast::mpmc::unbounded::segment::unlinked_next;
-use crate::broadcast::mpmc::unbounded::waiters::WaitReg;
 use crate::broadcast::mpmc::unbounded::waiters::Waiters;
 use crate::internal::mutex::Mutex;
 use crate::internal::waker_batch::WakerBatch;
+use crate::internal::wakerset::WakerToken;
 
 const SHARDS: usize = 4;
 
@@ -68,19 +68,26 @@ type ExtraShards = [ExtraShardSlot; SHARDS - 1];
 
 pub struct Subscription<T> {
     pub cursor: u64,
+    pub wait_gen: u64,
     pub seg: NonNull<Segment<T>>,
     pub slot_ptr: NonNull<MsgSlot<T>>,
-    pub rem_in_seg: u32,
-    pub wait_gen_hi: u32,
+    pub wait_overflow: Option<WakerToken>,
+    pub rem_in_seg: u16,
+    pub wait_inline: bool,
 }
 
-impl<T> Clone for Subscription<T> {
-    fn clone(&self) -> Self {
-        *self
+impl<T> Subscription<T> {
+    #[inline(always)]
+    pub fn has_waiter(&self) -> bool {
+        self.wait_inline || self.wait_overflow.is_some()
+    }
+
+    #[inline(always)]
+    pub fn clear_waiter_local(&mut self) {
+        self.wait_inline = false;
+        self.wait_overflow = None;
     }
 }
-
-impl<T> Copy for Subscription<T> {}
 
 struct DrainBatch<T> {
     first: Option<Arc<T>>,
@@ -327,10 +334,12 @@ impl<T> Shared<T> {
 
         let subscription = Subscription {
             cursor: 0,
+            wait_gen: 0,
             seg: seg0,
             slot_ptr,
-            rem_in_seg: INLINE_CAP as u32,
-            wait_gen_hi: 0,
+            wait_overflow: None,
+            rem_in_seg: INLINE_CAP as u16,
+            wait_inline: false,
         };
         (shared, subscription)
     }
@@ -386,7 +395,7 @@ impl<T> Shared<T> {
     #[inline(never)]
     fn wake_all_waiters(&self) {
         let mut waiters = self.waiters.lock();
-        if waiters.overflow_len == 0 {
+        if !waiters.has_overflow() {
             let Some(waker) = waiters.slot0.take() else {
                 self.has_waiters.store(false, Ordering::Release);
                 return;
@@ -417,8 +426,7 @@ impl<T> Shared<T> {
     #[inline]
     pub fn unread_from(&self, cursor: u64) -> usize {
         let tail = self.tail.load(Ordering::Acquire);
-        usize::try_from(tail.saturating_sub(cursor))
-            .expect("unread broadcast message count exceeds usize")
+        usize::try_from(tail.saturating_sub(cursor)).unwrap_or(usize::MAX)
     }
 
     pub fn retained_message_count(&self) -> usize {
@@ -427,8 +435,7 @@ impl<T> Shared<T> {
         }
         let reclaimed = self.reclaimed.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
-        usize::try_from(tail.saturating_sub(reclaimed))
-            .expect("retained broadcast message count exceeds usize")
+        usize::try_from(tail.saturating_sub(reclaimed)).unwrap_or(usize::MAX)
     }
 
     #[inline(always)]
@@ -723,7 +730,7 @@ impl<T> Shared<T> {
             (
                 seg,
                 Segment::slot_ptr_at(raw, offset),
-                (cap - offset) as u32,
+                (cap - offset) as u16,
             )
         };
 
@@ -737,10 +744,12 @@ impl<T> Shared<T> {
 
         Subscription {
             cursor: start,
+            wait_gen: 0,
             seg,
             slot_ptr,
+            wait_overflow: None,
             rem_in_seg,
-            wait_gen_hi: 0,
+            wait_inline: false,
         }
     }
 
@@ -787,12 +796,12 @@ impl<T> Shared<T> {
         drop(reclaimed);
     }
 
-    pub fn drop_receiver(&self, mut state: Subscription<T>) {
+    pub fn drop_receiver(&self, state: &mut Subscription<T>) {
+        self.clear_sub_waiter_fast(state);
         if self.is_disconnected() && self.seg_readers.load(Ordering::Acquire) == 1 {
-            self.drop_last_disconnected_receiver(&mut state);
+            self.drop_last_disconnected_receiver(state);
             return;
         }
-
         let end = {
             let _control = self.control.lock();
             let has_senders = !self.is_disconnected();
@@ -838,7 +847,7 @@ impl<T> Shared<T> {
                 if state.rem_in_seg != 0 {
                     state.slot_ptr = state.slot_ptr.add(1);
                 } else if state.cursor < end {
-                    self.advance_receiver_seg(&mut state);
+                    self.advance_receiver_seg(state);
                 }
             }
         }
@@ -1027,22 +1036,27 @@ impl<T> Shared<T> {
         // calling `std::thread::park`, leaving any outer executor's `Thread::unpark` token intact.
         let parker = Arc::new(SlotPark::new());
         let waker = Waker::from(parker.clone());
-        let mut wait_slot = None;
-        let mut wait_gen_hi = 0u32;
+        let mut wait_gen = 0u64;
+        let mut wait_inline = false;
+        let mut wait_overflow = None;
 
         loop {
             {
                 let mut waiters = self.waiters.lock();
                 let current_gen = self.wake_gen.load(Ordering::Relaxed);
-                let retired =
-                    waiters.register(&mut wait_slot, &mut wait_gen_hi, current_gen, &waker);
+                let retired = waiters.register(
+                    &mut wait_gen,
+                    &mut wait_inline,
+                    &mut wait_overflow,
+                    current_gen,
+                    &waker,
+                );
                 self.has_waiters.store(true, Ordering::SeqCst);
 
                 let ready = slot.state.load(Ordering::SeqCst);
                 if ready != 0 {
-                    let cleared = wait_slot
-                        .take()
-                        .and_then(|reg| waiters.remove(reg, wait_gen_hi, current_gen));
+                    let cleared =
+                        waiters.remove(wait_gen, &mut wait_inline, &mut wait_overflow, current_gen);
                     if waiters.is_empty() {
                         self.has_waiters.store(false, Ordering::Release);
                     }
@@ -1058,7 +1072,11 @@ impl<T> Shared<T> {
             parker.wait();
             let ready = slot.state.load(Ordering::Acquire);
             if ready != 0 {
-                self.clear_wait_slot_fast(wait_gen_hi, &mut wait_slot);
+                if (wait_inline || wait_overflow.is_some())
+                    && wait_gen == self.wake_gen.load(Ordering::Acquire)
+                {
+                    self.unregister_waiter(wait_gen, &mut wait_inline, &mut wait_overflow);
+                }
                 return ready;
             }
         }
@@ -1107,7 +1125,7 @@ impl<T> Shared<T> {
                     self.tail_seg.store(seg0_raw, Ordering::SeqCst);
                     sub.seg = NonNull::new_unchecked(seg0_raw);
                     sub.slot_ptr = Segment::slot_ptr_at(seg0_raw, 0);
-                    sub.rem_in_seg = INLINE_CAP as u32;
+                    sub.rem_in_seg = INLINE_CAP as u16;
                 }
             }
 
@@ -1135,7 +1153,7 @@ impl<T> Shared<T> {
             (*next_raw).refs.fetch_add(1, Ordering::Relaxed);
             let prev = mem::replace(&mut sub.seg, next);
             sub.slot_ptr = Segment::slot_ptr_at(next_raw, 0);
-            sub.rem_in_seg = (*next_raw).cap as u32;
+            sub.rem_in_seg = (*next_raw).cap as u16;
             self.release_seg_ref(prev);
         }
     }
@@ -1144,7 +1162,6 @@ impl<T> Shared<T> {
     pub fn poll_recv(
         &self,
         sub: &mut Subscription<T>,
-        wait_slot: &mut Option<WaitReg>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Received<T>, RecvError>> {
         loop {
@@ -1155,33 +1172,33 @@ impl<T> Shared<T> {
             let state = slot.state.load(Ordering::Acquire);
             if state != 0 {
                 let received = self.consume_ready_slot(sub, cur_ver, slot, state);
-                self.clear_wait_slot_fast(sub.wait_gen_hi, wait_slot);
+                self.clear_sub_waiter_fast(sub);
                 return Poll::Ready(Ok(received));
             }
             if self.tail.load(Ordering::Acquire) <= cur_ver
                 && self.is_disconnected()
                 && self.tail.load(Ordering::Acquire) <= cur_ver
             {
-                self.clear_wait_slot_fast(sub.wait_gen_hi, wait_slot);
+                self.clear_sub_waiter_fast(sub);
                 return Poll::Ready(Err(RecvError::Disconnected));
             }
             // Never spin or yield inside `Future::poll`: even if a concurrent publisher has
             // claimed `cur_ver` (`tail > cur_ver`) and was preempted before storing `slot.state`,
             // register the task waker and return `Poll::Pending` so the publisher wakes us once
             // `slot.state.store(..., SeqCst)` completes.
-            if !self.register_waiter(cur_ver, slot, &mut sub.wait_gen_hi, wait_slot, cx) {
+            if !self.register_waiter(cur_ver, slot, sub, cx) {
                 return Poll::Pending;
             }
         }
     }
 
     #[inline]
-    fn clear_wait_slot_fast(&self, wait_gen_hi: u32, wait_slot: &mut Option<WaitReg>) {
-        if let Some(reg) = *wait_slot {
-            if reg.full_gen(wait_gen_hi) == self.wake_gen.load(Ordering::Acquire) {
-                self.unregister_recv(wait_gen_hi, wait_slot);
+    pub fn clear_sub_waiter_fast(&self, sub: &mut Subscription<T>) {
+        if sub.has_waiter() {
+            if sub.wait_gen == self.wake_gen.load(Ordering::Acquire) {
+                self.unregister_waiter(sub.wait_gen, &mut sub.wait_inline, &mut sub.wait_overflow);
             } else {
-                *wait_slot = None;
+                sub.clear_waiter_local();
             }
         }
     }
@@ -1192,13 +1209,18 @@ impl<T> Shared<T> {
         &self,
         cur_ver: u64,
         slot: &MsgSlot<T>,
-        wait_gen_hi: &mut u32,
-        wait_slot: &mut Option<WaitReg>,
+        sub: &mut Subscription<T>,
         cx: &mut Context<'_>,
     ) -> bool {
         let mut waiters = self.waiters.lock();
         let current_gen = self.wake_gen.load(Ordering::Relaxed);
-        let retired = waiters.register(wait_slot, wait_gen_hi, current_gen, cx.waker());
+        let retired = waiters.register(
+            &mut sub.wait_gen,
+            &mut sub.wait_inline,
+            &mut sub.wait_overflow,
+            current_gen,
+            cx.waker(),
+        );
         self.has_waiters.store(true, Ordering::SeqCst);
 
         let slot_ready = slot.state.load(Ordering::SeqCst) != 0;
@@ -1206,9 +1228,12 @@ impl<T> Shared<T> {
             && self.senders.load(Ordering::SeqCst) == 0
             && self.tail.load(Ordering::SeqCst) <= cur_ver;
         if slot_ready || disconnected_and_empty {
-            let cleared = wait_slot
-                .take()
-                .and_then(|reg| waiters.remove(reg, *wait_gen_hi, current_gen));
+            let cleared = waiters.remove(
+                sub.wait_gen,
+                &mut sub.wait_inline,
+                &mut sub.wait_overflow,
+                current_gen,
+            );
             if waiters.is_empty() {
                 self.has_waiters.store(false, Ordering::Release);
             }
@@ -1225,16 +1250,20 @@ impl<T> Shared<T> {
 
     #[cold]
     #[inline(never)]
-    pub fn unregister_recv(&self, wait_gen_hi: u32, wait_slot: &mut Option<WaitReg>) {
-        let Some(reg) = wait_slot.take() else {
-            return;
-        };
-        if reg.full_gen(wait_gen_hi) != self.wake_gen.load(Ordering::Acquire) {
+    fn unregister_waiter(
+        &self,
+        wait_gen: u64,
+        wait_inline: &mut bool,
+        wait_overflow: &mut Option<WakerToken>,
+    ) {
+        if wait_gen != self.wake_gen.load(Ordering::Acquire) {
+            *wait_inline = false;
+            *wait_overflow = None;
             return;
         }
         let mut waiters = self.waiters.lock();
         let current_gen = self.wake_gen.load(Ordering::Relaxed);
-        let waker = waiters.remove(reg, wait_gen_hi, current_gen);
+        let waker = waiters.remove(wait_gen, wait_inline, wait_overflow, current_gen);
         if waiters.is_empty() {
             self.has_waiters.store(false, Ordering::Release);
         }

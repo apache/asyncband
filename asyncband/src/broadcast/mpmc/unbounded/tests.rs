@@ -19,6 +19,7 @@ use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Wake;
 use std::task::Waker;
 use std::thread;
@@ -156,7 +157,7 @@ fn dropping_all_receivers_reclaims_heap_segments_even_across_unwind() {
     assert_eq!(tx.shared.buffer_capacity(), INLINE_CAP);
 
     let mut fresh = tx.subscribe();
-    for i in 0..INLINE_CAP {
+    for _ in 0..INLINE_CAP {
         tx.send(Bomb(false));
         assert!(!fresh.try_recv().unwrap().0);
     }
@@ -200,9 +201,10 @@ fn draining_after_sender_disconnect_reclaims_heap_segments_immediately() {
 fn layout_holds_across_payload_size_table() {
     fn check_payload<T>() {
         assert_eq!(size_of::<MsgSlot<T>>(), 2 * size_of::<usize>());
-        assert_eq!(size_of::<Subscription<T>>(), 2 * size_of::<usize>() + 16);
-        assert!(size_of::<RecvShared<'_, T>>() <= 2 * size_of::<usize>());
-        assert!(size_of::<RecvCloned<'_, T>>() <= 2 * size_of::<usize>());
+        assert_eq!(size_of::<UnboundedSender<T>>(), 2 * size_of::<usize>());
+        assert_eq!(size_of::<Subscription<T>>(), 4 * size_of::<usize>() + 16);
+        assert_eq!(size_of::<RecvShared<'_, T>>(), size_of::<usize>());
+        assert_eq!(size_of::<RecvCloned<'_, T>>(), size_of::<usize>());
         assert!(align_of::<Shared<T>>() <= 16);
         assert!(size_of::<Shared<T>>() <= 944);
     }

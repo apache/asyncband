@@ -59,7 +59,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
@@ -69,7 +68,6 @@ use crate::broadcast::mpmc::error::TryRecvError;
 use crate::broadcast::mpmc::unbounded::queue::Shared;
 use crate::broadcast::mpmc::unbounded::queue::Subscription;
 use crate::broadcast::mpmc::unbounded::segment::Shard;
-use crate::broadcast::mpmc::unbounded::waiters::WaitReg;
 
 mod queue;
 mod segment;
@@ -173,8 +171,9 @@ impl<T> UnboundedSender<T> {
     /// This is not an unread count for any particular receiver. A value remains included until the
     /// last receiver eligible for it advances or is dropped.
     ///
-    /// The result is an instantaneous observation and may become stale as other tasks send or
-    /// receive.
+    /// The result is an approximate observation that includes claimed publications still in flight,
+    /// may briefly overcount while concurrent receives reclaim slots, and may become stale as other
+    /// tasks send or receive.
     ///
     /// # Examples
     ///
@@ -243,7 +242,7 @@ impl<T> fmt::Debug for UnboundedReceiver<T> {
 impl<T> Drop for UnboundedReceiver<T> {
     #[inline]
     fn drop(&mut self) {
-        self.shared.drop_receiver(self.sub);
+        self.shared.drop_receiver(&mut self.sub);
     }
 }
 
@@ -294,7 +293,6 @@ impl<T> UnboundedReceiver<T> {
         RecvShared {
             inner: Recv {
                 receiver: Some(self),
-                wait_slot: None,
             },
         }
     }
@@ -341,7 +339,6 @@ impl<T> UnboundedReceiver<T> {
         RecvCloned {
             inner: Recv {
                 receiver: Some(self),
-                wait_slot: None,
             },
         }
     }
@@ -448,10 +445,10 @@ impl<T> UnboundedReceiver<T> {
     /// Returns this receiver's unread value count.
     ///
     /// Unlike [`UnboundedSender::retained_message_count`], this excludes values retained only for
-    /// other receivers.
+    /// other receivers. Claimed versions whose slot writes are still in flight are included, so a
+    /// non-zero result matches `!`[`is_empty`](Self::is_empty).
     ///
-    /// The result is an instantaneous observation and may become stale as other tasks publish
-    /// values.
+    /// The result is an observation that may become stale as other tasks publish values.
     ///
     /// # Examples
     ///
@@ -527,7 +524,6 @@ impl<T> UnboundedReceiver<T> {
 
 struct Recv<'a, T> {
     receiver: Option<&'a mut UnboundedReceiver<T>>,
-    wait_slot: Option<WaitReg>,
 }
 
 impl<T> Recv<'_, T> {
@@ -536,37 +532,23 @@ impl<T> Recv<'_, T> {
         let Some(receiver) = self.receiver.as_deref_mut() else {
             panic!("unbounded broadcast recv polled after completion");
         };
-        let poll = receiver
-            .shared
-            .poll_recv(&mut receiver.sub, &mut self.wait_slot, cx);
+        let poll = receiver.shared.poll_recv(&mut receiver.sub, cx);
         if poll.is_ready() {
             self.receiver = None;
         }
         poll
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn drop_registered(&mut self, reg: WaitReg) {
-        if let Some(receiver) = self.receiver.as_deref() {
-            if reg.full_gen(receiver.sub.wait_gen_hi)
-                == receiver.shared.wake_gen.load(Ordering::Acquire)
-            {
-                receiver
-                    .shared
-                    .unregister_recv(receiver.sub.wait_gen_hi, &mut self.wait_slot);
-            }
-        }
     }
 }
 
 impl<T> Drop for Recv<'_, T> {
     #[inline(always)]
     fn drop(&mut self) {
-        let Some(reg) = self.wait_slot else {
+        let Some(receiver) = self.receiver.take() else {
             return;
         };
-        self.drop_registered(reg);
+        if receiver.sub.has_waiter() {
+            receiver.shared.clear_sub_waiter_fast(&mut receiver.sub);
+        }
     }
 }
 
