@@ -83,45 +83,50 @@ fn overflow_drops_payload_outside_the_channel_lock() {
 }
 
 #[test]
-fn one_off_burst_allocation_is_returned_once_it_is_behind_us() {
+fn partial_and_full_drain_reclaims_burst_segments_without_waiting_for_idle() {
     let (tx, mut rx) = unbounded();
 
-    let burst = HEAP_CAP * 8;
+    let burst = INLINE_CAP + HEAP_CAP * 8;
     for i in 0..burst {
         tx.send(i);
     }
-    assert!(tx.shared.buffer_capacity() >= burst);
+    let peak_capacity = tx.shared.buffer_capacity();
+    assert_eq!(peak_capacity, burst);
 
-    for i in 0..burst {
+    // Draining the inline segment plus half the heap segments reclaims retired prefix segments
+    // immediately even while the backlog stays non-empty.
+    let first_half = INLINE_CAP + HEAP_CAP * 4;
+    for i in 0..first_half {
         assert_eq!(rx.try_recv().as_deref(), Ok(&i));
     }
+    assert_eq!(tx.retained_message_count(), burst - first_half);
+    assert!(tx.shared.buffer_capacity() <= peak_capacity * 3 / 4);
 
-    // Draining evaluates the cycle that just peaked, so the burst allocation is still held.
+    // Draining the rest leaves only the active tail segment plus at most one pooled spare segment.
+    for i in first_half..burst {
+        assert_eq!(rx.try_recv().as_deref(), Ok(&i));
+    }
     assert_eq!(tx.retained_message_count(), 0);
-    assert!(tx.shared.buffer_capacity() >= burst);
-
-    // The next cycle stays small, which is what releases the memory.
-    tx.send(0);
-    assert_eq!(rx.try_recv().as_deref(), Ok(&0));
-    assert!(tx.shared.buffer_capacity() < burst);
+    assert!(tx.shared.buffer_capacity() <= INLINE_CAP + 2 * HEAP_CAP);
 }
 
 #[test]
-fn repeated_bursts_keep_their_allocation() {
+fn single_segment_bursts_reuse_the_spare_segment() {
     let (tx, mut rx) = unbounded();
-    let burst = HEAP_CAP * 4;
 
     for _ in 0..4 {
-        for i in 0..burst {
+        for i in 0..HEAP_CAP {
             tx.send(i);
         }
-        for i in 0..burst {
+        for i in 0..HEAP_CAP {
             assert_eq!(rx.try_recv().as_deref(), Ok(&i));
         }
+        assert!(tx.shared.buffer_capacity() <= INLINE_CAP + 2 * HEAP_CAP);
     }
 
-    // Every cycle peaks at the same size, so the buffer must not rebuild its allocation each time.
-    assert!(tx.shared.buffer_capacity() >= burst);
+    // Disconnecting after an already-drained burst releases the cached spare segment too.
+    drop(tx);
+    assert!(rx.shared.buffer_capacity() <= INLINE_CAP + HEAP_CAP);
 }
 
 #[test]
@@ -151,8 +156,19 @@ fn dropping_all_receivers_reclaims_heap_segments_even_across_unwind() {
     assert_eq!(tx.shared.buffer_capacity(), INLINE_CAP);
 
     let mut fresh = tx.subscribe();
-    tx.send(Bomb(false));
-    assert!(!fresh.try_recv().unwrap().0);
+    for i in 0..INLINE_CAP {
+        tx.send(Bomb(false));
+        assert!(!fresh.try_recv().unwrap().0);
+    }
+    drop(fresh);
+    assert_eq!(tx.shared.buffer_capacity(), INLINE_CAP);
+
+    let fresh = tx.subscribe();
+    for _ in 0..INLINE_CAP {
+        tx.send(Bomb(false));
+    }
+    drop(fresh);
+    assert_eq!(tx.shared.buffer_capacity(), INLINE_CAP);
 }
 
 #[test]

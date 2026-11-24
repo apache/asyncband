@@ -175,13 +175,52 @@ fn init_extra_shards_box(slot: &AtomicPtr<ExtraShards>) -> *mut ExtraShards {
     }
 }
 
+struct RetiredBatch<T> {
+    first: Option<NonNull<Segment<T>>>,
+    rest: Vec<NonNull<Segment<T>>>,
+}
+
+impl<T> RetiredBatch<T> {
+    const fn new() -> Self {
+        Self {
+            first: None,
+            rest: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, seg: NonNull<Segment<T>>) {
+        if self.first.is_none() {
+            self.first = Some(seg);
+        } else {
+            self.rest.push(seg);
+        }
+    }
+
+    #[inline]
+    fn dealloc_all(self) {
+        if let Some(first) = self.first {
+            // SAFETY: Retired segment reached zero references and 3-epoch publisher quiescence.
+            unsafe {
+                Segment::dealloc_heap(first);
+            }
+        }
+        for seg in self.rest {
+            // SAFETY: Retired segment reached zero references and 3-epoch publisher quiescence.
+            unsafe {
+                Segment::dealloc_heap(seg);
+            }
+        }
+    }
+}
+
 #[repr(C)]
 pub struct Shared<T> {
     // Read-mostly header: stays in shared L1 state across steady-state publish and receive.
     live_receivers: AtomicUsize,
+    seg_readers: AtomicUsize,
     paused: AtomicBool,
     has_heap_pool: AtomicBool,
-    has_excess_pool: AtomicBool,
     epoch: AtomicUsize,
     next_shard: AtomicUsize,
     senders: AtomicUsize,
@@ -194,7 +233,7 @@ pub struct Shared<T> {
     _sep1: CacheSep,
 
     /// Monotonic count of versions whose backlog slots have been reclaimed (plus any versions
-    /// skipped while zero receivers existed). Paired with `tail` so `tail - reclaimed` gives exact
+    /// skipped while zero receivers existed). Paired with `tail` so `tail - reclaimed` gives
     /// retained backlog length without splitting state across multiple counters.
     reclaimed: CounterU64,
     _sep2: CacheSep,
@@ -253,9 +292,9 @@ impl<T> Shared<T> {
     pub fn with_first_subscription() -> (Arc<Self>, Subscription<T>) {
         let shared = Arc::new(Self {
             live_receivers: AtomicUsize::new(1),
+            seg_readers: AtomicUsize::new(1),
             paused: AtomicBool::new(false),
             has_heap_pool: AtomicBool::new(false),
-            has_excess_pool: AtomicBool::new(false),
             epoch: AtomicUsize::new(0),
             next_shard: AtomicUsize::new(1),
             senders: AtomicUsize::new(1),
@@ -315,11 +354,32 @@ impl<T> Shared<T> {
 
     #[inline]
     pub fn drop_sender(&self) {
-        if self.senders.fetch_sub(1, Ordering::SeqCst) == 1
-            && self.has_waiters.load(Ordering::SeqCst)
-        {
-            self.wake_all_waiters();
+        if self.senders.fetch_sub(1, Ordering::SeqCst) == 1 {
+            if self.has_waiters.load(Ordering::SeqCst) {
+                self.wake_all_waiters();
+            }
+            if self.has_heap_pool.load(Ordering::Acquire) {
+                self.reclaim_spare_on_disconnect();
+            }
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn reclaim_spare_on_disconnect(&self) {
+        let mut to_free = RetiredBatch::new();
+        {
+            let mut pool_guard = self.pool.lock();
+            if let Some(mut pool) = pool_guard.take() {
+                self.try_advance_epoch_locked(&mut pool, false, &mut to_free);
+                if pool.active_heap_segments == 0 && pool.cached_len() == 0 {
+                    self.has_heap_pool.store(false, Ordering::Release);
+                } else {
+                    *pool_guard = Some(pool);
+                }
+            }
+        }
+        to_free.dealloc_all();
     }
 
     #[cold]
@@ -621,7 +681,8 @@ impl<T> Shared<T> {
                 let cur = self.tail_seg.load(Ordering::Acquire);
                 let base = (*cur).base.load(Ordering::Relaxed);
                 let cap = (*cur).cap as u64;
-                if (*cur).refs.load(Ordering::Acquire) == 1
+                if self.seg_readers.load(Ordering::Acquire) == 0
+                    && (*cur).refs.load(Ordering::Acquire) == 1
                     && (*cur).next.load(Ordering::Acquire).is_null()
                 {
                     if start < base || start - base >= cap {
@@ -666,6 +727,7 @@ impl<T> Shared<T> {
             )
         };
 
+        self.seg_readers.fetch_add(1, Ordering::Relaxed);
         self.live_receivers.store(prev_live + 1, Ordering::Release);
 
         if has_senders {
@@ -682,27 +744,71 @@ impl<T> Shared<T> {
         }
     }
 
-    pub fn drop_receiver(&self, mut state: Subscription<T>) {
-        let (end, became_zero_receivers) =
-            if self.is_disconnected() && self.live_receivers.load(Ordering::Acquire) == 1 {
-                self.live_receivers.store(0, Ordering::Release);
-                (self.tail.load(Ordering::Relaxed), true)
+    #[inline]
+    fn drop_last_disconnected_receiver(&self, state: &mut Subscription<T>) {
+        // Zero senders remain permanently and `seg_readers == 1` (`Acquire`) guarantees every
+        // earlier live or dropping receiver has finished touching segments; operating through
+        // `&self` preserves `state.seg` and `state.slot_ptr` Stacked-Borrows provenance.
+        let end = self.tail.load(Ordering::Relaxed);
+        let mut reclaimed = DrainBatch::new();
+        while state.cursor < end {
+            // SAFETY: Sole remaining segment reader on a permanently disconnected channel.
+            unsafe {
+                let slot = state.slot_ptr.as_ref();
+                debug_assert_eq!(slot.state.load(Ordering::Relaxed), 1);
+                let msg = (*slot.msg.get()).assume_init_read();
+                slot.state.store(0, Ordering::Relaxed);
+                reclaimed.push(msg);
+
+                state.cursor += 1;
+                state.rem_in_seg -= 1;
+                if state.rem_in_seg != 0 {
+                    state.slot_ptr = state.slot_ptr.add(1);
+                } else if state.cursor < end {
+                    self.advance_receiver_seg(state);
+                }
+            }
+        }
+
+        let seg_raw = state.seg.as_ptr();
+        unsafe {
+            let refs = (*seg_raw).refs.load(Ordering::Relaxed);
+            if refs > 1 {
+                (*seg_raw).refs.store(refs - 1, Ordering::Relaxed);
             } else {
-                let _control = self.control.lock();
-                let has_senders = !self.is_disconnected();
-                if has_senders {
-                    self.pause_publishers_locked();
-                }
+                self.release_seg_ref(state.seg);
+            }
+        }
+        self.live_receivers.store(0, Ordering::Relaxed);
+        self.seg_readers.store(0, Ordering::Relaxed);
+        if self.has_heap_pool.load(Ordering::Relaxed) {
+            self.reclaim_all_heap_when_no_receivers();
+        }
+        drop(reclaimed);
+    }
 
-                let end = self.tail.load(Ordering::Relaxed);
-                let prev_live = self.live_receivers.load(Ordering::Relaxed);
-                self.live_receivers.store(prev_live - 1, Ordering::Release);
+    pub fn drop_receiver(&self, mut state: Subscription<T>) {
+        if self.is_disconnected() && self.seg_readers.load(Ordering::Acquire) == 1 {
+            self.drop_last_disconnected_receiver(&mut state);
+            return;
+        }
 
-                if has_senders {
-                    self.unpause_publishers_locked();
-                }
-                (end, prev_live == 1)
-            };
+        let end = {
+            let _control = self.control.lock();
+            let has_senders = !self.is_disconnected();
+            if has_senders {
+                self.pause_publishers_locked();
+            }
+
+            let end = self.tail.load(Ordering::Relaxed);
+            let prev_live = self.live_receivers.load(Ordering::Relaxed);
+            self.live_receivers.store(prev_live - 1, Ordering::Release);
+
+            if has_senders {
+                self.unpause_publishers_locked();
+            }
+            end
+        };
 
         let mut reclaimed = DrainBatch::new();
         let mut reclaimed_count = 0u64;
@@ -731,7 +837,7 @@ impl<T> Shared<T> {
                 state.rem_in_seg -= 1;
                 if state.rem_in_seg != 0 {
                     state.slot_ptr = state.slot_ptr.add(1);
-                } else {
+                } else if state.cursor < end {
                     self.advance_receiver_seg(&mut state);
                 }
             }
@@ -745,21 +851,25 @@ impl<T> Shared<T> {
         unsafe {
             self.release_seg_ref(state.seg);
         }
-        if became_zero_receivers && self.has_heap_pool.load(Ordering::Acquire) {
+        if self.seg_readers.fetch_sub(1, Ordering::AcqRel) == 1
+            && self.has_heap_pool.load(Ordering::Acquire)
+        {
             self.reclaim_all_heap_when_no_receivers();
         }
         drop(reclaimed);
     }
 
-    /// Immediately releases all heap segments when no receivers remain so idle `UnboundedSender`
-    /// handles never retain backing segment buffers.
+    /// Immediately releases all heap segments once every live and draining receiver has finished
+    /// so idle `UnboundedSender` handles never retain backing segment buffers.
     #[cold]
     #[inline(never)]
     fn reclaim_all_heap_when_no_receivers(&self) {
-        let mut to_free = Vec::new();
+        let mut to_free = RetiredBatch::new();
         {
             let _control = self.control.lock();
-            if self.live_receivers.load(Ordering::Acquire) != 0 {
+            if self.live_receivers.load(Ordering::Acquire) != 0
+                || self.seg_readers.load(Ordering::Acquire) != 0
+            {
                 return;
             }
             let has_senders = !self.is_disconnected();
@@ -769,54 +879,55 @@ impl<T> Shared<T> {
 
             let cur_tail = self.tail.load(Ordering::Relaxed);
             let seg0_raw = self.inline_seg0.get().cast::<Segment<T>>();
-            let displaced = if !ptr::eq(self.tail_seg.load(Ordering::Acquire), seg0_raw) {
-                // SAFETY: Publishers are paused and `live_receivers == 0`, so `inline_seg0` has
-                // `refs == 0` and all its slots are already `state == 0`.
+            let old_tail_raw = self.tail_seg.load(Ordering::Acquire);
+            if !ptr::eq(old_tail_raw, seg0_raw) {
+                if let Some(old_tail) = NonNull::new(old_tail_raw) {
+                    // SAFETY: `self.tail_seg` owned one reference to `old_tail`.
+                    unsafe {
+                        self.release_seg_ref(old_tail);
+                    }
+                }
+                // SAFETY: Publishers are paused (`all_shards_idle()`), `live_receivers == 0`,
+                // and `seg_readers == 0`, giving exclusive ownership of `inline_seg0`.
                 unsafe {
+                    debug_assert_eq!((*seg0_raw).refs.load(Ordering::Acquire), 0);
                     (*seg0_raw).base.store(cur_tail, Ordering::Relaxed);
                     (*seg0_raw).refs.store(1, Ordering::Relaxed);
                     (*seg0_raw).prev.store(ptr::null_mut(), Ordering::Relaxed);
                     (*seg0_raw).next.store(ptr::null_mut(), Ordering::Relaxed);
                 }
-                NonNull::new(self.tail_seg.swap(seg0_raw, Ordering::SeqCst))
+                self.tail_seg.store(seg0_raw, Ordering::SeqCst);
             } else {
-                None
-            };
-
-            if has_senders {
-                self.unpause_publishers_locked();
-            }
-
-            if let Some(old_tail) = displaced {
-                // SAFETY: `self.tail_seg` owned one reference to `old_tail`.
+                // Even if `tail_seg` is still `inline_seg0` (e.g. after publishing `INLINE_CAP`
+                // messages and advancing a receiver onto a speculative heap segment), unlink any
+                // attached successor segment before draining the pool.
                 unsafe {
-                    self.release_seg_ref(old_tail);
+                    let next_raw = (*seg0_raw).next.swap(ptr::null_mut(), Ordering::AcqRel);
+                    if !next_raw.is_null() && !ptr::eq(next_raw, unlinked_next()) {
+                        self.release_seg_ref(NonNull::new_unchecked(next_raw));
+                    }
+                    (*seg0_raw).base.store(cur_tail, Ordering::Relaxed);
+                    (*seg0_raw).prev.store(ptr::null_mut(), Ordering::Relaxed);
                 }
             }
 
-            if self.live_receivers.load(Ordering::Acquire) == 0 {
+            {
                 let mut pool_guard = self.pool.lock();
                 if let Some(mut pool) = pool_guard.take() {
-                    if pool.active_heap_segments == 0 && self.all_shards_idle() {
-                        to_free.append(&mut pool.free_list);
-                        for bucket in &mut pool.retired {
-                            to_free.append(bucket);
-                        }
+                    self.try_advance_epoch_locked(&mut pool, false, &mut to_free);
+                    if pool.active_heap_segments == 0 && pool.cached_len() == 0 {
                         self.has_heap_pool.store(false, Ordering::Release);
-                        self.has_excess_pool.store(false, Ordering::Relaxed);
                     } else {
-                        self.try_advance_epoch_locked(&mut pool);
                         *pool_guard = Some(pool);
                     }
                 }
             }
-        }
-        for seg in to_free {
-            // SAFETY: Zero references and zero active shard epochs remain for `seg`.
-            unsafe {
-                Segment::dealloc_heap(seg);
+
+            if has_senders {
+                self.unpause_publishers_locked();
             }
         }
+        to_free.dealloc_all();
     }
 
     #[inline(always)]
@@ -891,10 +1002,11 @@ impl<T> Shared<T> {
         }
 
         if reclaimed
-            && (self.has_excess_pool.load(Ordering::Relaxed)
-                || (self.has_heap_pool.load(Ordering::Relaxed) && self.is_disconnected()))
+            && self.has_heap_pool.load(Ordering::Relaxed)
+            && self.is_disconnected()
+            && self.tail.load(Ordering::Relaxed) == next_ver
         {
-            self.post_reclaim_cold(sub, next_ver);
+            self.reclaim_when_drained_and_disconnected(sub, next_ver);
         }
 
         Received {
@@ -962,42 +1074,32 @@ impl<T> Shared<T> {
         }
     }
 
-    #[cold]
-    #[inline(never)]
-    fn post_reclaim_cold(&self, sub: &mut Subscription<T>, next_ver: u64) {
-        if self.tail.load(Ordering::Acquire) != next_ver {
-            return;
-        }
-        if self.is_disconnected() {
-            self.reclaim_when_drained_and_disconnected(sub, next_ver);
-        } else if self.has_excess_pool.load(Ordering::Relaxed) {
-            self.maybe_shrink_pool();
-        }
-    }
-
     /// Immediately reclaims heap segment backing memory once all senders have disconnected and
     /// receivers finish draining the backlog, even while disconnected `UnboundedReceiver` handles
     /// remain alive.
     #[cold]
     #[inline(never)]
     fn reclaim_when_drained_and_disconnected(&self, sub: &mut Subscription<T>, next_ver: u64) {
-        let mut to_free = Vec::new();
+        let mut to_free = RetiredBatch::new();
         {
             let _control = self.control.lock();
+            if !self.is_disconnected() || self.tail.load(Ordering::Acquire) != next_ver {
+                return;
+            }
             let seg0_raw = self.inline_seg0.get().cast::<Segment<T>>();
             let old_tail_raw = self.tail_seg.load(Ordering::Acquire);
-            if self.live_receivers.load(Ordering::Acquire) == 1
+            if self.seg_readers.load(Ordering::Acquire) == 1
                 && !(ptr::eq(old_tail_raw, seg0_raw) && ptr::eq(sub.seg.as_ptr(), seg0_raw))
             {
-                // SAFETY: Zero senders exist permanently, `sub` is the sole live subscription, and
-                // every buffered slot up to `next_ver` is drained. Releasing both `tail_seg` and
-                // `sub.seg` drops all active segment references (whether mid-segment or right
-                // across a segment boundary) to zero before resetting `inline_seg0`.
+                // SAFETY: Zero senders exist permanently, `seg_readers == 1` guarantees `sub` is
+                // the sole remaining segment holder (no other live or dropping receiver touches
+                // any segment), and every buffered slot up to `next_ver` is drained.
                 unsafe {
                     if let Some(old_tail) = NonNull::new(old_tail_raw) {
                         self.release_seg_ref(old_tail);
                     }
                     self.release_seg_ref(sub.seg);
+                    debug_assert_eq!((*seg0_raw).refs.load(Ordering::Acquire), 0);
                     (*seg0_raw).base.store(next_ver, Ordering::Relaxed);
                     (*seg0_raw).refs.store(2, Ordering::Relaxed);
                     (*seg0_raw).prev.store(ptr::null_mut(), Ordering::Relaxed);
@@ -1011,25 +1113,15 @@ impl<T> Shared<T> {
 
             let mut pool_guard = self.pool.lock();
             if let Some(mut pool) = pool_guard.take() {
-                for _ in 0..EPOCHS {
-                    self.try_advance_epoch_locked(&mut pool);
-                }
-                to_free.append(&mut pool.free_list);
+                self.try_advance_epoch_locked(&mut pool, false, &mut to_free);
                 if pool.active_heap_segments == 0 && pool.cached_len() == 0 {
                     self.has_heap_pool.store(false, Ordering::Release);
-                    self.has_excess_pool.store(false, Ordering::Relaxed);
                 } else {
-                    self.has_excess_pool
-                        .store(pool.cached_len() > 1, Ordering::Relaxed);
                     *pool_guard = Some(pool);
                 }
             }
         }
-        for seg in to_free {
-            unsafe {
-                Segment::dealloc_heap(seg);
-            }
-        }
+        to_free.dealloc_all();
     }
 
     #[cold]
@@ -1193,18 +1285,19 @@ impl<T> Shared<T> {
         refs: usize,
         prev: *mut Segment<T>,
     ) -> NonNull<Segment<T>> {
+        let mut to_free = RetiredBatch::new();
         let reused = {
             let mut pool_guard = self.pool.lock();
             let pool = pool_guard.get_or_insert_with(|| {
                 self.has_heap_pool.store(true, Ordering::Release);
                 Box::new(SegmentPool::new())
             });
-            self.try_advance_epoch_locked(pool);
-            let popped = pool.free_list.pop();
+            self.try_advance_epoch_locked(pool, true, &mut to_free);
+            let popped = pool.spare.take();
             pool.active_heap_segments += 1;
-            pool.cycle_peak_heap = pool.cycle_peak_heap.max(pool.active_heap_segments);
             popped
         };
+        to_free.dealloc_all();
         if let Some(ptr) = reused {
             unsafe {
                 Segment::reset_for_reuse(ptr, base, refs, prev);
@@ -1216,23 +1309,39 @@ impl<T> Shared<T> {
     }
 
     fn put_unused_heap_segment(&self, seg: NonNull<Segment<T>>) {
-        let mut pool_guard = self.pool.lock();
-        let pool = pool_guard
-            .as_mut()
-            .expect("heap segment requires initialized SegmentPool");
-        pool.active_heap_segments -= 1;
-        pool.free_list.push(seg);
+        let mut to_free = None;
+        {
+            let mut pool_guard = self.pool.lock();
+            let pool = pool_guard
+                .as_mut()
+                .expect("heap segment requires initialized SegmentPool");
+            pool.active_heap_segments -= 1;
+            if pool.spare.is_none() && !self.is_disconnected() {
+                pool.spare = Some(seg);
+            } else {
+                to_free = Some(seg);
+            }
+        }
+        if let Some(seg) = to_free {
+            // SAFETY: `seg` was never published to `Segment::next` or `tail_seg`.
+            unsafe {
+                Segment::dealloc_heap(seg);
+            }
+        }
     }
 
     unsafe fn release_seg_ref(&self, mut seg: NonNull<Segment<T>>) {
+        let mut to_free = RetiredBatch::new();
         loop {
             let raw = seg.as_ptr();
             if unsafe { (*raw).refs.fetch_sub(1, Ordering::AcqRel) } != 1 {
-                return;
+                break;
             }
             let next_raw = unsafe { (*raw).next.swap(unlinked_next(), Ordering::AcqRel) };
             let is_inline = unsafe { (*raw).is_inline };
             if !is_inline {
+                let keep_spare =
+                    !self.is_disconnected() && self.live_receivers.load(Ordering::Relaxed) != 0;
                 let mut pool_guard = self.pool.lock();
                 let pool = pool_guard
                     .as_mut()
@@ -1240,16 +1349,14 @@ impl<T> Shared<T> {
                 pool.active_heap_segments -= 1;
                 let cur_epoch = self.epoch.load(Ordering::Relaxed);
                 pool.retired[cur_epoch].push(seg);
-                self.try_advance_epoch_locked(pool);
-                if pool.cached_len() > 1 {
-                    self.has_excess_pool.store(true, Ordering::Relaxed);
-                }
+                self.try_advance_epoch_locked(pool, keep_spare, &mut to_free);
             }
             if next_raw.is_null() || ptr::eq(next_raw, unlinked_next()) {
-                return;
+                break;
             }
             seg = unsafe { NonNull::new_unchecked(next_raw) };
         }
+        to_free.dealloc_all();
     }
 
     fn shard_epoch_idle(&self, epoch_idx: usize) -> bool {
@@ -1268,7 +1375,17 @@ impl<T> Shared<T> {
         true
     }
 
-    fn try_advance_epoch_locked(&self, pool: &mut SegmentPool<T>) {
+    fn try_advance_epoch_locked(
+        &self,
+        pool: &mut SegmentPool<T>,
+        keep_spare: bool,
+        to_free: &mut RetiredBatch<T>,
+    ) {
+        if !keep_spare {
+            if let Some(spare) = pool.spare.take() {
+                to_free.push(spare);
+            }
+        }
         let steps = if self.all_shards_idle() { EPOCHS } else { 2 };
         for _ in 0..steps {
             let cur = self.epoch.load(Ordering::Relaxed);
@@ -1278,43 +1395,12 @@ impl<T> Shared<T> {
             }
             let next = (cur + 1) % EPOCHS;
             self.epoch.store(next, Ordering::SeqCst);
-            pool.free_list.append(&mut pool.retired[next]);
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn maybe_shrink_pool(&self) {
-        if self.retained_message_count() != 0 {
-            return;
-        }
-        let mut to_free = Vec::new();
-        {
-            let mut pool_guard = self.pool.lock();
-            let Some(pool) = pool_guard.as_mut() else {
-                self.has_excess_pool.store(false, Ordering::Relaxed);
-                return;
-            };
-            self.try_advance_epoch_locked(pool);
-            let cached = pool.cached_len();
-            let active = pool.active_heap_segments;
-            let total = active + cached;
-            let peak = mem::replace(&mut pool.cycle_peak_heap, active);
-            if total > 1 && peak <= total / 4 {
-                let keep_cached = (peak * 2).max(1).saturating_sub(active);
-                while pool.free_list.len() > keep_cached {
-                    if let Some(seg) = pool.free_list.pop() {
-                        to_free.push(seg);
-                    }
+            for seg in pool.retired[next].drain(..) {
+                if keep_spare && pool.spare.is_none() {
+                    pool.spare = Some(seg);
+                } else {
+                    to_free.push(seg);
                 }
-            }
-            if pool.cached_len() <= 1 {
-                self.has_excess_pool.store(false, Ordering::Relaxed);
-            }
-        }
-        for seg in to_free {
-            unsafe {
-                Segment::dealloc_heap(seg);
             }
         }
     }
@@ -1340,13 +1426,20 @@ impl<T> Shared<T> {
 
     #[cfg(test)]
     pub fn buffer_capacity(&self) -> usize {
-        let mut pool_guard = self.pool.lock();
-        let Some(pool) = pool_guard.as_mut() else {
-            return INLINE_CAP;
+        let mut to_free = RetiredBatch::new();
+        let cap = {
+            let mut pool_guard = self.pool.lock();
+            let Some(pool) = pool_guard.as_mut() else {
+                return INLINE_CAP;
+            };
+            let keep_spare =
+                !self.is_disconnected() && self.live_receivers.load(Ordering::Relaxed) != 0;
+            self.try_advance_epoch_locked(pool, keep_spare, &mut to_free);
+            let heap_segments = pool.active_heap_segments + pool.cached_len();
+            INLINE_CAP + heap_segments * HEAP_CAP
         };
-        self.try_advance_epoch_locked(pool);
-        let heap_segments = pool.active_heap_segments + pool.cached_len();
-        INLINE_CAP + heap_segments * HEAP_CAP
+        to_free.dealloc_all();
+        cap
     }
 
     #[cfg(test)]

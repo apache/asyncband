@@ -878,3 +878,52 @@ fn concurrent_drop_last_receiver_and_resubscribe_preserves_retained_count() {
         assert_eq!(tx.retained_message_count(), 0);
     }
 }
+
+#[test]
+fn concurrent_lagging_and_caught_up_drops_with_resubscribe_never_corrupt_inline_segment() {
+    use std::sync::Barrier;
+
+    let rounds = if cfg!(miri) { 8 } else { 256 };
+    for _ in 0..rounds {
+        let (tx, rx_lag) = unbounded::<Box<usize>>();
+        let mut rx_fast = tx.subscribe();
+
+        // Cross `INLINE_CAP` (`8`) onto a heap segment while `rx_lag` stays parked on slot 0 of
+        // `inline_seg0` and `rx_fast` drains to the heap segment.
+        for i in 0..14 {
+            tx.send(Box::new(i));
+            assert_eq!(**rx_fast.try_recv().unwrap(), i);
+        }
+
+        let start = Barrier::new(3);
+        let start_ref = &start;
+        let tx_resub = tx.clone();
+        let mut rx_fresh = None;
+
+        thread::scope(|scope| {
+            let lag_drop = scope.spawn(|| {
+                start_ref.wait();
+                drop(rx_lag);
+            });
+            let fast_drop = scope.spawn(|| {
+                start_ref.wait();
+                drop(rx_fast);
+            });
+            start.wait();
+            let sub = tx_resub.subscribe();
+            for i in 1000..1010 {
+                tx_resub.send(Box::new(i));
+            }
+            rx_fresh = Some(sub);
+            lag_drop.join().unwrap();
+            fast_drop.join().unwrap();
+        });
+
+        let mut rx_fresh = rx_fresh.unwrap();
+        for i in 1000..1010 {
+            assert_eq!(**rx_fresh.try_recv().unwrap(), i);
+        }
+        assert_eq!(rx_fresh.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(tx.retained_message_count(), 0);
+    }
+}

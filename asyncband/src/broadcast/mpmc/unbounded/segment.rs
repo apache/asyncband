@@ -35,7 +35,7 @@ use std::sync::atomic::Ordering;
 use crate::internal::mutex::Mutex;
 
 pub const INLINE_CAP: usize = 8;
-pub const HEAP_CAP: usize = 256;
+pub const HEAP_CAP: usize = 252;
 pub const EPOCHS: usize = 3;
 
 /// Sentinel stored into `Segment::next` when a retired segment unlinks its successor so slow
@@ -346,8 +346,7 @@ impl RefUnwindSafe for Shard {}
 
 pub struct SegmentPool<T> {
     pub active_heap_segments: usize,
-    pub cycle_peak_heap: usize,
-    pub free_list: Vec<NonNull<Segment<T>>>,
+    pub spare: Option<NonNull<Segment<T>>>,
     pub retired: [Vec<NonNull<Segment<T>>>; EPOCHS],
 }
 
@@ -355,22 +354,24 @@ impl<T> SegmentPool<T> {
     pub fn new() -> Self {
         Self {
             active_heap_segments: 0,
-            cycle_peak_heap: 0,
-            free_list: Vec::new(),
+            spare: None,
             retired: [Vec::new(), Vec::new(), Vec::new()],
         }
     }
 
     #[inline]
     pub fn cached_len(&self) -> usize {
-        self.free_list.len() + self.retired[0].len() + self.retired[1].len() + self.retired[2].len()
+        usize::from(self.spare.is_some())
+            + self.retired[0].len()
+            + self.retired[1].len()
+            + self.retired[2].len()
     }
 }
 
 impl<T> Drop for SegmentPool<T> {
     fn drop(&mut self) {
-        for ptr in self.free_list.drain(..) {
-            // SAFETY: Pool owns all heap segments in `free_list`.
+        if let Some(ptr) = self.spare.take() {
+            // SAFETY: Pool owns `spare`.
             unsafe { Segment::dealloc_heap(ptr) };
         }
         for bucket in &mut self.retired {

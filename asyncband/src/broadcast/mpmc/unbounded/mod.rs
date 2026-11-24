@@ -241,6 +241,7 @@ impl<T> fmt::Debug for UnboundedReceiver<T> {
 }
 
 impl<T> Drop for UnboundedReceiver<T> {
+    #[inline]
     fn drop(&mut self) {
         self.shared.drop_receiver(self.sub);
     }
