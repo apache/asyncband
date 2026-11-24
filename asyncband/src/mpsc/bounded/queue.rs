@@ -17,7 +17,6 @@
 
 use std::alloc;
 use std::cell::UnsafeCell;
-use std::hint;
 use std::marker::PhantomData;
 use std::mem;
 use std::num::NonZeroUsize;
@@ -27,15 +26,18 @@ use std::process;
 use std::ptr;
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::sync::Condvar;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 #[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
 use std::task::Waker;
-use std::thread;
 
 use crate::internal::mutex::Mutex;
 use crate::internal::register_waker;
@@ -56,6 +58,9 @@ const ACQ_WAITERS_BIT: u64 = 1 << 62;
 const ACQ_COUNT_MASK: u64 = (1 << 62) - 1;
 const RX_WAITERS_BIT: u64 = 1 << 63;
 const RX_REL_MASK: u64 = (1 << 63) - 1;
+const SLOT_EMPTY: u8 = 0;
+const SLOT_READY: u8 = 1;
+const SLOT_RX_WAITING: u8 = 2;
 
 #[repr(align(128))]
 struct CachePadded<T>(T);
@@ -370,9 +375,10 @@ impl<T> SlotRing<T> {
     }
 
     #[inline(always)]
-    unsafe fn slot_ready_at<'a>(base: *mut u8) -> &'a AtomicBool {
-        // SAFETY: Offset 0 of every allocated slot holds a valid zero-initialized `AtomicBool`.
-        unsafe { &*base.cast::<AtomicBool>() }
+    unsafe fn slot_state_at<'a>(base: *mut u8) -> &'a AtomicU8 {
+        // SAFETY: Offset 0 of every allocated slot is initialized to `SLOT_EMPTY` (`0`) and valid
+        // for atomic byte accesses for the lifetime of the slot allocation.
+        unsafe { AtomicU8::from_ptr(base) }
     }
 
     #[inline(always)]
@@ -380,18 +386,34 @@ impl<T> SlotRing<T> {
         // SAFETY: `value_offset` is aligned to a multiple of `align_of::<T>()` within the slot.
         unsafe { base.add(Self::LAYOUT.value_offset).cast::<T>() }
     }
+}
 
-    #[inline]
-    fn wait_until_ready(ready: &AtomicBool) {
-        let mut spins = 0u32;
-        while !ready.load(Ordering::Acquire) {
-            if spins < 128 && !cfg!(miri) {
-                hint::spin_loop();
-                spins += 1;
-            } else {
-                thread::yield_now();
-            }
+struct SlotPark {
+    notified: Mutex<bool>,
+    condvar: Condvar,
+}
+
+impl SlotPark {
+    fn wait(&self) {
+        let mut notified = self.notified.lock();
+        while !*notified {
+            notified = self
+                .condvar
+                .wait(notified)
+                .unwrap_or_else(PoisonError::into_inner);
         }
+        *notified = false;
+    }
+}
+
+impl Wake for SlotPark {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        *self.notified.lock() = true;
+        self.condvar.notify_one();
     }
 }
 
@@ -404,6 +426,7 @@ struct EndpointState {
 struct Control {
     rx_alive: bool,
     recv_waker: Option<Waker>,
+    recv_slot_ticket: Option<u64>,
     send_waiters: WaitList<SendWaiter>,
 }
 
@@ -448,10 +471,11 @@ impl<T> DrainGuard<'_, T> {
                 }
             } else {
                 let base = self.shared.ring.slot_base(ticket);
-                // SAFETY: `base` points to a valid slot whose ticket `< end` was claimed before
-                // `CLOSED_BIT` was set, and `BoundedReceiver::drop` owns all unconsumed slots.
+                self.shared.wait_for_slot_ready(ticket, base);
+                // SAFETY: `wait_for_slot_ready` observed `SLOT_READY` with `Acquire` on `base`,
+                // whose ticket `< end` was claimed before `CLOSED_BIT` was set, and
+                // `BoundedReceiver::drop` owns all unconsumed slots.
                 unsafe {
-                    SlotRing::<T>::wait_until_ready(SlotRing::<T>::slot_ready_at(base));
                     SlotRing::<T>::slot_value_at(base).drop_in_place();
                 }
             }
@@ -501,6 +525,7 @@ impl<T> Shared<T> {
                 control: Mutex::new(Control {
                     rx_alive: true,
                     recv_waker: None,
+                    recv_slot_ticket: None,
                     send_waiters: WaitList::new(),
                 }),
             }),
@@ -534,6 +559,7 @@ impl<T> Shared<T> {
     fn take_recv_waker(&self) -> Option<Waker> {
         let mut control = self.endpoint.0.control.lock();
         self.tail.0.clear_rx_waiting();
+        control.recv_slot_ticket = None;
         control.recv_waker.take()
     }
 
@@ -556,6 +582,7 @@ impl<T> Shared<T> {
             let final_tail = self.tail.0.close() & TICKET_MASK;
             self.tail.0.clear_rx_waiting();
             self.endpoint.0.rx_alive.store(false, Ordering::Release);
+            control.recv_slot_ticket = None;
             let recv_waker = control.recv_waker.take();
             let waiters = mem::replace(&mut control.send_waiters, WaitList::new());
             (final_tail, recv_waker, waiters)
@@ -891,18 +918,23 @@ impl<T> Shared<T> {
             return false;
         }
 
+        let ticket = raw & TICKET_MASK;
         if size_of::<T>() > 0 {
-            let base = self.ring.slot_base(raw & TICKET_MASK);
+            let base = self.ring.slot_base(ticket);
             // SAFETY: Capacity accounting bounds in-flight and buffered slots to `capacity`, and
-            // the previous occupant cleared `ready` before releasing its capacity unit.
-            unsafe {
+            // the previous occupant reset `slot_state` to `SLOT_EMPTY` before releasing capacity.
+            let prev_slot = unsafe {
                 ptr::copy_nonoverlapping(src, SlotRing::<T>::slot_value_at(base), 1);
-                SlotRing::<T>::slot_ready_at(base).store(true, Ordering::Release);
+                SlotRing::<T>::slot_state_at(base).swap(SLOT_READY, Ordering::AcqRel)
+            };
+            if prev_slot == SLOT_RX_WAITING {
+                self.wake_receiver_for_slot(ticket);
+                return true;
             }
         }
 
         if raw & RX_WAITING_BIT != 0 {
-            self.wake_receiver();
+            self.wake_receiver_on_tail();
         }
         true
     }
@@ -915,25 +947,51 @@ impl<T> Shared<T> {
     }
 
     #[cold]
-    fn wake_receiver(&self) {
-        if self.tail.0.load(Ordering::Acquire) & RX_WAITING_BIT == 0 {
-            return;
-        }
-        if let Some(waker) = self.take_recv_waker() {
+    fn wake_receiver_for_slot(&self, ticket: u64) {
+        let waker = {
+            let mut control = self.endpoint.0.control.lock();
+            if control.recv_slot_ticket == Some(ticket) {
+                control.recv_slot_ticket = None;
+                control.recv_waker.take()
+            } else {
+                None
+            }
+        };
+        if let Some(waker) = waker {
             waker.wake();
         }
     }
 
     #[cold]
-    pub fn clear_recv_waker_if_waiting(&self) {
+    fn wake_receiver_on_tail(&self) {
+        if self.tail.0.load(Ordering::Acquire) & RX_WAITING_BIT == 0 {
+            return;
+        }
+        let waker = {
+            let mut control = self.endpoint.0.control.lock();
+            self.tail.0.clear_rx_waiting();
+            if control.recv_slot_ticket.is_none() {
+                control.recv_waker.take()
+            } else {
+                None
+            }
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    #[cold]
+    fn clear_recv_waker_if_waiting(&self) {
         if self.tail.0.load(Ordering::Relaxed) & RX_WAITING_BIT != 0 {
             drop(self.take_recv_waker());
         }
     }
 
     #[cold]
-    pub fn register_recv_wait(&self, head: u64, cx: &mut Context<'_>) -> bool {
+    fn register_recv_wait(&self, head: u64, cx: &mut Context<'_>) -> bool {
         let mut control = self.endpoint.0.control.lock();
+        control.recv_slot_ticket = None;
         let old_waker = register_waker(&mut control.recv_waker, cx.waker());
         let prev_tail = self.tail.0.set_rx_waiting() & TICKET_MASK;
 
@@ -951,6 +1009,42 @@ impl<T> Shared<T> {
         false
     }
 
+    #[cold]
+    fn register_slot_wait(&self, head: u64, base: *mut u8, cx: &mut Context<'_>) -> bool {
+        // SAFETY: `base` points to a valid allocated slot in `0..self.ring.capacity`.
+        let state = unsafe { SlotRing::<T>::slot_state_at(base) };
+        if state.load(Ordering::Acquire) == SLOT_READY {
+            return true;
+        }
+
+        let mut control = self.endpoint.0.control.lock();
+        self.tail.0.clear_rx_waiting();
+        control.recv_slot_ticket = Some(head);
+        let old_waker = register_waker(&mut control.recv_waker, cx.waker());
+
+        match state.compare_exchange(
+            SLOT_EMPTY,
+            SLOT_RX_WAITING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) | Err(SLOT_RX_WAITING) => {
+                drop(control);
+                drop(old_waker);
+                false
+            }
+            Err(SLOT_READY) => {
+                control.recv_slot_ticket = None;
+                let cleared = control.recv_waker.take();
+                drop(control);
+                drop(old_waker);
+                drop(cleared);
+                true
+            }
+            Err(_) => unreachable!("invalid bounded mpsc slot state"),
+        }
+    }
+
     #[inline]
     pub fn claim_read_slot(&self, head: u64) -> Result<*mut u8, TryRecvError> {
         if size_of::<T>() == 0 {
@@ -960,10 +1054,81 @@ impl<T> Shared<T> {
 
         let base = self.ring.slot_base(head);
         // SAFETY: `base` points to a valid allocated slot in `0..self.ring.capacity`.
-        if !unsafe { SlotRing::<T>::slot_ready_at(base) }.load(Ordering::Acquire) {
+        if unsafe { SlotRing::<T>::slot_state_at(base) }.load(Ordering::Acquire) != SLOT_READY {
             self.claim_read_slot_slow(head, base)?;
         }
         Ok(base)
+    }
+
+    #[inline]
+    pub fn poll_claim_read_slot(
+        &self,
+        head: u64,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<*mut u8, RecvError>> {
+        if size_of::<T>() == 0 {
+            return self.poll_claim_zst_slot(head, cx);
+        }
+
+        let base = self.ring.slot_base(head);
+        // SAFETY: `base` points to a valid allocated slot in `0..self.ring.capacity`.
+        if unsafe { SlotRing::<T>::slot_state_at(base) }.load(Ordering::Acquire) == SLOT_READY {
+            return Poll::Ready(Ok(base));
+        }
+        self.poll_claim_read_slot_slow(head, base, cx)
+    }
+
+    fn poll_claim_zst_slot(
+        &self,
+        head: u64,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<*mut u8, RecvError>> {
+        loop {
+            match self.ensure_non_empty(head) {
+                Ok(()) => return Poll::Ready(Ok(NonNull::<u8>::dangling().as_ptr())),
+                Err(TryRecvError::Empty) => {
+                    if !self.register_recv_wait(head, cx) {
+                        return Poll::Pending;
+                    }
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.clear_recv_waker_if_waiting();
+                    return Poll::Ready(Err(RecvError::Disconnected));
+                }
+            }
+        }
+    }
+
+    #[cold]
+    fn poll_claim_read_slot_slow(
+        &self,
+        head: u64,
+        base: *mut u8,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<*mut u8, RecvError>> {
+        loop {
+            match self.ensure_non_empty(head) {
+                Ok(()) => {
+                    if self.register_slot_wait(head, base, cx) {
+                        return Poll::Ready(Ok(base));
+                    }
+                    return Poll::Pending;
+                }
+                Err(TryRecvError::Empty) => {
+                    if !self.register_recv_wait(head, cx) {
+                        return Poll::Pending;
+                    }
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.clear_recv_waker_if_waiting();
+                    return Poll::Ready(Err(RecvError::Disconnected));
+                }
+            }
+            // SAFETY: `base` points to a valid allocated slot in `0..self.ring.capacity`.
+            if unsafe { SlotRing::<T>::slot_state_at(base) }.load(Ordering::Acquire) == SLOT_READY {
+                return Poll::Ready(Ok(base));
+            }
+        }
     }
 
     #[inline]
@@ -982,10 +1147,58 @@ impl<T> Shared<T> {
     }
 
     #[cold]
+    fn wait_for_slot_ready(&self, ticket: u64, base: *mut u8) {
+        // SAFETY: `base` points to a valid allocated slot in `0..self.ring.capacity`.
+        let state = unsafe { SlotRing::<T>::slot_state_at(base) };
+        if state.load(Ordering::Acquire) == SLOT_READY {
+            return;
+        }
+
+        let parker = Arc::new(SlotPark {
+            notified: Mutex::new(false),
+            condvar: Condvar::new(),
+        });
+        let waker = Waker::from(parker.clone());
+
+        loop {
+            {
+                let mut control = self.endpoint.0.control.lock();
+                self.tail.0.clear_rx_waiting();
+                control.recv_slot_ticket = Some(ticket);
+                let old_waker = control.recv_waker.replace(waker.clone());
+                match state.compare_exchange(
+                    SLOT_EMPTY,
+                    SLOT_RX_WAITING,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) | Err(SLOT_RX_WAITING) => {
+                        drop(control);
+                        drop(old_waker);
+                    }
+                    Err(SLOT_READY) => {
+                        control.recv_slot_ticket = None;
+                        let cleared = control.recv_waker.take();
+                        drop(control);
+                        drop(old_waker);
+                        drop(cleared);
+                        return;
+                    }
+                    Err(_) => unreachable!("invalid bounded mpsc slot state"),
+                }
+            }
+
+            parker.wait();
+            if state.load(Ordering::Acquire) == SLOT_READY {
+                return;
+            }
+        }
+    }
+
+    #[cold]
     fn claim_read_slot_slow(&self, head: u64, base: *mut u8) -> Result<(), TryRecvError> {
         self.ensure_non_empty(head)?;
-        // SAFETY: `base` points to a valid allocated slot in `0..self.ring.capacity`.
-        SlotRing::<T>::wait_until_ready(unsafe { SlotRing::<T>::slot_ready_at(base) });
+        self.wait_for_slot_ready(head, base);
         Ok(())
     }
 
@@ -997,11 +1210,11 @@ impl<T> Shared<T> {
             return unsafe { NonNull::<T>::dangling().as_ptr().read() };
         }
 
-        // SAFETY: `claim_read_slot` observed `ready == true` with `Acquire`, synchronizing with
+        // SAFETY: `claim_read_slot` observed `SLOT_READY` with `Acquire`, synchronizing with
         // the producer's write of `T`, and `BoundedReceiver` holds exclusive `&mut` access.
         let value = unsafe { SlotRing::<T>::slot_value_at(base).read() };
         unsafe {
-            SlotRing::<T>::slot_ready_at(base).store(false, Ordering::Release);
+            SlotRing::<T>::slot_state_at(base).store(SLOT_EMPTY, Ordering::Release);
         }
         self.release_from_receiver();
         value
@@ -1017,12 +1230,137 @@ impl<T> Shared<T> {
 
         // Materialize `Poll::Ready(Ok(value))` directly in the caller's return slot before
         // releasing capacity so LLVM does not stage large payloads through an extra stack buffer.
-        // SAFETY: `claim_read_slot` observed `ready == true` with `Acquire`.
+        // SAFETY: `poll_claim_read_slot` observed `SLOT_READY` with `Acquire`.
         let out = Poll::Ready(Ok(unsafe { SlotRing::<T>::slot_value_at(base).read() }));
         unsafe {
-            SlotRing::<T>::slot_ready_at(base).store(false, Ordering::Release);
+            SlotRing::<T>::slot_state_at(base).store(SLOT_EMPTY, Ordering::Release);
         }
         self.release_from_receiver();
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::thread;
+
+    use super::*;
+    use crate::mpsc::BoundedReceiver;
+    use crate::mpsc::BoundedSender;
+
+    struct CountWake(AtomicUsize);
+
+    impl Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn try_recv_parks_without_consuming_caller_thread_token() {
+        let shared = Shared::<u64>::new(NonZeroUsize::new(4).unwrap());
+        let _tx = BoundedSender::new(shared.clone());
+        let mut rx = BoundedReceiver::new(shared.clone());
+
+        shared.try_acquire_capacity().unwrap();
+        let raw = shared.tail.0.claim();
+        assert_eq!(raw & TICKET_MASK, 0);
+
+        let base = shared.ring.slot_base(0);
+        let shared_producer = shared.clone();
+        let publisher = thread::spawn(move || {
+            let state =
+                unsafe { SlotRing::<u64>::slot_state_at(shared_producer.ring.slot_base(0)) };
+            while state.load(Ordering::Acquire) != SLOT_RX_WAITING {
+                thread::yield_now();
+            }
+            let base = shared_producer.ring.slot_base(0);
+            let prev = unsafe {
+                SlotRing::<u64>::slot_value_at(base).write(77);
+                SlotRing::<u64>::slot_state_at(base).swap(SLOT_READY, Ordering::AcqRel)
+            };
+            assert_eq!(prev, SLOT_RX_WAITING);
+            shared_producer.wake_receiver_for_slot(0);
+        });
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let consumer = thread::spawn(move || {
+            // Pre-arm the caller thread's unpark token and verify `try_recv` leaves it intact.
+            thread::current().unpark();
+            assert_eq!(rx.try_recv(), Ok(77));
+            thread::park();
+            done_tx.send(()).unwrap();
+            rx
+        });
+
+        #[cfg(not(miri))]
+        if done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_err()
+        {
+            consumer.thread().unpark();
+            panic!("try_recv timed out or consumed the caller thread's unpark token");
+        }
+        #[cfg(miri)]
+        done_rx.recv().unwrap();
+
+        let rx = consumer.join().unwrap();
+        assert_eq!(
+            unsafe { SlotRing::<u64>::slot_state_at(base) }.load(Ordering::Acquire),
+            SLOT_EMPTY
+        );
+        publisher.join().unwrap();
+        drop(rx);
+    }
+
+    #[test]
+    fn recv_poll_suspends_without_spinning_when_head_producer_is_in_flight() {
+        let shared = Shared::<u64>::new(NonZeroUsize::new(4).unwrap());
+        let tx = BoundedSender::new(shared.clone());
+        let mut rx = BoundedReceiver::new(shared.clone());
+
+        shared.try_acquire_capacity().unwrap();
+        let raw = shared.tail.0.claim();
+        assert_eq!(raw & TICKET_MASK, 0);
+
+        let wake1 = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker1 = Waker::from(wake1.clone());
+        let mut cx1 = Context::from_waker(&waker1);
+
+        let wake2 = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker2 = Waker::from(wake2.clone());
+        let mut cx2 = Context::from_waker(&waker2);
+
+        {
+            let mut fut = pin!(rx.recv());
+            assert_eq!(fut.as_mut().poll(&mut cx1), Poll::Pending);
+
+            let base = shared.ring.slot_base(0);
+            assert_eq!(
+                unsafe { SlotRing::<u64>::slot_state_at(base) }.load(Ordering::Acquire),
+                SLOT_RX_WAITING
+            );
+
+            // Re-polling with a replaced waker keeps `SLOT_RX_WAITING` armed and updates the waker.
+            assert_eq!(fut.as_mut().poll(&mut cx2), Poll::Pending);
+            assert_eq!(wake1.0.load(Ordering::SeqCst), 0);
+            assert_eq!(wake2.0.load(Ordering::SeqCst), 0);
+
+            let prev_slot = unsafe {
+                SlotRing::<u64>::slot_value_at(base).write(99);
+                SlotRing::<u64>::slot_state_at(base).swap(SLOT_READY, Ordering::AcqRel)
+            };
+            assert_eq!(prev_slot, SLOT_RX_WAITING);
+            shared.wake_receiver_for_slot(0);
+
+            assert_eq!(wake1.0.load(Ordering::SeqCst), 0);
+            assert_eq!(wake2.0.load(Ordering::SeqCst), 1);
+            assert_eq!(fut.as_mut().poll(&mut cx2), Poll::Ready(Ok(99)));
+        }
+
+        tx.try_send(100).unwrap();
+        assert_eq!(rx.try_recv(), Ok(100));
     }
 }

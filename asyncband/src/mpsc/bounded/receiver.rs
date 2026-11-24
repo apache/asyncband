@@ -194,27 +194,20 @@ impl<T> Future for Recv<'_, T> {
         let Some(receiver) = this.receiver.as_deref_mut() else {
             panic!("bounded mpsc recv polled after completion");
         };
-        loop {
-            let head = receiver.head;
-            match receiver.shared.claim_read_slot(head) {
-                Ok(base) => {
-                    receiver.head = head + 1;
-                    // SAFETY: `claim_read_slot` confirmed readiness of `base` at `head`.
-                    let out = unsafe { receiver.shared.read_claimed_slot_poll(base) };
-                    this.receiver = None;
-                    return out;
-                }
-                Err(TryRecvError::Disconnected) => {
-                    receiver.shared.clear_recv_waker_if_waiting();
-                    this.receiver = None;
-                    return Poll::Ready(Err(RecvError::Disconnected));
-                }
-                Err(TryRecvError::Empty) => {
-                    if !receiver.shared.register_recv_wait(head, cx) {
-                        return Poll::Pending;
-                    }
-                }
+        let head = receiver.head;
+        match receiver.shared.poll_claim_read_slot(head, cx) {
+            Poll::Ready(Ok(base)) => {
+                receiver.head = head + 1;
+                // SAFETY: `poll_claim_read_slot` confirmed readiness of `base` at `head`.
+                let out = unsafe { receiver.shared.read_claimed_slot_poll(base) };
+                this.receiver = None;
+                out
             }
+            Poll::Ready(Err(err)) => {
+                this.receiver = None;
+                Poll::Ready(Err(err))
+            }
+            Poll::Pending => Poll::Pending,
         }
     }
 }
