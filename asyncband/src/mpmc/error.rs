@@ -55,25 +55,32 @@ impl<T> fmt::Debug for SendError<T> {
 
 impl<T> Error for SendError<T> {}
 
-/// Error returned by [`BoundedSender::try_send`](crate::mpmc::BoundedSender::try_send) or
-/// [`BoundedSender::try_reserve`](crate::mpmc::BoundedSender::try_reserve).
+/// Error returned by [`BoundedSender::try_send`](crate::mpmc::BoundedSender::try_send),
+/// [`BoundedSender::try_reserve`](crate::mpmc::BoundedSender::try_reserve), or
+/// [`BoundedSender::try_reserve_owned`](crate::mpmc::BoundedSender::try_reserve_owned).
+///
+/// The inner payload `T` is the unsent value for `try_send`, `()` for `try_reserve`, or the
+/// returned [`BoundedSender`](crate::mpmc::BoundedSender) for `try_reserve_owned`.
 #[derive(Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
-    /// No unassigned capacity remains, so the value cannot be sent without waiting.
+    /// No unassigned capacity remains, so the operation cannot complete without waiting.
     Full(T),
-    /// All receivers have been dropped, so the value can never be received.
+    /// All receivers have been dropped, so no further values can be received.
     Disconnected(T),
 }
 
 impl<T> TrySendError<T> {
-    /// Returns a reference to the value that failed to be sent.
+    /// Returns a reference to the inner payload: the unsent value, `()` for borrowed reservations,
+    /// or the returned [`BoundedSender`](crate::mpmc::BoundedSender) for owned reservations.
     pub fn as_inner(&self) -> &T {
         match self {
             TrySendError::Full(value) | TrySendError::Disconnected(value) => value,
         }
     }
 
-    /// Consumes the error and returns the value that failed to be sent.
+    /// Consumes the error and returns the inner payload: the unsent value, `()` for borrowed
+    /// reservations, or the returned [`BoundedSender`](crate::mpmc::BoundedSender) for owned
+    /// reservations.
     pub fn into_inner(self) -> T {
         match self {
             TrySendError::Full(value) | TrySendError::Disconnected(value) => value,

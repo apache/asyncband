@@ -152,6 +152,7 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<mpmc::BoundedSender<i64>>();
     assert_send_and_sync::<mpmc::BoundedReceiver<i64>>();
     assert_send_and_sync::<mpmc::Permit<'_, i64>>();
+    assert_send_and_sync::<mpmc::OwnedPermit<i64>>();
     assert_send_and_sync::<mpmc::UnboundedSender<Cell<u8>>>();
     assert_send_and_sync::<mpmc::UnboundedReceiver<Cell<u8>>>();
     assert_send_and_sync::<mpmc::BoundedSender<Cell<u8>>>();
@@ -220,6 +221,9 @@ fn movable_public_types_are_send() {
     assert_send_value(bounded_sender.send(Cell::new(0)));
     assert_send_value(bounded_sender.reserve());
     assert_send_value(bounded_receiver.recv());
+
+    let (bounded_sender, _bounded_receiver) = mpmc::bounded::<Cell<u8>>(1);
+    assert_send_value(bounded_sender.reserve_owned());
 
     let (unbounded_sender, unbounded_receiver) = spmc::unbounded::<Cell<u8>>();
     assert_send_value(unbounded_receiver.recv());
@@ -339,6 +343,7 @@ fn public_types_are_unpin() {
     assert_unpin::<mpmc::BoundedSender<i64>>();
     assert_unpin::<mpmc::BoundedReceiver<i64>>();
     assert_unpin::<mpmc::Permit<'_, i64>>();
+    assert_unpin::<mpmc::OwnedPermit<i64>>();
     assert_unpin::<spmc::SendError<i64>>();
     assert_unpin::<spmc::TrySendError<i64>>();
     assert_unpin::<spmc::RecvError>();
@@ -373,6 +378,7 @@ fn channel_endpoints_and_permits_preserve_traits_for_send_payloads() {
             assert_channel_family!(mpsc, $payload);
             assert_channel_family!(mpmc, $payload);
             assert_channel_family!(spmc, $payload);
+            assert_traits::<mpmc::OwnedPermit<$payload>>();
         };
     }
 

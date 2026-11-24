@@ -35,6 +35,7 @@ use crate::mpmc::TrySendError;
 
 pub struct Shared<T> {
     state: Mutex<State<T>>,
+    capacity: Option<usize>,
 }
 
 /// Values, endpoint counts, and both waiter queues share one lock, so each transition and the
@@ -43,12 +44,14 @@ pub struct Shared<T> {
 struct State<T> {
     values: VecDeque<T>,
     // None is an unbounded queue. In a bounded queue, each slot belongs to available,
-    // a queued value, a Permit, or a detached waiter with a grant.
+    // a queued value, a held permit, or a detached waiter with a grant.
     available: Option<usize>,
     senders: usize,
     receivers: usize,
     recv_waiters: WaitList<RetryWaiter>,
     send_waiters: WaitList<SendWaiter>,
+    #[cfg(test)]
+    fail_next_reserve: bool,
 }
 
 impl<T> State<T> {
@@ -83,8 +86,23 @@ impl<T> State<T> {
         None
     }
 
-    /// Queues a value and selects a waiting receiver's waker.
+    /// Ensures backing storage for one more value before moving it into the queue, so capacity
+    /// overflow unwinds while `value` still lives in the caller's outer scope.
+    fn reserve_for_push(&mut self) {
+        #[cfg(test)]
+        let additional = if mem::take(&mut self.fail_next_reserve) {
+            usize::MAX
+        } else {
+            1
+        };
+        #[cfg(not(test))]
+        let additional = 1;
+        self.values.reserve(additional);
+    }
+
+    /// Queues a value into pre-reserved storage and selects a waiting receiver's waker.
     fn push(&mut self, value: T) -> Option<Waker> {
+        debug_assert!(self.values.capacity() - self.values.len() >= 1);
         self.values.push_back(value);
         self.recv_waiters.notify_one()
     }
@@ -156,8 +174,16 @@ impl<T> Shared<T> {
                 receivers: 1,
                 recv_waiters: WaitList::new(),
                 send_waiters: WaitList::new(),
+                #[cfg(test)]
+                fail_next_reserve: false,
             }),
+            capacity,
         }
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_reserve(&self) {
+        self.state.lock().fail_next_reserve = true;
     }
 
     pub fn clone_sender(&self) {
@@ -215,15 +241,36 @@ impl<T> Shared<T> {
         self.state.lock().values.is_empty()
     }
 
+    pub fn len(&self) -> usize {
+        self.state.lock().values.len()
+    }
+
+    pub fn capacity(&self) -> Option<usize> {
+        self.capacity
+    }
+
+    pub fn sender_count(&self) -> usize {
+        self.state.lock().senders
+    }
+
+    pub fn receiver_count(&self) -> usize {
+        self.state.lock().receivers
+    }
+
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
         let waker = {
             let mut state = self.state.lock();
-            match state.acquire() {
-                Ok(()) => {}
-                Err(TrySendError::Full(())) => return Err(TrySendError::Full(value)),
-                Err(TrySendError::Disconnected(())) => {
-                    return Err(TrySendError::Disconnected(value));
-                }
+            if state.receivers == 0 {
+                return Err(TrySendError::Disconnected(value));
+            }
+            if !state.has_capacity() {
+                return Err(TrySendError::Full(value));
+            }
+            // Reserve storage before consuming capacity or moving `value` into `push`, so a
+            // capacity-overflow panic releases `state` before `value` drops and leaks no slot.
+            state.reserve_for_push();
+            if let Some(available) = &mut state.available {
+                *available -= 1;
             }
             state.push(value)
         };
@@ -245,8 +292,14 @@ impl<T> Shared<T> {
         }
     }
 
+    /// Takes one unassigned capacity slot, which the caller then owns until it is sent on or
+    /// released.
+    pub fn acquire(&self) -> Result<(), TrySendError<()>> {
+        self.state.lock().acquire()
+    }
+
     pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
-        self.state.lock().acquire()?;
+        self.acquire()?;
         Ok(Permit { shared: self })
     }
 
@@ -256,6 +309,86 @@ impl<T> Shared<T> {
             waiter: None,
         };
         poll_fn(|cx| reserve.poll(cx)).await
+    }
+
+    /// Polls an operation waiting for one capacity slot, which the caller then owns like one
+    /// taken by [`acquire`](Self::acquire).
+    pub fn poll_reserve(
+        &self,
+        waiter: &mut Option<WaiterId>,
+        cx: &Context<'_>,
+    ) -> Poll<Result<(), SendError<()>>> {
+        let mut state = self.state.lock();
+        // The last receiver may have dropped while this reservation was waiting or granted.
+        if state.receivers == 0 {
+            *waiter = None;
+            return Poll::Ready(Err(SendError::new(())));
+        }
+        // A previous poll queued this reservation; a released slot may now belong to it.
+        if let Some(id) = *waiter {
+            if matches!(state.send_waiters.waiter_mut(id), SendWaiter::Granted) {
+                let retired = state.send_waiters.remove_unlinked_waiter(id);
+                *waiter = None;
+                drop(state);
+                drop(retired);
+                return Poll::Ready(Ok(()));
+            }
+        } else if state.has_capacity() {
+            // This reservation has not queued yet and can claim unassigned capacity immediately.
+            if let Some(available) = &mut state.available {
+                *available -= 1;
+            }
+            drop(state);
+            return Poll::Ready(Ok(()));
+        }
+        // Otherwise, wait for a slot or refresh the waker of the queued reservation.
+        let retired = state.send_waiters.register_waiter(waiter, cx.waker());
+        drop(state);
+        drop(retired);
+        Poll::Pending
+    }
+
+    /// Withdraws an operation registered by [`poll_reserve`](Self::poll_reserve). Capacity it was
+    /// already granted passes to the next waiting operation.
+    pub fn cancel_reserve(&self, id: WaiterId) {
+        let (retired, waker) = {
+            let mut state = self.state.lock();
+            if state.receivers == 0 {
+                return;
+            }
+            let retired = state.send_waiters.remove(id);
+            // A grant already owns a slot, so returning it does not require a capacity check.
+            let waker = if matches!(retired, SendWaiter::Granted) {
+                state.release()
+            } else {
+                None
+            };
+            (retired, waker)
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        drop(retired);
+    }
+
+    /// Queues a value on a slot taken by [`acquire`](Self::acquire) or
+    /// [`poll_reserve`](Self::poll_reserve), which the queued value then owns. Returns the value
+    /// if no receiver remains.
+    pub fn send_reserved(&self, value: T) -> Result<Option<Waker>, T> {
+        let mut state = self.state.lock();
+        if state.receivers == 0 {
+            return Err(value);
+        }
+        // Reserve storage before moving `value` into `push`, so a capacity-overflow panic
+        // releases `state` before `value` drops.
+        state.reserve_for_push();
+        Ok(state.push(value))
+    }
+
+    /// Returns a slot taken by [`acquire`](Self::acquire) or [`poll_reserve`](Self::poll_reserve)
+    /// to the first waiting operation, or to available capacity.
+    pub fn release_reserved(&self) -> Option<Waker> {
+        self.state.lock().release()
     }
 
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
@@ -303,17 +436,19 @@ impl<T> Permit<'_, T> {
     /// # Errors
     ///
     /// Returns [`SendError`] containing the unsent value if all receivers have been dropped.
+    ///
+    /// # Panics
+    ///
+    /// Panics if growing the internal queue buffer overflows the allocation size limit. On panic,
+    /// `value` is dropped outside the queue lock and this permit's reserved capacity is released to
+    /// the next waiting sender or to available capacity.
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
-        let waker = {
-            let mut state = self.shared.state.lock();
-            if state.receivers == 0 {
-                return Err(SendError::new(value));
-            }
-            let waker = state.push(value);
-            // The queued value now owns this capacity.
-            mem::forget(self);
-            waker
+        let waker = match self.shared.send_reserved(value) {
+            Ok(waker) => waker,
+            Err(value) => return Err(SendError::new(value)),
         };
+        // The queued value now owns this capacity.
+        mem::forget(self);
         if let Some(waker) = waker {
             waker.wake();
         }
@@ -323,7 +458,7 @@ impl<T> Permit<'_, T> {
 
 impl<T> Drop for Permit<'_, T> {
     fn drop(&mut self) {
-        let waker = self.shared.state.lock().release();
+        let waker = self.shared.release_reserved();
         if let Some(waker) = waker {
             waker.wake();
         }
@@ -337,66 +472,18 @@ struct Reserve<'a, T> {
 
 impl<'a, T> Reserve<'a, T> {
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Permit<'a, T>, SendError<()>>> {
-        let mut state = self.shared.state.lock();
-        // The last receiver may have dropped while this reservation was waiting or granted.
-        if state.receivers == 0 {
-            self.waiter = None;
-            return Poll::Ready(Err(SendError::new(())));
-        }
-        // A previous poll queued this reservation; a released slot may now belong to it.
-        if let Some(id) = self.waiter {
-            if matches!(state.send_waiters.waiter_mut(id), SendWaiter::Granted) {
-                let retired = state.send_waiters.remove_unlinked_waiter(id);
-                self.waiter = None;
-                drop(state);
-                drop(retired);
-                return Poll::Ready(Ok(Permit {
-                    shared: self.shared,
-                }));
-            }
-        } else if state.has_capacity() {
-            // This reservation has not queued yet and can claim unassigned capacity immediately.
-            if let Some(available) = &mut state.available {
-                *available -= 1;
-            }
-            drop(state);
-            return Poll::Ready(Ok(Permit {
-                shared: self.shared,
-            }));
-        }
-        // Otherwise, wait for a slot or refresh the waker of the queued reservation.
-        let retired = state
-            .send_waiters
-            .register_waiter(&mut self.waiter, cx.waker());
-        drop(state);
-        drop(retired);
-        Poll::Pending
+        let shared = self.shared;
+        shared
+            .poll_reserve(&mut self.waiter, cx)
+            .map(|reserved| reserved.map(|()| Permit { shared }))
     }
 }
 
 impl<T> Drop for Reserve<'_, T> {
     fn drop(&mut self) {
-        let Some(id) = self.waiter.take() else {
-            return;
-        };
-        let (retired, waker) = {
-            let mut state = self.shared.state.lock();
-            if state.receivers == 0 {
-                return;
-            }
-            let retired = state.send_waiters.remove(id);
-            // A grant already owns a slot, so returning it does not require a capacity check.
-            let waker = if matches!(retired, SendWaiter::Granted) {
-                state.release()
-            } else {
-                None
-            };
-            (retired, waker)
-        };
-        if let Some(waker) = waker {
-            waker.wake();
+        if let Some(id) = self.waiter.take() {
+            self.shared.cancel_reserve(id);
         }
-        drop(retired);
     }
 }
 

@@ -29,7 +29,9 @@ use tests_integration::poll_once;
 mod callbacks;
 mod concurrency;
 mod notification;
+mod owned_reservation;
 mod reservation;
+mod state;
 
 /// Either receiver flavor, so one case can cover both queues.
 trait Receiver<T>: Clone {

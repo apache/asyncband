@@ -23,6 +23,15 @@ All significant changes to this project will be documented in this file.
 
 ## Unreleased
 
+### New features
+
+* Add `mpmc::BoundedSender::{reserve_owned, try_reserve_owned}` returning an `mpmc::OwnedPermit` that owns the consumed sender along with its reserved capacity, keeping that sender alive while the reservation waits and until it is sent, released, or dropped.
+* Add `len`, `sender_count`, `receiver_count`, and `same_channel` to `mpmc` senders and receivers, `is_empty` to `mpmc` senders, and `capacity` to `mpmc::BoundedSender` and `mpmc::BoundedReceiver`, to inspect queued values, endpoint liveness, and channel identity without sending or receiving.
+
+### Bug fixes
+
+* Drop unsent payloads outside the internal queue lock and preserve bounded capacity accounting when an `mpmc` send panics on buffer capacity overflow, allowing payload destructors to reenter the channel without deadlocking.
+
 ## v0.8.1
 
 ### New features
