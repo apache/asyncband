@@ -15,14 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Storage, cursors, and receiving logic shared by the bounded and unbounded MPMC broadcast
-//! channels.
-//!
-//! Both channels retain the same committed backlog and reclaim it the same way; they differ only
-//! in what a producer does when that backlog is large. That difference stays in the two channel
-//! modules, and so does each channel's own `Recv` future, so neither contract is hidden behind a
-//! shared abstraction. What lives here is the state and the one poll step whose waker protocol is
-//! subtle enough that a second copy would be a second thing to keep correct.
+//! Storage, cursors, and receiving helpers for MPMC broadcast channels.
 
 use std::collections::VecDeque;
 use std::mem;
@@ -40,9 +33,6 @@ use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
-
-/// Retained capacity below which an elastic backlog is never shrunk back.
-pub const MIN_RETAINED_CAPACITY: usize = 64;
 
 /// A received message together with whether advancing the cursor vacated the head slot.
 ///
@@ -85,17 +75,6 @@ impl<T> Reclaimed<T> {
     }
 }
 
-/// How a backlog manages the allocation behind its retained messages.
-enum Retention {
-    /// Grow on demand, and return a burst allocation once a later cycle stays small.
-    Elastic {
-        /// The largest backlog retained since the buffer was last empty.
-        peak_len: usize,
-    },
-    /// Allocated once for the requested capacity and never shrunk.
-    Fixed,
-}
-
 /// A retained message together with the number of receiver cursors positioned at its version.
 ///
 /// While a cursor sits on a version the message stays readable, so once the count reaches zero the
@@ -133,28 +112,17 @@ pub struct Backlog<T> {
     tail: u64,
     /// Cursor for each active receiver.
     receivers: Arena<u64>,
-    retention: Retention,
 }
 
 impl<T> Backlog<T> {
-    /// A backlog that grows on demand and gives burst allocations back.
-    pub fn elastic() -> Self {
-        Self::new(VecDeque::new(), Retention::Elastic { peak_len: 0 })
-    }
-
     /// A backlog preallocated for `capacity` retained messages that never shrinks.
     pub fn fixed(capacity: usize) -> Self {
-        Self::new(VecDeque::with_capacity(capacity), Retention::Fixed)
-    }
-
-    fn new(buffer: VecDeque<Slot<T>>, retention: Retention) -> Self {
         Self {
-            buffer,
+            buffer: VecDeque::with_capacity(capacity),
             head: 0,
             at_tail: 0,
             tail: 0,
             receivers: Arena::new(),
-            retention,
         }
     }
 
@@ -202,9 +170,6 @@ impl<T> Backlog<T> {
         // Every cursor that was caught up now has this message as its next read.
         let cursors = mem::take(&mut self.at_tail);
         self.buffer.push_back(Slot { msg, cursors });
-        if let Retention::Elastic { peak_len } = &mut self.retention {
-            *peak_len = (*peak_len).max(self.buffer.len());
-        }
     }
 
     /// Registers a new subscription at the committed tail.
@@ -265,7 +230,6 @@ impl<T> Backlog<T> {
             let msg = self.buffer.pop_front().expect("head slot must exist").msg;
             self.head += 1;
             debug_assert!(self.head <= self.tail);
-            self.shrink_buffer();
             Received {
                 msg,
                 reclaimed: true,
@@ -310,35 +274,7 @@ impl<T> Backlog<T> {
 
         self.head += reclaimed.len() as u64;
         debug_assert!(self.head <= self.tail);
-        self.shrink_buffer();
         reclaimed
-    }
-
-    /// Returns the allocation grown for a stalled receiver once that backlog is behind us.
-    ///
-    /// Without this, a single burst pins its peak allocation for the lifetime of the channel.
-    /// The decision is deliberately made only when the buffer drains completely, and against the
-    /// peak of the cycle that just ended rather than the current length: a channel that repeatedly
-    /// fills and drains keeps a peak as large as its bursts, so it holds its allocation instead of
-    /// reallocating on every cycle. Only once a full cycle stays small does the buffer give the
-    /// memory back.
-    ///
-    /// A fixed backlog keeps the allocation it was built with, which is the whole point of asking
-    /// for a capacity up front.
-    fn shrink_buffer(&mut self) {
-        let Retention::Elastic { peak_len } = &mut self.retention else {
-            return;
-        };
-
-        if !self.buffer.is_empty() {
-            return;
-        }
-
-        let peak = mem::take(peak_len);
-        let capacity = self.buffer.capacity();
-        if capacity > MIN_RETAINED_CAPACITY && peak <= capacity / 4 {
-            self.buffer.shrink_to(MIN_RETAINED_CAPACITY.max(peak * 2));
-        }
     }
 
     #[cfg(test)]
@@ -369,7 +305,7 @@ impl<T> Backlog<T> {
 /// Checking the backlog and registering a waker share this lock with publishing and detaching
 /// registrations, so neither messages nor freed capacity can slip between a check and
 /// registration.
-pub struct Inner<T, S = ()> {
+pub struct Inner<T, S> {
     pub log: Backlog<T>,
     pub waiters: WakerSet,
     pub send_waiters: S,
@@ -460,28 +396,6 @@ pub fn unregister<T, S>(
     drop(waker);
 }
 
-/// Receives without waiting on an unbounded channel.
-pub fn try_receive<T>(
-    inner: &Mutex<Inner<T>>,
-    senders: &AtomicUsize,
-    key: SlotId,
-) -> Result<Received<T>, TryRecvError> {
-    inner.lock().try_receive(senders, key)
-}
-
-/// Polls the shared receiving logic on an unbounded channel.
-pub fn poll_receive<T>(
-    inner: &Mutex<Inner<T>>,
-    senders: &AtomicUsize,
-    key: SlotId,
-    token: &mut Option<WakerToken>,
-    cx: &mut Context<'_>,
-) -> Poll<Result<Received<T>, RecvError>> {
-    let (poll, retired_waker) = inner.lock().poll_receive(senders, key, token, cx);
-    drop(retired_waker);
-    poll
-}
-
 /// Yields the received message owned with the channel unlocked.
 ///
 /// When `received.reclaimed` is true, advancing the cursor popped the message from `buffer`, so
@@ -548,7 +462,7 @@ pub mod tests {
     /// — and checks the accounting after each step.
     #[test]
     fn cursor_accounting_holds_across_subscribe_receive_and_drop() {
-        let mut log = Backlog::<u64>::elastic();
+        let mut log = Backlog::<u64>::fixed(16);
 
         let a = log.subscribe();
         let b = log.subscribe();
