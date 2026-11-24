@@ -17,7 +17,6 @@
 
 use std::fmt;
 use std::future::Future;
-use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -53,7 +52,13 @@ impl<T> BoundedReceiver<T> {
         Self { shared, head: 0 }
     }
 
-    /// Receives the next queued value without waiting for a message, freeing one capacity slot.
+    /// Receives the next queued value without waiting for future sends, freeing one capacity slot.
+    ///
+    /// Only messages that have already claimed a queue slot are visible; held
+    /// [`Permit`](super::Permit)s and concurrent sends that have acquired capacity but not yet
+    /// claimed a slot are not queued values, so [`TryRecvError::Empty`] may be returned while
+    /// capacity is already full. If the sender that claimed the head slot is still copying its
+    /// value, this call briefly waits for that slot write to finish before returning the message.
     ///
     /// # Errors
     ///
@@ -125,7 +130,6 @@ impl<T> BoundedReceiver<T> {
     pub fn recv(&mut self) -> impl Future<Output = Result<T, RecvError>> {
         Recv {
             receiver: Some(self),
-            _pinned: PhantomPinned,
         }
     }
 
@@ -153,11 +157,14 @@ impl<T> BoundedReceiver<T> {
         !self.shared.has_senders()
     }
 
-    /// Returns `true` if no queued value is waiting to be received.
+    /// Returns `true` if no queued value has claimed a slot for delivery.
     ///
-    /// Held permits and sends still waiting for capacity are not queued values. A `true` result
-    /// may become stale as senders add values. A `false` result guarantees that the next receive
-    /// on this receiver finds a value, because receiving requires `&mut self`.
+    /// Held [`Permit`](super::Permit)s, sends waiting for capacity, and concurrent sends that have
+    /// acquired capacity but not yet claimed a queue slot are not queued values. A `true` result
+    /// may become stale as senders publish values. A `false` result means the head slot has been
+    /// claimed, so the next receive on this receiver will observe a message, though
+    /// [`recv`](Self::recv) may suspend once and [`try_recv`](Self::try_recv) may briefly wait if
+    /// the sender is still copying its value into that slot.
     ///
     /// # Examples
     ///
@@ -180,7 +187,6 @@ impl<T> BoundedReceiver<T> {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 struct Recv<'a, T> {
     receiver: Option<&'a mut BoundedReceiver<T>>,
-    _pinned: PhantomPinned,
 }
 
 impl<T> Future for Recv<'_, T> {
@@ -188,9 +194,7 @@ impl<T> Future for Recv<'_, T> {
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: `Recv` never stores self-referential pointers; `PhantomPinned` only keeps
-        // `!Unpin` parity on the opaque `recv` future.
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
         let Some(receiver) = this.receiver.as_deref_mut() else {
             panic!("bounded mpsc recv polled after completion");
         };

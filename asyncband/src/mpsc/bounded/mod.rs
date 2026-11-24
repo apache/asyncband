@@ -36,10 +36,12 @@ pub use self::sender::Permit;
 /// `reserve` operations enter the wait queue; new senders cannot take an already granted slot.
 ///
 /// Message storage is preallocated for `buffer` values. Queued messages and outstanding
-/// reservations together occupy at most `buffer` capacity units.
-///
-/// The `try_*` methods do not wait for capacity or messages, but may briefly synchronize with a
-/// concurrent operation.
+/// reservations together occupy at most `buffer` capacity units. Sending is a two-step operation:
+/// [`BoundedSender::send`] and [`BoundedSender::try_send`] first acquire a capacity unit (just like
+/// [`BoundedSender::reserve`]) and then claim the next queue position to copy the message. While a
+/// concurrent send is between those two steps, another producer can observe
+/// [`TrySendError::Full`](crate::mpsc::TrySendError::Full) before the message becomes visible to
+/// [`BoundedReceiver::try_recv`] or [`BoundedReceiver::is_empty`].
 ///
 /// # Panics
 ///
@@ -55,37 +57,4 @@ pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
         BoundedSender::new(shared.clone()),
         BoundedReceiver::new(shared),
     )
-}
-
-#[cfg(doctest)]
-mod compile_fail_tests {
-    /// ```compile_fail
-    /// use asyncband::mpsc;
-    ///
-    /// fn assert_unpin<T: Unpin>(_: T) {}
-    ///
-    /// let (tx, _rx) = mpsc::bounded(1);
-    /// assert_unpin(tx.send(1));
-    /// ```
-    struct SendFutureIsNotUnpin;
-
-    /// ```compile_fail
-    /// use asyncband::mpsc;
-    ///
-    /// fn assert_unpin<T: Unpin>(_: T) {}
-    ///
-    /// let (tx, _rx) = mpsc::bounded::<usize>(1);
-    /// assert_unpin(tx.reserve());
-    /// ```
-    struct ReserveFutureIsNotUnpin;
-
-    /// ```compile_fail
-    /// use asyncband::mpsc;
-    ///
-    /// fn assert_unpin<T: Unpin>(_: T) {}
-    ///
-    /// let (_tx, mut rx) = mpsc::bounded::<usize>(1);
-    /// assert_unpin(rx.recv());
-    /// ```
-    struct RecvFutureIsNotUnpin;
 }

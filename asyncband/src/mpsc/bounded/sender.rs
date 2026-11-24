@@ -17,10 +17,8 @@
 
 use std::fmt;
 use std::future::Future;
-use std::hint;
-use std::marker::PhantomPinned;
 use std::mem;
-use std::mem::ManuallyDrop;
+use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -67,6 +65,9 @@ impl<T> BoundedSender<T> {
 
     /// Sends a value, waiting for capacity when the queue is full.
     ///
+    /// Once capacity is acquired, claiming the next queue slot and copying `value` proceeds as
+    /// described on [`try_send`](Self::try_send).
+    ///
     /// # Errors
     ///
     /// Returns [`SendError`] containing the unsent value if the receiver has been dropped.
@@ -87,8 +88,7 @@ impl<T> BoundedSender<T> {
         SendValue {
             shared: Some(&self.shared),
             waiter: None,
-            value: ManuallyDrop::new(value),
-            _pinned: PhantomPinned,
+            value: MaybeUninit::new(value),
         }
     }
 
@@ -134,7 +134,6 @@ impl<T> BoundedSender<T> {
         Reserve {
             shared: Some(&self.shared),
             waiter: None,
-            _pinned: PhantomPinned,
         }
     }
 
@@ -157,6 +156,11 @@ impl<T> BoundedSender<T> {
     }
 
     /// Sends a value without waiting for capacity.
+    ///
+    /// Acquiring capacity and claiming a queue position are separate steps: a concurrent sender can
+    /// observe [`TrySendError::Full`] as soon as the last capacity unit is taken, including while
+    /// another sender holds a [`Permit`] or has just acquired capacity and has not yet claimed its
+    /// queue slot.
     ///
     /// # Errors
     ///
@@ -183,13 +187,15 @@ impl<T> BoundedSender<T> {
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
         match self.shared.try_acquire_capacity() {
             Ok(()) => {
-                let value = ManuallyDrop::new(value);
+                let value = MaybeUninit::new(value);
                 // SAFETY: `value` is initialized; `publish_from_ptr` takes logical ownership on
                 // `true` and leaves `value` untouched on `false`.
-                if unsafe { self.shared.publish_from_ptr(&*value) } {
+                if unsafe { self.shared.publish_from_ptr(value.as_ptr()) } {
                     Ok(())
                 } else {
-                    Err(TrySendError::Disconnected(ManuallyDrop::into_inner(value)))
+                    // SAFETY: `publish_from_ptr` returned `false` without reading or dropping
+                    // `value`.
+                    Err(TrySendError::Disconnected(unsafe { value.assume_init() }))
                 }
             }
             Err(TrySendError::Full(())) => Err(TrySendError::Full(value)),
@@ -248,13 +254,14 @@ impl<T> Permit<'_, T> {
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
         let shared = self.shared;
         mem::forget(self);
-        let value = ManuallyDrop::new(value);
+        let value = MaybeUninit::new(value);
         // SAFETY: `value` is initialized; `publish_from_ptr` takes logical ownership on `true` and
         // leaves `value` untouched on `false`.
-        if unsafe { shared.publish_from_ptr(&*value) } {
+        if unsafe { shared.publish_from_ptr(value.as_ptr()) } {
             Ok(())
         } else {
-            Err(SendError::new(ManuallyDrop::into_inner(value)))
+            // SAFETY: `publish_from_ptr` returned `false` without reading or dropping `value`.
+            Err(SendError::new(unsafe { value.assume_init() }))
         }
     }
 }
@@ -270,21 +277,22 @@ impl<T> Drop for Permit<'_, T> {
 struct SendValue<'a, T> {
     shared: Option<&'a Shared<T>>,
     waiter: Option<WaiterId>,
-    value: ManuallyDrop<T>,
-    _pinned: PhantomPinned,
+    value: MaybeUninit<T>,
 }
+
+// `SendValue` never pins `value`; it transfers `T` by value into a ring slot or back via error.
+impl<T> Unpin for SendValue<'_, T> {}
 
 impl<T> SendValue<'_, T> {
     #[inline(always)]
     fn publish_acquired(&mut self, shared: &Shared<T>) -> Poll<Result<(), SendError<T>>> {
         self.shared = None;
         // SAFETY: `self.value` is initialized and `self.shared = None` prevents `Drop` from
-        // dropping it again. On `true`, `publish_from_ptr` took ownership; asserting `None` lets
-        // LLVM fold the caller's post-await `Drop` and skip staging a `Result` stack union.
-        if unsafe { shared.publish_from_ptr(&*self.value) } {
-            unsafe {
-                hint::assert_unchecked(self.shared.is_none());
-            }
+        // dropping it again if waking panics. `MaybeUninit<T>` carries no validity invariant after
+        // ownership moves into the ring, so moving the completed future remains sound for `Box<T>`
+        // (including on pre-1.96 toolchains) and `&mut T`.
+        if unsafe { shared.publish_from_ptr(self.value.as_ptr()) } {
+            self.shared = None;
             Poll::Ready(Ok(()))
         } else {
             unsafe { self.finish_disconnected() }
@@ -295,9 +303,9 @@ impl<T> SendValue<'_, T> {
     #[inline(never)]
     unsafe fn finish_disconnected(&mut self) -> Poll<Result<(), SendError<T>>> {
         self.shared = None;
-        // SAFETY: Caller guarantees `self.value` has not been moved or dropped.
+        // SAFETY: Caller guarantees `self.value` is initialized and has not been moved or dropped.
         Poll::Ready(Err(SendError::new(unsafe {
-            ManuallyDrop::take(&mut self.value)
+            self.value.assume_init_read()
         })))
     }
 }
@@ -307,9 +315,7 @@ impl<T> Future for SendValue<'_, T> {
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: `SendValue` never stores self-referential pointers; `PhantomPinned` only keeps
-        // `!Unpin` parity on the opaque `send` future.
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
         let shared = this
             .shared
             .expect("bounded mpsc send polled after completion");
@@ -346,7 +352,7 @@ impl<T> Drop for SendValue<'_, T> {
         if mem::needs_drop::<T>() {
             // SAFETY: `self.shared.is_some()` means `self.value` was never published or returned.
             unsafe {
-                ManuallyDrop::drop(&mut self.value);
+                self.value.assume_init_drop();
             }
         }
     }
@@ -356,7 +362,6 @@ impl<T> Drop for SendValue<'_, T> {
 struct Reserve<'a, T> {
     shared: Option<&'a Shared<T>>,
     waiter: Option<WaiterId>,
-    _pinned: PhantomPinned,
 }
 
 impl<'a, T> Future for Reserve<'a, T> {
@@ -364,9 +369,7 @@ impl<'a, T> Future for Reserve<'a, T> {
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: `Reserve` never stores self-referential pointers; `PhantomPinned` only keeps
-        // `!Unpin` parity on the opaque `reserve` future.
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
         let shared = this
             .shared
             .expect("bounded mpsc reserve polled after completion");

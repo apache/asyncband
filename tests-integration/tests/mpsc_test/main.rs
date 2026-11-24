@@ -380,3 +380,27 @@ fn zero_sized_payloads_run_destructors_once_across_all_paths() {
     drop(unsent);
     assert_eq!(DROPS.load(Ordering::Relaxed), 8);
 }
+
+#[test]
+fn completed_send_future_can_move_by_value_after_payload_is_consumed() {
+    use std::pin::Pin;
+
+    let (tx, mut rx) = mpsc::bounded(2);
+    let mut boxed_send = tx.send(Box::new(42usize));
+    assert_eq!(expect_ready(poll_once(Pin::new(&mut boxed_send))), Ok(()));
+    assert_eq!(*rx.try_recv().unwrap(), 42);
+    let moved_boxed_send = boxed_send;
+    drop(moved_boxed_send);
+
+    let mut target = 7usize;
+    {
+        let (ref_tx, mut ref_rx) = mpsc::bounded(2);
+        let mut ref_send = ref_tx.send(&mut target);
+        assert_eq!(expect_ready(poll_once(Pin::new(&mut ref_send))), Ok(()));
+        let received = ref_rx.try_recv().unwrap();
+        *received = 99;
+        let moved_ref_send = ref_send;
+        drop(moved_ref_send);
+    }
+    assert_eq!(target, 99);
+}
