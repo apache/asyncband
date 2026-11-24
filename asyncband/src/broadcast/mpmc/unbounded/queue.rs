@@ -50,6 +50,7 @@ use crate::broadcast::mpmc::unbounded::segment::MsgSlot;
 use crate::broadcast::mpmc::unbounded::segment::Segment;
 use crate::broadcast::mpmc::unbounded::segment::SegmentPool;
 use crate::broadcast::mpmc::unbounded::segment::Shard;
+use crate::broadcast::mpmc::unbounded::segment::unlinked_next;
 use crate::broadcast::mpmc::unbounded::waiters::WaitReg;
 use crate::broadcast::mpmc::unbounded::waiters::Waiters;
 use crate::internal::mutex::Mutex;
@@ -162,7 +163,7 @@ fn init_extra_shards_box(slot: &AtomicPtr<ExtraShards>) -> *mut ExtraShards {
         },
     ]);
     let raw = Box::into_raw(boxed);
-    match slot.compare_exchange(ptr::null_mut(), raw, Ordering::AcqRel, Ordering::Acquire) {
+    match slot.compare_exchange(ptr::null_mut(), raw, Ordering::SeqCst, Ordering::Acquire) {
         Ok(_) => raw,
         Err(winner) => {
             // SAFETY: Another thread won the initialization race; reclaim our unused `Box`.
@@ -225,10 +226,10 @@ impl<T> Drop for Shared<T> {
             let inline_raw = self.inline_seg0.get().cast::<Segment<T>>();
             if ptr::eq(tail_seg, inline_raw) {
                 let next_raw = *self.inline_seg0.get_mut().header.next.get_mut();
-                if let Some(next) = NonNull::new(next_raw) {
-                    // SAFETY: `inline_seg0.next` owned one reference to heap segment `next`.
+                if !next_raw.is_null() && !ptr::eq(next_raw, unlinked_next()) {
+                    // SAFETY: `inline_seg0.next` owned one reference to heap segment `next_raw`.
                     unsafe {
-                        self.release_seg_ref(next);
+                        self.release_seg_ref(NonNull::new_unchecked(next_raw));
                     }
                 }
             } else {
@@ -414,7 +415,7 @@ impl<T> Shared<T> {
         if !self.shard0.is_all_idle() {
             return false;
         }
-        let extra = self.extra_shards.load(Ordering::Acquire);
+        let extra = self.extra_shards.load(Ordering::SeqCst);
         if !extra.is_null() {
             // SAFETY: `extra` stays valid until `Shared::drop`.
             for slot in unsafe { &*extra } {
@@ -429,7 +430,7 @@ impl<T> Shared<T> {
     fn pause_publishers_locked(&self) {
         self.paused.store(true, Ordering::SeqCst);
         Self::wait_shard_quiescent(&self.shard0);
-        let extra = self.extra_shards.load(Ordering::Acquire);
+        let extra = self.extra_shards.load(Ordering::SeqCst);
         if !extra.is_null() {
             // SAFETY: `extra` stays valid until `Shared::drop`.
             for slot in unsafe { &*extra } {
@@ -444,10 +445,14 @@ impl<T> Shared<T> {
 
     #[inline(always)]
     pub fn send(&self, shard_ptr: NonNull<Shard>, msg: T) {
-        if self.live_receivers.load(Ordering::Relaxed) == 0 {
-            self.send_cold(shard_ptr, msg);
-            return;
-        }
+        let msg = if self.live_receivers.load(Ordering::Relaxed) == 0 {
+            match self.try_discard_cold(shard_ptr, msg) {
+                None => return,
+                Some(msg) => msg,
+            }
+        } else {
+            msg
+        };
 
         let arc_msg = Arc::new(msg);
         let (shard, e) = self.enter_shard(shard_ptr);
@@ -462,10 +467,11 @@ impl<T> Shared<T> {
             Self::drop_and_panic_overflow(arc_msg);
         };
 
-        // SAFETY: Active shard epoch keeps `tail_seg` valid, and any segment holding an unwritten
-        // `version` remains pinned until `slot.state` becomes non-zero.
+        // SAFETY: Active shard epoch (`SeqCst` enter paired with `SeqCst` `tail_seg` load and
+        // `is_epoch_idle`) keeps `tail_seg` valid, and any segment holding an unwritten `version`
+        // remains pinned until `slot.state` becomes non-zero.
         unsafe {
-            let seg = self.tail_seg.load(Ordering::Acquire);
+            let seg = self.tail_seg.load(Ordering::SeqCst);
             let base = (*seg).base.load(Ordering::Relaxed);
             if version >= base && version - base < (*seg).cap as u64 {
                 let slot = Segment::slot_at(seg, (version - base) as usize);
@@ -485,10 +491,7 @@ impl<T> Shared<T> {
 
     #[cold]
     #[inline(never)]
-    fn send_cold(&self, shard_ptr: NonNull<Shard>, msg: T) {
-        if self.tail.load(Ordering::Relaxed) == u64::MAX {
-            Self::drop_and_panic_overflow(msg);
-        }
+    fn try_discard_cold(&self, shard_ptr: NonNull<Shard>, msg: T) -> Option<T> {
         let (shard, e) = self.enter_shard(shard_ptr);
         let live_rcvs = self.live_receivers.load(Ordering::Acquire);
         if live_rcvs == 0 {
@@ -502,10 +505,10 @@ impl<T> Shared<T> {
                 claimed.is_some(),
                 "broadcast channel version counter overflowed"
             );
-            return;
+            return None;
         }
         shard.exit(e);
-        self.send(shard_ptr, msg);
+        Some(msg)
     }
 
     #[cold]
@@ -540,11 +543,11 @@ impl<T> Shared<T> {
         arc_msg: Arc<T>,
     ) {
         unsafe {
-            while version < (*seg).base.load(Ordering::Relaxed) {
-                seg = (*seg).prev.load(Ordering::Acquire);
-                debug_assert!(!seg.is_null());
-            }
             loop {
+                while version < (*seg).base.load(Ordering::Relaxed) {
+                    seg = (*seg).prev.load(Ordering::Acquire);
+                    debug_assert!(!seg.is_null());
+                }
                 let base = (*seg).base.load(Ordering::Relaxed);
                 let cap = (*seg).cap as u64;
                 if version - base < cap {
@@ -553,17 +556,22 @@ impl<T> Shared<T> {
                     slot.state.store(live_rcvs, Ordering::SeqCst);
                     return;
                 }
-                seg = self.advance_or_get_next_for_pub(seg);
+                match self.advance_or_get_next_for_pub(seg) {
+                    Some(next) => seg = next,
+                    None => seg = self.tail_seg.load(Ordering::SeqCst),
+                }
             }
         }
     }
 
     #[cold]
-    unsafe fn advance_or_get_next_for_pub(&self, cur: *mut Segment<T>) -> *mut Segment<T> {
-        let next = unsafe { self.get_or_init_next(cur) };
+    unsafe fn advance_or_get_next_for_pub(&self, cur: *mut Segment<T>) -> Option<*mut Segment<T>> {
+        let next = unsafe { self.get_or_init_next(cur)? };
         if ptr::eq(self.tail_seg.load(Ordering::Acquire), cur) {
-            unsafe {
-                (*next).refs.fetch_add(1, Ordering::Relaxed);
+            // Guard against resurrecting `next.refs` from `0` to `1` if faster threads already
+            // advanced `tail_seg` past both `cur` and `next` and retired `next`.
+            if !unsafe { Self::try_inc_seg_ref(next) } {
+                return None;
             }
             if self
                 .tail_seg
@@ -579,7 +587,22 @@ impl<T> Shared<T> {
                 }
             }
         }
-        next
+        Some(next)
+    }
+
+    #[inline]
+    unsafe fn try_inc_seg_ref(seg: *mut Segment<T>) -> bool {
+        let refs = unsafe { &(*seg).refs };
+        let mut cur = refs.load(Ordering::Relaxed);
+        loop {
+            if cur == 0 {
+                return false;
+            }
+            match refs.compare_exchange_weak(cur, cur + 1, Ordering::Acquire, Ordering::Relaxed) {
+                Ok(_) => return true,
+                Err(actual) => cur = actual,
+            }
+        }
     }
 
     pub fn subscribe(&self) -> Subscription<T> {
@@ -625,7 +648,9 @@ impl<T> Shared<T> {
                     if start - base < cap {
                         break;
                     }
-                    cur = self.advance_or_get_next_for_pub(cur);
+                    cur = self
+                        .advance_or_get_next_for_pub(cur)
+                        .expect("paused tail_seg cannot be unlinked");
                 }
                 (*cur).refs.fetch_add(1, Ordering::Relaxed);
                 NonNull::new_unchecked(cur)
@@ -1011,7 +1036,9 @@ impl<T> Shared<T> {
     #[inline(never)]
     unsafe fn advance_receiver_seg(&self, sub: &mut Subscription<T>) {
         unsafe {
-            let next_raw = self.get_or_init_next(sub.seg.as_ptr());
+            let next_raw = self
+                .get_or_init_next(sub.seg.as_ptr())
+                .expect("active receiver segment cannot be unlinked");
             let next = NonNull::new_unchecked(next_raw);
             (*next_raw).refs.fetch_add(1, Ordering::Relaxed);
             let prev = mem::replace(&mut sub.seg, next);
@@ -1124,10 +1151,13 @@ impl<T> Shared<T> {
     }
 
     #[cold]
-    unsafe fn get_or_init_next(&self, cur: *mut Segment<T>) -> *mut Segment<T> {
+    unsafe fn get_or_init_next(&self, cur: *mut Segment<T>) -> Option<*mut Segment<T>> {
         let existing = unsafe { (*cur).next.load(Ordering::Acquire) };
+        if ptr::eq(existing, unlinked_next()) {
+            return None;
+        }
         if !existing.is_null() {
-            return existing;
+            return Some(existing);
         }
 
         let next_base = unsafe {
@@ -1145,10 +1175,14 @@ impl<T> Shared<T> {
                 Ordering::Acquire,
             )
         } {
-            Ok(_) => cand.as_ptr(),
+            Ok(_) => Some(cand.as_ptr()),
             Err(winner) => {
                 self.put_unused_heap_segment(cand);
-                winner
+                if ptr::eq(winner, unlinked_next()) {
+                    None
+                } else {
+                    Some(winner)
+                }
             }
         }
     }
@@ -1196,7 +1230,7 @@ impl<T> Shared<T> {
             if unsafe { (*raw).refs.fetch_sub(1, Ordering::AcqRel) } != 1 {
                 return;
             }
-            let next_raw = unsafe { (*raw).next.swap(ptr::null_mut(), Ordering::Acquire) };
+            let next_raw = unsafe { (*raw).next.swap(unlinked_next(), Ordering::AcqRel) };
             let is_inline = unsafe { (*raw).is_inline };
             if !is_inline {
                 let mut pool_guard = self.pool.lock();
@@ -1211,10 +1245,10 @@ impl<T> Shared<T> {
                     self.has_excess_pool.store(true, Ordering::Relaxed);
                 }
             }
-            let Some(next) = NonNull::new(next_raw) else {
+            if next_raw.is_null() || ptr::eq(next_raw, unlinked_next()) {
                 return;
-            };
-            seg = next;
+            }
+            seg = unsafe { NonNull::new_unchecked(next_raw) };
         }
     }
 
@@ -1222,7 +1256,7 @@ impl<T> Shared<T> {
         if !self.shard0.is_epoch_idle(epoch_idx) {
             return false;
         }
-        let extra = self.extra_shards.load(Ordering::Acquire);
+        let extra = self.extra_shards.load(Ordering::SeqCst);
         if !extra.is_null() {
             // SAFETY: `extra` stays valid until `Shared::drop`.
             for slot in unsafe { &*extra } {

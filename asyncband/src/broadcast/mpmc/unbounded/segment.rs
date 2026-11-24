@@ -17,6 +17,7 @@
 
 use std::alloc;
 use std::cell::UnsafeCell;
+use std::mem;
 use std::mem::MaybeUninit;
 use std::panic::RefUnwindSafe;
 use std::panic::UnwindSafe;
@@ -37,6 +38,14 @@ pub const INLINE_CAP: usize = 8;
 pub const HEAP_CAP: usize = 256;
 pub const EPOCHS: usize = 3;
 
+/// Sentinel stored into `Segment::next` when a retired segment unlinks its successor so slow
+/// publishers never mistake an unlinked retired segment for one whose successor is still
+/// unallocated.
+#[inline(always)]
+pub fn unlinked_next<T>() -> *mut Segment<T> {
+    NonNull::<Segment<T>>::dangling().as_ptr()
+}
+
 /// Uninitialized 128-byte separator that guarantees adjacent fields never share a 128-byte
 /// coherence sector for any allocator base alignment without over-aligning `Shared<T>` or dirtying
 /// separator cache lines on channel creation.
@@ -53,6 +62,8 @@ pub struct CounterU64(AtomicU64);
 
 #[cfg(target_has_atomic = "64")]
 impl CounterU64 {
+    const FAST_LIMIT: u64 = u64::MAX - (1 << 32);
+
     pub const fn new(initial: u64) -> Self {
         Self(AtomicU64::new(initial))
     }
@@ -74,28 +85,41 @@ impl CounterU64 {
 
     #[inline(always)]
     pub fn advance_or_abort(&self, ordering: Ordering) {
-        if self.0.fetch_add(1, ordering) == u64::MAX {
+        if self.0.fetch_add(1, ordering) >= Self::FAST_LIMIT {
             process::abort();
         }
     }
 
     #[inline(always)]
     pub fn claim_next(&self) -> Option<u64> {
+        if self.0.load(Ordering::Relaxed) >= Self::FAST_LIMIT {
+            return self.claim_next_slow();
+        }
         // `SeqCst` pairs with `has_waiters` in `register_waiter` without extra instructions over
-        // `AcqRel` on ARM64 (`ldaddal`) or x86_64 (`lock xadd`).
+        // `AcqRel` on ARM64 (`ldaddal`) or x86_64 (`lock xadd`); `FAST_LIMIT` routes saturation to
+        // `claim_next_slow`, and aborting at `u64::MAX` closes any extreme preemption race across
+        // 2^32 concurrent publishes.
         let prev = self.0.fetch_add(1, Ordering::SeqCst);
         if prev == u64::MAX {
-            self.restore_max();
-            None
-        } else {
-            Some(prev)
+            process::abort();
         }
+        Some(prev)
     }
 
     #[cold]
     #[inline(never)]
-    fn restore_max(&self) {
-        self.0.store(u64::MAX, Ordering::SeqCst);
+    fn claim_next_slow(&self) -> Option<u64> {
+        let mut cur = self.0.load(Ordering::Relaxed);
+        loop {
+            let next = cur.checked_add(1)?;
+            match self
+                .0
+                .compare_exchange_weak(cur, next, Ordering::SeqCst, Ordering::Relaxed)
+            {
+                Ok(_) => return Some(cur),
+                Err(actual) => cur = actual,
+            }
+        }
     }
 }
 
@@ -175,7 +199,6 @@ pub struct Segment<T> {
     pub prev: AtomicPtr<Segment<T>>,
     pub next: AtomicPtr<Segment<T>>,
     pub is_inline: bool,
-    slots: [MsgSlot<T>; 0],
 }
 
 impl<T> UnwindSafe for Segment<T> {}
@@ -197,7 +220,6 @@ impl<T> InlineSegment<T> {
                 prev: AtomicPtr::new(ptr::null_mut()),
                 next: AtomicPtr::new(ptr::null_mut()),
                 is_inline: true,
-                slots: [],
             },
             slots: [const { MsgSlot::new() }; INLINE_CAP],
         }
@@ -256,14 +278,20 @@ impl<T> Segment<T> {
 
     #[inline(always)]
     pub unsafe fn slot_ptr_at(seg: *mut Self, offset: usize) -> NonNull<MsgSlot<T>> {
+        const {
+            assert!(
+                mem::offset_of!(InlineSegment<T>, slots) == mem::offset_of!(HeapSegment<T>, slots)
+            );
+        }
         // SAFETY: `seg` points to an `InlineSegment<T>` (`cap == INLINE_CAP`) or `HeapSegment<T>`
-        // (`cap == HEAP_CAP`), and projecting from `(*seg).slots` preserves full segment
-        // provenance across `0..cap`.
+        // (`cap == HEAP_CAP`) with provenance over the full segment allocation, and both layouts
+        // place `slots` at the same byte offset after `Segment<T>` (including any 32-bit tail
+        // padding required by `CounterU64` alignment).
         unsafe {
             debug_assert!(offset < (*seg).cap);
-            let raw = ptr::addr_of!((*seg).slots)
+            let raw = seg
+                .byte_add(mem::offset_of!(InlineSegment<T>, slots))
                 .cast::<MsgSlot<T>>()
-                .cast_mut()
                 .add(offset);
             NonNull::new_unchecked(raw)
         }
@@ -275,57 +303,10 @@ impl<T> Segment<T> {
     }
 }
 
-#[cfg(target_has_atomic = "64")]
-pub struct Shard {
-    /// Packs three 16-bit active publisher counts (`0..16`, `16..32`, `32..48`) into one word so
-    /// computing `epoch << 4` is a single barrel shift instead of an integer multiply.
-    active: AtomicU64,
-}
-
-#[cfg(target_has_atomic = "64")]
-impl Shard {
-    const SHIFT_BITS: usize = 4;
-    const EPOCH_MASK: u64 = 0xFFFF;
-
-    pub const fn new() -> Self {
-        Self {
-            active: AtomicU64::new(0),
-        }
-    }
-
-    #[inline(always)]
-    pub fn enter(&self, epoch: usize) {
-        let shift = epoch << Self::SHIFT_BITS;
-        let prev = self.active.fetch_add(1u64 << shift, Ordering::SeqCst);
-        if ((prev >> shift) & Self::EPOCH_MASK) == Self::EPOCH_MASK {
-            process::abort();
-        }
-    }
-
-    #[inline(always)]
-    pub fn exit(&self, epoch: usize) {
-        self.active
-            .fetch_sub(1u64 << (epoch << Self::SHIFT_BITS), Ordering::Release);
-    }
-
-    #[inline]
-    pub fn is_all_idle(&self) -> bool {
-        self.active.load(Ordering::SeqCst) == 0
-    }
-
-    #[inline]
-    pub fn is_epoch_idle(&self, epoch: usize) -> bool {
-        ((self.active.load(Ordering::Acquire) >> (epoch << Self::SHIFT_BITS)) & Self::EPOCH_MASK)
-            == 0
-    }
-}
-
-#[cfg(not(target_has_atomic = "64"))]
 pub struct Shard {
     active: [AtomicUsize; EPOCHS],
 }
 
-#[cfg(not(target_has_atomic = "64"))]
 impl Shard {
     pub const fn new() -> Self {
         Self {
@@ -337,12 +318,14 @@ impl Shard {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn enter(&self, epoch: usize) {
-        self.active[epoch].fetch_add(1, Ordering::SeqCst);
+        if self.active[epoch].fetch_add(1, Ordering::SeqCst) > isize::MAX as usize {
+            process::abort();
+        }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn exit(&self, epoch: usize) {
         self.active[epoch].fetch_sub(1, Ordering::Release);
     }
@@ -354,7 +337,7 @@ impl Shard {
 
     #[inline]
     pub fn is_epoch_idle(&self, epoch: usize) -> bool {
-        self.active[epoch].load(Ordering::Acquire) == 0
+        self.active[epoch].load(Ordering::SeqCst) == 0
     }
 }
 

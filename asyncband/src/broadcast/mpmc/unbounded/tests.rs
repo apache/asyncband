@@ -31,15 +31,42 @@ use crate::broadcast::mpmc::unbounded::segment::MsgSlot;
 #[test]
 #[should_panic(expected = "broadcast channel version counter overflowed")]
 fn send_panics_on_version_overflow() {
-    let (tx, _) = unbounded();
+    let (tx, rx) = unbounded();
+    drop(rx);
     tx.shared.set_tail(u64::MAX);
     tx.send(());
 }
 
 #[test]
+fn concurrent_version_overflow_saturates_without_wrapping() {
+    let (tx, initial_rx) = unbounded::<usize>();
+    drop(initial_rx);
+    tx.shared.set_tail(u64::MAX - 2);
+    let mut rx = tx.subscribe();
+
+    let workers: Vec<_> = (0..6)
+        .map(|i| {
+            let tx = tx.clone();
+            thread::spawn(move || catch_unwind(AssertUnwindSafe(|| tx.send(i))).is_ok())
+        })
+        .collect();
+
+    let succeeded = workers
+        .into_iter()
+        .map(|h| h.join().unwrap())
+        .filter(|&ok| ok)
+        .count();
+    assert_eq!(succeeded, 2);
+    assert!(rx.try_recv().is_ok());
+    assert!(rx.try_recv().is_ok());
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[test]
 fn overflow_drops_payload_outside_the_channel_lock() {
     for has_receiver in [false, true] {
-        let (tx, _) = unbounded();
+        let (tx, rx) = unbounded();
+        drop(rx);
         tx.shared.set_tail(u64::MAX);
         let _receiver = has_receiver.then(|| tx.subscribe());
         let tx_inspect = tx.clone();

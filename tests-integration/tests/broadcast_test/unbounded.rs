@@ -504,7 +504,7 @@ async fn recv_reports_disconnection_without_any_message() {
 #[test]
 fn concurrent_senders_deliver_every_message_to_every_receiver() {
     const SENDERS: u64 = 4;
-    const PER_SENDER: u64 = if cfg!(miri) { 8 } else { 512 };
+    const PER_SENDER: u64 = if cfg!(miri) { 16 } else { 600 };
 
     let (tx, rx) = unbounded();
     let mut receivers = Vec::with_capacity(4);
