@@ -196,3 +196,34 @@ fn large_pending_send_preserves_ownership_on_cancel_and_disconnect() {
         }
     }
 }
+
+#[test]
+fn bounded_grants_capacity_in_fifo_order_past_inline_waker_batch_limit() {
+    const CAPACITY: usize = 64;
+    const WAITERS: usize = 40;
+
+    let (tx, mut rx) = mpsc::bounded(CAPACITY);
+    for i in 0..CAPACITY {
+        tx.try_send(i).unwrap();
+    }
+
+    let mut waiters = Vec::with_capacity(WAITERS);
+    for i in 0..WAITERS {
+        let sender = tx.clone();
+        let mut fut = Box::pin(async move { sender.send(CAPACITY + i).await });
+        let (waker, wakes) = WakeCounter::new();
+        assert!(poll_with(fut.as_mut(), &waker).is_pending());
+        waiters.push((fut, waker, wakes));
+    }
+
+    for (expected, (mut fut, waker, wakes)) in waiters.into_iter().enumerate() {
+        assert_eq!(rx.try_recv(), Ok(expected));
+        assert_eq!(wakes.count(), 1);
+        assert_eq!(expect_ready(poll_with(fut.as_mut(), &waker)), Ok(()));
+    }
+
+    for expected in WAITERS..(CAPACITY + WAITERS) {
+        assert_eq!(rx.try_recv(), Ok(expected));
+    }
+    assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+}

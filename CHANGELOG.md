@@ -23,6 +23,10 @@ All significant changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Performance improvements
+
+* Shrink `mpsc::BoundedSender::{send, reserve}` and `mpsc::BoundedReceiver::recv` futures and speed up `mpsc::bounded` across multi-producer inline 1 KiB and boxed transfers, single- and multi-producer task and OS-thread queues, uncontended send/receive and reservation roundtrips, and backpressure handoffs and cancellations; capacity-1 task handoffs are roughly unchanged.
+
 ## v0.8.1
 
 ### New features

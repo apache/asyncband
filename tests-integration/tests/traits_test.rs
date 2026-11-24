@@ -212,6 +212,15 @@ fn movable_public_types_are_send() {
     let once_cell = OnceCell::<i64>::new();
     assert_send_value(once_cell.wait());
 
+    let (unbounded_sender, mut unbounded_receiver) = mpsc::unbounded::<Cell<u8>>();
+    assert_send_value(unbounded_receiver.recv());
+    drop(unbounded_sender);
+
+    let (bounded_sender, mut bounded_receiver) = mpsc::bounded::<Cell<u8>>(1);
+    assert_send_value(bounded_sender.send(Cell::new(0)));
+    assert_send_value(bounded_sender.reserve());
+    assert_send_value(bounded_receiver.recv());
+
     let (unbounded_sender, unbounded_receiver) = mpmc::unbounded::<Cell<u8>>();
     assert_send_value(unbounded_receiver.recv());
     drop(unbounded_sender);
