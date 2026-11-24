@@ -255,11 +255,15 @@ impl<T> Segment<T> {
     }
 
     pub unsafe fn dealloc_heap(ptr: NonNull<Self>) {
-        debug_assert!(!unsafe { (*ptr.as_ptr()).is_inline });
+        let raw = ptr.as_ptr();
+        debug_assert!(!unsafe { (*raw).is_inline });
         let layout = alloc::Layout::new::<HeapSegment<T>>();
-        // SAFETY: `ptr` was allocated in `alloc_heap` and all initialized slots were consumed.
+        // SAFETY: `raw` was allocated as `HeapSegment<T>` in `alloc_heap` and all initialized
+        // `MaybeUninit<Arc<T>>` slots were already consumed; `drop_in_place` is a no-op on
+        // 64-bit-atomic targets and drops the `Mutex<u64>` header fallback elsewhere.
         unsafe {
-            alloc::dealloc(ptr.as_ptr().cast::<u8>(), layout);
+            ptr::drop_in_place(raw.cast::<HeapSegment<T>>());
+            alloc::dealloc(raw.cast::<u8>(), layout);
         }
     }
 

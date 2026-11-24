@@ -1092,9 +1092,9 @@ impl<T> Shared<T> {
         }
     }
 
-    /// Immediately reclaims heap segment backing memory once all senders have disconnected and
-    /// receivers finish draining the backlog, even while disconnected `UnboundedReceiver` handles
-    /// remain alive.
+    /// Reclaims pooled heap segments once a disconnected channel's backlog drains, and resets a
+    /// sole remaining subscription back onto `inline_seg0` so an idle disconnected handle retains
+    /// no heap segment.
     #[cold]
     #[inline(never)]
     fn reclaim_when_drained_and_disconnected(&self, sub: &mut Subscription<T>, next_ver: u64) {
