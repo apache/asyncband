@@ -285,6 +285,9 @@ fn public_types_are_unpin() {
     fn assert_unpin<T: Unpin>() {}
     fn assert_unpin_value<T: Unpin>(_: T) {}
 
+    #[derive(Clone)]
+    struct PinnedClone(PhantomPinned);
+
     assert_unpin::<Barrier>();
     assert_unpin::<Condvar>();
     assert_unpin::<ManualResetEvent>();
@@ -367,6 +370,11 @@ fn public_types_are_unpin() {
     assert_unpin_value(bounded_tx.send(PhantomPinned));
     assert_unpin_value(bounded_tx.reserve());
     assert_unpin_value(bounded_rx.recv());
+
+    let (broadcast_tx, mut broadcast_rx) = broadcast::mpmc::unbounded::<PinnedClone>();
+    let mut broadcast_rx2 = broadcast_tx.subscribe();
+    assert_unpin_value(broadcast_rx.recv());
+    assert_unpin_value(broadcast_rx2.recv_cloned());
 }
 
 #[test]
