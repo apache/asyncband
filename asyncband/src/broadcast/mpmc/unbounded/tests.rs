@@ -297,3 +297,79 @@ fn try_recv_parks_without_consuming_caller_thread_token() {
     publisher.join().unwrap();
     drop((tx, rx));
 }
+
+#[test]
+fn sync_inflight_waiters_finish_before_async_waker_callbacks() {
+    use std::sync::Mutex;
+
+    struct LockingWake {
+        try_shared_lock: Arc<Mutex<()>>,
+        try_cloned_lock: Arc<Mutex<()>>,
+        woke: AtomicUsize,
+    }
+
+    impl Wake for LockingWake {
+        fn wake(self: Arc<Self>) {
+            // If `wake_all_waiters` invokes async wakers before unparking synchronous in-flight
+            // slot waiters, acquiring these locks deadlocks with `try_recv` and `try_recv_cloned`.
+            drop(self.try_shared_lock.lock().unwrap());
+            drop(self.try_cloned_lock.lock().unwrap());
+            self.woke.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let (tx, mut rx_async) = unbounded();
+    let mut rx_try_shared = tx.subscribe();
+    let mut rx_try_cloned = tx.subscribe();
+    let mut rx_probe = tx.subscribe();
+
+    let (epoch, version, live_rcvs) = tx.shared.begin_inflight_publish_for_test();
+
+    let try_shared_lock = Arc::new(Mutex::new(()));
+    let try_cloned_lock = Arc::new(Mutex::new(()));
+    let wake_state = Arc::new(LockingWake {
+        try_shared_lock: try_shared_lock.clone(),
+        try_cloned_lock: try_cloned_lock.clone(),
+        woke: AtomicUsize::new(0),
+    });
+    let waker = Waker::from(wake_state.clone());
+    let mut cx = Context::from_waker(&waker);
+
+    // Occupy `Waiters::slot0` first with an async `Waker` whose `wake` callback acquires the
+    // caller locks held across synchronous `try_recv` and `try_recv_cloned`.
+    let mut fut = rx_async.recv();
+    assert!(Pin::new(&mut fut).poll(&mut cx).is_pending());
+
+    let shared_lock_for_thread = try_shared_lock.clone();
+    let try_shared_handle = thread::spawn(move || {
+        let _guard = shared_lock_for_thread.lock().unwrap();
+        assert_eq!(rx_try_shared.try_recv().as_deref(), Ok(&91usize));
+        rx_try_shared
+    });
+
+    let cloned_lock_for_thread = try_cloned_lock.clone();
+    let try_cloned_handle = thread::spawn(move || {
+        let _guard = cloned_lock_for_thread.lock().unwrap();
+        assert_eq!(rx_try_cloned.try_recv_cloned(), Ok(91usize));
+        rx_try_cloned
+    });
+
+    while tx.shared.sync_inflight_waiters_for_test() < 2 {
+        thread::yield_now();
+    }
+
+    tx.shared
+        .finish_inflight_publish_for_test(epoch, version, live_rcvs, 91usize);
+
+    assert_eq!(wake_state.woke.load(Ordering::SeqCst), 1);
+    assert_eq!(rx_probe.try_recv().as_deref(), Ok(&91));
+    let rx_try_shared = try_shared_handle.join().unwrap();
+    let rx_try_cloned = try_cloned_handle.join().unwrap();
+    assert_eq!(
+        Pin::new(&mut fut).poll(&mut cx).map(|res| res.map(|v| *v)),
+        Poll::Ready(Ok(91))
+    );
+    drop(fut);
+    assert_eq!(tx.retained_message_count(), 0);
+    drop((tx, rx_async, rx_try_shared, rx_try_cloned, rx_probe));
+}

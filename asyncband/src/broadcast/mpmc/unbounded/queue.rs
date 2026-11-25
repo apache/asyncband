@@ -24,16 +24,12 @@ use std::panic::UnwindSafe;
 use std::ptr;
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::sync::Condvar;
-use std::sync::PoisonError;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
-use std::task::Wake;
-use std::task::Waker;
 use std::thread;
 
 use crate::broadcast::mpmc::common::Received;
@@ -109,46 +105,6 @@ impl<T> DrainBatch<T> {
         } else {
             self.rest.push(msg);
         }
-    }
-}
-
-struct SlotPark {
-    notified: Mutex<bool>,
-    condvar: Condvar,
-}
-
-impl SlotPark {
-    const fn new() -> Self {
-        Self {
-            notified: Mutex::new(false),
-            condvar: Condvar::new(),
-        }
-    }
-
-    fn wait(&self) {
-        let mut notified = self.notified.lock();
-        while !*notified {
-            notified = self
-                .condvar
-                .wait(notified)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-        *notified = false;
-    }
-
-    fn notify(&self) {
-        *self.notified.lock() = true;
-        self.condvar.notify_one();
-    }
-}
-
-impl Wake for SlotPark {
-    fn wake(self: Arc<Self>) {
-        self.notify();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.notify();
     }
 }
 
@@ -395,14 +351,28 @@ impl<T> Shared<T> {
     #[inline(never)]
     fn wake_all_waiters(&self) {
         let mut waiters = self.waiters.lock();
+        let sync_park = waiters.active_sync_park();
+        let has_sync = sync_park.is_some();
+
         if !waiters.has_overflow() {
             let Some(waker) = waiters.slot0.take() else {
-                self.has_waiters.store(false, Ordering::Release);
+                if !has_sync {
+                    self.has_waiters.store(false, Ordering::Release);
+                }
+                drop(waiters);
+                if let Some(parker) = sync_park {
+                    parker.notify_all();
+                }
                 return;
             };
             self.wake_gen.advance_or_abort(Ordering::Release);
-            self.has_waiters.store(false, Ordering::Release);
+            if !has_sync {
+                self.has_waiters.store(false, Ordering::Release);
+            }
             drop(waiters);
+            if let Some(parker) = sync_park {
+                parker.notify_all();
+            }
             waker.wake();
             return;
         }
@@ -413,8 +383,13 @@ impl<T> Shared<T> {
         }
         waiters.drain_overflow_into(&mut batch);
         self.wake_gen.advance_or_abort(Ordering::Release);
-        self.has_waiters.store(false, Ordering::Release);
+        if !has_sync {
+            self.has_waiters.store(false, Ordering::Release);
+        }
         drop(waiters);
+        if let Some(parker) = sync_park {
+            parker.notify_all();
+        }
         batch.wake_all();
     }
 
@@ -1032,53 +1007,29 @@ impl<T> Shared<T> {
             return state;
         }
 
-        // Park on a private `Mutex<bool>` + `Condvar` waker instead of looping `yield_now` or
-        // calling `std::thread::park`, leaving any outer executor's `Thread::unpark` token intact.
-        let parker = Arc::new(SlotPark::new());
-        let waker = Waker::from(parker.clone());
-        let mut wait_gen = 0u64;
-        let mut wait_inline = false;
-        let mut wait_overflow = None;
+        // Park on a private `Mutex` + `Condvar` notified before external task wakers instead of
+        // spinning, calling `std::thread::park` (which would consume a caller's unpark token), or
+        // queuing behind user `Waker::wake` callbacks.
+        let parker = {
+            let mut waiters = self.waiters.lock();
+            let parker = waiters.enter_sync();
+            self.has_waiters.store(true, Ordering::SeqCst);
+            parker
+        };
 
         loop {
-            {
-                let mut waiters = self.waiters.lock();
-                let current_gen = self.wake_gen.load(Ordering::Relaxed);
-                let retired = waiters.register(
-                    &mut wait_gen,
-                    &mut wait_inline,
-                    &mut wait_overflow,
-                    current_gen,
-                    &waker,
-                );
-                self.has_waiters.store(true, Ordering::SeqCst);
-
-                let ready = slot.state.load(Ordering::SeqCst);
-                if ready != 0 {
-                    let cleared =
-                        waiters.remove(wait_gen, &mut wait_inline, &mut wait_overflow, current_gen);
-                    if waiters.is_empty() {
+            let seen = parker.snapshot();
+            let ready = slot.state.load(Ordering::SeqCst);
+            if ready != 0 {
+                if parker.leave() {
+                    let waiters = self.waiters.lock();
+                    if parker.is_idle() && waiters.is_empty() {
                         self.has_waiters.store(false, Ordering::Release);
                     }
-                    drop(waiters);
-                    drop(retired);
-                    drop(cleared);
-                    return ready;
-                }
-                drop(waiters);
-                drop(retired);
-            }
-
-            parker.wait();
-            let ready = slot.state.load(Ordering::Acquire);
-            if ready != 0 {
-                if (wait_inline || wait_overflow.is_some())
-                    && wait_gen == self.wake_gen.load(Ordering::Acquire)
-                {
-                    self.unregister_waiter(wait_gen, &mut wait_inline, &mut wait_overflow);
                 }
                 return ready;
             }
+            parker.wait(seen);
         }
     }
 
@@ -1474,6 +1425,11 @@ impl<T> Shared<T> {
     #[cfg(test)]
     pub fn has_waiters_for_test(&self) -> bool {
         self.has_waiters.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub fn sync_inflight_waiters_for_test(&self) -> usize {
+        self.waiters.lock().sync_waiter_count()
     }
 
     #[cfg(test)]
