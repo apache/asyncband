@@ -1,19 +1,24 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+// Portions of the unbounded pool API originated from Fastpool 1.1.1.
 // Copyright 2025 FastLabs Developers
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// This file contains code ported from Fastpool 1.1.1.
-// The incorporated code has been modified for use in Apache Asyncband.
+// The Fastpool-derived portions remain licensed under the Apache License, Version 2.0.
+// Asyncband delegated pool state to PoolCore and added non-Send factory support; see LICENSE.
 // Upstream source:
 // https://github.com/fast/fastpool/blob/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool/src/unbounded.rs
 
@@ -23,8 +28,7 @@
 //! [`sync.Pool`](https://pkg.go.dev/sync#Pool).
 //!
 //! To configure a factory for creating objects when the pool is empty, like `sync.Pool`'s `New`,
-//! you can create the unbounded pool via [`Pool::new`](Pool::new) with an
-//! implementation of [`ManageObject`].
+//! pass a [`ManageObject`] implementation to [`Pool::new`](Pool::new).
 //!
 //! ## Examples
 //!
@@ -98,14 +102,14 @@ use std::ops::DerefMut;
 use std::sync::Arc;
 use std::sync::Weak;
 
-use crate::internal::mutex::Mutex;
 use crate::pool::ManageObject;
 use crate::pool::ObjectStatus;
 use crate::pool::QueueStrategy;
 use crate::pool::RecycleCancelledStrategy;
 use crate::pool::RetainResult;
 use crate::pool::state::ObjectState;
-use crate::pool::state::PoolState;
+use crate::pool::state::PoolCore;
+use crate::pool::state::UnreadyObject;
 
 /// The configuration of [`Pool`].
 #[derive(Clone, Copy, Debug)]
@@ -235,11 +239,7 @@ impl<T: Send> ManageObject for NeverManageObject<T> {
 ///
 /// See the [module level documentation](self) for more.
 pub struct Pool<T, M: ManageObject<Object = T> = NeverManageObject<T>> {
-    config: PoolConfig,
-    manager: M,
-
-    /// The objects tracked by the pool.
-    slots: Mutex<PoolState<T>>,
+    core: PoolCore<T, M>,
 }
 
 impl<T, M> fmt::Debug for Pool<T, M>
@@ -248,9 +248,13 @@ where
     M: ManageObject<Object = T>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let config = PoolConfig {
+            queue_strategy: self.core.queue_strategy,
+            recycle_cancelled_strategy: self.core.recycle_cancelled_strategy,
+        };
         f.debug_struct("Pool")
-            .field("slots", &self.slots)
-            .field("config", &self.config)
+            .field("slots", &self.core.slots)
+            .field("config", &config)
             .finish()
     }
 }
@@ -267,7 +271,7 @@ impl<T: Send> Pool<T> {
     /// This method only exists for [`NeverManageObject`] pools. It returns `None` when the pool is
     /// empty.
     pub fn try_get(self: &Arc<Self>) -> Option<Object<T>> {
-        let mut state = self.slots.lock().pop(self.config.queue_strategy)?;
+        let mut state = self.core.slots.lock().pop(self.core.queue_strategy)?;
         state.status.mark_recycled();
         Some(Object {
             state: Some(state),
@@ -278,11 +282,15 @@ impl<T: Send> Pool<T> {
     /// Retrieves an [`Object`] from this [`Pool`], or creates a new one with the passed-in async
     /// closure, if the pool is empty.
     ///
-    /// This method only exists for [`NeverManageObject`] pools. If you provide a custom
-    /// [`ManageObject`] implementation, you should use [`Pool::get`] instead, and it will call
-    /// [`ManageObject::create`] to create a new object if the pool is empty.
+    /// This method only exists for [`NeverManageObject`] pools. Pools configured with a
+    /// [`ManageObject`] implementation use [`Pool::get`] instead, which calls
+    /// [`ManageObject::create`] when no idle object is available.
     ///
-    /// # Cancel safety
+    /// # Errors
+    ///
+    /// Returns the error from `f` if creation fails. No object is added to the pool on error.
+    ///
+    /// # Cancellation
     ///
     /// Cancelling while the provided future is pending leaves the pool unchanged.
     pub async fn get_or_create<E, F>(self: &Arc<Self>, f: F) -> Result<Object<T>, E>
@@ -295,7 +303,7 @@ impl<T: Send> Pool<T> {
 
         let object = f().await?;
         let state = ObjectState::new(object);
-        self.slots.lock().add_active();
+        self.core.slots.lock().add_active();
         Ok(Object {
             state: Some(state),
             pool: Arc::downgrade(self),
@@ -306,12 +314,12 @@ impl<T: Send> Pool<T> {
 impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// Creates a new [`Pool`] with config and the specified [`ManageObject`].
     pub fn new(config: PoolConfig, manager: M) -> Arc<Self> {
-        let slots = Mutex::new(PoolState::new());
-
         Arc::new(Self {
-            config,
-            manager,
-            slots,
+            core: PoolCore::new(
+                config.queue_strategy,
+                config.recycle_cancelled_strategy,
+                manager,
+            ),
         })
     }
 
@@ -320,54 +328,42 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// If no idle object is available, this method calls [`ManageObject::create`].
     ///
     /// Idle objects are checked with [`ManageObject::is_recyclable`]. A failed check detaches the
-    /// object and retries checkout; its error is discarded. Only errors from
-    /// [`ManageObject::create`] are returned to the caller.
+    /// object and retries checkout; its error is discarded.
     ///
-    /// # Cancel safety
+    /// # Errors
     ///
-    /// Cancelling while creating a new object leaves the pool unchanged. Cancelling while
+    /// Returns errors from [`ManageObject::create`]. A failed creation does not add an object to
+    /// the pool.
+    ///
+    /// # Cancellation
+    ///
+    /// Cancelling during creation drops the creation future without adding an object. Objects
+    /// already detached by failed recycling checks stay detached. Cancelling while
     /// [`ManageObject::is_recyclable`] is checking an idle object follows
     /// [`PoolConfig::recycle_cancelled_strategy`].
     pub async fn get(self: &Arc<Self>) -> Result<Object<T, M>, M::Error> {
-        let object = loop {
-            let existing = self.slots.lock().pop(self.config.queue_strategy);
-
-            match existing {
+        loop {
+            match self.core.pop() {
                 None => {
-                    let object = self.manager.create().await?;
-                    let state = ObjectState::new(object);
-                    self.slots.lock().add_active();
-                    break Object {
+                    let state = self.core.create_active().await?;
+                    return Ok(Object {
                         state: Some(state),
                         pool: Arc::downgrade(self),
-                    };
+                    });
                 }
-                Some(object) => {
-                    let mut unready_object = UnreadyObject {
-                        state: Some(object),
-                        pool: self,
-                    };
-
-                    let state = unready_object.state();
-                    let status = state.status;
-                    if self
-                        .manager
-                        .is_recyclable(&mut state.o, &status)
-                        .await
-                        .is_ok()
-                    {
-                        state.status.mark_recycled();
-                        break unready_object.ready();
-                    } else {
-                        // We need to manually detach here as the drop implementation
-                        // depends on the recycle cancelled strategy.
-                        unready_object.detach();
+                Some(state) => {
+                    let mut unready = UnreadyObject::new(&self.core, state);
+                    if unready.recycle().await.is_ok() {
+                        return Ok(Object {
+                            state: Some(unready.into_ready()),
+                            pool: Arc::downgrade(self),
+                        });
                     }
+                    // A rejected object must be detached even when cancellation would restore it.
+                    unready.detach();
                 }
-            };
-        };
-
-        Ok(object)
+            }
+        }
     }
 
     /// Extends the pool with exactly one object.
@@ -384,12 +380,15 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// pool.extend_one(Vec::<i64>::with_capacity(1024));
     /// ```
     pub fn extend_one(&self, o: T) {
-        self.extend(Some(o));
+        let state = ObjectState::new(o);
+        self.core.slots.lock().add_idle(state);
     }
 
     /// Extends the pool with the objects of an iterator.
     ///
-    /// The iterator is consumed while the pool is locked and must not call back into it.
+    /// # Deadlocks
+    ///
+    /// Advancing the iterator runs while the pool is locked and must not call back into it.
     ///
     /// # Examples
     ///
@@ -407,17 +406,28 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
     /// ]);
     /// ```
     pub fn extend(&self, iter: impl IntoIterator<Item = T>) {
-        let mut slots = self.slots.lock();
-        for o in iter {
+        let mut iter = iter.into_iter();
+        let mut slots = self.core.slots.lock();
+        for o in &mut iter {
             slots.add_idle(ObjectState::new(o));
         }
     }
 
     /// Retains idle objects for which `f` returns `true`.
     ///
-    /// Checked-out objects are skipped and may return to the pool later. The predicate runs while
-    /// the pool is locked and must not call back into it; detachment hooks run after the lock is
-    /// released.
+    /// Checked-out objects are skipped and may return to the pool later. Detachment hooks run
+    /// after the lock is released.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of idle objects retained and the removed objects after their detachment
+    /// hooks have run. Checked-out objects are not included in the retained count.
+    ///
+    /// # Deadlocks
+    ///
+    /// The predicate runs while the pool is locked and must not call back into it.
+    ///
+    /// # Examples
     ///
     /// The following example starts a background task that runs every 30 seconds and removes
     /// objects from the pool that have not been used for more than one minute. The task will
@@ -448,41 +458,17 @@ impl<T, M: ManageObject<Object = T>> Pool<T, M> {
         &self,
         f: impl FnMut(&mut M::Object, ObjectStatus) -> bool,
     ) -> RetainResult<M::Object> {
-        let mut result = {
-            let mut slots = self.slots.lock();
-            slots.retain(f)
-        };
-        for object in &mut result.removed {
-            self.manager.on_detached(object);
-        }
-        result
+        self.core.retain(f)
     }
 
     /// Returns a consistent snapshot of the objects currently tracked by the pool.
     pub fn status(&self) -> PoolStatus {
-        let slots = self.slots.lock();
+        let slots = self.core.slots.lock();
 
         PoolStatus {
             current_size: slots.current_size(),
             idle_count: slots.idle_count(),
         }
-    }
-
-    fn return_object(&self, mut state: ObjectState<T>) {
-        state.status.mark_returned();
-        self.restore_idle(state);
-    }
-
-    fn restore_idle(&self, state: ObjectState<T>) {
-        let mut slots = self.slots.lock();
-        slots.return_idle(state);
-    }
-
-    fn detach_object(&self, o: &mut T) {
-        let mut slots = self.slots.lock();
-        slots.detach();
-        drop(slots);
-        self.manager.on_detached(o);
     }
 }
 
@@ -513,7 +499,7 @@ impl<T, M: ManageObject<Object = T>> Drop for Object<T, M> {
     fn drop(&mut self) {
         if let Some(state) = self.state.take() {
             if let Some(pool) = self.pool.upgrade() {
-                pool.return_object(state);
+                pool.core.return_object(state);
             }
         }
     }
@@ -557,7 +543,7 @@ impl<T, M: ManageObject<Object = T>> Object<T, M> {
         // INVARIANT: `state` is `Some` until this object is detached or dropped.
         let mut o = self.state.take().unwrap().o;
         if let Some(pool) = self.pool.upgrade() {
-            pool.detach_object(&mut o);
+            pool.core.detach_object(&mut o);
         }
         o
     }
@@ -566,52 +552,5 @@ impl<T, M: ManageObject<Object = T>> Object<T, M> {
     pub fn status(&self) -> ObjectStatus {
         // INVARIANT: `state` is `Some` until this object is detached or dropped.
         self.state.as_ref().unwrap().status
-    }
-}
-
-/// A wrapper of ObjectState used during the `is_recyclable` check in `Pool::get`.
-///
-/// If the check passes, the object is converted to a ready `Object` via `ready()`.
-/// If the check fails, `detach()` should be called to permanently remove the object
-/// from the pool. If dropped without calling either method (due to being cancelled),
-/// the behavior depends on the pool's [`RecycleCancelledStrategy`] configuration.
-struct UnreadyObject<'a, M: ManageObject> {
-    state: Option<ObjectState<M::Object>>,
-    // The enclosing `get` call keeps the pool alive through cancellation cleanup.
-    pool: &'a Arc<Pool<M::Object, M>>,
-}
-
-impl<M: ManageObject> Drop for UnreadyObject<'_, M> {
-    fn drop(&mut self) {
-        if let Some(mut state) = self.state.take() {
-            match self.pool.config.recycle_cancelled_strategy {
-                RecycleCancelledStrategy::Detach => {
-                    self.pool.detach_object(&mut state.o);
-                }
-                RecycleCancelledStrategy::ReturnToPool => {
-                    self.pool.restore_idle(state);
-                }
-            }
-        }
-    }
-}
-
-impl<M: ManageObject> UnreadyObject<'_, M> {
-    fn ready(mut self) -> Object<M::Object, M> {
-        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
-        let state = Some(self.state.take().unwrap());
-        let pool = Arc::downgrade(self.pool);
-        Object { state, pool }
-    }
-
-    fn detach(&mut self) {
-        if let Some(mut state) = self.state.take() {
-            self.pool.detach_object(&mut state.o);
-        }
-    }
-
-    fn state(&mut self) -> &mut ObjectState<M::Object> {
-        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
-        self.state.as_mut().unwrap()
     }
 }

@@ -15,14 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Storage, cursors, and receiving logic shared by the bounded and unbounded MPMC broadcast
-//! channels.
-//!
-//! Both channels retain the same committed backlog and reclaim it the same way; they differ only
-//! in what a producer does when that backlog is large. That difference stays in the two channel
-//! modules, and so does each channel's own `Recv` future, so neither contract is hidden behind a
-//! shared abstraction. What lives here is the state and the one poll step whose waker protocol is
-//! subtle enough that a second copy would be a second thing to keep correct.
+//! Storage, cursors, and receiving helpers for MPMC broadcast channels.
 
 use std::collections::VecDeque;
 use std::mem;
@@ -31,6 +24,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use crate::broadcast::mpmc::error::RecvError;
 use crate::broadcast::mpmc::error::TryRecvError;
@@ -39,9 +33,6 @@ use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
-
-/// Retained capacity below which an elastic backlog is never shrunk back.
-pub const MIN_RETAINED_CAPACITY: usize = 64;
 
 /// A received message together with whether advancing the cursor vacated the head slot.
 ///
@@ -84,17 +75,6 @@ impl<T> Reclaimed<T> {
     }
 }
 
-/// How a backlog manages the allocation behind its retained messages.
-enum Retention {
-    /// Grow on demand, and return a burst allocation once a later cycle stays small.
-    Elastic {
-        /// The largest backlog retained since the buffer was last empty.
-        peak_len: usize,
-    },
-    /// Allocated once for the requested capacity and never shrunk.
-    Fixed,
-}
-
 /// A retained message together with the number of receiver cursors positioned at its version.
 ///
 /// While a cursor sits on a version the message stays readable, so once the count reaches zero the
@@ -132,28 +112,17 @@ pub struct Backlog<T> {
     tail: u64,
     /// Cursor for each active receiver.
     receivers: Arena<u64>,
-    retention: Retention,
 }
 
 impl<T> Backlog<T> {
-    /// A backlog that grows on demand and gives burst allocations back.
-    pub fn elastic() -> Self {
-        Self::new(VecDeque::new(), Retention::Elastic { peak_len: 0 })
-    }
-
     /// A backlog preallocated for `capacity` retained messages that never shrinks.
     pub fn fixed(capacity: usize) -> Self {
-        Self::new(VecDeque::with_capacity(capacity), Retention::Fixed)
-    }
-
-    fn new(buffer: VecDeque<Slot<T>>, retention: Retention) -> Self {
         Self {
-            buffer,
+            buffer: VecDeque::with_capacity(capacity),
             head: 0,
             at_tail: 0,
             tail: 0,
             receivers: Arena::new(),
-            retention,
         }
     }
 
@@ -181,68 +150,26 @@ impl<T> Backlog<T> {
         usize::try_from(self.tail - head).expect("unread broadcast message count exceeds usize")
     }
 
-    /// Advances the committed tail.
+    /// Publishes one version, taking the payload only if a subscription can read it.
     ///
-    /// # Panics
-    ///
-    /// Panics if the message version counter overflows.
-    fn advance_tail(&mut self) {
+    /// The caller owns the payload through the overflow check and drops any unretained value
+    /// after unlocking. Conversion to an Arc is deferred until the value will be retained.
+    pub fn publish<P>(&mut self, payload: &mut Option<P>, into_msg: impl FnOnce(P) -> Arc<T>) {
         self.tail = self
             .tail
             .checked_add(1)
             .expect("broadcast channel version counter overflowed");
-    }
-
-    /// Advances the committed tail for a message no subscription can read.
-    ///
-    /// `head` moves with it so the invariant that `buffer` covers versions `[head, tail)` still
-    /// holds without buffering anything. The buffer is already drained when the last receiver was
-    /// dropped, so there is nothing to clear here. The caller keeps the payload and drops it after
-    /// releasing the channel lock.
-    pub fn publish_discarded(&mut self) {
-        debug_assert!(!self.has_receivers());
-        debug_assert!(self.buffer.is_empty());
-        debug_assert_eq!(self.at_tail, 0);
-        self.advance_tail();
-        self.head = self.tail;
-    }
-
-    /// Advances the committed tail and retains `msg` for every currently active subscription.
-    ///
-    /// Returns the message when no subscription can read it, so the caller drops it after
-    /// releasing the channel lock rather than running `T::drop` inside the critical section.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the message version counter overflows.
-    #[must_use = "drop the unretained message after releasing the channel lock"]
-    pub fn publish(&mut self, msg: Arc<T>) -> Option<Arc<T>> {
         if !self.has_receivers() {
-            self.publish_discarded();
-            return Some(msg);
+            debug_assert!(self.buffer.is_empty());
+            debug_assert_eq!(self.at_tail, 0);
+            self.head = self.tail;
+            return;
         }
 
-        self.publish_retained(msg);
-        None
-    }
-
-    /// Advances the committed tail and retains `msg`.
-    ///
-    /// The caller must already have established that a subscription is active, which is what a
-    /// bounded channel does anyway to decide between rejecting and discarding.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the message version counter overflows.
-    pub fn publish_retained(&mut self, msg: Arc<T>) {
-        debug_assert!(self.has_receivers());
-        self.advance_tail();
+        let msg = into_msg(payload.take().expect("a publication must have a payload"));
         // Every cursor that was caught up now has this message as its next read.
         let cursors = mem::take(&mut self.at_tail);
         self.buffer.push_back(Slot { msg, cursors });
-        if let Retention::Elastic { peak_len } = &mut self.retention {
-            *peak_len = (*peak_len).max(self.buffer.len());
-        }
     }
 
     /// Registers a new subscription at the committed tail.
@@ -303,7 +230,6 @@ impl<T> Backlog<T> {
             let msg = self.buffer.pop_front().expect("head slot must exist").msg;
             self.head += 1;
             debug_assert!(self.head <= self.tail);
-            self.shrink_buffer();
             Received {
                 msg,
                 reclaimed: true,
@@ -348,35 +274,7 @@ impl<T> Backlog<T> {
 
         self.head += reclaimed.len() as u64;
         debug_assert!(self.head <= self.tail);
-        self.shrink_buffer();
         reclaimed
-    }
-
-    /// Returns the allocation grown for a stalled receiver once that backlog is behind us.
-    ///
-    /// Without this, a single burst pins its peak allocation for the lifetime of the channel.
-    /// The decision is deliberately made only when the buffer drains completely, and against the
-    /// peak of the cycle that just ended rather than the current length: a channel that repeatedly
-    /// fills and drains keeps a peak as large as its bursts, so it holds its allocation instead of
-    /// reallocating on every cycle. Only once a full cycle stays small does the buffer give the
-    /// memory back.
-    ///
-    /// A fixed backlog keeps the allocation it was built with, which is the whole point of asking
-    /// for a capacity up front.
-    fn shrink_buffer(&mut self) {
-        let Retention::Elastic { peak_len } = &mut self.retention else {
-            return;
-        };
-
-        if !self.buffer.is_empty() {
-            return;
-        }
-
-        let peak = mem::take(peak_len);
-        let capacity = self.buffer.capacity();
-        if capacity > MIN_RETAINED_CAPACITY && peak <= capacity / 4 {
-            self.buffer.shrink_to(MIN_RETAINED_CAPACITY.max(peak * 2));
-        }
     }
 
     #[cfg(test)]
@@ -387,6 +285,8 @@ impl<T> Backlog<T> {
     /// Doctors the sequencer so a test can reach the overflow guard in `publish`.
     #[cfg(test)]
     pub fn set_tail(&mut self, tail: u64) {
+        assert!(self.buffer.is_empty() && !self.has_receivers());
+        self.head = tail;
         self.tail = tail;
     }
 
@@ -400,39 +300,86 @@ impl<T> Backlog<T> {
     }
 }
 
-/// Buffer, receiver cursors, and parked receivers, all under one lock.
+/// Buffer, receiver cursors, and parked channel waiters, all under one lock.
 ///
 /// Checking the backlog and registering a waker share this lock with publishing and detaching
-/// registrations, so a message cannot be published between an empty check and registration.
-pub struct Inner<T> {
+/// registrations, so neither messages nor freed capacity can slip between a check and
+/// registration.
+pub struct Inner<T, S> {
     pub log: Backlog<T>,
     pub waiters: WakerSet,
+    pub send_waiters: S,
 }
 
-impl<T> Inner<T> {
+impl<T, S> Inner<T, S> {
     /// Wraps `log` in the channel lock and registers the subscription every constructor hands out
     /// alongside its first sender.
-    pub fn with_first_subscription(mut log: Backlog<T>) -> (Mutex<Self>, SlotId) {
+    pub fn with_first_subscription(mut log: Backlog<T>, send_waiters: S) -> (Mutex<Self>, SlotId) {
         let key = log.subscribe();
         let inner = Mutex::new(Self {
             log,
             waiters: WakerSet::new(),
+            send_waiters,
         });
         (inner, key)
+    }
+
+    /// Receives without waiting while holding the channel lock.
+    #[inline]
+    pub fn try_receive(
+        &mut self,
+        senders: &AtomicUsize,
+        key: SlotId,
+    ) -> Result<Received<T>, TryRecvError> {
+        // Check this receiver's cursor while holding `inner` before observing the sender count.
+        // Senders append messages under the same lock before they can be dropped, so an empty
+        // result here means this receiver has no unread buffered message.
+        match self.log.receive(key) {
+            Some(received) => Ok(received),
+            None if senders.load(Ordering::Acquire) == 0 => Err(TryRecvError::Disconnected),
+            None => Err(TryRecvError::Empty),
+        }
+    }
+
+    /// Polls the shared receiving logic while holding the channel lock, returning any replaced
+    /// waker for unlocked destruction.
+    #[inline]
+    #[must_use = "drop the returned waker after releasing the channel lock"]
+    pub fn poll_receive(
+        &mut self,
+        senders: &AtomicUsize,
+        key: SlotId,
+        token: &mut Option<WakerToken>,
+        cx: &mut Context<'_>,
+    ) -> (Poll<Result<Received<T>, RecvError>>, Option<Waker>) {
+        match self.log.receive(key) {
+            Some(received) => {
+                *token = None;
+                (Poll::Ready(Ok(received)), None)
+            }
+            None if senders.load(Ordering::Acquire) == 0 => {
+                *token = None;
+                (Poll::Ready(Err(RecvError::Disconnected)), None)
+            }
+            None => {
+                let retired_waker = self.waiters.register(token, cx.waker());
+                (Poll::Pending, retired_waker)
+            }
+        }
     }
 }
 
 /// Wakes every parked receiver so it can observe the channel's disconnected state.
 ///
 /// Both families call this from the last sender's `Drop`.
-pub fn disconnect<T>(inner: &Mutex<Inner<T>>) {
+pub fn disconnect<T, S>(inner: &Mutex<Inner<T, S>>) {
     let wakers = mem::take(&mut inner.lock().waiters);
     wakers.wake_all();
 }
 
 /// Removes a cancelled `recv` future's waker registration, dropping the waker after unlocking.
-pub fn unregister<T>(
-    inner: &Mutex<Inner<T>>,
+pub fn unregister<T, S>(
+    inner: &Mutex<Inner<T, S>>,
     senders: &AtomicUsize,
     key: SlotId,
     token: &mut Option<WakerToken>,
@@ -447,58 +394,6 @@ pub fn unregister<T>(
     let waker = inner.waiters.unregister(token);
     drop(inner);
     drop(waker);
-}
-
-/// Receives without waiting, returning the message and whether advancing the cursor vacated the
-/// head slot.
-///
-/// The caller owns what happens next: a bounded channel releases the freed slot to blocked
-/// producers before touching the payload.
-pub fn try_receive<T>(
-    inner: &Mutex<Inner<T>>,
-    senders: &AtomicUsize,
-    key: SlotId,
-) -> Result<Received<T>, TryRecvError> {
-    // Check this receiver's cursor while holding `inner` before observing the sender count.
-    // Senders append messages under the same lock before they can be dropped, so an empty result
-    // here means this receiver has no unread buffered message.
-    let mut inner = inner.lock();
-    match inner.log.receive(key) {
-        Some(received) => Ok(received),
-        None if senders.load(Ordering::Acquire) == 0 => Err(TryRecvError::Disconnected),
-        None => Err(TryRecvError::Empty),
-    }
-}
-
-/// Polls the shared receiving logic for both channels' `recv` futures.
-///
-/// Publication and disconnection detach all registrations, so their ready paths clear the token
-/// without unregistering it.
-pub fn poll_receive<T>(
-    inner: &Mutex<Inner<T>>,
-    senders: &AtomicUsize,
-    key: SlotId,
-    token: &mut Option<WakerToken>,
-    cx: &mut Context<'_>,
-) -> Poll<Result<Received<T>, RecvError>> {
-    let mut inner = inner.lock();
-    match inner.log.receive(key) {
-        Some(received) => {
-            *token = None;
-            Poll::Ready(Ok(received))
-        }
-        None => {
-            if senders.load(Ordering::Acquire) == 0 {
-                *token = None;
-                return Poll::Ready(Err(RecvError::Disconnected));
-            }
-
-            let retired_waker = inner.waiters.register(token, cx.waker());
-            drop(inner);
-            drop(retired_waker);
-            Poll::Pending
-        }
-    }
 }
 
 /// Yields the received message owned with the channel unlocked.
@@ -525,14 +420,49 @@ pub fn take_msg<T: Clone>(received: Received<T>) -> T {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
+    use std::cell::Cell;
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
+    use std::rc::Rc;
+
     use super::*;
+
+    pub struct InspectOnDrop(Box<dyn Fn()>);
+
+    impl Drop for InspectOnDrop {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+
+    pub fn assert_overflow_drops_unlocked(
+        inspect: impl Fn() -> Option<usize> + 'static,
+        send: impl FnOnce(InspectOnDrop),
+    ) {
+        let observed = Rc::new(Cell::new(None));
+        let result = observed.clone();
+        let payload = InspectOnDrop(Box::new(move || result.set(inspect())));
+        let overflow = catch_unwind(AssertUnwindSafe(|| send(payload)));
+        assert!(overflow.is_err());
+        assert_eq!(
+            observed.get(),
+            Some(0),
+            "destructor could not inspect the backlog"
+        );
+    }
+
+    fn publish(log: &mut Backlog<u64>, value: u64) -> Option<u64> {
+        let mut payload = Some(value);
+        log.publish(&mut payload, Arc::new);
+        payload
+    }
 
     /// Drives every cursor-count mutation point — subscribing, publishing, receiving, and dropping
     /// — and checks the accounting after each step.
     #[test]
     fn cursor_accounting_holds_across_subscribe_receive_and_drop() {
-        let mut log = Backlog::<u64>::elastic();
+        let mut log = Backlog::<u64>::fixed(16);
 
         let a = log.subscribe();
         let b = log.subscribe();
@@ -540,10 +470,10 @@ mod tests {
 
         // The first publication picks up the caught-up cursors; a subscription registered
         // mid-backlog starts at the tail and counts against the next publication.
-        assert!(log.publish(Arc::new(1)).is_none());
+        assert!(publish(&mut log, 1).is_none());
         let c = log.subscribe();
-        assert!(log.publish(Arc::new(2)).is_none());
-        assert!(log.publish(Arc::new(3)).is_none());
+        assert!(publish(&mut log, 2).is_none());
+        assert!(publish(&mut log, 3).is_none());
         log.assert_cursor_accounting();
 
         assert_eq!(*log.receive(a).unwrap().msg, 1);
@@ -571,7 +501,7 @@ mod tests {
 
         // A call to `receive` that catches up to the tail releases the head slot and moves the
         // cursor back to `at_tail`.
-        assert!(log.publish(Arc::new(4)).is_none());
+        assert!(publish(&mut log, 4).is_none());
         let received = log.receive(a).unwrap();
         assert_eq!(*received.msg, 4);
         assert!(received.reclaimed);
@@ -579,7 +509,7 @@ mod tests {
 
         // With no subscription left, a publication is discarded and nothing is counted.
         assert!(log.remove_receiver(a).is_empty());
-        assert_eq!(*log.publish(Arc::new(5)).unwrap(), 5);
+        assert_eq!(publish(&mut log, 5), Some(5));
         log.assert_cursor_accounting();
     }
 }

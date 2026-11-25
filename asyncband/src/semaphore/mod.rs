@@ -37,17 +37,14 @@
 //! # async fn main() {
 //! use asyncband::semaphore::Semaphore;
 //!
-//! let semaphore = Semaphore::new(3);
-//! let a_permit = semaphore.acquire(1).await;
-//! let two_permits = semaphore.acquire(2).await;
+//! let limits = Semaphore::new(4);
+//! let batch = limits.acquire(3).await;
+//! assert_eq!(limits.available_permits(), 1);
 //!
-//! assert_eq!(semaphore.available_permits(), 0);
+//! assert!(limits.try_acquire(2).is_none());
 //!
-//! let permit_attempt = semaphore.try_acquire(1);
-//! assert!(permit_attempt.is_none());
-//!
-//! drop(a_permit);
-//! assert_eq!(semaphore.available_permits(), 1);
+//! drop(batch);
+//! assert_eq!(limits.available_permits(), 4);
 //! # }
 //! ```
 
@@ -56,7 +53,7 @@ use std::sync::Arc;
 
 use crate::internal::semaphore;
 
-/// An async counting semaphore for controlling access to a set of resources.
+/// Asynchronous counting semaphore that bounds concurrent access with permits.
 ///
 /// See the [module level documentation](self) for more.
 #[derive(Debug)]
@@ -65,14 +62,15 @@ pub struct Semaphore {
 }
 
 impl Semaphore {
-    /// Creates a new semaphore with the given number of permits.
+    /// Creates a semaphore initialized with `permits` available permits.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Semaphore::new(5); // Creates a semaphore with 5 permits
+    /// let sem = Semaphore::new(5);
+    /// assert_eq!(sem.available_permits(), 5);
     /// ```
     pub const fn new(permits: usize) -> Self {
         Self {
@@ -80,7 +78,7 @@ impl Semaphore {
         }
     }
 
-    /// Returns the current number of permits available.
+    /// Returns an instantaneous count of unacquired permits currently available.
     ///
     /// # Examples
     ///
@@ -149,7 +147,11 @@ impl Semaphore {
         self.s.reduce_permits(n);
     }
 
-    /// Adds `permits` new permits to the semaphore.
+    /// Returns `permits` permits to the semaphore.
+    ///
+    /// Released permits first repay any unpaid deficit recorded by
+    /// [`reduce_permits`](Self::reduce_permits); remaining permits wake queued acquisitions or
+    /// increase [`available_permits`](Self::available_permits).
     ///
     /// # Panics
     ///
@@ -161,39 +163,33 @@ impl Semaphore {
     /// use asyncband::semaphore::Semaphore;
     ///
     /// let sem = Semaphore::new(0);
-    /// sem.release(2); // Adds 2 permits
+    /// sem.release(2);
     /// assert_eq!(sem.available_permits(), 2);
     /// ```
     pub fn release(&self, permits: usize) {
         self.s.release(permits);
     }
 
-    /// Attempts to acquire `permits` permits from the semaphore without blocking.
+    /// Attempts to claim `permits` immediately without waiting.
     ///
-    /// If the permits are successfully acquired, a [`SemaphorePermit`] is returned.
-    /// The permits will be automatically returned to the semaphore when the permit
-    /// is dropped, unless [`forget`] is called.
+    /// Returns [`None`] if fewer than `permits` permits are available. Otherwise returns a
+    /// [`SemaphorePermit`] whose destructor releases those permits back to the semaphore unless
+    /// [`SemaphorePermit::forget`] consumes it first.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Semaphore::new(2);
+    /// let quota = Semaphore::new(3);
     ///
-    /// // First acquisition succeeds
-    /// let permit1 = sem.try_acquire(1).unwrap();
-    /// assert_eq!(sem.available_permits(), 1);
+    /// let first = quota.try_acquire(2).unwrap();
+    /// assert_eq!(quota.available_permits(), 1);
+    /// assert!(quota.try_acquire(2).is_none());
     ///
-    /// // Second acquisition succeeds
-    /// let permit2 = sem.try_acquire(1).unwrap();
-    /// assert_eq!(sem.available_permits(), 0);
-    ///
-    /// // Third acquisition fails
-    /// assert!(sem.try_acquire(1).is_none());
+    /// drop(first);
+    /// assert_eq!(quota.available_permits(), 3);
     /// ```
-    ///
-    /// [`forget`]: SemaphorePermit::forget
     pub fn try_acquire(&self, permits: usize) -> Option<SemaphorePermit<'_>> {
         if self.s.try_acquire(permits) {
             Some(SemaphorePermit { sem: self, permits })
@@ -202,14 +198,18 @@ impl Semaphore {
         }
     }
 
-    /// Acquires `permits` permits from the semaphore.
+    /// Waits until `permits` permits are available and returns a guard holding them.
     ///
-    /// If the permits are not immediately available, this method will wait until they become
-    /// available. Returns a [`SemaphorePermit`] that will release the permits when dropped.
+    /// Dropping the returned [`SemaphorePermit`] returns its permits to this semaphore unless
+    /// [`SemaphorePermit::forget`] consumes it first.
     ///
-    /// # Cancel safety
+    /// Pending acquisitions are served in queue order. A larger request can hold up smaller
+    /// requests behind it until enough permits become available.
     ///
-    /// Pending acquisitions complete in order. Cancelling this call loses its place among them.
+    /// # Cancellation
+    ///
+    /// Dropping a pending future removes the request and returns any permits already assigned to
+    /// it. Retrying joins the back of the queue.
     ///
     /// # Examples
     ///
@@ -220,20 +220,19 @@ impl Semaphore {
     ///
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Arc::new(Semaphore::new(2));
-    /// let sem2 = sem.clone();
+    /// let quota = Arc::new(Semaphore::new(2));
+    /// let worker_quota = quota.clone();
     ///
-    /// let handle = tokio::spawn(async move {
-    ///     let permit = sem2.acquire(1).await;
-    ///     // Do some work with the permit.
-    ///     // Permit is automatically released when dropped.
+    /// let task = tokio::spawn(async move {
+    ///     let _lease = worker_quota.acquire(1).await;
+    ///     42
     /// });
     ///
-    /// let permit = sem.acquire(1).await;
-    /// // Do some work with the permit
-    /// drop(permit); // Explicitly release the permit
+    /// let lease = quota.acquire(1).await;
+    /// assert_eq!(lease.permits(), 1);
+    /// drop(lease);
     ///
-    /// handle.await.unwrap();
+    /// assert_eq!(task.await.unwrap(), 42);
     /// # }
     /// ```
     pub async fn acquire(&self, permits: usize) -> SemaphorePermit<'_> {
@@ -241,13 +240,11 @@ impl Semaphore {
         SemaphorePermit { sem: self, permits }
     }
 
-    /// Attempts to acquire `permits` permits from the semaphore without blocking.
+    /// Attempts to claim `permits` immediately on an [`Arc`]-shared semaphore without waiting.
     ///
-    /// The semaphore must be wrapped in an [`Arc`] to call this method.
-    ///
-    /// If the permits are successfully acquired, a [`OwnedSemaphorePermit`] is returned.
-    /// The permits will be automatically returned to the semaphore when the permit
-    /// is dropped, unless [`forget`] is called.
+    /// Returns [`None`] if fewer than `permits` permits are available. Otherwise returns an
+    /// [`OwnedSemaphorePermit`] that keeps the `Arc` alive and releases its permits on drop unless
+    /// [`OwnedSemaphorePermit::forget`] consumes it first.
     ///
     /// # Examples
     ///
@@ -256,19 +253,15 @@ impl Semaphore {
     ///
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Arc::new(Semaphore::new(2));
+    /// let quota = Arc::new(Semaphore::new(4));
     ///
-    /// let p1 = sem.clone().try_acquire_owned(1).unwrap();
-    /// assert_eq!(sem.available_permits(), 1);
+    /// let lease = quota.clone().try_acquire_owned(3).unwrap();
+    /// assert_eq!(quota.available_permits(), 1);
+    /// assert!(quota.clone().try_acquire_owned(2).is_none());
     ///
-    /// let p2 = sem.clone().try_acquire_owned(1).unwrap();
-    /// assert_eq!(sem.available_permits(), 0);
-    ///
-    /// let p3 = sem.try_acquire_owned(1);
-    /// assert!(p3.is_none());
+    /// drop(lease);
+    /// assert_eq!(quota.available_permits(), 4);
     /// ```
-    ///
-    /// [`forget`]: OwnedSemaphorePermit::forget
     pub fn try_acquire_owned(self: Arc<Self>, permits: usize) -> Option<OwnedSemaphorePermit> {
         if self.s.try_acquire(permits) {
             Some(OwnedSemaphorePermit { sem: self, permits })
@@ -277,16 +270,19 @@ impl Semaphore {
         }
     }
 
-    /// Acquires `permits` permits from the semaphore.
+    /// Waits on an [`Arc`]-shared semaphore until `permits` permits are available and returns an
+    /// owned guard.
     ///
-    /// The semaphore must be wrapped in an [`Arc`] to call this method.
+    /// Dropping the returned [`OwnedSemaphorePermit`] releases both the permits and its reference
+    /// to the semaphore unless [`OwnedSemaphorePermit::forget`] consumes it first.
     ///
-    /// If the permits are not immediately available, this method will wait until they become
-    /// available. Returns a [`OwnedSemaphorePermit`] that will release the permits when dropped.
+    /// Pending acquisitions are served in queue order. A larger request can hold up smaller
+    /// requests behind it until enough permits become available.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Pending acquisitions complete in order. Cancelling this call loses its place among them.
+    /// Dropping a pending future removes the request and returns any permits already assigned to
+    /// it. Retrying joins the back of the queue. The future also releases its owned `Arc`.
     ///
     /// # Examples
     ///
@@ -297,21 +293,22 @@ impl Semaphore {
     ///
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Arc::new(Semaphore::new(3));
-    /// let mut join_handles = vec![];
+    /// let quota = Arc::new(Semaphore::new(2));
+    /// let mut workers = Vec::new();
     ///
-    /// for _ in 0..5 {
-    ///     let permit = sem.clone().acquire_owned(1).await;
-    ///     join_handles.push(tokio::spawn(async move {
-    ///         // perform task...
-    ///         // explicitly own `permit` in the task
-    ///         drop(permit);
+    /// for job_id in 0..4usize {
+    ///     let lease = quota.clone().acquire_owned(1).await;
+    ///     workers.push(tokio::spawn(async move {
+    ///         let _lease = lease;
+    ///         job_id * 2
     ///     }));
     /// }
     ///
-    /// for handle in join_handles {
-    ///     handle.await.unwrap();
+    /// let mut results = Vec::new();
+    /// for worker in workers {
+    ///     results.push(worker.await.unwrap());
     /// }
+    /// assert_eq!(results, [0, 2, 4, 6]);
     /// # }
     /// ```
     pub async fn acquire_owned(self: Arc<Self>, permits: usize) -> OwnedSemaphorePermit {
@@ -320,15 +317,10 @@ impl Semaphore {
     }
 }
 
-/// A permit from the semaphore.
+/// Borrowed RAII guard representing permits acquired from a [`Semaphore`].
 ///
-/// This type is created by the [`acquire`] and [`try_acquire`] methods on [`Semaphore`].
-/// When the permit is dropped, the permits will be returned to the semaphore unless
-/// [`forget`] is called.
-///
-/// [`acquire`]: Semaphore::acquire
-/// [`try_acquire`]: Semaphore::try_acquire
-/// [`forget`]: SemaphorePermit::forget
+/// Created by [`Semaphore::acquire`] and [`Semaphore::try_acquire`]. Dropping this guard returns
+/// its permits to the semaphore unless [`SemaphorePermit::forget`] is called first.
 #[must_use = "permits are released immediately when dropped"]
 #[derive(Debug)]
 pub struct SemaphorePermit<'a> {
@@ -337,71 +329,59 @@ pub struct SemaphorePermit<'a> {
 }
 
 impl SemaphorePermit<'_> {
-    /// Forgets the permit **without** releasing it back to the semaphore.
+    /// Consumes this guard without returning its permits to the semaphore.
     ///
-    /// This can be used to permanently reduce the number of permits available
-    /// from a semaphore.
+    /// The acquired capacity remains permanently deducted unless explicitly restored later via
+    /// [`Semaphore::release`]. To deduct permits without first holding a guard, use
+    /// [`Semaphore::reduce_permits`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use std::sync::Arc;
-    ///
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Arc::new(Semaphore::new(10));
-    /// {
-    ///     let permit = sem.try_acquire(5).unwrap();
-    ///     assert_eq!(sem.available_permits(), 5);
-    ///     permit.forget();
-    /// }
+    /// let quota = Semaphore::new(6);
+    /// let held = quota.try_acquire(4).unwrap();
+    /// held.forget();
     ///
-    /// // Since we forgot the permit, available permits won't go back to
-    /// // its initial value even after the permit is dropped
-    /// assert_eq!(sem.available_permits(), 5);
+    /// assert_eq!(quota.available_permits(), 2);
+    /// quota.release(4);
+    /// assert_eq!(quota.available_permits(), 6);
     /// ```
     pub fn forget(mut self) {
         self.permits = 0;
     }
 
-    /// Merge two [`SemaphorePermit`] instances together, consuming `other`
-    /// without releasing the permits it holds.
+    /// Combines the permits held by `other` into `self`.
     ///
-    /// Permits held by both `self` and `other` are released when `self` drops.
+    /// `other` is consumed without releasing its permits; all combined permits are later released
+    /// together when `self` drops (or retained permanently if forgotten).
     ///
     /// # Panics
     ///
-    /// This function panics if permits from different [`Semaphore`] instances are merged or if
-    /// their combined permit count exceeds `usize::MAX`.
+    /// Panics if `self` and `other` belong to different [`Semaphore`] instances or if their
+    /// combined permit count overflows `usize::MAX`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use std::sync::Arc;
-    ///
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Arc::new(Semaphore::new(10));
-    /// let mut permit = sem.try_acquire(1).unwrap();
+    /// let quota = Semaphore::new(8);
+    /// let mut combined = quota.try_acquire(2).unwrap();
+    /// combined.merge(quota.try_acquire(3).unwrap());
     ///
-    /// for _ in 0..9 {
-    ///     let new_permit = sem.try_acquire(1).unwrap();
-    ///     // Merge individual permits into a single one.
-    ///     permit.merge(new_permit)
-    /// }
+    /// assert_eq!(combined.permits(), 5);
+    /// assert_eq!(quota.available_permits(), 3);
     ///
-    /// assert_eq!(sem.available_permits(), 0);
-    ///
-    /// // Release all permits in a single batch.
-    /// drop(permit);
-    ///
-    /// assert_eq!(sem.available_permits(), 10);
+    /// drop(combined);
+    /// assert_eq!(quota.available_permits(), 8);
     /// ```
     #[track_caller]
     pub fn merge(&mut self, mut other: Self) {
         assert!(
             ptr::eq(self.sem, other.sem),
-            "merging permits from different semaphore instances"
+            "cannot merge permits from different semaphores"
         );
         self.permits = self
             .permits
@@ -410,25 +390,22 @@ impl SemaphorePermit<'_> {
         other.permits = 0;
     }
 
-    /// Splits `n` permits from `self` and returns a new [`SemaphorePermit`] instance that holds `n`
-    /// permits.
+    /// Detaches `n` permits from `self` into a new borrowed guard.
     ///
-    /// If there are insufficient permits, and it is impossible to reduce by `n`, returns `None`.
+    /// Returns [`None`] without modifying `self` when `n` exceeds [`Self::permits`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use std::sync::Arc;
-    ///
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Arc::new(Semaphore::new(3));
+    /// let quota = Semaphore::new(5);
+    /// let mut whole = quota.try_acquire(5).unwrap();
+    /// let part = whole.split(2).unwrap();
     ///
-    /// let mut p1 = sem.try_acquire(3).unwrap();
-    /// let p2 = p1.split(1).unwrap();
-    ///
-    /// assert_eq!(p1.permits(), 2);
-    /// assert_eq!(p2.permits(), 1);
+    /// assert_eq!(whole.permits(), 3);
+    /// assert_eq!(part.permits(), 2);
+    /// assert!(whole.split(4).is_none());
     /// ```
     pub fn split(&mut self, n: usize) -> Option<Self> {
         if n > self.permits {
@@ -443,16 +420,16 @@ impl SemaphorePermit<'_> {
         })
     }
 
-    /// Returns the number of permits this permit holds.
+    /// Returns how many permits this guard currently holds.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Semaphore::new(5);
-    /// let permit = sem.try_acquire(3).unwrap();
-    /// assert_eq!(permit.permits(), 3);
+    /// let quota = Semaphore::new(7);
+    /// let guard = quota.try_acquire(4).unwrap();
+    /// assert_eq!(guard.permits(), 4);
     /// ```
     pub fn permits(&self) -> usize {
         self.permits
@@ -465,11 +442,11 @@ impl Drop for SemaphorePermit<'_> {
     }
 }
 
-/// An owned permit from the semaphore.
+/// Owned RAII guard representing permits acquired from an [`Arc`]-shared [`Semaphore`].
 ///
-/// This type is created by the [`acquire_owned`] method.
-///
-/// [`acquire_owned`]: Semaphore::acquire_owned
+/// Created by [`Semaphore::acquire_owned`] and [`Semaphore::try_acquire_owned`]. Dropping this
+/// guard returns its permits to the semaphore unless [`OwnedSemaphorePermit::forget`] is called
+/// first.
 #[must_use = "permits are released immediately when dropped"]
 #[derive(Debug)]
 pub struct OwnedSemaphorePermit {
@@ -478,10 +455,11 @@ pub struct OwnedSemaphorePermit {
 }
 
 impl OwnedSemaphorePermit {
-    /// Forgets the permit **without** releasing it back to the semaphore.
+    /// Consumes this guard without returning its permits to the semaphore.
     ///
-    /// This can be used to permanently reduce the number of permits available
-    /// from a semaphore.
+    /// The acquired capacity remains permanently deducted unless explicitly restored later via
+    /// [`Semaphore::release`]. To deduct permits without first holding a guard, use
+    /// [`Semaphore::reduce_permits`].
     ///
     /// # Examples
     ///
@@ -490,30 +468,27 @@ impl OwnedSemaphorePermit {
     ///
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Arc::new(Semaphore::new(10));
-    /// {
-    ///     let permit = sem.clone().try_acquire_owned(5).unwrap();
-    ///     assert_eq!(sem.available_permits(), 5);
-    ///     permit.forget();
-    /// }
+    /// let quota = Arc::new(Semaphore::new(6));
+    /// let held = quota.clone().try_acquire_owned(4).unwrap();
+    /// held.forget();
     ///
-    /// // Since we forgot the permit, available permits won't go back to
-    /// // its initial value even after the permit is dropped
-    /// assert_eq!(sem.available_permits(), 5);
+    /// assert_eq!(quota.available_permits(), 2);
+    /// quota.release(4);
+    /// assert_eq!(quota.available_permits(), 6);
     /// ```
     pub fn forget(mut self) {
         self.permits = 0;
     }
 
-    /// Merge two [`OwnedSemaphorePermit`] instances together, consuming `other`
-    /// without releasing the permits it holds.
+    /// Combines the permits held by `other` into `self`.
     ///
-    /// Permits held by both `self` and `other` are released when `self` drops.
+    /// `other` is consumed without releasing its permits; all combined permits are later released
+    /// together when `self` drops (or retained permanently if forgotten).
     ///
     /// # Panics
     ///
-    /// This function panics if permits from different [`Semaphore`] instances are merged or if
-    /// their combined permit count exceeds `usize::MAX`.
+    /// Panics if `self` and `other` belong to different [`Semaphore`] instances or if their
+    /// combined permit count overflows `usize::MAX`.
     ///
     /// # Examples
     ///
@@ -522,27 +497,21 @@ impl OwnedSemaphorePermit {
     ///
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Arc::new(Semaphore::new(10));
-    /// let mut permit = sem.clone().try_acquire_owned(1).unwrap();
+    /// let quota = Arc::new(Semaphore::new(8));
+    /// let mut combined = quota.clone().try_acquire_owned(2).unwrap();
+    /// combined.merge(quota.clone().try_acquire_owned(3).unwrap());
     ///
-    /// for _ in 0..9 {
-    ///     let new_permit = sem.clone().try_acquire_owned(1).unwrap();
-    ///     // Merge individual permits into a single one.
-    ///     permit.merge(new_permit)
-    /// }
+    /// assert_eq!(combined.permits(), 5);
+    /// assert_eq!(quota.available_permits(), 3);
     ///
-    /// assert_eq!(sem.available_permits(), 0);
-    ///
-    /// // Release all permits in a single batch.
-    /// drop(permit);
-    ///
-    /// assert_eq!(sem.available_permits(), 10);
+    /// drop(combined);
+    /// assert_eq!(quota.available_permits(), 8);
     /// ```
     #[track_caller]
     pub fn merge(&mut self, mut other: Self) {
         assert!(
             Arc::ptr_eq(&self.sem, &other.sem),
-            "merging permits from different semaphore instances"
+            "cannot merge permits from different semaphores"
         );
         self.permits = self
             .permits
@@ -551,14 +520,9 @@ impl OwnedSemaphorePermit {
         other.permits = 0;
     }
 
-    /// Splits `n` permits from `self` and returns a new [`OwnedSemaphorePermit`] instance that
-    /// holds `n` permits.
+    /// Detaches `n` permits from `self` into a new owned guard, cloning the underlying [`Arc`].
     ///
-    /// If there are insufficient permits, and it is impossible to reduce by `n`, returns `None`.
-    ///
-    /// # Note
-    ///
-    /// It will clone the owned `Arc<Semaphore>` to construct the new instance.
+    /// Returns [`None`] without modifying `self` when `n` exceeds [`Self::permits`].
     ///
     /// # Examples
     ///
@@ -567,13 +531,13 @@ impl OwnedSemaphorePermit {
     ///
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Arc::new(Semaphore::new(3));
+    /// let quota = Arc::new(Semaphore::new(5));
+    /// let mut whole = quota.try_acquire_owned(5).unwrap();
+    /// let part = whole.split(2).unwrap();
     ///
-    /// let mut p1 = sem.try_acquire_owned(3).unwrap();
-    /// let p2 = p1.split(1).unwrap();
-    ///
-    /// assert_eq!(p1.permits(), 2);
-    /// assert_eq!(p2.permits(), 1);
+    /// assert_eq!(whole.permits(), 3);
+    /// assert_eq!(part.permits(), 2);
+    /// assert!(whole.split(4).is_none());
     /// ```
     pub fn split(&mut self, n: usize) -> Option<Self> {
         if n > self.permits {
@@ -588,7 +552,7 @@ impl OwnedSemaphorePermit {
         })
     }
 
-    /// Returns the number of permits this permit holds.
+    /// Returns how many permits this guard currently holds.
     ///
     /// # Examples
     ///
@@ -597,9 +561,9 @@ impl OwnedSemaphorePermit {
     ///
     /// use asyncband::semaphore::Semaphore;
     ///
-    /// let sem = Arc::new(Semaphore::new(5));
-    /// let permit = sem.try_acquire_owned(3).unwrap();
-    /// assert_eq!(permit.permits(), 3);
+    /// let quota = Arc::new(Semaphore::new(7));
+    /// let guard = quota.try_acquire_owned(4).unwrap();
+    /// assert_eq!(guard.permits(), 4);
     /// ```
     pub fn permits(&self) -> usize {
         self.permits

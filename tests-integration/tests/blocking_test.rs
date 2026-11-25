@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::RefCell;
 use std::future::Future;
 use std::future::pending;
 use std::future::poll_fn;
@@ -44,6 +45,73 @@ fn block_on_supports_method_and_ufcs_syntax() {
 fn wait_timeout_polls_before_checking_the_deadline() {
     assert_eq!(async { 42 }.wait_timeout(Duration::ZERO), Some(42));
     assert_eq!(pending::<()>().wait_timeout(Duration::ZERO), None);
+
+    let (completion, mut future, polls) = controlled_future();
+    assert_eq!((&mut future).wait_timeout(Duration::ZERO), None);
+    polls.recv_timeout(TEST_WATCHDOG).unwrap();
+
+    let producer = thread::spawn(move || {
+        polls.recv().unwrap();
+        completion.complete(7);
+    });
+    assert_eq!(future.block_on(), 7);
+    producer.join().unwrap();
+}
+
+#[test]
+fn waits_work_during_thread_local_destruction() {
+    fn self_waking_once(output: usize) -> impl Future<Output = usize> {
+        let mut polled = false;
+        poll_fn(move |context| {
+            if polled {
+                Poll::Ready(output)
+            } else {
+                polled = true;
+                context.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+    }
+
+    struct OnDrop(Option<mpsc::Sender<usize>>);
+
+    impl Drop for OnDrop {
+        fn drop(&mut self) {
+            let Some(done_tx) = self.0.take() else {
+                return;
+            };
+
+            // Avoid spawning or waiting on other OS threads here: on Windows (including Rust
+            // 1.86.0), TLS destructors can run under the OS loader lock, which serializes thread
+            // startup and exit across the process.
+            let first = self_waking_once(20).block_on();
+            let second = self_waking_once(21).wait_timeout(TEST_WATCHDOG).unwrap();
+            let third = async { 1 }.wait_timeout(Duration::ZERO).unwrap();
+            done_tx.send(first + second + third).unwrap();
+        }
+    }
+
+    thread_local! {
+        static BEFORE_CACHE: RefCell<OnDrop> = const { RefCell::new(OnDrop(None)) };
+        static AFTER_CACHE: RefCell<OnDrop> = const { RefCell::new(OnDrop(None)) };
+    }
+
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = thread::spawn({
+        let done_tx = done_tx.clone();
+        move || {
+            // Register one destructor before and one after initializing the executor's TLS cache so
+            // at least one runs after the cache is destroyed regardless of TLS teardown order.
+            BEFORE_CACHE.with(|slot| *slot.borrow_mut() = OnDrop(Some(done_tx.clone())));
+            assert_eq!(async { 1 }.block_on(), 1);
+            AFTER_CACHE.with(|slot| *slot.borrow_mut() = OnDrop(Some(done_tx)));
+        }
+    });
+    drop(done_tx);
+
+    worker.join().unwrap();
+    assert_eq!(done_rx.recv_timeout(TEST_WATCHDOG).unwrap(), 42);
+    assert_eq!(done_rx.recv_timeout(TEST_WATCHDOG).unwrap(), 42);
 }
 
 #[test]

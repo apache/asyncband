@@ -32,6 +32,7 @@ asyncband = { workspace = true, features = [
   "condvar",
   "event",
   "latch",
+  "lazy-cell",
   "mpmc",
   "mpsc",
   "mutex",
@@ -55,6 +56,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 
 [dev-dependencies]
 async-broadcast = { workspace = true }
+futures-util = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 waitgroup = { workspace = true }
 
 [lib]
@@ -70,6 +73,11 @@ path = "benches/primitives/main.rs"
 harness = false
 name = "ecosystem"
 path = "benches/ecosystem/main.rs"
+
+[[bench]]
+harness = false
+name = "upgradable_stages"
+path = "benches/upgradable_stages.rs"
 
 [lints]
 workspace = true

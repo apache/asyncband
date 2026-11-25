@@ -26,7 +26,7 @@ use std::fmt;
 pub struct SendError<T>(T);
 
 impl<T> SendError<T> {
-    /// Gets a reference to the value that failed to be sent.
+    /// Returns a reference to the value that failed to be sent.
     pub fn as_inner(&self) -> &T {
         &self.0
     }
@@ -55,7 +55,8 @@ impl<T> fmt::Debug for SendError<T> {
 
 impl<T> Error for SendError<T> {}
 
-/// Error returned by [`BoundedSender::try_send`](crate::spmc::BoundedSender::try_send).
+/// Error returned by [`BoundedSender::try_send`](crate::spmc::BoundedSender::try_send) or
+/// [`BoundedSender::try_reserve`](crate::spmc::BoundedSender::try_reserve).
 #[derive(Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
     /// The queue is full, so the value cannot be sent without waiting for capacity.
@@ -65,7 +66,7 @@ pub enum TrySendError<T> {
 }
 
 impl<T> TrySendError<T> {
-    /// Gets a reference to the value that failed to be sent.
+    /// Returns a reference to the value that failed to be sent.
     pub fn as_inner(&self) -> &T {
         match self {
             TrySendError::Full(value) | TrySendError::Disconnected(value) => value,

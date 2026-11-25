@@ -23,6 +23,8 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
+use crate::internal::register_waker;
+use crate::internal::retry_waiter::RetryWaiter;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::spmc::RecvError;
@@ -34,16 +36,16 @@ pub struct Shared<T> {
     state: Mutex<State<T>>,
 }
 
-/// Values, endpoint state, and both waiter queues share one lock, so each transition and the
-/// waiter it selects are decided together. Wake callbacks and waker or value destructors run
-/// outside the lock, because they may reenter the queue.
+/// Values, endpoint state, receiver waiters, and the single sender waker share one lock, so each
+/// transition and the task it wakes are decided together. Wake callbacks and waker or value
+/// destructors run outside the lock, because they may reenter the queue.
 struct State<T> {
     values: VecDeque<T>,
     capacity: Option<usize>,
     sender_alive: bool,
     receivers: usize,
-    recv_waiters: WaitList<Waiter>,
-    send_waiters: WaitList<Waiter>,
+    recv_waiters: WaitList<RetryWaiter>,
+    send_waker: Option<Waker>,
 }
 
 impl<T> State<T> {
@@ -58,63 +60,16 @@ impl<T> State<T> {
         self.recv_waiters.notify_one()
     }
 
-    /// Takes the next value and selects a waiting sender's waker.
+    /// Takes the next value and wakes the blocked sender, if any.
     fn pop(&mut self) -> Result<(T, Option<Waker>), TryRecvError> {
         if let Some(value) = self.values.pop_front() {
-            // Unbounded queues never block senders, so their sender queue is always empty.
-            Ok((value, self.send_waiters.notify_one()))
+            // Unbounded queues never block the sender, so `send_waker` is always `None`.
+            Ok((value, self.send_waker.take()))
         } else if !self.sender_alive {
             Err(TryRecvError::Disconnected)
         } else {
             Err(TryRecvError::Empty)
         }
-    }
-}
-
-/// Notification state for an operation waiting to send or receive a value.
-///
-/// Notification wakes the waiting task; it does not reserve a value or queue slot.
-/// The future retains its waiter ID so it can reclaim the detached node when polled again or
-/// dropped. Disconnection clears the waiter storage instead.
-enum Waiter {
-    Waiting(Waker),
-    Notified,
-}
-
-impl WaitList<Waiter> {
-    fn notify_one(&mut self) -> Option<Waker> {
-        let (_, waiter) = self.unlink_first_waiter(|_| true)?;
-        let Waiter::Waiting(waker) = mem::replace(waiter, Waiter::Notified) else {
-            unreachable!("only waiting operations remain linked");
-        };
-        Some(waker)
-    }
-
-    fn remove_waiter(&mut self, id: WaiterId) -> Waiter {
-        // Unlinking is idempotent, so notified waiters are removed the same way as linked ones.
-        self.unlink_waiter(id, |_| true);
-        self.remove_unlinked_waiter(id)
-    }
-
-    /// Registers a pending operation's waker or refreshes an existing registration.
-    ///
-    /// If the future finds no value or slot after notification, its waiter rejoins the queue.
-    #[must_use = "drop the replaced waker after releasing the queue lock"]
-    fn register(&mut self, id: &mut Option<WaiterId>, current: &Waker) -> Option<Waker> {
-        if let Some(queued) = *id {
-            if let Waiter::Waiting(waker) = self.waiter_mut(queued) {
-                if waker.will_wake(current) {
-                    return None;
-                }
-                return Some(mem::replace(waker, current.clone()));
-            }
-        }
-        if let Some(notified) = id.take() {
-            // The notification already took this node's waker, so nothing is retired.
-            self.remove_waiter(notified);
-        }
-        *id = Some(self.push_back(Waiter::Waiting(current.clone())));
-        None
     }
 }
 
@@ -135,7 +90,7 @@ impl<T> Shared<T> {
                 sender_alive: true,
                 receivers: 1,
                 recv_waiters: WaitList::new(),
-                send_waiters: WaitList::new(),
+                send_waker: None,
             }),
         }
     }
@@ -157,20 +112,29 @@ impl<T> Shared<T> {
         self.state.lock().receivers += 1;
     }
 
+    pub fn has_sender(&self) -> bool {
+        self.state.lock().sender_alive
+    }
+
+    pub fn has_receivers(&self) -> bool {
+        self.state.lock().receivers != 0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.state.lock().values.is_empty()
+    }
+
     pub fn drop_receiver(&self) {
-        let (discarded, mut waiters) = {
+        let (discarded, waker) = {
             let mut state = self.state.lock();
             state.receivers -= 1;
             if state.receivers != 0 {
                 return;
             }
-            (
-                mem::take(&mut state.values),
-                mem::replace(&mut state.send_waiters, WaitList::new()),
-            )
+            (mem::take(&mut state.values), state.send_waker.take())
         };
-        // Notify blocked senders before destroying buffered values, whose destructors may panic.
-        while let Some(waker) = waiters.notify_one() {
+        // Notify a blocked sender before destroying buffered values, whose destructors may panic.
+        if let Some(waker) = waker {
             waker.wake();
         }
         drop(discarded);
@@ -199,12 +163,47 @@ impl<T> Shared<T> {
             Err(TrySendError::Disconnected(value)) => return Err(SendError::new(value)),
             Err(TrySendError::Full(value)) => value,
         };
-        let mut send = Send {
+        match self.reserve().await {
+            Ok(()) => self.send_reserved(value),
+            Err(_) => Err(SendError::new(value)),
+        }
+    }
+
+    pub fn try_reserve(&self) -> Result<(), TrySendError<()>> {
+        let state = self.state.lock();
+        if state.receivers == 0 {
+            Err(TrySendError::Disconnected(()))
+        } else if !state.has_capacity() {
+            Err(TrySendError::Full(()))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub async fn reserve(&self) -> Result<(), SendError<()>> {
+        let mut reserve = Reserve {
             shared: self,
-            waiter: None,
-            value: Some(value),
+            registered: false,
         };
-        poll_fn(|cx| send.poll(cx)).await
+        poll_fn(|cx| reserve.poll(cx)).await
+    }
+
+    pub fn send_reserved(&self, value: T) -> Result<(), SendError<T>> {
+        let waker = {
+            let mut state = self.state.lock();
+            if state.receivers == 0 {
+                return Err(SendError::new(value));
+            }
+            debug_assert!(
+                state.has_capacity(),
+                "exclusive sender borrow preserves reserved capacity"
+            );
+            state.push(value)
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        Ok(())
     }
 
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
@@ -229,59 +228,46 @@ impl<T> Shared<T> {
     }
 }
 
-struct Send<'a, T> {
+/// Waits for capacity on the single `BoundedSender`, whose exclusive `&mut self` borrow guarantees
+/// that at most one `Reserve` future exists for the queue at a time.
+struct Reserve<'a, T> {
     shared: &'a Shared<T>,
-    waiter: Option<WaiterId>,
-    value: Option<T>,
+    registered: bool,
 }
 
-impl<T> Send<'_, T> {
-    fn take_value(&mut self) -> T {
-        self.value.take().expect("pending send must own its value")
-    }
-
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SendError<T>>> {
+impl<T> Reserve<'_, T> {
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SendError<()>>> {
         let mut state = self.shared.state.lock();
         let outcome = if state.receivers == 0 {
-            self.waiter = None;
-            Err(self.take_value())
+            self.registered = false;
+            Err(SendError::new(()))
         } else if state.has_capacity() {
-            Ok(state.push(self.take_value()))
+            Ok(())
         } else {
-            let retired = state.send_waiters.register(&mut self.waiter, cx.waker());
+            let retired = register_waker(&mut state.send_waker, cx.waker());
+            self.registered = true;
             drop(state);
             drop(retired);
             return Poll::Pending;
         };
-        let retired = self
-            .waiter
-            .take()
-            .map(|id| state.send_waiters.remove_waiter(id));
+        let retired = if self.registered {
+            self.registered = false;
+            state.send_waker.take()
+        } else {
+            None
+        };
         drop(state);
-        let result = outcome
-            .map(|waker| {
-                if let Some(waker) = waker {
-                    waker.wake();
-                }
-            })
-            .map_err(SendError::new);
         drop(retired);
-        Poll::Ready(result)
+        Poll::Ready(outcome)
     }
 }
 
-impl<T> Drop for Send<'_, T> {
+impl<T> Drop for Reserve<'_, T> {
     fn drop(&mut self) {
-        let Some(id) = self.waiter.take() else {
+        if !self.registered {
             return;
-        };
-        let retired = {
-            let mut state = self.shared.state.lock();
-            if state.receivers == 0 {
-                return;
-            }
-            state.send_waiters.remove_waiter(id)
-        };
+        }
+        let retired = self.shared.state.lock().send_waker.take();
         drop(retired);
     }
 }
@@ -308,10 +294,7 @@ impl<T> Recv<'_, T> {
                 return Poll::Pending;
             }
         };
-        let retired = self
-            .waiter
-            .take()
-            .map(|id| state.recv_waiters.remove_waiter(id));
+        let retired = self.waiter.take().map(|id| state.recv_waiters.remove(id));
         drop(state);
         let result = outcome.map(|(value, waker)| {
             if let Some(waker) = waker {
@@ -334,9 +317,9 @@ impl<T> Drop for Recv<'_, T> {
             if !state.sender_alive {
                 return;
             }
-            let retired = state.recv_waiters.remove_waiter(id);
+            let retired = state.recv_waiters.remove(id);
             // Hand an unconsumed notification to the next receiver while a value still waits.
-            let waker = if matches!(retired, Waiter::Notified) && !state.values.is_empty() {
+            let waker = if matches!(retired, RetryWaiter::Notified) && !state.values.is_empty() {
                 state.recv_waiters.notify_one()
             } else {
                 None

@@ -84,21 +84,25 @@ pub fn new() -> (Shutdown, ShutdownGuard) {
         wait: wg.clone().into_future(),
     };
     let guard = ShutdownGuard {
-        latch,
+        watch: ShutdownWatch { latch },
         wait_group: wg,
     };
     (shutdown, guard)
 }
 
-/// Coordinates a graceful shutdown request and completion.
+/// A future that requests shutdown and waits for all completion guards to be dropped.
 ///
-/// Awaiting this handle requests shutdown and waits for every [`ShutdownGuard`] to be dropped. The
-/// request is issued on the first poll. Merely creating, moving, or dropping an unpolled handle
-/// does not request shutdown.
+/// Once this future returns [`Poll::Ready`], polling it again continues to return
+/// `Poll::Ready(())`. See the [module level documentation](self) for more.
 ///
-/// Once the handle has been polled, the shutdown request is sticky even if the future is cancelled
-/// or dropped. If shutdown must be requested before a `select` can choose another branch, call
-/// [`request_shutdown`](Self::request_shutdown) before entering the `select`:
+/// # Cancellation
+///
+/// The first poll requests shutdown. Dropping an unpolled future does not request it; dropping
+/// a pending future after its first poll does not withdraw the request or drop completion
+/// guards. Call [`request_shutdown`](Self::request_shutdown) before selecting when the request
+/// must happen even if this future is never polled.
+///
+/// # Examples
 ///
 /// ```
 /// # #[tokio::main]
@@ -122,8 +126,6 @@ pub fn new() -> (Shutdown, ShutdownGuard) {
 /// worker.await.unwrap();
 /// # }
 /// ```
-///
-/// See the [module level documentation](self) for more.
 #[must_use = "shutdown is not requested unless this handle is polled or request_shutdown is called"]
 #[derive(Debug, Clone)]
 pub struct Shutdown {
@@ -156,7 +158,7 @@ impl Future for Shutdown {
 /// See the [module level documentation](self) for more.
 #[derive(Debug, Clone)]
 pub struct ShutdownGuard {
-    latch: Arc<Latch>,
+    watch: ShutdownWatch,
     #[expect(
         dead_code,
         reason = "keeps shutdown completion pending until this guard is dropped"
@@ -170,32 +172,39 @@ impl ShutdownGuard {
     /// The returned handle does not delay shutdown completion, but this guard still does. Use
     /// [`into_watch`](Self::into_watch) to stop keeping completion pending.
     pub fn watch(&self) -> ShutdownWatch {
-        ShutdownWatch {
-            latch: self.latch.clone(),
-        }
+        self.watch.clone()
     }
 
     /// Converts this guard into a watch that does not delay completion.
     pub fn into_watch(self) -> ShutdownWatch {
-        let Self { latch, .. } = self;
-        ShutdownWatch { latch }
+        self.watch
     }
 
     /// Returns whether shutdown has been requested.
     pub fn is_shutdown_requested(&self) -> bool {
-        self.latch.try_wait().is_ok()
+        self.watch.is_shutdown_requested()
     }
 
     /// Waits until shutdown is requested.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping a pending future removes only this wait. It does not request shutdown, clear an
+    /// existing request, or drop the handle borrowed by this call.
     pub async fn shutdown_requested(&self) {
-        self.latch.wait().await;
+        self.watch.shutdown_requested().await;
     }
 
-    /// Returns a future that resolves when shutdown is requested.
+    /// Returns a future that observes a shutdown request without borrowing this handle.
     ///
-    /// The returned future can be moved into a spawned task.
+    /// The future retains the request state but does not keep shutdown completion pending.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping the future removes only this wait. It does not request shutdown or clear an
+    /// existing request.
     pub fn shutdown_requested_owned(&self) -> impl Future<Output = ()> + 'static {
-        self.latch.clone().wait_owned()
+        self.watch.shutdown_requested_owned()
     }
 }
 
@@ -214,13 +223,23 @@ impl ShutdownWatch {
     }
 
     /// Waits until shutdown is requested.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping a pending future removes only this wait. It does not request shutdown, clear an
+    /// existing request, or drop the handle borrowed by this call.
     pub async fn shutdown_requested(&self) {
         self.latch.wait().await;
     }
 
-    /// Returns an owned future that resolves when shutdown is requested.
+    /// Returns a future that observes a shutdown request without borrowing this handle.
     ///
-    /// The returned future has no lifetime constraints.
+    /// The future retains the request state but does not keep shutdown completion pending.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping the future removes only this wait. It does not request shutdown or clear an
+    /// existing request.
     pub fn shutdown_requested_owned(&self) -> impl Future<Output = ()> + 'static {
         self.latch.clone().wait_owned()
     }

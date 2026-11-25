@@ -21,11 +21,11 @@
 //! their tokens must be cleared rather than passed back to the set. Returned wakers must be woken
 //! or dropped after releasing the lock.
 
-use std::mem;
 use std::task::Waker;
 
 use crate::internal::arena::Arena;
 use crate::internal::arena::SlotId;
+use crate::internal::update_waker;
 use crate::internal::waker_batch::WakerBatch;
 
 /// An exclusive handle to one waker slot in a [`WakerSet`].
@@ -54,10 +54,21 @@ impl WakerSet {
         }
     }
 
-    /// Constructs an empty waker set with the specified capacity.
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            wakers: Arena::with_capacity(capacity),
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.wakers.is_empty()
+    }
+
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.wakers.capacity()
+    }
+
+    /// Moves registered wakers into `batch`, retaining slot capacity for reuse.
+    #[inline]
+    pub fn drain_into(&mut self, batch: &mut WakerBatch) {
+        if !self.wakers.is_empty() {
+            self.wakers.drain().for_each(|waker| batch.push(waker));
         }
     }
 
@@ -66,10 +77,9 @@ impl WakerSet {
     /// Moves each waker into the batch; up to [`WakerBatch::STACK_SIZE`] fit without allocating.
     #[inline]
     pub fn take_all(&mut self) -> WakerBatch {
-        if self.wakers.is_empty() {
-            return WakerBatch::new();
-        }
-        self.wakers.take_all()
+        let mut batch = WakerBatch::new();
+        self.drain_into(&mut batch);
+        batch
     }
 
     /// Consumes the set, waking every registered waker and releasing its allocation.
@@ -80,32 +90,50 @@ impl WakerSet {
         self.wakers.into_iter().for_each(Waker::wake);
     }
 
+    /// Inserts a new waker slot and returns its exclusive token.
+    #[inline]
+    pub fn insert(&mut self, waker: &Waker) -> WakerToken {
+        WakerToken(self.wakers.insert(waker.clone()))
+    }
+
+    /// Replaces the waker at `token` unless it already wakes the same task.
+    #[inline]
+    #[must_use = "drop the returned waker after releasing the waker set's state lock"]
+    pub fn update(&mut self, token: &WakerToken, waker: &Waker) -> Option<Waker> {
+        let current = self
+            .wakers
+            .get_mut(token.0)
+            .expect("waker token must refer to an occupied slot");
+        update_waker(current, waker)
+    }
+
+    /// Removes and returns the waker identified by `token`.
+    #[inline]
+    #[must_use = "drop the returned waker after releasing the waker set's state lock"]
+    pub fn remove(&mut self, token: WakerToken) -> Waker {
+        self.wakers.remove(token.0)
+    }
+
     /// Registers or updates a waker.
     ///
     /// Returns the previous waker only if it was replaced.
     #[inline]
     #[must_use = "drop the returned waker after releasing the waker set's state lock"]
     pub fn register(&mut self, token: &mut Option<WakerToken>, waker: &Waker) -> Option<Waker> {
-        if let Some(token) = token {
-            let current = self
-                .wakers
-                .get_mut(token.0)
-                .expect("waker token must refer to an occupied slot");
-            if current.will_wake(waker) {
-                return None;
+        match token {
+            Some(token) => self.update(token, waker),
+            None => {
+                *token = Some(self.insert(waker));
+                None
             }
-            return Some(mem::replace(current, waker.clone()));
         }
-
-        *token = Some(WakerToken(self.wakers.insert(waker.clone())));
-        None
     }
 
     /// Removes and returns the waker identified by `token`, clearing the token.
     #[inline]
     #[must_use = "drop the returned waker after releasing the waker set's state lock"]
     pub fn unregister(&mut self, token: &mut Option<WakerToken>) -> Option<Waker> {
-        token.take().map(|token| self.wakers.remove(token.0))
+        token.take().map(|token| self.remove(token))
     }
 }
 

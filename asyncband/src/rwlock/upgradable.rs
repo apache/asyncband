@@ -20,33 +20,33 @@ use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 
-use crate::internal::semaphore::Semaphore;
 use crate::rwlock::RwLock;
 use crate::rwlock::RwLockReadGuard;
 use crate::rwlock::RwLockWriteGuard;
 use crate::rwlock::access::ReadAccess;
+use crate::rwlock::access::Reservation;
 use crate::rwlock::access::WriteAccess;
 use crate::rwlock::write_guard;
 
 /// Shared and exclusive access with a single reader that can reserve an atomic upgrade.
 ///
 /// Ordinary readers and one upgradable reader may coexist, up to the configured reader limit.
-/// Writers exclude all readers. An upgrade retains its read permit until it owns every permit,
-/// so no writer can modify the value between inspection and mutation. Panics do not poison the
-/// lock. Ordinary read and write guards are the same types returned by [`RwLock`].
+/// Writers exclude all readers. An upgrade retains its reader slot until exclusive access is
+/// granted, so no writer can modify the value between inspection and mutation. Panics do not
+/// poison the lock. Ordinary read and write guards are the same types returned by [`RwLock`].
 ///
 /// # Ordering
 ///
 /// Writers and upgradable readers acquire a shared reservation in FIFO order, before requesting
-/// data permits. An upgradable reader retains this reservation until upgrade, downgrade, or drop.
+/// reader slots. An upgradable reader retains this reservation until upgrade, downgrade, or drop.
 /// A writer releases it once it has exclusive access. Thus a writer waiting behind an upgradable
-/// reader cannot enter the data-permit queue ahead of that reader's upgrade and deadlock it.
+/// reader cannot enter the reader-slot queue ahead of that reader's upgrade and deadlock it.
 /// A writer already waiting for the reservation precedes a later upgradable acquisition.
 ///
-/// Ordinary readers bypass the reservation. Data permits are assigned in FIFO order: once a
+/// Ordinary readers bypass the reservation. Reader slots are assigned in FIFO order: once a
 /// writer or upgrade queues for them, later readers cannot pass it. Readers already queued before
-/// an upgrade may finish first. With a reader limit of one, upgrading needs no additional permits
-/// and completes immediately, even if readers are queued.
+/// an upgrade may finish first. With a reader limit of one, upgrading needs no additional reader
+/// slots and completes immediately, even if readers are queued.
 ///
 /// There is no single FIFO order across both queues. Readers may pass writers still waiting for
 /// the reservation, including while an upgradable guard is held. Progress assumes holders release
@@ -68,7 +68,7 @@ use crate::rwlock::write_guard;
 /// queue position. [`upgrade`](RwLockUpgradableReadGuard::upgrade) consumes its guard; cancelling
 /// that future releases the guard as well, including before its first poll.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use asyncband::rwlock::RwLockUpgradableReadGuard;
@@ -89,9 +89,9 @@ use crate::rwlock::write_guard;
 /// # }
 /// ```
 pub struct UpgradableRwLock<T: ?Sized> {
-    // Every operation taking more than one data permit must first hold this reservation.
+    // Every operation taking more than one data slot must first hold this reservation.
     // It is never exposed, nor is the inner lock, so writers cannot bypass it.
-    reservation: Semaphore,
+    reservation: Reservation,
     inner: RwLock<T>,
 }
 
@@ -107,7 +107,7 @@ impl<T> UpgradableRwLock<T> {
     /// accepted.
     pub const fn with_max_readers(value: T, max_readers: NonZeroUsize) -> Self {
         Self {
-            reservation: Semaphore::new(1),
+            reservation: Reservation::new(),
             inner: RwLock::with_max_readers(value, max_readers),
         }
     }
@@ -128,7 +128,7 @@ impl<T: ?Sized> UpgradableRwLock<T> {
     ///
     /// Writers and upgrades already queued for data permits must finish first.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Cancellation releases any assigned permit and loses the request's queue position.
     pub async fn read(&self) -> RwLockReadGuard<'_, T> {
@@ -144,13 +144,12 @@ impl<T: ?Sized> UpgradableRwLock<T> {
     ///
     /// See [ordering](Self#ordering) for how ordinary readers may pass this request.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Cancellation releases the reservation and any assigned permits and loses both queue
     /// positions.
     pub async fn write(&self) -> RwLockWriteGuard<'_, T> {
-        self.reservation.acquire(1).await;
-        let reservation = ReadAccess::new(&self.reservation);
+        let reservation = ReadAccess::acquire(&self.reservation).await;
         let write = self.inner.write().await;
         drop(reservation);
         write
@@ -159,10 +158,7 @@ impl<T: ?Sized> UpgradableRwLock<T> {
     /// Returns a write guard immediately, or `None` when the reservation or exclusive access is
     /// unavailable. Failure releases any reservation acquired by this call.
     pub fn try_write(&self) -> Option<RwLockWriteGuard<'_, T>> {
-        if !self.reservation.try_acquire(1) {
-            return None;
-        }
-        let reservation = ReadAccess::new(&self.reservation);
+        let reservation = ReadAccess::try_acquire(&self.reservation)?;
         let write = self.inner.try_write();
         drop(reservation);
         write
@@ -173,16 +169,14 @@ impl<T: ?Sized> UpgradableRwLock<T> {
     /// The returned guard excludes other upgradable readers and reserves priority over later
     /// writers. Ordinary readers can coexist with it.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Cancellation releases the reservation and any assigned permit and loses both queue
     /// positions.
     pub async fn upgradable_read(&self) -> RwLockUpgradableReadGuard<'_, T> {
-        self.reservation.acquire(1).await;
-        let reservation = ReadAccess::new(&self.reservation);
-        self.inner.s.acquire(1).await;
+        let reservation = ReadAccess::acquire(&self.reservation).await;
         RwLockUpgradableReadGuard {
-            access: ReadAccess::new(&self.inner),
+            access: ReadAccess::acquire(&self.inner).await,
             reservation,
         }
     }
@@ -190,15 +184,9 @@ impl<T: ?Sized> UpgradableRwLock<T> {
     /// Returns an upgradable guard immediately, or `None` when the reservation or a reader slot
     /// is unavailable. Failure releases any reservation acquired by this call.
     pub fn try_upgradable_read(&self) -> Option<RwLockUpgradableReadGuard<'_, T>> {
-        if !self.reservation.try_acquire(1) {
-            return None;
-        }
-        let reservation = ReadAccess::new(&self.reservation);
-        if !self.inner.s.try_acquire(1) {
-            return None;
-        }
+        let reservation = ReadAccess::try_acquire(&self.reservation)?;
         Some(RwLockUpgradableReadGuard {
-            access: ReadAccess::new(&self.inner),
+            access: ReadAccess::try_acquire(&self.inner)?,
             reservation,
         })
     }
@@ -236,14 +224,14 @@ pub struct RwLockUpgradableReadGuard<'a, T: ?Sized> {
     // Unlike an ordinary read guard, this token must retain T: Send + Sync for Send: moving the
     // guard to another thread also moves the ability to acquire mutable access by upgrading.
     access: ReadAccess<&'a RwLock<T>>,
-    reservation: ReadAccess<&'a Semaphore>,
+    reservation: ReadAccess<&'a Reservation>,
 }
 
 impl<T: ?Sized> Deref for RwLockUpgradableReadGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // SAFETY: the token owns one data permit, excluding writers for this borrow's lifetime.
+        // SAFETY: the token owns one reader slot, excluding writers for this borrow's lifetime.
         // Upgrade consumes the guard, so it cannot overlap a shared reference borrowed from it.
         unsafe { &*self.access.owner().c.get() }
     }
@@ -267,7 +255,7 @@ impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
     /// The reservation prevents writers from queuing ahead of this upgrade. Ordinary readers
     /// already ahead in the data-permit queue may finish first; later readers cannot pass it.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// This consumes the guard. Dropping the future releases the original reader slot, any
     /// partially or fully assigned upgrade permits, and the reservation. This also holds if the
@@ -276,7 +264,10 @@ impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
         let lock = *this.access.owner();
         // Keep both RAII tokens alive across the await. The semaphore's acquisition future owns
         // additional permits until completion and returns them if cancelled, even after a grant.
-        lock.s.acquire(lock.max_readers - 1).await;
+        lock.state
+            .semaphore()
+            .acquire(lock.state.upgrade_permits())
+            .await;
         this.into_write()
     }
 
@@ -284,6 +275,13 @@ impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
     ///
     /// Failure neither consumes additional permits nor reserves a queue position. With a reader
     /// limit of one, this always succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original upgradable guard if exclusive access is unavailable. It retains its
+    /// reader slot and reservation; no additional permits are consumed.
+    ///
+    /// # Examples
     ///
     /// ```
     /// use asyncband::rwlock::RwLockUpgradableReadGuard;
@@ -299,7 +297,11 @@ impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
     /// ```
     pub fn try_upgrade(this: Self) -> Result<RwLockWriteGuard<'a, T>, Self> {
         let lock = *this.access.owner();
-        if lock.s.try_acquire(lock.max_readers - 1) {
+        if lock
+            .state
+            .semaphore()
+            .try_acquire(lock.state.upgrade_permits())
+        {
             Ok(this.into_write())
         } else {
             Err(this)
@@ -320,8 +322,8 @@ impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
         read
     }
 
-    // Called only after acquiring all max_readers - 1 additional data permits. No await or
-    // callback occurs during the transfer. The borrowed token has no owner allocation to free.
+    // Called only after acquiring all remaining reader slots so that `lock` holds `writer_permits`
+    // in total. No await or callback occurs during the transfer.
     fn into_write(self) -> RwLockWriteGuard<'a, T> {
         let Self {
             access,
@@ -329,7 +331,7 @@ impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
         } = self;
         let lock = *access.owner();
         mem::forget(access);
-        let write = write_guard::from_access(WriteAccess::new(lock, lock.max_readers));
+        let write = write_guard::from_access(WriteAccess::new(lock));
         drop(reservation);
         write
     }

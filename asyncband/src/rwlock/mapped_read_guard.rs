@@ -28,7 +28,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
 
-use crate::internal::semaphore::Semaphore;
+use crate::rwlock::access::LockState;
 use crate::rwlock::access::ReadAccess;
 
 /// Shared access to a projection of a locked value borrowed for the guard lifetime.
@@ -38,7 +38,7 @@ use crate::rwlock::access::ReadAccess;
 #[must_use = "dropping the guard releases its read access immediately"]
 pub struct MappedRwLockReadGuard<'a, T: ?Sized> {
     d: NonNull<T>,
-    access: ReadAccess<&'a Semaphore>,
+    access: ReadAccess<&'a LockState>,
     variance: PhantomData<fn() -> T>,
 }
 
@@ -57,7 +57,7 @@ impl<'a, T: ?Sized> MappedRwLockReadGuard<'a, T> {
     /// `d` must come from a shared reference into the locked value, created while `access` was
     /// held. A pointer derived from `&mut` access is not valid here, because other readers can
     /// change its target through interior mutability.
-    pub(crate) fn new(d: NonNull<T>, access: ReadAccess<&'a Semaphore>) -> Self {
+    pub(crate) fn new(d: NonNull<T>, access: ReadAccess<&'a LockState>) -> Self {
         Self {
             d,
             access,
@@ -91,9 +91,13 @@ impl<T: ?Sized> Deref for MappedRwLockReadGuard<'_, T> {
 impl<'a, T: ?Sized> MappedRwLockReadGuard<'a, T> {
     /// Selects a component while retaining the same lock access.
     ///
-    /// The closure runs while the original guard is held. If it panics, that guard is released.
+    /// The closure runs while the original guard is held.
     /// Call this as `MappedRwLockReadGuard::map(guard, f)` to avoid shadowing methods of the
     /// value.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access.
     pub fn map<U, F>(orig: Self, f: F) -> MappedRwLockReadGuard<'a, U>
     where
         F: FnOnce(&T) -> &U,
@@ -103,11 +107,18 @@ impl<'a, T: ?Sized> MappedRwLockReadGuard<'a, T> {
         MappedRwLockReadGuard::new(d, orig.access)
     }
 
-    /// Selects a component, or returns the still-held original guard when the closure returns
-    /// `None`.
+    /// Attempts to select a component while retaining the same lock access.
     ///
-    /// A panic in the closure releases the guard. Call this as
-    /// `MappedRwLockReadGuard::filter_map(guard, f)`.
+    /// Call this as `MappedRwLockReadGuard::filter_map(guard, f)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access.
     pub fn filter_map<U, F>(orig: Self, f: F) -> Result<MappedRwLockReadGuard<'a, U>, Self>
     where
         F: FnOnce(&T) -> Option<&U>,

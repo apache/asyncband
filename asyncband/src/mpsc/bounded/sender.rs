@@ -16,33 +16,32 @@
 // under the License.
 
 use std::fmt;
-use std::future::poll_fn;
+use std::future::Future;
 use std::mem;
+use std::mem::MaybeUninit;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::internal::mutex::Mutex;
-use crate::internal::register_waker;
 use crate::internal::waitlist::WaiterId;
 use crate::mpsc::SendError;
 use crate::mpsc::TrySendError;
-use crate::mpsc::bounded::State;
-use crate::mpsc::bounded::Waiter;
+use crate::mpsc::bounded::queue::Shared;
 
 /// The sending endpoint of a bounded mpsc channel.
 ///
 /// Instances are created by the [`bounded`](crate::mpsc::bounded) function.
 pub struct BoundedSender<T> {
-    shared: Arc<Mutex<State<T>>>,
+    shared: Arc<Shared<T>>,
 }
 
 impl<T> Clone for BoundedSender<T> {
+    #[inline]
     fn clone(&self) -> Self {
-        self.shared.lock().senders += 1;
-        BoundedSender {
-            shared: self.shared.clone(),
-        }
+        let shared = self.shared.clone();
+        shared.clone_sender();
+        BoundedSender { shared }
     }
 }
 
@@ -53,64 +52,65 @@ impl<T> fmt::Debug for BoundedSender<T> {
 }
 
 impl<T> Drop for BoundedSender<T> {
+    #[inline]
     fn drop(&mut self) {
-        let wake = {
-            let mut state = self.shared.lock();
-            state.senders -= 1;
-            if state.senders == 0 {
-                state.recv_waker.take()
-            } else {
-                None
-            }
-        };
-        if let Some(waker) = wake {
-            waker.wake();
-        }
+        self.shared.drop_sender();
     }
 }
 
 impl<T> BoundedSender<T> {
-    pub(super) fn new(shared: Arc<Mutex<State<T>>>) -> Self {
+    pub(in crate::mpsc::bounded) fn new(shared: Arc<Shared<T>>) -> Self {
         Self { shared }
     }
 
-    /// Sends a message, waiting until the channel has capacity when necessary.
+    /// Sends a value, waiting for capacity when the queue is full.
     ///
-    /// If the receiver has been dropped, the returned error contains `value`.
+    /// Once capacity is acquired, claiming the next queue slot and copying `value` proceeds as
+    /// described on [`try_send`](Self::try_send).
     ///
-    /// # Cancel safety
+    /// # Errors
+    ///
+    /// Returns [`SendError`] containing the unsent value if the receiver has been dropped.
+    ///
+    /// # Cancellation
     ///
     /// Dropping a pending `send` future loses its place waiting for capacity and drops `value`;
     /// a future that has returned `Pending` has not sent the message. Use
     /// [`try_send`](Self::try_send) when the caller must retain ownership if capacity is
     /// unavailable, or [`reserve`](Self::reserve) to wait for capacity before constructing the
     /// message.
-    pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
-        let value = match self.try_send(value) {
-            Ok(()) => return Ok(()),
-            Err(TrySendError::Disconnected(value)) => return Err(SendError::new(value)),
-            Err(TrySendError::Full(value)) => value,
-        };
-        match self.reserve().await {
-            Ok(permit) => permit.send(value),
-            Err(_) => Err(SendError::new(value)),
+    ///
+    /// # Panics
+    ///
+    /// Polling the returned future after it has returned [`Poll::Ready`] panics.
+    #[inline]
+    pub fn send(&self, value: T) -> impl Future<Output = Result<(), SendError<T>>> {
+        SendValue {
+            shared: Some(&self.shared),
+            waiter: None,
+            value: MaybeUninit::new(value),
         }
     }
 
-    /// Reserves capacity for one message before constructing it.
+    /// Reserves capacity for one message before the caller supplies its value.
     ///
-    /// A successful reservation returns a [`Permit`]. Dropping the permit releases capacity;
-    /// [`Permit::send`] publishes a value without waiting for space. Reservations do not establish
-    /// message order: other producers may send while a permit is held.
+    /// The returned [`Permit`] holds one capacity slot. Dropping it releases that slot;
+    /// [`Permit::send`] publishes a value without waiting for space. Holding a permit does not
+    /// establish message order or keep a receiver alive.
     ///
-    /// Returns `SendError(())` if the receiver has been dropped. A permit obtained earlier does
-    /// not keep the receiver alive; sending with it can still return the unsent value on
-    /// disconnect.
+    /// # Errors
     ///
-    /// # Cancel safety
+    /// Returns `SendError(())` if the receiver has been dropped. A successful reservation
+    /// can still fail to send if disconnection happens before [`Permit::send`].
+    ///
+    /// # Cancellation
     ///
     /// Dropping a pending `reserve` future loses its place in the wait queue. If capacity has
     /// already been granted, it is released to the next waiter or made available to a new sender.
+    ///
+    /// # Panics
+    ///
+    /// Polling the returned future after it has returned [`Poll::Ready`] panics.
     ///
     /// # Examples
     ///
@@ -129,29 +129,44 @@ impl<T> BoundedSender<T> {
     /// );
     /// # }
     /// ```
-    pub async fn reserve(&self) -> Result<Permit<'_, T>, SendError<()>> {
-        let mut reserve = Reserve {
-            shared: &self.shared,
+    #[inline]
+    pub fn reserve(&self) -> impl Future<Output = Result<Permit<'_, T>, SendError<()>>> {
+        Reserve {
+            shared: Some(&self.shared),
             waiter: None,
-        };
-        poll_fn(|cx| reserve.poll(cx)).await
+        }
     }
 
     /// Reserves capacity for one message without waiting.
     ///
-    /// Returns [`TrySendError::Full`] if queued messages and outstanding permits occupy the
-    /// buffer, or [`TrySendError::Disconnected`] if the receiver has been dropped.
+    /// Dropping the returned [`Permit`] releases its capacity. See [`reserve`](Self::reserve)
+    /// for reservation and message ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] if capacity is unavailable, or
+    /// [`TrySendError::Disconnected`] if the receiver has been dropped. Errors carry `()`
+    /// because no message has been supplied.
+    #[inline]
     pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
-        self.shared.lock().acquire()?;
+        self.shared.try_acquire_capacity()?;
         Ok(Permit {
             shared: &self.shared,
         })
     }
 
-    /// Attempts to send a message without waiting for capacity.
+    /// Sends a value without waiting for capacity.
     ///
-    /// A full buffer returns [`TrySendError::Full`], while a dropped receiver returns
-    /// [`TrySendError::Disconnected`]. Both errors return ownership of the unsent value.
+    /// Acquiring capacity and claiming a queue position are separate steps: a concurrent sender can
+    /// observe [`TrySendError::Full`] as soon as the last capacity unit is taken, including while
+    /// another sender holds a [`Permit`] or has just acquired capacity and has not yet claimed its
+    /// queue slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] if capacity is unavailable, or
+    /// [`TrySendError::Disconnected`] if the receiver has been dropped. Both errors contain the
+    /// unsent value; nothing is enqueued on error.
     ///
     /// # Examples
     ///
@@ -168,17 +183,20 @@ impl<T> BoundedSender<T> {
     /// drop(rx);
     /// assert_eq!(tx.try_send(30), Err(TrySendError::Disconnected(30)));
     /// ```
+    #[inline]
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        let mut state = self.shared.lock();
-        match state.acquire() {
+        match self.shared.try_acquire_capacity() {
             Ok(()) => {
-                state.queue.push_back(value);
-                let wake = state.recv_waker.take();
-                drop(state);
-                if let Some(waker) = wake {
-                    waker.wake();
+                let value = MaybeUninit::new(value);
+                // SAFETY: `value` is initialized; `publish_from_ptr` takes logical ownership on
+                // `true` and leaves `value` untouched on `false`.
+                if unsafe { self.shared.publish_from_ptr(value.as_ptr()) } {
+                    Ok(())
+                } else {
+                    // SAFETY: `publish_from_ptr` returned `false` without reading or dropping
+                    // `value`.
+                    Err(TrySendError::Disconnected(unsafe { value.assume_init() }))
                 }
-                Ok(())
             }
             Err(TrySendError::Full(())) => Err(TrySendError::Full(value)),
             Err(TrySendError::Disconnected(())) => Err(TrySendError::Disconnected(value)),
@@ -202,8 +220,9 @@ impl<T> BoundedSender<T> {
     /// drop(rx);
     /// assert!(tx.is_disconnected());
     /// ```
+    #[inline]
     pub fn is_disconnected(&self) -> bool {
-        !self.shared.lock().receiver
+        !self.shared.has_receiver()
     }
 }
 
@@ -214,7 +233,7 @@ impl<T> BoundedSender<T> {
 /// it without sending releases capacity and notifies a waiting sender.
 #[must_use = "dropping the permit releases its reserved capacity"]
 pub struct Permit<'a, T> {
-    shared: &'a Mutex<State<T>>,
+    shared: &'a Shared<T>,
 }
 
 impl<T> fmt::Debug for Permit<'_, T> {
@@ -224,96 +243,169 @@ impl<T> fmt::Debug for Permit<'_, T> {
 }
 
 impl<T> Permit<'_, T> {
-    /// Publishes a message using this permit, without waiting for capacity.
+    /// Publishes a value using this reserved capacity without waiting for space.
     ///
-    /// If the receiver has been dropped, the returned error contains the unsent value.
+    /// This consumes the permit, including when sending fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError`] containing the unsent value if the receiver has been dropped.
+    #[inline]
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
-        let mut state = self.shared.lock();
-        if !state.receiver {
-            return Err(SendError::new(value));
-        }
-        state.queue.push_back(value);
-        // The queued message now owns capacity.
+        let shared = self.shared;
         mem::forget(self);
-        let wake = state.recv_waker.take();
-        drop(state);
-        if let Some(waker) = wake {
-            waker.wake();
+        let value = MaybeUninit::new(value);
+        // SAFETY: `value` is initialized; `publish_from_ptr` takes logical ownership on `true` and
+        // leaves `value` untouched on `false`.
+        if unsafe { shared.publish_from_ptr(value.as_ptr()) } {
+            Ok(())
+        } else {
+            // SAFETY: `publish_from_ptr` returned `false` without reading or dropping `value`.
+            Err(SendError::new(unsafe { value.assume_init() }))
         }
-        Ok(())
     }
 }
 
 impl<T> Drop for Permit<'_, T> {
+    #[inline]
     fn drop(&mut self) {
-        let wake = self.shared.lock().release();
-        if let Some(waker) = wake {
-            waker.wake();
+        self.shared.release_capacity();
+    }
+}
+
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+struct SendValue<'a, T> {
+    shared: Option<&'a Shared<T>>,
+    waiter: Option<WaiterId>,
+    value: MaybeUninit<T>,
+}
+
+// `SendValue` never pins `value`; it transfers `T` by value into a ring slot or back via error.
+impl<T> Unpin for SendValue<'_, T> {}
+
+impl<T> SendValue<'_, T> {
+    #[inline(always)]
+    fn publish_acquired(&mut self, shared: &Shared<T>) -> Poll<Result<(), SendError<T>>> {
+        self.shared = None;
+        // SAFETY: `self.value` is initialized and `self.shared = None` prevents `Drop` from
+        // dropping it again if waking panics. `MaybeUninit<T>` carries no validity invariant after
+        // ownership moves into the ring, so moving the completed future remains sound for `Box<T>`
+        // (including on pre-1.96 toolchains) and `&mut T`.
+        if unsafe { shared.publish_from_ptr(self.value.as_ptr()) } {
+            self.shared = None;
+            Poll::Ready(Ok(()))
+        } else {
+            unsafe { self.finish_disconnected() }
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    unsafe fn finish_disconnected(&mut self) -> Poll<Result<(), SendError<T>>> {
+        self.shared = None;
+        // SAFETY: Caller guarantees `self.value` is initialized and has not been moved or dropped.
+        Poll::Ready(Err(SendError::new(unsafe {
+            self.value.assume_init_read()
+        })))
+    }
+}
+
+impl<T> Future for SendValue<'_, T> {
+    type Output = Result<(), SendError<T>>;
+
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let shared = this
+            .shared
+            .expect("bounded mpsc send polled after completion");
+
+        if this.waiter.is_none() {
+            match shared.try_acquire_capacity() {
+                Ok(()) => return this.publish_acquired(shared),
+                Err(TrySendError::Disconnected(())) => {
+                    // SAFETY: `this.value` has not been moved or dropped.
+                    return unsafe { this.finish_disconnected() };
+                }
+                Err(TrySendError::Full(())) => {}
+            }
+        }
+
+        match shared.poll_acquire_capacity_slow(&mut this.waiter, cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(())) => this.publish_acquired(shared),
+            // SAFETY: `this.value` has not been moved or dropped.
+            Poll::Ready(Err(_)) => unsafe { this.finish_disconnected() },
         }
     }
 }
 
+impl<T> Drop for SendValue<'_, T> {
+    #[inline]
+    fn drop(&mut self) {
+        let Some(shared) = self.shared else {
+            return;
+        };
+        if let Some(id) = self.waiter.take() {
+            shared.cancel_waiter_id(id);
+        }
+        if mem::needs_drop::<T>() {
+            // SAFETY: `self.shared.is_some()` means `self.value` was never published or returned.
+            unsafe {
+                self.value.assume_init_drop();
+            }
+        }
+    }
+}
+
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 struct Reserve<'a, T> {
-    shared: &'a Mutex<State<T>>,
+    shared: Option<&'a Shared<T>>,
     waiter: Option<WaiterId>,
 }
 
-impl<'a, T> Reserve<'a, T> {
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Permit<'a, T>, SendError<()>>> {
-        let mut state = self.shared.lock();
-        if !state.receiver {
-            self.waiter = None;
-            return Poll::Ready(Err(SendError::new(())));
-        }
-        if let Some(index) = self.waiter {
-            let waiter = state.send_waiters.waiter_mut(index);
-            if waiter.grant {
-                let waiter = state.send_waiters.remove_unlinked_waiter(index);
-                self.waiter = None;
-                let permit = Permit {
-                    shared: self.shared,
-                };
-                drop(state);
-                drop(waiter);
-                return Poll::Ready(Ok(permit));
+impl<'a, T> Future for Reserve<'a, T> {
+    type Output = Result<Permit<'a, T>, SendError<()>>;
+
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let shared = this
+            .shared
+            .expect("bounded mpsc reserve polled after completion");
+
+        if this.waiter.is_none() {
+            match shared.try_acquire_capacity() {
+                Ok(()) => {
+                    this.shared = None;
+                    return Poll::Ready(Ok(Permit { shared }));
+                }
+                Err(TrySendError::Disconnected(())) => {
+                    this.shared = None;
+                    return Poll::Ready(Err(SendError::new(())));
+                }
+                Err(TrySendError::Full(())) => {}
             }
-            let old = register_waker(&mut waiter.waker, cx.waker());
-            drop(state);
-            drop(old);
-            return Poll::Pending;
         }
-        if state.available != 0 {
-            state.available -= 1;
-            let permit = Permit {
-                shared: self.shared,
-            };
-            drop(state);
-            return Poll::Ready(Ok(permit));
+        match shared.poll_acquire_capacity_slow(&mut this.waiter, cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(())) => {
+                this.shared = None;
+                Poll::Ready(Ok(Permit { shared }))
+            }
+            Poll::Ready(Err(error)) => {
+                this.shared = None;
+                Poll::Ready(Err(error))
+            }
         }
-        self.waiter = Some(state.send_waiters.push_back(Waiter {
-            grant: false,
-            waker: Some(cx.waker().clone()),
-        }));
-        Poll::Pending
     }
 }
 
 impl<T> Drop for Reserve<'_, T> {
+    #[inline]
     fn drop(&mut self) {
-        let Some(index) = self.waiter else { return };
-        let (waiter, wake) = {
-            let mut state = self.shared.lock();
-            if !state.receiver {
-                return;
-            }
-            state.send_waiters.unlink_waiter(index, |_| true);
-            let waiter = state.send_waiters.remove_unlinked_waiter(index);
-            let wake = if waiter.grant { state.release() } else { None };
-            (waiter, wake)
-        };
-        if let Some(waker) = wake {
-            waker.wake();
+        if let Some((shared, id)) = self.shared.zip(self.waiter.take()) {
+            shared.cancel_waiter_id(id);
         }
-        drop(waiter);
     }
 }

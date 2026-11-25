@@ -271,10 +271,14 @@ impl Phaser {
         self.state.lock().unarrived
     }
 
-    /// Registers one participant in the current phase, or returns [`Closed`].
+    /// Registers one participant in the current phase.
     ///
     /// Registration racing with advancement joins the phase before or after that advancement.
     /// The returned participant owns a shared handle and does not borrow this one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Closed`] without registering a participant if the phaser is closed.
     ///
     /// # Panics
     ///
@@ -292,8 +296,11 @@ impl Phaser {
     /// participants; yielded handles keep their registrations. The iterator owns a shared handle
     /// and does not borrow this phaser.
     ///
-    /// Returns [`Closed`] without registering anyone if the phaser is closed. On an open phaser,
-    /// a zero-sized batch does nothing. Collect this iterator into a collection of your choice.
+    /// On an open phaser, a zero-sized batch does nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Closed`] without registering any participants if the phaser is closed.
     ///
     /// # Panics
     ///
@@ -328,13 +335,18 @@ impl Phaser {
     /// a future target number: a number different from the current phase returns immediately.
     /// It neither registers a participant nor records an arrival.
     ///
+    /// Phase numbers wrap; do not retain an observation across a full `u64` cycle or use a number
+    /// obtained from another phaser.
+    ///
+    /// # Errors
+    ///
     /// Returns [`Closed`] if the observed phase is still current when the phaser closes. A phase
-    /// completed before the phaser was closed remains successful. Phase numbers wrap; do not retain
-    /// an observation across a full `u64` cycle or use a number obtained from another phaser.
+    /// completed before closure remains successful.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Cancelling only unregisters this wait's waker. The same observation can be retried.
+    /// Dropping a pending future unregisters only this wait. It does not record an arrival or
+    /// change the phase; the same observation can be retried.
     pub async fn wait(&self, observed: u64) -> Result<u64, Closed> {
         PhaserWait {
             phaser: self,
@@ -407,8 +419,8 @@ impl Drop for PhaserParticipants {
 #[derive(Debug)]
 pub struct PhaserParticipant {
     phaser: Phaser,
-    // Cleared only after advancement, so a pending current phase also records arrival.
-    pending: Option<u64>,
+    // Retain the arrival across cancellation so a retry can observe the same phase.
+    arrived_phase: Option<u64>,
     registered: bool,
 }
 
@@ -416,7 +428,7 @@ impl PhaserParticipant {
     fn new(phaser: Phaser) -> Self {
         Self {
             phaser,
-            pending: None,
+            arrived_phase: None,
             registered: true,
         }
     }
@@ -428,19 +440,23 @@ impl PhaserParticipant {
 
     /// Records this participant's arrival and remembers that phase for [`wait`](Self::wait).
     ///
-    /// Returns the phase in which arrival was recorded, or [`Closed`] without recording one.
+    /// Returns the phase in which arrival was recorded.
     /// Repeated calls within one phase count only once. After advancement, an explicit new call
     /// arrives in the new phase and replaces any previous pending observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Closed`] without recording an arrival if the phaser is closed.
     pub fn arrive(&mut self) -> Result<u64, Closed> {
         let mut state = self.phaser.state.lock();
         if state.closed {
             return Err(Closed(()));
         }
         let phase = state.phase;
-        if self.pending != Some(phase) {
+        if self.arrived_phase != Some(phase) {
             state.unarrived -= 1;
         }
-        self.pending = Some(phase);
+        self.arrived_phase = Some(phase);
         let mut wakers = state.advance_if_ready();
         drop(state);
         wakers.wake_all();
@@ -453,26 +469,33 @@ impl PhaserParticipant {
     /// already completed. With no pending observation, the first poll arrives in the current
     /// phase. Success consumes the pending observation and returns the new current phase.
     ///
-    /// # Cancel safety
+    /// # Errors
+    ///
+    /// Returns [`Closed`] if the phaser closes before this call can record an arrival or before
+    /// its pending phase completes. A phase completed before closure remains successful.
+    ///
+    /// # Cancellation
     ///
     /// An unpolled call has no effect. Once polled, arrival is committed. Cancelling preserves
     /// the pending observation, so retrying this method waits for the same phase without
     /// counting another arrival. An explicit new `arrive` replaces that pending observation.
     pub async fn wait(&mut self) -> Result<u64, Closed> {
-        let observed = match self.pending {
-            Some(phase) => phase,
-            None => self.arrive()?,
-        };
-        let next = self.phaser.wait(observed).await?;
-        self.pending = None;
-        Ok(next)
+        ParticipantWait {
+            participant: self,
+            token: None,
+        }
+        .await
     }
 
-    /// Withdraws this participant and returns the phase from which it withdrew, or [`Closed`].
+    /// Withdraws this participant and returns the phase from which it withdrew.
     ///
     /// Any outstanding arrival is discharged without counting an already-arrived participant
     /// twice. This always removes the registration, even if the phaser is closed. The pending
     /// observation is abandoned. Dropping a participant has the same membership effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Closed`] if the phaser is closed. The registration is still removed.
     pub fn deregister(mut self) -> Result<u64, Closed> {
         self.do_deregister()
     }
@@ -481,7 +504,7 @@ impl PhaserParticipant {
         let mut state = self.phaser.state.lock();
         self.registered = false;
         state.registered -= 1;
-        if self.pending != Some(state.phase) {
+        if self.arrived_phase != Some(state.phase) {
             state.unarrived -= 1;
         }
         let result = if state.closed {
@@ -535,6 +558,76 @@ impl Drop for PhaserWait<'_> {
         }
         let mut state = self.phaser.state.lock();
         if state.completion(self.observed).is_ready() {
+            return;
+        }
+        let retired = state.waiters.unregister(&mut self.token);
+        drop(state);
+        drop(retired);
+    }
+}
+
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+struct ParticipantWait<'a> {
+    participant: &'a mut PhaserParticipant,
+    token: Option<WakerToken>,
+}
+
+impl Future for ParticipantWait<'_> {
+    type Output = Result<u64, Closed>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let mut state = this.participant.phaser.state.lock();
+        if let Some(observed) = this.participant.arrived_phase {
+            match state.completion(observed) {
+                Poll::Ready(Ok(next)) => {
+                    this.token = None;
+                    this.participant.arrived_phase = None;
+                    return Poll::Ready(Ok(next));
+                }
+                Poll::Ready(Err(closed)) => {
+                    this.token = None;
+                    return Poll::Ready(Err(closed));
+                }
+                Poll::Pending => {
+                    let retired = state.waiters.register(&mut this.token, cx.waker());
+                    drop(state);
+                    drop(retired);
+                    return Poll::Pending;
+                }
+            }
+        }
+
+        if state.closed {
+            return Poll::Ready(Err(Closed(())));
+        }
+        let observed = state.phase;
+        state.unarrived -= 1;
+        if state.unarrived == 0 {
+            let mut wakers = state.advance_if_ready();
+            let next = state.phase;
+            drop(state);
+            wakers.wake_all();
+            return Poll::Ready(Ok(next));
+        }
+
+        this.participant.arrived_phase = Some(observed);
+        this.token = Some(state.waiters.insert(cx.waker()));
+        Poll::Pending
+    }
+}
+
+impl Drop for ParticipantWait<'_> {
+    fn drop(&mut self) {
+        if self.token.is_none() {
+            return;
+        }
+        let observed = self
+            .participant
+            .arrived_phase
+            .expect("registered participant wait must have recorded an arrival");
+        let mut state = self.participant.phaser.state.lock();
+        if state.completion(observed).is_ready() {
             return;
         }
         let retired = state.waiters.unregister(&mut self.token);

@@ -21,68 +21,70 @@ under the License.
 
 ## v0.6.7 (2026-08-13)
 
-* Announce the upcoming `asyncband` rebrand.
+### Notable changes
+
+* Announce the upcoming rename from `mea` to `asyncband`.
 
 ## v0.6.6 (2026-08-13)
 
-### Bug fixes
-
-* Prevent `OwnedMappedMutexGuard` from allowing invalid lifetime coercions. ([#121](https://github.com/fast/mea/pull/121))
-* Require the protected value of an `OwnedRwLockReadGuard` to be both `Send` and `Sync` before the guard can be sent across threads. ([#122](https://github.com/fast/mea/pull/122))
-* Prevent reentrant wakers from deadlocking or poisoning `Barrier`, `Latch`, `WaitGroup`, `Once`, and `broadcast::overflow` operations. ([#125](https://github.com/fast/mea/pull/125))
-* Retry spurious atomic failures when completing `Once` initialization. ([#126](https://github.com/fast/mea/pull/126))
-* Make cloning a `WaitGroup` panic on counter overflow instead of silently losing track of a handle. ([#128](https://github.com/fast/mea/pull/128))
-* Align `Condvar` with standard non-buffered notification semantics by notifying only current waiters and passing a cancelled `notify_one` wakeup to another current waiter. ([#132](https://github.com/fast/mea/pull/132))
-* Ensure polling or cancelling a contended `oneshot` receive does not wait for the sender to make progress. ([#138](https://github.com/fast/mea/pull/138))
-* Clean up uninitialized `OnceMap` and `singleflight::Group` entries once no callers remain after a failure, panic, or cancellation. ([#142](https://github.com/fast/mea/pull/142))
-* Keep a semaphore's permit count unchanged when `Semaphore::release` panics on overflow. ([#144](https://github.com/fast/mea/pull/144))
-
 ### Improvements
 
-* Remove unnecessary `Clone` bounds from `singleflight::Group` keys and custom hashers used by `OnceMap` and `singleflight::Group`. ([#142](https://github.com/fast/mea/pull/142))
+* Remove unnecessary `Clone` bounds on keys in `singleflight::Group` and on custom hashers in `OnceMap` and `singleflight::Group`.
+
+### Bug fixes
+
+* Make `OwnedMappedMutexGuard` invariant over its projected type to prevent unsound lifetime coercions.
+* Require `T: Send + Sync` before `OwnedRwLockReadGuard<T>` implements `Send`.
+* Wake waiters after releasing internal locks across `Barrier`, `Latch`, `WaitGroup`, `Once`, and `broadcast::overflow` so reentrant wakers cannot deadlock or poison state.
+* Retry spurious compare-exchange failures when completing `Once` initialization instead of leaving concurrent waiters blocked.
+* Panic on reference-count overflow when cloning `WaitGroup` instead of silently losing track of a handle.
+* Notify only waiters already registered before `Condvar::{notify_one, notify_all}`, and forward a cancelled `notify_one` wakeup to another current waiter.
+* Avoid waiting on sender progress when polling or cancelling a contended `oneshot::Receiver`.
+* Remove uninitialized `OnceMap` and `singleflight::Group` entries once all callers leave after an error, panic, or cancellation.
+* Leave the permit count unchanged when `Semaphore::release` panics on overflow.
 
 ## v0.6.5 (2026-07-30)
 
 ### New features
 
-* Implement `admission::FairShare` to provide a work-conserving admission policy for workloads partitioned by key.
+* Add `admission::{FairShare, FairSharePermit, OwnedFairSharePermit}` for work-conserving admission control across partitioned keys.
 
 ## v0.6.4 (2026-05-28)
 
 ### New features
 
-* Implement `shutdown::ShutdownWatch` to wait for the shutdown signal without blocking `ShutdownSend::await_shutdown`.
+* Add `shutdown::ShutdownWatch` to wait for the shutdown signal without delaying `ShutdownSend::await_shutdown`.
 
 ## v0.6.3 (2026-01-21)
 
 ### Improvements
 
-* `OnceMap` no longer requires `K: Clone` everywhere.
+* Remove the `K: Clone` bound from `OnceMap` construction and operations.
 
 ## v0.6.2 (2026-01-21)
 
 ### New features
 
-* Implement `once::OnceMap` to run computation only once and store the results in a hash map.
-* `singleflight::Group` now supports custom hashers for keys.
+* Add `once::OnceMap` to coalesce concurrent per-key computations and store completed values in a hash map.
+* Support custom hashers on `singleflight::Group` via `Group::with_hasher`.
 
 ### Improvements
 
-* `singleflight::Group::forget` now accepts any `&Q` where `Q: ?Sized + Hash + Eq` and `K: Borrow<Q>` aligning with standard HashMap's interface.
+* Allow `singleflight::Group::forget` to accept borrowed key forms `&Q` where `K: Borrow<Q>` and `Q: ?Sized + Hash + Eq`.
 
 ## v0.6.1 (2026-01-11)
 
 ### New features
 
-* Implement `singleflight` pattern for deduplicating concurrent requests.
+* Add `singleflight::Group` for coalescing concurrent duplicate requests by key.
 
 ## v0.6.0 (2026-01-04)
 
 ### Breaking changes
 
-* All channel errors are now unified follow the same `[Try](Send|Recv)Error` pattern. ([#98](https://github.com/fast/mea/pull/98))
-* `broadcast::channel` and the related types are moved to one level deeper module `broadcast::overflow`. ([#99](https://github.com/fast/mea/pull/99))
+* Unify channel error types across `oneshot`, `mpsc`, and `broadcast`: `mpsc::{BoundedReceiver, UnboundedReceiver}::recv` now returns `Result<T, mpsc::RecvError>` instead of `Option<T>`, `oneshot::Receiver::try_recv` now returns `Result<T, oneshot::TryRecvError>` instead of `Result<Option<T>, oneshot::RecvError>`, and `oneshot::RecvError` is now an enum with a `Disconnected` variant.
+* Move `broadcast::channel` and its sender, receiver, and error types into `broadcast::overflow`.
 
 ### Improvements
 
-* `oneshot::Sender` and `oneshot::Receiver` now always implement `Debug`.
+* Implement `Debug` unconditionally for `oneshot::Sender<T>`, `oneshot::Receiver<T>`, and `oneshot::Recv<T>` without requiring `T: Debug`.

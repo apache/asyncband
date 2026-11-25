@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A multi-producer multi-consumer broadcast channel with a bounded buffer.
+//! A capacity-limited fan-out channel with multiple senders and receivers.
 //!
-//! This channel supports multiple senders and multiple receivers. Each message sent by any sender
-//! is received by all active receivers. Nothing is ever displaced to make room, so receiving never
-//! reports lag; instead the channel retains at most `capacity` messages and makes producers wait.
+//! Publishing delivers every accepted value to every receiver subscribed at that moment. Older
+//! values are never overwritten to make room, so receiving never reports lag; once retained
+//! messages and held [`Permit`]s reach `capacity`, producers wait for a slot to free.
 //!
 //! # Capacity
 //!
@@ -32,11 +32,15 @@
 //! subscription exerts backpressure" means, and it is the trade a lossless bounded broadcast
 //! makes. Drop a receiver that will not drain, and its backlog is released immediately.
 //!
-//! If no receivers are active the channel retains nothing, so sending never waits.
+//! If no receivers are active the channel retains nothing, so [`BoundedSender::send`] and
+//! [`BoundedSender::try_send`] discard immediately without waiting, while
+//! [`BoundedSender::reserve`] and [`BoundedSender::try_reserve`] still cap held [`Permit`]s at
+//! `capacity`.
 //!
 //! Receiving a value releases the subscription's claim before returning that value; processing
-//! it afterward does not hold capacity. The capacity limit excludes values held by pending `send`
-//! futures and values already handed to application code.
+//! it afterward does not hold capacity. The capacity limit counts retained messages and held
+//! [`Permit`]s; it excludes values held by pending `send` futures and values already handed to
+//! application code.
 //!
 //! # Receivers
 //!
@@ -47,9 +51,10 @@
 //! # Fairness
 //!
 //! Waiting producers are woken as capacity frees, but capacity is not reserved for them: a
-//! producer calling [`BoundedSender::try_send`] can take a slot that a woken producer was about to
-//! use, and that producer then waits again. Publication itself is one indivisible step, so
-//! cancelling a `send` future can never leave a gap in the committed order.
+//! producer calling [`BoundedSender::try_send`] or [`BoundedSender::try_reserve`] can take a slot
+//! that a woken producer was about to use, and that producer then waits again. Publication itself
+//! is one indivisible step, so cancelling a `send` future or dropping a [`Permit`] can never leave
+//! a gap in the committed order.
 //!
 //! # Examples
 //!
@@ -60,16 +65,16 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() {
-//! let (tx, mut rx1) = mpmc::bounded(4);
-//! let mut rx2 = tx.subscribe();
+//! let (publisher, mut audit) = mpmc::bounded(4);
+//! let mut metrics = publisher.subscribe();
 //!
-//! tx.send(10).await;
-//! tx.send(20).await;
+//! publisher.send("started").await;
+//! publisher.send("finished").await;
 //!
-//! assert_eq!(*rx1.recv().await.unwrap(), 10);
-//! assert_eq!(*rx1.recv().await.unwrap(), 20);
-//! assert_eq!(*rx2.recv().await.unwrap(), 10);
-//! assert_eq!(*rx2.recv().await.unwrap(), 20);
+//! assert_eq!(*audit.recv().await.unwrap(), "started");
+//! assert_eq!(*audit.recv().await.unwrap(), "finished");
+//! assert_eq!(*metrics.recv().await.unwrap(), "started");
+//! assert_eq!(*metrics.recv().await.unwrap(), "finished");
 //! # }
 //! ```
 //!
@@ -102,7 +107,6 @@ use std::fmt;
 use std::future::Future;
 use std::future::poll_fn;
 use std::pin::Pin;
-use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -118,8 +122,10 @@ use crate::broadcast::mpmc::error::TryRecvError;
 use crate::broadcast::mpmc::error::TrySendError;
 use crate::internal::arena::SlotId;
 use crate::internal::mutex::Mutex;
-use crate::internal::semaphore::Acquire;
-use crate::internal::semaphore::Semaphore;
+use crate::internal::retry_waiter::RetryWaiter;
+use crate::internal::waitlist::WaitList;
+use crate::internal::waitlist::WaiterId;
+use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerToken;
 
 #[cfg(test)]
@@ -128,9 +134,12 @@ mod tests;
 /// Creates a new broadcast channel that retains at most `capacity` messages.
 ///
 /// Every accepted value stays readable by every receiver that was active when it was accepted.
-/// Once `capacity` messages are retained, [`BoundedSender::send`] waits and
-/// [`BoundedSender::try_send`] reports [`TrySendError::Full`] until the slowest active receiver
-/// consumes a message or is dropped.
+/// While at least one receiver is active, once retained messages and held [`Permit`]s fill
+/// `capacity`, [`BoundedSender::send`] waits and [`BoundedSender::try_send`] reports
+/// [`TrySendError::Full`] until the slowest active receiver frees a message, all receivers are
+/// dropped, or an unused [`Permit`] is dropped. [`BoundedSender::reserve`] and
+/// [`BoundedSender::try_reserve`] enforce the same `capacity` limit even when no receivers are
+/// active, waiting or returning [`TrySendError::Full`] until a slot is freed.
 ///
 /// # Panics
 ///
@@ -152,13 +161,11 @@ pub fn bounded<T>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
         "broadcast bounded channel requires capacity > 0"
     );
 
-    let (inner, key) = Inner::with_first_subscription(Backlog::fixed(capacity));
+    let (inner, key) = Inner::with_first_subscription(Backlog::fixed(capacity), SendQueue::new());
     let shared = Arc::new(Shared {
         inner,
         senders: AtomicUsize::new(1),
         capacity,
-        tx_permits: Semaphore::new(0),
-        blocked_senders: AtomicUsize::new(0),
     });
     let sender = BoundedSender {
         shared: shared.clone(),
@@ -167,65 +174,93 @@ pub fn bounded<T>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     (sender, receiver)
 }
 
+struct SendQueue {
+    reserved: usize,
+    waiters: WaitList<RetryWaiter>,
+}
+
+impl SendQueue {
+    const fn new() -> Self {
+        Self {
+            reserved: 0,
+            waiters: WaitList::new(),
+        }
+    }
+}
+
+impl<T> Inner<T, SendQueue> {
+    #[inline]
+    fn has_capacity(&self, capacity: usize) -> bool {
+        self.log.retained() + self.send_waiters.reserved < capacity
+    }
+}
+
 struct Shared<T> {
-    inner: Mutex<Inner<T>>,
+    inner: Mutex<Inner<T, SendQueue>>,
     /// Number of active senders.
     senders: AtomicUsize,
     /// The logical limit on the retained backlog.
     capacity: usize,
-    /// Producers parked in [`BoundedSender::send`].
-    ///
-    /// A permit here is a wake-up hint, not a reserved slot: a woken producer rechecks the backlog
-    /// and parks again if another producer took the space first. The semaphore starts empty and
-    /// only ever grows when a reclaim finds someone waiting, so an idle channel accumulates none.
-    tx_permits: Semaphore,
-    /// Number of producers in the waiting path of [`BoundedSender::send`].
-    ///
-    /// This upper bound lets receivers skip the semaphore lock when no producer is waiting.
-    blocked_senders: AtomicUsize,
 }
 
-impl<T> Shared<T> {
-    /// Notifies waiting producers after receiving a message or removing a subscription frees
-    /// capacity.
-    ///
-    /// Call with the channel unlocked, before payload cloning or destruction can panic.
-    fn release_reclaimed(&self, freed: usize) {
-        if freed == 0 {
+struct SendWait<'a, T> {
+    shared: &'a Shared<T>,
+    waiter: Option<WaiterId>,
+}
+
+impl<T> Drop for SendWait<'_, T> {
+    fn drop(&mut self) {
+        let Some(id) = self.waiter.take() else {
             return;
+        };
+        let (retired, next_waker) = {
+            let mut inner = self.shared.inner.lock();
+            let retired = inner.send_waiters.waiters.remove(id);
+            // Hand an unconsumed notification to the next producer while capacity remains.
+            let next_waker = if matches!(retired, RetryWaiter::Notified)
+                && inner.has_capacity(self.shared.capacity)
+            {
+                inner.send_waiters.waiters.notify_one()
+            } else {
+                None
+            };
+            (retired, next_waker)
+        };
+        if let Some(waker) = next_waker {
+            waker.wake();
         }
-
-        // Cap permits at the number of blocked producers. Surplus permits make later `send` futures
-        // retry a full channel instead of waiting, especially after dropping a lagging
-        // subscription.
-        let waiting = self.waiting_senders();
-        if waiting > 0 {
-            self.tx_permits.release_if_waiters(freed.min(waiting));
-        }
+        drop(retired);
     }
+}
 
-    /// Wakes every blocked producer when the last subscription leaves.
-    ///
-    /// Sending now discards payloads without consuming capacity, so every producer can proceed.
-    fn release_all(&self) {
-        if self.waiting_senders() > 0 {
-            self.tx_permits.notify_all();
+impl<'a, T> SendWait<'a, T> {
+    fn poll_reserve(&mut self, cx: &mut Context<'_>) -> Poll<Permit<'a, T>> {
+        let mut inner = self.shared.inner.lock();
+        if !inner.has_capacity(self.shared.capacity) {
+            let retired_waker = inner
+                .send_waiters
+                .waiters
+                .register(&mut self.waiter, cx.waker());
+            drop(inner);
+            drop(retired_waker);
+            return Poll::Pending;
         }
-    }
-
-    /// Returns an upper bound on parked producers without locking the semaphore.
-    ///
-    /// Producers increment before rechecking capacity under the channel lock; reclaim paths load
-    /// after releasing it. A producer is either covered by this count or rechecks capacity after
-    /// the reclaim, so skipping or capping notifications cannot strand it.
-    fn waiting_senders(&self) -> usize {
-        self.blocked_senders.load(Ordering::Acquire)
+        let retired_waiter = self
+            .waiter
+            .take()
+            .map(|id| inner.send_waiters.waiters.remove(id));
+        inner.send_waiters.reserved += 1;
+        drop(inner);
+        drop(retired_waiter);
+        Poll::Ready(Permit {
+            shared: Some(self.shared),
+        })
     }
 }
 
 /// The sending side of a bounded broadcast channel.
 ///
-/// The sender can be cloned to create multiple producers. Dropping the final sender disconnects
+/// Cloning this handle adds another producer. Dropping the final sender disconnects
 /// the channel. Each receiver may drain its own buffered messages before observing disconnection.
 pub struct BoundedSender<T> {
     shared: Arc<Shared<T>>,
@@ -233,9 +268,8 @@ pub struct BoundedSender<T> {
 
 impl<T> Clone for BoundedSender<T> {
     fn clone(&self) -> Self {
-        // Relaxed is enough because this count publishes nothing on its own: receivers read it
-        // only to decide whether any sender remains, and every message it could hide is published
-        // under `inner`, which a receiver holds before it observes the count.
+        // Relaxed is enough because borrowing `&self` keeps `senders > 0`; terminal disconnection
+        // synchronizes through the `AcqRel` decrement chain in `Drop`.
         self.shared.senders.fetch_add(1, Ordering::Relaxed);
         Self {
             shared: self.shared.clone(),
@@ -262,17 +296,15 @@ impl<T> Drop for BoundedSender<T> {
 impl<T> BoundedSender<T> {
     /// Broadcasts a value to all active receivers, waiting for capacity if the channel is full.
     ///
-    /// The wait ends when the slowest active receiver consumes a retained message or is dropped.
-    /// If no receivers are active, the message is dropped immediately and this returns without
-    /// waiting.
+    /// The wait ends when the slowest active receiver consumes a retained message, a lagging
+    /// receiver is dropped, or an unused [`Permit`] is dropped. If no receivers are active, the
+    /// message is dropped immediately and this returns without waiting.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// This method is cancel safe in the sense that matters for a lossless log: the value is
-    /// either published to every active receiver or not published at all. Publication happens in
-    /// one indivisible step, so cancelling a `send` future cannot leave a reserved but unfilled
-    /// position in the committed order. Dropping the future before publication drops the unsent
-    /// value.
+    /// Dropping a pending future does not publish the value and drops the unsent input. Publication
+    /// is indivisible: it cannot leave a reserved but unfilled position in the message order. Use
+    /// [`reserve`](Self::reserve) to wait for capacity before constructing a value.
     ///
     /// # Panics
     ///
@@ -286,9 +318,9 @@ impl<T> BoundedSender<T> {
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let (tx, mut rx) = mpmc::bounded(1);
-    /// tx.send(10).await;
-    /// assert_eq!(*rx.recv().await.unwrap(), 10);
+    /// let (publisher, mut receiver) = mpmc::bounded(1);
+    /// publisher.send("ready").await;
+    /// assert_eq!(*receiver.recv().await.unwrap(), "ready");
     /// # }
     /// ```
     pub async fn send(&self, value: T) {
@@ -298,82 +330,106 @@ impl<T> BoundedSender<T> {
         };
 
         struct SendState<'a, T> {
-            sender: &'a BoundedSender<T>,
-            // Declared before `value` so cancellation can wake the next waiting producer before
-            // the payload's destructor runs.
-            acquire: Acquire<'a>,
+            // Declared first so dropping a pending send releases its waiter and wakes any follower
+            // before running `value`'s destructor.
+            wait: SendWait<'a, T>,
             // Boxed once, out of the critical section, and reused by every retry.
             value: Option<Arc<T>>,
         }
 
-        impl<T> Drop for SendState<'_, T> {
-            fn drop(&mut self) {
-                // Runs before the fields, so the count drops while `acquire` is still queued.
-                // That ordering is safe in the direction that matters: the window can only make a
-                // receiver skip a wake-up this producer no longer wants, because the future being
-                // dropped is exactly the one leaving. Every other waiting producer still holds its
-                // own increment, so the count cannot reach zero while one of them needs waking.
-                self.sender
-                    .shared
-                    .blocked_senders
-                    .fetch_sub(1, Ordering::Release);
-            }
-        }
-
         impl<T> SendState<'_, T> {
             fn poll_send(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-                let mut msg = match self.value.take() {
-                    Some(msg) => msg,
-                    None => return Poll::Ready(()),
-                };
-
-                loop {
-                    // Enqueue before rechecking. `release_if_waiters` adds nothing when no
-                    // producer is queued, so a reclaim landing between the recheck and the
-                    // registration would otherwise drop its wake-up and park this producer for
-                    // good. Registering first orders this producer's semaphore acquisition ahead
-                    // of the reclaim's, so either the recheck sees the freed slot or the reclaim
-                    // sees this waiter.
-                    let poll = pin!(&mut self.acquire).poll(cx);
-
-                    msg = match self.sender.try_publish(msg) {
-                        Ok(()) => return Poll::Ready(()),
-                        Err(msg) => msg,
-                    };
-
-                    if poll.is_ready() {
-                        self.acquire = self.sender.shared.tx_permits.acquire(1);
-                    } else {
-                        self.value = Some(msg);
+                let unretained;
+                let retired_waiter;
+                let mut wakers = WakerBatch::new();
+                {
+                    let mut inner = self.wait.shared.inner.lock();
+                    if inner.log.has_receivers() && !inner.has_capacity(self.wait.shared.capacity) {
+                        let retired_waker = inner
+                            .send_waiters
+                            .waiters
+                            .register(&mut self.wait.waiter, cx.waker());
+                        drop(inner);
+                        drop(retired_waker);
                         return Poll::Pending;
                     }
+                    assert!(
+                        self.value.is_some(),
+                        "bounded broadcast send polled after completion"
+                    );
+                    // Retire the waiter only after `publish` succeeds so an overflow unwind leaves
+                    // `self.wait` intact to forward its notification outside the lock.
+                    inner.log.publish(&mut self.value, |msg| msg);
+                    unretained = self.value.take();
+                    retired_waiter = self
+                        .wait
+                        .waiter
+                        .take()
+                        .map(|id| inner.send_waiters.waiters.remove(id));
+                    inner.waiters.drain_into(&mut wakers);
                 }
+                wakers.wake_all();
+                drop(retired_waiter);
+                drop(unretained);
+                Poll::Ready(())
             }
         }
 
-        // Announce this producer before it can recheck capacity, so a concurrent reclaim either
-        // sees it here or is seen by that recheck.
-        self.shared.blocked_senders.fetch_add(1, Ordering::Release);
-        let acquire = self.shared.tx_permits.acquire(1);
         let mut send = SendState {
-            sender: self,
-            acquire,
+            wait: SendWait {
+                shared: &self.shared,
+                waiter: None,
+            },
             value: Some(Arc::new(value)),
         };
         poll_fn(|cx| send.poll_send(cx)).await
     }
 
-    /// Attempts to broadcast a value to all active receivers without waiting.
+    /// Reserves capacity for one message before constructing its value.
     ///
-    /// # Returns
+    /// The returned [`Permit`] holds one capacity slot until it is used with [`Permit::send`] or
+    /// dropped. Holding a permit does not assign a broadcast sequence position: message order is
+    /// established only when [`Permit::send`] commits a value.
     ///
-    /// * `Ok(())`: The value was published, or discarded because no receivers are active.
-    /// * `Err(TrySendError::Full(value))`: The channel already retains `capacity` messages. The
-    ///   value was not published and is returned unchanged.
+    /// # Cancellation
     ///
-    /// # Panics
+    /// Dropping a pending `reserve` future removes its waiter without retaining capacity. If this
+    /// waiter had been notified while capacity remains available, the notification is forwarded to
+    /// the next waiting producer.
     ///
-    /// Panics if the internal message version counter overflows.
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let (publisher, mut receiver) = mpmc::bounded(1);
+    /// let permit = publisher.reserve().await;
+    /// permit.send(String::from("constructed after capacity became available"));
+    /// assert_eq!(
+    ///     *receiver.recv().await.unwrap(),
+    ///     "constructed after capacity became available"
+    /// );
+    /// # }
+    /// ```
+    pub async fn reserve(&self) -> Permit<'_, T> {
+        let mut wait = SendWait {
+            shared: &self.shared,
+            waiter: None,
+        };
+        poll_fn(|cx| wait.poll_reserve(cx)).await
+    }
+
+    /// Reserves capacity for one message without waiting.
+    ///
+    /// Dropping the returned [`Permit`] releases its capacity slot. See [`reserve`](Self::reserve)
+    /// for how reservations interact with publication order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] carrying `()` if retained messages and held permits already
+    /// occupy the channel's full capacity.
     ///
     /// # Examples
     ///
@@ -381,12 +437,52 @@ impl<T> BoundedSender<T> {
     /// use asyncband::broadcast::mpmc;
     /// use asyncband::broadcast::mpmc::TrySendError;
     ///
-    /// let (tx, mut rx) = mpmc::bounded(1);
-    /// tx.try_send(10).unwrap();
-    /// assert_eq!(tx.try_send(20), Err(TrySendError::Full(20)));
+    /// let (publisher, mut receiver) = mpmc::bounded::<i32>(1);
+    /// let permit = publisher.try_reserve().unwrap();
+    /// assert_eq!(publisher.try_reserve().unwrap_err(), TrySendError::Full(()));
     ///
-    /// assert_eq!(*rx.try_recv().unwrap(), 10);
-    /// tx.try_send(20).unwrap();
+    /// permit.send(7);
+    /// assert_eq!(*receiver.try_recv().unwrap(), 7);
+    /// ```
+    pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
+        let mut inner = self.shared.inner.lock();
+        if !inner.has_capacity(self.shared.capacity) {
+            return Err(TrySendError::Full(()));
+        }
+        inner.send_waiters.reserved += 1;
+        Ok(Permit {
+            shared: Some(&self.shared),
+        })
+    }
+
+    /// Broadcasts a value to all active receivers without waiting for capacity.
+    ///
+    /// If no receivers are active, the value is discarded and this returns `Ok(())`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] containing the unsent value if the channel has no capacity.
+    /// The value has not been published.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the channel's message version counter would overflow.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    /// use asyncband::broadcast::mpmc::TrySendError;
+    ///
+    /// let (publisher, mut receiver) = mpmc::bounded(1);
+    /// publisher.try_send("first").unwrap();
+    /// assert_eq!(
+    ///     publisher.try_send("second"),
+    ///     Err(TrySendError::Full("second"))
+    /// );
+    ///
+    /// assert_eq!(*receiver.try_recv().unwrap(), "first");
+    /// publisher.try_send("second").unwrap();
     /// ```
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
         // `Arc::new` runs inside the critical section, but only after the capacity check, so a
@@ -396,47 +492,32 @@ impl<T> BoundedSender<T> {
         // cache already makes it cheap — and it measured slower when producers wait for capacity,
         // because a rejected attempt would then allocate and free once before the `send` future
         // boxes the value for real.
-        self.publish(value, Arc::new).map_err(TrySendError::Full)
-    }
-
-    /// Publishes a message that is already boxed, handing it back if the channel is still full.
-    ///
-    /// This is the retry step of a pending `send` future, which boxes once with the channel
-    /// unlocked and then reuses that `Arc` for every attempt rather than reallocating per
-    /// retry.
-    fn try_publish(&self, msg: Arc<T>) -> Result<(), Arc<T>> {
-        self.publish(msg, |msg| msg)
-    }
-
-    /// Publishes a message for both send paths.
-    ///
-    /// Calls `into_msg` only when retaining the payload, so `try_send` can defer its allocation
-    /// until capacity is available while `try_publish` passes through its existing `Arc`.
-    fn publish<P>(&self, payload: P, into_msg: impl FnOnce(P) -> Arc<T>) -> Result<(), P> {
-        let mut discarded = None;
+        let mut unretained;
         let mut inner = self.shared.inner.lock();
-        if !inner.log.has_receivers() {
-            // Drop the discarded payload after unlocking: its destructor may reenter the channel.
-            inner.log.publish_discarded();
-            discarded = Some(payload);
-        } else if inner.log.retained() == self.shared.capacity {
-            // Leave waiters registered because no message was published.
-            return Err(payload);
-        } else {
-            inner.log.publish_retained(into_msg(payload));
+        // A channel without receivers discards immediately without occupying a backlog slot.
+        if inner.log.has_receivers() && !inner.has_capacity(self.shared.capacity) {
+            return Err(TrySendError::Full(value));
         }
-        let mut wakers = inner.waiters.take_all();
+        unretained = Some(value);
+        inner.log.publish(&mut unretained, Arc::new);
+        if !inner.waiters.is_empty() {
+            let mut wakers = WakerBatch::new();
+            inner.waiters.drain_into(&mut wakers);
+            drop(inner);
+            wakers.wake_all();
+            drop(unretained);
+            return Ok(());
+        }
         drop(inner);
-        wakers.wake_all();
-        drop(discarded);
+        drop(unretained);
         Ok(())
     }
 
     /// Returns the number of messages currently retained by the channel.
     ///
     /// This is not the number of messages any single receiver can still read. It is the shared
-    /// backlog kept alive by the slowest active receiver, and it is what this channel measures
-    /// against its [`capacity`](BoundedSender::capacity).
+    /// backlog kept alive by the slowest active receiver; held [`Permit`]s are not included here,
+    /// though they also occupy [`capacity`](BoundedSender::capacity).
     ///
     /// The returned value is an instantaneous snapshot. It is suitable for diagnostics and soft
     /// flow-control decisions, but other tasks may change it immediately by sending or receiving.
@@ -446,35 +527,37 @@ impl<T> BoundedSender<T> {
     /// ```
     /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.try_send(10).unwrap();
-    /// assert_eq!(tx.retained_message_count(), 1);
+    /// let (publisher, mut receiver) = mpmc::bounded(4);
+    /// publisher.try_send("pending").unwrap();
+    /// assert_eq!(publisher.retained_message_count(), 1);
     ///
-    /// assert_eq!(*rx.try_recv().unwrap(), 10);
-    /// assert_eq!(tx.retained_message_count(), 0);
+    /// assert_eq!(*receiver.try_recv().unwrap(), "pending");
+    /// assert_eq!(publisher.retained_message_count(), 0);
     /// ```
     pub fn retained_message_count(&self) -> usize {
         self.shared.inner.lock().log.retained()
     }
 
-    /// Returns the number of messages this channel retains before producers wait.
+    /// Returns the maximum number of retained messages and held [`Permit`]s this channel allows
+    /// before producers wait.
     ///
-    /// This is the value passed to [`bounded`] and never changes. Pair it with
-    /// [`retained_message_count`](BoundedSender::retained_message_count) to compute headroom.
+    /// This is the value passed to [`bounded`] and never changes. Both
+    /// [`retained_message_count`](BoundedSender::retained_message_count) and outstanding
+    /// [`Permit`]s count against this limit.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, _rx) = mpmc::bounded::<i32>(8);
-    /// assert_eq!(tx.capacity(), 8);
+    /// let (publisher, _receiver) = mpmc::bounded::<i32>(8);
+    /// assert_eq!(publisher.capacity(), 8);
     /// ```
     pub fn capacity(&self) -> usize {
         self.shared.capacity
     }
 
-    /// Creates a new receiver that starts receiving messages from the current tail of the channel.
+    /// Subscribes a new receiver for values published from this point forward.
     ///
     /// Subscribing never consumes capacity: the new cursor starts at the tail, so it retains
     /// nothing that was not already retained.
@@ -487,13 +570,13 @@ impl<T> BoundedSender<T> {
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let (tx, _rx) = mpmc::bounded(4);
-    /// tx.send(10).await;
+    /// let (publisher, _initial) = mpmc::bounded(4);
+    /// publisher.send("earlier").await;
     ///
-    /// let mut rx = tx.subscribe();
-    /// assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
-    /// tx.send(20).await;
-    /// assert_eq!(*rx.recv().await.unwrap(), 20);
+    /// let mut late = publisher.subscribe();
+    /// assert_eq!(late.try_recv(), Err(TryRecvError::Empty));
+    /// publisher.send("later").await;
+    /// assert_eq!(*late.recv().await.unwrap(), "later");
     /// # }
     /// ```
     #[must_use = "the receiver is dropped immediately if it is not retained"]
@@ -524,42 +607,43 @@ impl<T> fmt::Debug for BoundedReceiver<T> {
 
 impl<T> Drop for BoundedReceiver<T> {
     fn drop(&mut self) {
-        let (reclaimed, drained_last) = {
+        let mut wakers = WakerBatch::new();
+        let reclaimed = {
             let mut inner = self.shared.inner.lock();
             let reclaimed = inner.log.remove_receiver(self.key);
-            let drained_last = !inner.log.has_receivers();
-            (reclaimed, drained_last)
+            if !inner.log.has_receivers() {
+                inner.send_waiters.waiters.notify_all(&mut wakers);
+            } else {
+                inner
+                    .send_waiters
+                    .waiters
+                    .notify_up_to(reclaimed.len(), &mut wakers);
+            }
+            reclaimed
         };
 
-        if drained_last {
-            self.shared.release_all();
-        } else {
-            self.shared.release_reclaimed(reclaimed.len());
-        }
-
-        // Payload destructors run last, and unlocked.
+        // Wake producers before payload destructors can panic, and run both unlocked.
+        wakers.wake_all();
         drop(reclaimed);
     }
 }
 
 impl<T> BoundedReceiver<T> {
-    /// Receives the next value for this receiver as the channel's shared `Arc<T>`.
+    /// Waits for this receiver's next value and returns the channel's shared `Arc<T>`.
     ///
     /// Receiving never clones `T`. The `Arc` outlives the message's stay in the backlog: a
     /// caller that keeps it keeps the payload alive but holds no capacity. Use
     /// [`recv_cloned`](BoundedReceiver::recv_cloned) to take an owned value instead.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// * `Ok(Arc<T>)`: The next message.
-    /// * `Err(RecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
+    /// Returns [`RecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Dropping a pending `recv` future leaves this receiver's cursor unchanged. A subsequent
-    /// `recv` future can still return the same next value, so these futures may safely be raced
-    /// with other futures in a selection construct.
+    /// Dropping a pending future leaves this receiver's cursor unchanged, so a subsequent receive
+    /// observes the same next value.
     ///
     /// # Examples
     ///
@@ -568,33 +652,35 @@ impl<T> BoundedReceiver<T> {
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.send(10).await;
-    /// assert_eq!(*rx.recv().await.unwrap(), 10);
+    /// let (publisher, mut receiver) = mpmc::bounded(4);
+    /// publisher.send("ready").await;
+    /// assert_eq!(*receiver.recv().await.unwrap(), "ready");
     /// # }
     /// ```
     pub async fn recv(&mut self) -> Result<Arc<T>, RecvError> {
         Ok(self.wait_next().await?.msg)
     }
 
-    /// Receives the next value for this receiver as an owned `T`.
+    /// Waits for this receiver's next value and returns it as an owned `T`.
     ///
     /// The payload is moved out of the channel without cloning when this read reclaims the message
     /// and nothing else still refers to it, such as an `Arc` kept from a shared receive or another
-    /// receiver's clone still in progress. Otherwise it is cloned with the channel unlocked. If
-    /// `T::clone` panics, this receiver has still advanced past the value.
+    /// receiver's clone still in progress. Otherwise it is cloned with the channel unlocked.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// * `Ok(T)`: The next message.
-    /// * `Err(RecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
+    /// Returns [`RecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Dropping a pending `recv_cloned` future leaves this receiver's cursor unchanged. A
-    /// subsequent receive can still return the same next value, so these futures may safely be
-    /// raced with other futures in a selection construct.
+    /// Dropping a pending future leaves this receiver's cursor unchanged, so a subsequent receive
+    /// observes the same next value.
+    ///
+    /// # Panics
+    ///
+    /// If `T::clone` panics, this receiver has already advanced past the message. Retrying
+    /// receives a later message rather than the one whose clone panicked.
     ///
     /// # Examples
     ///
@@ -603,9 +689,9 @@ impl<T> BoundedReceiver<T> {
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.send(String::from("owned")).await;
-    /// assert_eq!(rx.recv_cloned().await, Ok(String::from("owned")));
+    /// let (publisher, mut receiver) = mpmc::bounded(4);
+    /// publisher.send(String::from("owned")).await;
+    /// assert_eq!(receiver.recv_cloned().await, Ok(String::from("owned")));
     /// # }
     /// ```
     pub async fn recv_cloned(&mut self) -> Result<T, RecvError>
@@ -616,52 +702,56 @@ impl<T> BoundedReceiver<T> {
         Ok(common::take_msg(received))
     }
 
-    /// Attempts to receive the next value for this receiver without blocking, as the channel's
-    /// shared `Arc<T>`.
+    /// Attempts to take this receiver's next value without waiting, as the channel's shared
+    /// `Arc<T>`.
     ///
     /// See [`recv`](BoundedReceiver::recv) for what keeping the `Arc` means, and
     /// [`try_recv_cloned`](BoundedReceiver::try_recv_cloned) to take an owned value instead.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// * `Ok(Arc<T>)`: The next message.
-    /// * `Err(TryRecvError::Empty)`: No message is currently available.
-    /// * `Err(TryRecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
+    /// Returns [`TryRecvError::Empty`] when no message is available but a sender remains.
+    /// Returns [`TryRecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.try_send(10).unwrap();
-    /// assert_eq!(*rx.try_recv().unwrap(), 10);
+    /// let (publisher, mut receiver) = mpmc::bounded(4);
+    /// publisher.try_send("ready").unwrap();
+    /// assert_eq!(*receiver.try_recv().unwrap(), "ready");
     /// ```
     pub fn try_recv(&mut self) -> Result<Arc<T>, TryRecvError> {
         Ok(self.receive_released()?.msg)
     }
 
-    /// Attempts to receive the next value for this receiver without blocking, as an owned `T`.
+    /// Attempts to take this receiver's next value without waiting and returns it as an owned
+    /// `T`.
     ///
     /// See [`recv_cloned`](BoundedReceiver::recv_cloned) for when the payload is moved out rather
     /// than cloned.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// * `Ok(T)`: The next message.
-    /// * `Err(TryRecvError::Empty)`: No message is currently available.
-    /// * `Err(TryRecvError::Disconnected)`: All senders have been dropped and this receiver has no
-    ///   remaining messages.
+    /// Returns [`TryRecvError::Empty`] when no message is available but a sender remains.
+    /// Returns [`TryRecvError::Disconnected`] once all senders have been dropped and this
+    /// receiver has consumed its remaining messages.
+    ///
+    /// # Panics
+    ///
+    /// If `T::clone` panics, this receiver has already advanced past the message. Retrying
+    /// receives a later message rather than the one whose clone panicked.
     ///
     /// # Examples
     ///
     /// ```
     /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.try_send(String::from("owned")).unwrap();
-    /// assert_eq!(rx.try_recv_cloned(), Ok(String::from("owned")));
+    /// let (publisher, mut receiver) = mpmc::bounded(4);
+    /// publisher.try_send(String::from("owned")).unwrap();
+    /// assert_eq!(receiver.try_recv_cloned(), Ok(String::from("owned")));
     /// ```
     pub fn try_recv_cloned(&mut self) -> Result<T, TryRecvError>
     where
@@ -678,15 +768,19 @@ impl<T> BoundedReceiver<T> {
     /// was released, a waiting producer would be stalled permanently. The `Recv` future orders its
     /// poll the same way.
     fn receive_released(&mut self) -> Result<Received<T>, TryRecvError> {
-        let received = common::try_receive(&self.shared.inner, &self.shared.senders, self.key)?;
+        let mut inner = self.shared.inner.lock();
+        let received = inner.try_receive(&self.shared.senders, self.key)?;
         if received.reclaimed {
-            self.shared.release_reclaimed(1);
+            if let Some(waker) = inner.send_waiters.waiters.notify_one() {
+                drop(inner);
+                waker.wake();
+                return Ok(received);
+            }
         }
         Ok(received)
     }
 
-    /// Re-subscribes to the channel, returning a new receiver that starts receiving messages from
-    /// the *current* tail of the channel.
+    /// Creates a new subscription positioned after all values already published to the channel.
     ///
     /// The new receiver skips every value already published, including the latest retained value.
     /// The original receiver is unchanged and continues to retain its own backlog until it
@@ -697,14 +791,14 @@ impl<T> BoundedReceiver<T> {
     /// ```
     /// use asyncband::broadcast::mpmc;
     ///
-    /// let (tx, mut rx) = mpmc::bounded(4);
-    /// tx.try_send(1).unwrap();
-    /// tx.try_send(2).unwrap();
+    /// let (publisher, mut original) = mpmc::bounded(4);
+    /// publisher.try_send("first").unwrap();
+    /// publisher.try_send("second").unwrap();
     ///
-    /// let mut rx2 = rx.resubscribe();
-    /// tx.try_send(3).unwrap();
+    /// let mut fresh = original.resubscribe();
+    /// publisher.try_send("third").unwrap();
     ///
-    /// assert_eq!(*rx2.try_recv().unwrap(), 3);
+    /// assert_eq!(*fresh.try_recv().unwrap(), "third");
     /// ```
     #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn resubscribe(&self) -> Self {
@@ -743,6 +837,55 @@ impl<T> BoundedReceiver<T> {
         self.shared.inner.lock().log.unread(self.key)
     }
 
+    /// Returns `true` if all senders have been dropped.
+    ///
+    /// Unread messages buffered for this receiver remain available after disconnection, so
+    /// [`recv`](Self::recv) and [`try_recv`](Self::try_recv) report disconnection only once this
+    /// receiver has drained its remaining backlog. A `false` result can become outdated immediately
+    /// if the last sender is dropped concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    ///
+    /// let (tx, mut rx) = mpmc::bounded(2);
+    /// tx.try_send(1).unwrap();
+    /// assert!(!rx.is_disconnected());
+    ///
+    /// drop(tx);
+    /// assert!(rx.is_disconnected());
+    /// assert_eq!(*rx.try_recv().unwrap(), 1);
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        self.shared.senders.load(Ordering::Acquire) == 0
+    }
+
+    /// Returns `true` if this receiver has no unread messages waiting in the backlog.
+    ///
+    /// Messages already consumed by this receiver that remain retained for slower receivers do not
+    /// count, nor do held [`Permit`]s or sends waiting for capacity. The result is an instantaneous
+    /// snapshot and may become stale as other tasks publish.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    ///
+    /// let (tx, mut fast) = mpmc::bounded(2);
+    /// let _slow = tx.subscribe();
+    /// assert!(fast.is_empty());
+    ///
+    /// tx.try_send(10).unwrap();
+    /// assert!(!fast.is_empty());
+    ///
+    /// assert_eq!(*fast.try_recv().unwrap(), 10);
+    /// assert!(fast.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.unread_message_count() == 0
+    }
+
     fn wait_next(&mut self) -> Recv<'_, T> {
         Recv {
             receiver: self,
@@ -778,24 +921,108 @@ impl<T> Future for Recv<'_, T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self { receiver, token } = self.get_mut();
 
-        let received = match common::poll_receive(
-            &receiver.shared.inner,
-            &receiver.shared.senders,
-            receiver.key,
-            token,
-            cx,
-        ) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-            Poll::Ready(Ok(received)) => received,
+        // Notify a waiting producer before handing out the payload, for the same reason as
+        // `receive_released`: a panicking `T::clone` or `T::drop` in `take_msg` must not strand
+        // producers waiting for the reclaimed slot.
+        let (poll, retired_waker, sender_waker) = {
+            let mut inner = receiver.shared.inner.lock();
+            let (poll, retired_waker) =
+                inner.poll_receive(&receiver.shared.senders, receiver.key, token, cx);
+            let sender_waker = match &poll {
+                Poll::Ready(Ok(received)) if received.reclaimed => {
+                    inner.send_waiters.waiters.notify_one()
+                }
+                _ => None,
+            };
+            (poll, retired_waker, sender_waker)
         };
-
-        // Release before handing out the payload, for the same reason as `receive_released`: a
-        // panicking `T::clone` or `T::drop` in `take_msg` must not strand producers waiting for
-        // the reclaimed slot.
-        if received.reclaimed {
-            receiver.shared.release_reclaimed(1);
+        drop(retired_waker);
+        if let Some(waker) = sender_waker {
+            waker.wake();
         }
-        Poll::Ready(Ok(received))
+        poll
+    }
+}
+
+/// Capacity reserved for one message on a bounded broadcast channel.
+///
+/// Created by [`BoundedSender::reserve`] or [`BoundedSender::try_reserve`]. Holding a permit
+/// counts one slot against the channel's [`capacity`](BoundedSender::capacity) without assigning a
+/// message position in the broadcast sequence. Dropping the permit without sending releases that
+/// slot and notifies a waiting producer.
+#[must_use = "dropping the permit releases its reserved capacity"]
+pub struct Permit<'a, T> {
+    shared: Option<&'a Shared<T>>,
+}
+
+impl<T> fmt::Debug for Permit<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Permit").finish_non_exhaustive()
+    }
+}
+
+impl<T> Permit<'_, T> {
+    /// Broadcasts `value` to all active receivers using this reserved capacity without waiting.
+    ///
+    /// If no receivers are active when this method is called, `value` is discarded immediately and
+    /// the freed capacity notifies a waiting producer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the channel has already published `u64::MAX` messages. On panic, `value` is
+    /// dropped outside the channel lock and this permit's reserved capacity is released.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::broadcast::mpmc;
+    ///
+    /// let (publisher, mut receiver) = mpmc::bounded(1);
+    /// let permit = publisher.try_reserve().unwrap();
+    /// permit.send("published");
+    /// assert_eq!(*receiver.try_recv().unwrap(), "published");
+    /// ```
+    pub fn send(self, value: T) {
+        // Bind `unretained` before `this` so on an overflow unwind `this` drops first, releasing
+        // the reserved slot and waking any waiting producer before `value`'s destructor runs.
+        let mut unretained = Some(value);
+        let mut this = self;
+        let shared = this
+            .shared
+            .expect("broadcast permit must hold a channel reference");
+        let mut inner = shared.inner.lock();
+        inner.log.publish(&mut unretained, Arc::new);
+        this.shared = None;
+        inner.send_waiters.reserved -= 1;
+        let sender_waker = if !inner.log.has_receivers() {
+            inner.send_waiters.waiters.notify_one()
+        } else {
+            None
+        };
+        let receiver_wakers = (!inner.waiters.is_empty()).then(|| inner.waiters.take_all());
+        drop(inner);
+        if let Some(waker) = sender_waker {
+            waker.wake();
+        }
+        if let Some(mut wakers) = receiver_wakers {
+            wakers.wake_all();
+        }
+        drop(unretained);
+    }
+}
+
+impl<T> Drop for Permit<'_, T> {
+    fn drop(&mut self) {
+        let Some(shared) = self.shared.take() else {
+            return;
+        };
+        let next_waker = {
+            let mut inner = shared.inner.lock();
+            inner.send_waiters.reserved -= 1;
+            inner.send_waiters.waiters.notify_one()
+        };
+        if let Some(waker) = next_waker {
+            waker.wake();
+        }
     }
 }

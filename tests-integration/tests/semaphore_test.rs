@@ -35,16 +35,20 @@ use tests_integration::expect_ready;
 use tests_integration::poll_with;
 
 #[test]
-fn try_acquire() {
-    let sem = Semaphore::new(1);
-    {
-        let p1 = sem.try_acquire(1);
-        assert!(p1.is_some());
-        let p2 = sem.try_acquire(1);
-        assert!(p2.is_none());
-    }
-    let p3 = sem.try_acquire(1);
-    assert!(p3.is_some());
+fn try_acquire_tracks_held_and_dropped_permits() {
+    let semaphore = Semaphore::new(2);
+    let first = semaphore.try_acquire(1).unwrap();
+    assert_eq!(semaphore.available_permits(), 1);
+    assert!(semaphore.try_acquire(2).is_none());
+
+    let second = semaphore.try_acquire(1).unwrap();
+    assert_eq!(semaphore.available_permits(), 0);
+    assert!(semaphore.try_acquire(1).is_none());
+
+    drop(first);
+    assert_eq!(semaphore.available_permits(), 1);
+    drop(second);
+    assert_eq!(semaphore.available_permits(), 2);
 }
 
 #[test]
@@ -64,16 +68,17 @@ fn released_permit_wakes_a_pending_acquire() {
 }
 
 #[test]
-fn forget() {
-    let sem = Arc::new(Semaphore::new(1));
-    {
-        let p = sem.try_acquire(1).unwrap();
-        assert_eq!(sem.available_permits(), 0);
-        p.forget();
-        assert_eq!(sem.available_permits(), 0);
-    }
-    assert_eq!(sem.available_permits(), 0);
-    assert!(sem.try_acquire(1).is_none());
+fn forgetting_a_permit_permanently_consumes_capacity() {
+    let semaphore = Semaphore::new(2);
+    let held = semaphore.try_acquire(2).unwrap();
+    assert_eq!(semaphore.available_permits(), 0);
+
+    held.forget();
+    assert_eq!(semaphore.available_permits(), 0);
+    assert!(semaphore.try_acquire(1).is_none());
+
+    semaphore.release(1);
+    assert_eq!(semaphore.available_permits(), 1);
 }
 
 #[test]
@@ -135,40 +140,40 @@ fn merge_overflow_panics_without_losing_owned_permits() {
 }
 
 #[test]
-fn acquire_then_drop() {
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
+fn dropping_pending_acquire_preserves_subsequent_releases() {
+    let semaphore = Semaphore::new(1);
+    let held = semaphore.try_acquire(1).unwrap();
+    let (waker, wakes) = WakeCounter::new();
 
-    let s = Semaphore::new(1);
-    let p1 = s.try_acquire(1).unwrap();
     {
-        let p2 = s.acquire(1);
-        let poll = pin!(p2).poll(&mut context);
-        assert!(poll.is_pending());
+        let mut waiter = pin!(semaphore.acquire(1));
+        assert!(poll_with(waiter.as_mut(), &waker).is_pending());
     }
-    drop(p1);
-    assert_eq!(s.available_permits(), 1);
+
+    drop(held);
+    assert_eq!(wakes.count(), 0);
+    assert_eq!(semaphore.available_permits(), 1);
 }
 
 #[test]
-fn wake_then_drop() {
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
+fn dropping_notified_waiters_returns_assigned_permits() {
+    let semaphore = Semaphore::new(2);
+    let held = semaphore.try_acquire(2).unwrap();
+    let (waker1, wakes1) = WakeCounter::new();
+    let (waker2, wakes2) = WakeCounter::new();
 
-    let s = Semaphore::new(2);
-    let p1 = s.try_acquire(2).unwrap();
-    {
-        let p2 = s.acquire(1);
-        let p2 = pin!(p2);
-        assert!(p2.poll(&mut context).is_pending());
-        {
-            let p3 = s.acquire(1);
-            let p3 = pin!(p3);
-            assert!(p3.poll(&mut context).is_pending());
-            drop(p1);
-        }
-    }
-    assert_eq!(s.available_permits(), 2);
+    let mut first = Box::pin(semaphore.acquire(1));
+    let mut second = Box::pin(semaphore.acquire(1));
+    assert!(poll_with(first.as_mut(), &waker1).is_pending());
+    assert!(poll_with(second.as_mut(), &waker2).is_pending());
+
+    drop(held);
+    assert_eq!(wakes1.count(), 1);
+    assert_eq!(wakes2.count(), 1);
+
+    drop(second);
+    drop(first);
+    assert_eq!(semaphore.available_permits(), 2);
 }
 
 #[test]

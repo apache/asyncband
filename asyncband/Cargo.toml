@@ -17,10 +17,10 @@
 
 [package]
 name = "asyncband"
-version = "0.7.4"
+version = "0.8.1"
 
 categories = ["asynchronous", "concurrency"]
-description = "Composable, runtime-agnostic concurrency building blocks for async Rust."
+description = "Apache Asyncband™: Composable, runtime-agnostic concurrency building blocks for async Rust."
 documentation = "https://docs.rs/asyncband"
 keywords = [
   "async",

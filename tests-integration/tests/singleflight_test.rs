@@ -26,8 +26,11 @@ use std::sync::atomic::Ordering;
 use std::task::Poll;
 
 use asyncband::singleflight::Group;
+use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
+use tests_integration::poll_with;
 use tokio::sync::oneshot;
 
 #[tokio::test]
@@ -253,4 +256,35 @@ fn duplicate_key_destructor_can_forget_another_key() {
             assert_eq!(poll_once(duplicate.as_mut()), Poll::Ready("leader"));
         }
     });
+}
+
+#[test]
+fn completed_leader_wakes_trailing_follower_while_head_follower_stays_paused() {
+    let group = Group::new();
+    let (release_tx, release_rx) = oneshot::channel();
+    let mut leader = pin!(group.work("key", async || {
+        release_rx.await.unwrap();
+        "shared"
+    }));
+    let mut paused_follower = std::pin::pin!(group.work("key", async || unreachable!()));
+    let mut trailing_follower = pin!(group.work("key", async || unreachable!()));
+    let (paused_waker, paused_wakes) = WakeCounter::new();
+    let (trailing_waker, trailing_wakes) = WakeCounter::new();
+
+    assert!(poll_once(leader.as_mut()).is_pending());
+    assert!(poll_with(paused_follower.as_mut(), &paused_waker).is_pending());
+    assert!(poll_with(trailing_follower.as_mut(), &trailing_waker).is_pending());
+
+    release_tx.send(()).unwrap();
+    assert_eq!(expect_ready(poll_once(leader.as_mut())), "shared");
+    assert_eq!(paused_wakes.count(), 1);
+    assert_eq!(trailing_wakes.count(), 1);
+    assert_eq!(
+        expect_ready(poll_with(trailing_follower.as_mut(), &trailing_waker)),
+        "shared"
+    );
+    assert_eq!(
+        expect_ready(poll_with(paused_follower.as_mut(), &paused_waker)),
+        "shared"
+    );
 }

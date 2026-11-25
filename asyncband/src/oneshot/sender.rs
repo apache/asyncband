@@ -40,7 +40,7 @@ use crate::oneshot::Receiver;
 use crate::oneshot::deallocate_empty_channel;
 use crate::oneshot::drop_message_and_deallocate_channel;
 
-/// Sends a value to the associated [`Receiver`].
+/// The sending half of a [`oneshot`](crate::oneshot) channel.
 pub struct Sender<T> {
     channel_ptr: NonNull<Channel<T>>,
 }
@@ -55,8 +55,11 @@ unsafe impl<T: Send> Send for Sender<T> {}
 unsafe impl<T: Sync> Sync for Sender<T> {}
 
 impl<T> Sender<T> {
-    /// Attempts to send a value on this channel, returning an error containing the message if it
-    /// could not be sent.
+    /// Sends `message` to the paired [`Receiver`], consuming this sender.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError`] containing the unsent message if the receiver has been dropped.
     pub fn send(self, message: T) -> Result<(), SendError<T>> {
         // `send` takes over endpoint cleanup, so `Sender::drop` must not run afterward.
         let sender = ManuallyDrop::new(self);
@@ -67,57 +70,43 @@ impl<T> Sender<T> {
         // receiver cancellation transfers allocation cleanup to this sender.
         let channel = unsafe { channel_ptr.as_ref() };
 
-        // Write the message into the channel on the heap.
-        //
-        // SAFETY: The receiver only ever accesses this memory location if we are in the MESSAGE
-        // state, and since we are responsible for setting that state, we can guarantee that we have
-        // exclusive access to this memory location to perform this write.
+        // SAFETY: `message` is only read after `MESSAGE` is published via the atomic transition
+        // below, giving the sender exclusive write access here.
         unsafe { channel.write_message(message) };
 
-        // Publish the message directly, or begin awakening a receiving task:
+        // Publish the message directly, or take ownership of waking a parked receiver:
         //
-        // * EMPTY + 1 = MESSAGE
-        // * RECEIVING + 1 = AWAKING
-        // * DISCONNECTED + 1 = EMPTY (invalid), however this state is never observed
+        // * `EMPTY + 1 = MESSAGE`
+        // * `RECEIVING + 1 = AWAKING`
         //
-        // ORDERING: Release publishes the message directly for EMPTY-to-MESSAGE and orders it
-        // before the waiting path's final publication. The RMW's load half is Relaxed, so
-        // branches that consume receiver-published resources use an Acquire fence.
+        // ORDERING: `Release` publishes the initialized message on `EMPTY -> MESSAGE` and orders it
+        // before the `AWAKING` handoff's final publication. Branches that inspect receiver-side
+        // state acquire below.
         match channel.state.fetch_add(1, Ordering::Release) {
-            // The receiver is alive and has not started waiting. Send done.
+            // Receiver has not registered a waker yet; it will read and drop the payload.
             EMPTY => Ok(()),
-            // The receiver is waiting. Wake it up so it can return the message.
+            // Receiver is parked; extract its waker and finalize the state transition.
             RECEIVING => {
-                // SAFETY: fetch_add observed RECEIVING and changed it to AWAKING, transferring
-                // exclusive ownership of the published waker to this sender. The message was
-                // initialized before the RMW and is ready to publish.
+                // SAFETY: Observing `RECEIVING` and setting `AWAKING` transferred exclusive waker
+                // ownership to this sender; `message` was initialized before the RMW.
                 let (waker, receiver_owns_allocation) =
                     unsafe { Channel::finish_sender_awakening(channel_ptr, MESSAGE) };
                 if receiver_owns_allocation {
                     waker.wake();
                 } else {
-                    // Sending still succeeds because this sender owned the waker before the
-                    // receiving future was cancelled.
+                    // Send succeeded before receiver cancellation transitioned out of `AWAKING`.
                     //
-                    // SAFETY: Receiver cancellation transferred message and allocation cleanup to
-                    // this sender. The original pointer provenance may therefore be reclaimed as a
-                    // Box; the message is initialized and the waker has been moved out.
+                    // SAFETY: Cancellation transferred allocation cleanup to this sender. The
+                    // waker was moved out and the message slot is initialized.
                     unsafe { drop_message_and_deallocate_channel(channel_ptr) };
                 }
                 Ok(())
             }
-            // The receiver was already dropped. The error is responsible for freeing the channel.
+            // Receiver already disconnected; return the unsent message inside `SendError`.
             //
-            // SAFETY: The acquire fence in this arm synchronizes with the receiver's write of the
-            // DISCONNECTED state. Since the receiver will no longer access `channel_ptr`, the error
-            // takes exclusive ownership of the channel's resources.
-            // Moreover, since we just placed the message in the channel, the channel contains a
-            // valid message.
+            // SAFETY: The `Acquire` fence pairs with receiver disconnection so this endpoint now
+            // owns the channel allocation and its initialized message exclusively.
             DISCONNECTED => {
-                // ORDERING: The RMW read DISCONNECTED from the receiver's Release-ordered drop
-                // transition.
-                // This Acquire completes the ownership handoff before SendError accesses the
-                // allocation.
                 fence(Ordering::Acquire);
                 Err(SendError { channel_ptr })
             }
@@ -125,23 +114,16 @@ impl<T> Sender<T> {
         }
     }
 
-    /// Returns `true` if the channel is disconnected.
+    /// Reports whether the paired [`Receiver`] has already been dropped.
     ///
-    /// This occurs when the receiver is dropped.
-    ///
-    /// If `true` is returned, a future call to [`send`](Sender::send) is guaranteed to return an
-    /// error.
+    /// When this returns `true`, a later call to [`send`](Sender::send) is guaranteed to fail with
+    /// [`SendError`]. A `false` result does not prevent the receiver from dropping concurrently.
     pub fn is_disconnected(&self) -> bool {
-        // SAFETY: The channel exists on the heap for the entire duration of this method, and we
-        // only ever acquire shared references to it. Dropping the receiver does not immediately
-        // free the channel.
+        // SAFETY: While `self` is live, dropping the receiver never frees the channel allocation.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
-        // ORDERING: Relaxed is sufficient for the method's contract: if this returns true, a
-        // future call to `send` is guaranteed to return an error.
-        //
-        // Once true has been observed, it will remain true. However, if false is observed, the
-        // receiver might just have been dropped without this thread observing it yet.
+        // ORDERING: `DISCONNECTED` is terminal, so `Relaxed` suffices to observe permanent
+        // disconnection; `false` makes no synchronization guarantee against concurrent drops.
         matches!(channel.state.load(Ordering::Relaxed), DISCONNECTED)
     }
 
@@ -152,58 +134,41 @@ impl<T> Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        // SAFETY: The receiver only ever frees the channel if we are in the MESSAGE or
-        // DISCONNECTED states.
-        //
-        // * If we are in the MESSAGE state, then `send` suppressed `Sender::drop`, so we should not
-        //   be in this function call.
-        // * If we are in the DISCONNECTED state, then the receiver either received the message,
-        //   making this statement unreachable, or was dropped and observed that our side was still
-        //   alive, and thus didn't free the channel.
-        // Publishing DISCONNECTED can let the receiver reclaim the allocation; no channel access
-        // may follow unless receiver cancellation transfers allocation cleanup to this sender.
+        // SAFETY: While `Sender::drop` runs, neither `MESSAGE` (blocked by `ManuallyDrop` in
+        // `send`) nor receiver-reclaimed `DISCONNECTED` can have freed the allocation. No channel
+        // access may follow publishing `DISCONNECTED` unless receiver cancellation hands cleanup
+        // back to this sender.
         let channel = unsafe { self.channel_ptr.as_ref() };
 
-        // Publish the channel's disconnected state directly, or begin awakening a receiving task:
+        // Publish disconnection directly, or take ownership of waking a parked receiver:
         //
-        // * EMPTY ^ 001 = DISCONNECTED
-        // * RECEIVING ^ 001 = AWAKING
-        // * DISCONNECTED ^ 001 = EMPTY (invalid), but this state is never observed
+        // * `EMPTY ^ 0b001 = DISCONNECTED`
+        // * `RECEIVING ^ 0b001 = AWAKING`
         //
-        // ORDERING: Release publishes the disconnected state and orders it before the waiting
-        // path's final publication. The RMW's load half is Relaxed, so branches that consume
-        // receiver-published resources use an Acquire fence.
+        // ORDERING: `Release` publishes the sender's drop before any waiting handoff; branches that
+        // reclaim resources acquire below.
         match channel.state.fetch_xor(0b001, Ordering::Release) {
-            // The receiver is not waiting, nor is it dropped. The receiver is responsible for
-            // deallocating the channel.
+            // Receiver is alive without a waker and will reclaim the empty channel.
             EMPTY => {}
-            // The receiver is waiting. Wake it up so it can detect that the channel disconnected.
+            // Receiver is parked; extract its waker and finalize disconnection.
             RECEIVING => {
-                // SAFETY: fetch_xor observed RECEIVING and changed it to AWAKING, transferring
-                // exclusive ownership of the published waker to this sender. Sender::drop has no
-                // message to publish.
+                // SAFETY: Observing `RECEIVING` and setting `AWAKING` transferred exclusive waker
+                // ownership; no message was written.
                 let (waker, receiver_owns_allocation) =
                     unsafe { Channel::finish_sender_awakening(self.channel_ptr, DISCONNECTED) };
                 if receiver_owns_allocation {
                     waker.wake();
                 } else {
-                    // SAFETY: Receiver cancellation transferred allocation cleanup to this sender.
-                    // Both slots are uninitialized, and the original pointer provenance may be
-                    // reclaimed as a Box.
+                    // SAFETY: Cancellation transferred cleanup; both payload and waker slots are
+                    // empty.
                     unsafe { deallocate_empty_channel(self.channel_ptr) };
                 }
             }
-            // The receiver was already dropped. We are responsible for freeing the channel.
+            // Receiver already disconnected and observed this live sender; reclaim the allocation.
             DISCONNECTED => {
-                // ORDERING: The RMW read DISCONNECTED from the receiver's Release-ordered drop
-                // transition.
-                // Acquire makes all preceding receiver accesses happen before deallocation.
+                // ORDERING: Pairs with the receiver's `Release` drop before freeing the channel.
                 fence(Ordering::Acquire);
-                // SAFETY: when the receiver switches the state to DISCONNECTED they have received
-                // the message or will no longer be trying to receive the message, and have
-                // observed that the sender is still alive, meaning that we are responsible for
-                // freeing the channel allocation. The acquire ordering above synchronizes with
-                // the receiver's final write of the state.
+                // SAFETY: Receiver is gone and left an empty channel allocation for this sender.
                 unsafe { deallocate_empty_channel(self.channel_ptr) };
             }
             state => unreachable!("unexpected channel state: {}", state),
@@ -211,10 +176,10 @@ impl<T> Drop for Sender<T> {
     }
 }
 
-/// An error returned when trying to send on a disconnected channel. Returned from
-/// [`Sender::send`] if the corresponding [`Receiver`] has already been dropped.
+/// Error returned by [`Sender::send`] when the paired [`Receiver`] was dropped before receiving.
 ///
-/// The message that could not be sent can be retrieved again with [`SendError::into_inner`].
+/// Owns the unsent value; call [`as_inner`](Self::as_inner) to inspect it or
+/// [`into_inner`](Self::into_inner) to recover it.
 pub struct SendError<T> {
     channel_ptr: NonNull<Channel<T>>,
 }
@@ -228,7 +193,7 @@ unsafe impl<T: Send> Send for SendError<T> {}
 unsafe impl<T: Sync> Sync for SendError<T> {}
 
 impl<T> SendError<T> {
-    /// Get a reference to the message that failed to be sent.
+    /// Returns a reference to the message that failed to be sent.
     pub fn as_inner(&self) -> &T {
         // SAFETY: SendError exclusively owns the allocation and its initialized message.
         unsafe { self.channel_ptr.as_ref().message() }

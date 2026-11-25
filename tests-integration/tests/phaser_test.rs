@@ -604,6 +604,42 @@ fn cancelling_a_waiter_can_close_the_phaser_from_its_waker_destructor() {
     assert!(phaser.is_closed());
 }
 
+#[test]
+fn participant_wait_drops_replaced_and_cancelled_wakers_outside_the_lock() {
+    let phaser = Phaser::new();
+    let mut first = phaser.register_one().unwrap();
+    let _second = phaser.register_one().unwrap();
+    let waker = waker_on_drop({
+        let phaser = phaser.clone();
+        move || phaser.close()
+    });
+    let mut wait = pin!(first.wait());
+    assert!(poll_with(wait.as_mut(), &waker).is_pending());
+    drop(waker);
+    assert!(!phaser.is_closed());
+
+    let (replacement, counter) = WakeCounter::new();
+    assert!(poll_with(wait.as_mut(), &replacement).is_pending());
+    assert!(phaser.is_closed());
+    assert_eq!(counter.count(), 1);
+    assert!(matches!(poll_once(wait.as_mut()), Poll::Ready(Err(_))));
+
+    let phaser = Phaser::new();
+    let mut first = phaser.register_one().unwrap();
+    let _second = phaser.register_one().unwrap();
+    let waker = waker_on_drop({
+        let phaser = phaser.clone();
+        move || phaser.close()
+    });
+    let mut wait = Box::pin(first.wait());
+    assert!(poll_with(wait.as_mut(), &waker).is_pending());
+    drop(waker);
+    assert!(!phaser.is_closed());
+
+    drop(wait);
+    assert!(phaser.is_closed());
+}
+
 #[tokio::test]
 #[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn participant_can_wait_from_a_spawned_task() {

@@ -9,13 +9,15 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Condvar;
-use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
 use std::task::Wake;
 use std::task::Waker;
 use std::thread;
 use std::time::Duration;
+
+use crate::internal::mutex::Mutex;
 
 const EMPTY: usize = 0;
 const PARKED: usize = 1;
@@ -66,13 +68,15 @@ fn yield_now() {
 }
 
 impl ParkerState {
-    fn park(&self, timeout: Option<Duration>) {
-        // Notifications are tokens. Consuming one is the common self-wake path and needs no lock.
-        if self
-            .state
+    fn try_consume_notification(&self) -> bool {
+        self.state
             .compare_exchange(NOTIFIED, EMPTY, SeqCst, SeqCst)
             .is_ok()
-        {
+    }
+
+    fn park(&self, timeout: Option<Duration>) {
+        // Notifications are tokens. Consuming one is the common self-wake path and needs no lock.
+        if self.try_consume_notification() {
             return;
         }
 
@@ -85,17 +89,13 @@ impl ParkerState {
         // so time spent yielding would extend the caller's deadline.
         if timeout.is_none() {
             yield_now();
-            if self
-                .state
-                .compare_exchange(NOTIFIED, EMPTY, SeqCst, SeqCst)
-                .is_ok()
-            {
+            if self.try_consume_notification() {
                 return;
             }
         }
 
         // The mutex only closes the race between publishing PARKED and entering the condvar wait.
-        let mut guard = self.lock.lock().unwrap();
+        let mut guard = self.lock.lock();
         match self.state.compare_exchange(EMPTY, PARKED, SeqCst, SeqCst) {
             Ok(_) => {}
             Err(NOTIFIED) => {
@@ -108,17 +108,19 @@ impl ParkerState {
 
         match timeout {
             None => loop {
-                guard = self.condvar.wait(guard).unwrap();
-                if self
-                    .state
-                    .compare_exchange(NOTIFIED, EMPTY, SeqCst, SeqCst)
-                    .is_ok()
-                {
+                guard = self
+                    .condvar
+                    .wait(guard)
+                    .unwrap_or_else(PoisonError::into_inner);
+                if self.try_consume_notification() {
                     return;
                 }
             },
             Some(timeout) => {
-                let (_guard, _wait_result) = self.condvar.wait_timeout(guard, timeout).unwrap();
+                let (_guard, _wait_result) = self
+                    .condvar
+                    .wait_timeout(guard, timeout)
+                    .unwrap_or_else(PoisonError::into_inner);
                 match self.state.swap(EMPTY, SeqCst) {
                     NOTIFIED | PARKED => {}
                     state => panic!("inconsistent timed park state: {state}"),
@@ -135,7 +137,7 @@ impl ParkerState {
         }
 
         // Waiting for this lock ensures the parker has entered Condvar::wait before notification.
-        drop(self.lock.lock().unwrap());
+        drop(self.lock.lock());
         self.condvar.notify_one();
     }
 }
@@ -236,6 +238,25 @@ mod tests {
             });
             parker.park();
             assert_eq!(yield_count(), 1);
+            assert_eq!(parker.state.state.load(SeqCst), EMPTY);
+            notifier.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn timed_park_sleeps_until_woken() {
+        with_watchdog(|| {
+            reset_yields();
+            let parker = Parker::new();
+            let state = parker.state.clone();
+            let notifier = thread::spawn(move || {
+                while state.state.load(SeqCst) != PARKED {
+                    thread::yield_now();
+                }
+                state.unpark();
+            });
+            parker.park_timeout(Duration::from_secs(60));
+            assert_eq!(yield_count(), 0);
             assert_eq!(parker.state.state.load(SeqCst), EMPTY);
             notifier.join().unwrap();
         });

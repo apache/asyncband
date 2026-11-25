@@ -21,32 +21,66 @@ use std::pin::pin;
 
 use asyncband::blocking::FutureExt;
 use asyncband::shutdown::*;
+use tests_integration::TestTask;
 use tests_integration::poll_once;
-use tests_integration::test_runtime;
 
 #[test]
 fn test_multiple_tasks() {
+    const TASKS: usize = if cfg!(miri) { 16 } else { 100 };
     let (shutdown, guard) = new();
-    for _i in 0..100 {
-        let guard = guard.clone();
-        test_runtime().spawn(async move { guard.shutdown_requested().await });
-    }
+    let mut tasks = (0..TASKS)
+        .map(|_| {
+            let guard = guard.clone();
+            let mut task = TestTask::new(async move {
+                guard.shutdown_requested().await;
+            });
+            assert!(task.poll().is_pending());
+            task
+        })
+        .collect::<Vec<_>>();
     drop(guard);
-    FutureExt::block_on(shutdown);
+
+    let mut shutdown = TestTask::new(shutdown);
+    assert!(shutdown.poll().is_pending());
+
+    for mut task in tasks.drain(..) {
+        assert!(task.is_woken());
+        assert!(task.poll().is_ready());
+    }
+    assert!(shutdown.is_woken());
+    assert!(shutdown.poll().is_ready());
 }
 
 #[test]
 fn test_multiple_control_handles() {
+    const TASKS: usize = if cfg!(miri) { 16 } else { 100 };
     let (shutdown, guard) = new();
-    for _i in 0..100 {
-        let guard = guard.clone();
-        test_runtime().spawn(async move { guard.shutdown_requested().await });
-    }
+    let mut tasks = (0..TASKS)
+        .map(|_| {
+            let guard = guard.clone();
+            let mut task = TestTask::new(async move {
+                guard.shutdown_requested().await;
+            });
+            assert!(task.poll().is_pending());
+            task
+        })
+        .collect::<Vec<_>>();
     drop(guard);
-    let shutdown_clone = shutdown.clone();
+
+    let mut shutdown_clone = TestTask::new(shutdown.clone());
     shutdown.request_shutdown();
-    FutureExt::block_on(shutdown);
-    FutureExt::block_on(shutdown_clone);
+    let mut shutdown = TestTask::new(shutdown);
+    assert!(shutdown.poll().is_pending());
+    assert!(shutdown_clone.poll().is_pending());
+
+    for mut task in tasks.drain(..) {
+        assert!(task.is_woken());
+        assert!(task.poll().is_ready());
+    }
+    assert!(shutdown.is_woken());
+    assert!(shutdown_clone.is_woken());
+    assert!(shutdown.poll().is_ready());
+    assert!(shutdown_clone.poll().is_ready());
 }
 
 #[test]
@@ -61,14 +95,23 @@ fn test_shutdown_requested_owned_does_not_capture_self() {
 
     let (shutdown, guard) = new();
     let mut state = State { guard };
-    test_runtime().spawn(async move {
+    let mut worker = TestTask::new(async move {
         let shutdown_requested = state.guard.shutdown_requested_owned();
         tokio::select! {
             _ = shutdown_requested => (),
-            _ = run_state(&mut state) => (),
+            _ = run_state(&mut state) => unreachable!(),
         }
     });
-    FutureExt::block_on(shutdown);
+    assert!(worker.poll().is_pending());
+
+    let mut shutdown = TestTask::new(shutdown);
+    assert!(shutdown.poll().is_pending());
+    assert!(worker.is_woken());
+    assert!(worker.poll().is_ready());
+    drop(worker);
+
+    assert!(shutdown.is_woken());
+    assert!(shutdown.poll().is_ready());
 }
 
 #[test]
@@ -99,6 +142,7 @@ fn test_polling_shutdown_requests_and_waits_for_completion() {
     assert!(watch.is_shutdown_requested());
 
     drop(guard);
+    assert!(poll_once(shutdown.as_mut()).is_ready());
     assert!(poll_once(shutdown.as_mut()).is_ready());
 }
 
@@ -134,9 +178,11 @@ fn test_disabled_select_branch_does_not_request_shutdown() {
 fn test_watch_observes_shutdown_request() {
     let (shutdown, guard) = new();
     let watch = guard.watch();
-    let handle = test_runtime().spawn(async move { watch.shutdown_requested().await });
+    let mut observer = TestTask::new(async move { watch.shutdown_requested().await });
+    assert!(observer.poll().is_pending());
     drop(guard);
 
     FutureExt::block_on(shutdown);
-    FutureExt::block_on(handle).unwrap();
+    assert!(observer.is_woken());
+    assert!(observer.poll().is_ready());
 }

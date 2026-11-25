@@ -17,7 +17,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Apache Asyncband (Incubating)
+# Apache Asyncband™ (Incubating)
 
 [![Crates.io][crates-badge]][crates-url]
 [![Documentation][docs-badge]][docs-url]
@@ -37,7 +37,7 @@ under the License.
 
 > [!IMPORTANT]
 >
-> Apache Asyncband (incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC.
+> Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC.
 >
 > Please read the [DISCLAIMER](DISCLAIMER) and a full explanation of ["incubating"](https://incubator.apache.org/policy/incubation.html).
 >
@@ -45,15 +45,9 @@ under the License.
 
 ## Overview
 
-Asyncband is a focused collection of composable, runtime-agnostic concurrency building blocks for async Rust. It provides synchronization, initialization, task coordination, channels, resource reuse, and workload control without choosing an executor for the application.
+Apache Asyncband™ is a focused collection of composable, runtime-agnostic concurrency building blocks for async Rust. It provides synchronization, initialization, task coordination, channels, resource reuse, and workload control without choosing an executor for the application.
 
-Asyncband's async APIs are built on standard futures and wakers. The library does not spawn tasks, own worker threads, install timers, or require a reactor or I/O driver. Applications can poll its futures with Tokio, async-std, smol, a custom executor, or any other standards-based runtime, and compose runtime services such as deadlines around them.
-
-### Project scope
-
-The project is not limited to small or stateless synchronization primitives. Stateful utilities such as a singleflight group or an object pool fit when they provide a generally reusable coordination mechanism and remain independent of executor policy.
-
-The boundary is mechanism versus policy. Task placement, timers, deadlines, retries, periodic maintenance, and application lifecycle orchestration stay with the caller and its runtime. Potential future-concurrency or scheduling APIs are evaluated against the same boundary: they must remain executor-independent and compose with caller-owned execution and timing.
+Asyncband's async APIs build on standard Rust `Future` and `Waker` contracts without binding to a concrete executor, I/O reactor, or OS timer driver, and compose directly with native `async`/`await` control flow rather than callback or combinator chains. Applications can poll its futures on Tokio, async-std, smol, or a custom executor; see [DESIGN.md](DESIGN.md) for the project's architectural guidelines.
 
 ## Getting started
 
@@ -157,8 +151,26 @@ This crate is built against the latest stable release, and its minimum supported
 
 The policy is that the minimum Rust version required to use this crate can be increased in minor version updates. For example, if Asyncband 1.0 requires Rust 1.20.0, then Asyncband 1.0.z for all values of z will also require Rust 1.20.0 or newer. However, Asyncband 1.y for y > 0 may require a newer minimum version of Rust.
 
+## Community and contributing
+
+Questions, bug reports, and feature requests are welcome through [GitHub issues](https://github.com/apache/asyncband/issues) and [GitHub discussions](https://github.com/apache/asyncband/discussions). Visit the [Apache Asyncband website](https://asyncband.apache.org/) for engineering blog posts and verified downloads, and the [community guide](https://asyncband.apache.org/community/) for public mailing lists, governance, voting rules, and other ways to participate.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to build, test, and contribute to Asyncband. All project participation is governed by the [Apache Software Foundation Code of Conduct](https://www.apache.org/foundation/policies/conduct.html).
+
+## Security
+
+Report suspected vulnerabilities privately to [security@apache.org](mailto:security@apache.org), with "Asyncband" in the subject. Follow the [ASF vulnerability reporting process](https://security.apache.org/report/) and see [SECURITY-THREAT-MODEL.md](SECURITY-THREAT-MODEL.md) for scope details.
+
+## Branding
+
+The first and most prominent mentions must use the full form: **Apache Asyncband™** (and **Apache Asyncband™ (Incubating)** while undergoing incubation) for any individual usage (webpage, handout, slides, etc.). Depending on the context and writing style, you should use the full form of the name sufficiently often to ensure that readers clearly understand the association of both the Asyncband project and the Asyncband software product to the ASF as the parent organization.
+
+Source code is licensed under the Apache License, Version 2.0, which does not grant rights to use the project names, logos, or icons; third-party distributions or derivative works must comply with the [ASF Trademark Policy](https://www.apache.org/foundation/marks/) and use distinct branding.
+
+For more details, see the [Apache Product Name Usage Guide](https://www.apache.org/foundation/marks/guide).
+
 ## License and Trademarks
 
 This project is licensed under [Apache License, Version 2.0](LICENSE); the license file also records incorporated third-party works and their terms.
 
-Apache Asyncband, Asyncband, and Apache are either registered trademarks or trademarks of The Apache Software Foundation in the United States and/or other countries.
+Apache Asyncband, Asyncband, Apache, the Apache logo, and the Apache Asyncband project logo are either registered trademarks or trademarks of The Apache Software Foundation in the United States and/or other countries. All other marks mentioned may be trademarks or registered trademarks of their respective owners.

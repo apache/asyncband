@@ -26,7 +26,7 @@
 //! Unlike `oneshot`, which transfers one value to one receiver, completion can fan one result out
 //! to many current and future observers without creating and managing one channel per observer.
 //! Unlike `OnceCell`, initialization is controlled only by the distinct completer capability;
-//! observers can only wait.
+//! observers can only inspect or wait for the result.
 //!
 //! # Examples
 //!
@@ -82,6 +82,16 @@ struct Shared<T> {
     waiters: Mutex<WakerSet>,
 }
 
+impl<T> Shared<T> {
+    fn finish(&self, result: Option<T>) -> WakerSet {
+        let mut waiters = self.waiters.lock();
+        // Detach registrations before publishing completion to lock-free observers.
+        let wakers = mem::take(&mut *waiters);
+        assert!(self.result.set(result).is_ok());
+        wakers
+    }
+}
+
 /// The error returned by [`Completion::wait`] when the completer was dropped without a value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Abandoned(());
@@ -118,23 +128,42 @@ impl<T> fmt::Debug for Completer<T> {
 }
 
 impl<T> Completer<T> {
-    /// Completes the primitive with `value` and wakes all pending observers.
+    /// Publishes `value` and wakes all pending observers.
     ///
-    /// Returns `value` if all observers were already dropped. A successful completion does not
-    /// guarantee that an observer will remain alive long enough to read the value.
+    /// Success does not guarantee that an observer remains alive long enough to read the value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(value)` if all observers have already been dropped.
     pub fn complete(mut self, value: T) -> Result<(), T> {
         let Some(shared) = self.shared.upgrade() else {
             return Err(value);
         };
-        let mut waiters = shared.waiters.lock();
-        // Detach registrations before publishing completion to lock-free observers.
-        let wakers = mem::take(&mut *waiters);
-        assert!(shared.result.set(Some(value)).is_ok());
-        drop(waiters);
+        let wakers = shared.finish(Some(value));
         // Disarm abandonment handling before invoking wake callbacks.
         self.shared = Weak::new();
         wakers.wake_all();
         Ok(())
+    }
+
+    /// Returns `true` if all [`Completion`] observers have been dropped.
+    ///
+    /// Once this returns `true`, a later call to [`complete`](Self::complete) is guaranteed to
+    /// return `Err(value)`. A `false` result can become outdated immediately if the last observer
+    /// is dropped concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::completion;
+    ///
+    /// let (completer, completion) = completion::new::<u8>();
+    /// assert!(!completer.is_disconnected());
+    /// drop(completion);
+    /// assert!(completer.is_disconnected());
+    /// ```
+    pub fn is_disconnected(&self) -> bool {
+        self.shared.strong_count() == 0
     }
 }
 
@@ -143,11 +172,7 @@ impl<T> Drop for Completer<T> {
         let Some(shared) = self.shared.upgrade() else {
             return;
         };
-        let mut waiters = shared.waiters.lock();
-        let wakers = mem::take(&mut *waiters);
-        assert!(shared.result.set(None).is_ok());
-        drop(waiters);
-        wakers.wake_all();
+        shared.finish(None).wake_all();
     }
 }
 
@@ -176,13 +201,43 @@ impl<T> fmt::Debug for Completion<T> {
 }
 
 impl<T> Completion<T> {
+    /// Returns the settled result without waiting, or `None` while the completer is still alive
+    /// and has not published a value.
+    ///
+    /// Returns `Some(Ok(&value))` after [`Completer::complete`] publishes a value, and
+    /// `Some(Err(Abandoned))` if the completer was dropped without publishing one. Once this
+    /// returns `Some(...)`, every subsequent call on any observer of this completion returns the
+    /// same outcome.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use asyncband::completion;
+    ///
+    /// let (completer, completion) = completion::new();
+    /// assert_eq!(completion.get(), None);
+    ///
+    /// completer.complete("ready").unwrap();
+    /// assert_eq!(completion.get(), Some(Ok(&"ready")));
+    /// ```
+    pub fn get(&self) -> Option<Result<&T, Abandoned>> {
+        self.shared
+            .result
+            .get()
+            .map(|result| result.as_ref().ok_or(Abandoned(())))
+    }
+
     /// Waits for the shared value and returns a reference to it.
+    ///
+    /// # Errors
     ///
     /// Returns [`Abandoned`] if the completer is dropped before providing a value. Abandonment
     /// remains distinct from any error stored inside `T`.
     ///
-    /// This method is cancel safe. Dropping one pending wait unregisters only that call and does
-    /// not affect this observer, another wait, or the eventual result.
+    /// # Cancellation
+    ///
+    /// Dropping a pending future unregisters only this wait. It does not affect this observer,
+    /// other waiters, or the eventual result.
     pub async fn wait(&self) -> Result<&T, Abandoned> {
         Wait {
             shared: &self.shared,

@@ -35,6 +35,8 @@ use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
 use tests_integration::waker_on_clone;
+use tests_integration::waker_on_drop;
+use tests_integration::waker_on_wake;
 
 #[test]
 fn set_is_sticky_and_reset_blocks_new_waiters() {
@@ -117,32 +119,17 @@ fn cancelling_a_committed_waiter_leaves_the_others_committed() {
     assert!(!event.is_set());
 }
 
-// A waker that re-enters the event it belongs to, both when woken and when dropped. The internal
-// lock is non-reentrant, so waking or dropping this waker inside the critical section deadlocks.
-struct ReentrantWaker(Arc<ManualResetEvent>);
-
-impl Wake for ReentrantWaker {
-    fn wake(self: Arc<Self>) {
-        self.0.reset();
-    }
-}
-
-impl Drop for ReentrantWaker {
-    fn drop(&mut self) {
-        self.0.reset();
-    }
-}
-
 // Wakers must be invoked and dropped after the internal lock is released.
 #[test]
 fn wakers_are_woken_and_dropped_outside_the_internal_lock() {
     assert_completes_without_deadlock(|| {
         let event = Arc::new(ManualResetEvent::new());
 
-        // `set` wakes the waiter, and the waker re-enters `reset`.
+        // `set` wakes the waiter, and the wake callback re-enters `reset` without relying on Drop.
         let mut woken = pin!(event.clone().wait_owned());
         {
-            let waker = Waker::from(Arc::new(ReentrantWaker(event.clone())));
+            let wake_event = event.clone();
+            let waker = waker_on_wake(move || wake_event.reset());
             assert!(
                 woken
                     .as_mut()
@@ -159,11 +146,17 @@ fn wakers_are_woken_and_dropped_outside_the_internal_lock() {
                 .is_ready()
         );
 
-        // Polling again with a different waker drops the one it replaces. The registration holds
-        // the last reference to the first waker, so its `Drop` runs during that poll.
+        // Polling again with a different waker drops the one it replaces, and cancelling drops the
+        // remaining registration; both drops re-enter `reset` outside the lock.
+        let drops = Arc::new(AtomicUsize::new(0));
         let mut replaced = Box::pin(event.clone().wait_owned());
         {
-            let first = Waker::from(Arc::new(ReentrantWaker(event.clone())));
+            let drop_event = event.clone();
+            let drops = drops.clone();
+            let first = waker_on_drop(move || {
+                drop_event.reset();
+                drops.fetch_add(1, Ordering::Relaxed);
+            });
             assert!(
                 replaced
                     .as_mut()
@@ -172,7 +165,12 @@ fn wakers_are_woken_and_dropped_outside_the_internal_lock() {
             );
         }
         {
-            let second = Waker::from(Arc::new(ReentrantWaker(event.clone())));
+            let drop_event = event.clone();
+            let drops = drops.clone();
+            let second = waker_on_drop(move || {
+                drop_event.reset();
+                drops.fetch_add(1, Ordering::Relaxed);
+            });
             assert!(
                 replaced
                     .as_mut()
@@ -180,10 +178,10 @@ fn wakers_are_woken_and_dropped_outside_the_internal_lock() {
                     .is_pending()
             );
         }
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
 
-        // Cancelling a pending wait drops the registered waker, which re-enters `reset`. The
-        // registration holds the last reference, so the drop runs here.
         drop(replaced);
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
     });
 }
 

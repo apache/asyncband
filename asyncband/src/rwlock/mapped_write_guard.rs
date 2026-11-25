@@ -28,7 +28,7 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ptr::NonNull;
 
-use crate::internal::semaphore::Semaphore;
+use crate::rwlock::access::LockState;
 use crate::rwlock::access::WriteAccess;
 
 /// Exclusive access to a projection of a locked value borrowed for the guard lifetime.
@@ -43,7 +43,7 @@ use crate::rwlock::access::WriteAccess;
 #[must_use = "dropping the guard releases its write access immediately"]
 pub struct MappedRwLockWriteGuard<'a, T: ?Sized> {
     d: NonNull<T>,
-    access: WriteAccess<&'a Semaphore>,
+    access: WriteAccess<&'a LockState>,
     // Mutable access requires invariance over T.
     variance: PhantomData<&'a mut T>,
 }
@@ -58,7 +58,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for MappedRwLockWriteGuard<'_, T> {}
 unsafe impl<T: ?Sized + Send> Send for MappedRwLockWriteGuard<'_, T> {}
 
 impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
-    pub(crate) fn new(d: NonNull<T>, access: WriteAccess<&'a Semaphore>) -> Self {
+    pub(crate) fn new(d: NonNull<T>, access: WriteAccess<&'a LockState>) -> Self {
         Self {
             d,
             access,
@@ -97,9 +97,14 @@ impl<T: ?Sized> DerefMut for MappedRwLockWriteGuard<'_, T> {
 impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
     /// Selects a component while retaining the same lock access.
     ///
-    /// The closure runs while the original guard is held. If it panics, that guard is released.
+    /// The closure runs while the original guard is held.
     /// Call this as `MappedRwLockWriteGuard::map(guard, f)` to avoid shadowing methods of the
     /// value.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     pub fn map<U, F>(mut orig: Self, f: F) -> MappedRwLockWriteGuard<'a, U>
     where
         F: FnOnce(&mut T) -> &mut U,
@@ -109,11 +114,19 @@ impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
         MappedRwLockWriteGuard::new(d, orig.access)
     }
 
-    /// Selects a component, or returns the still-held original guard when the closure returns
-    /// `None`.
+    /// Attempts to select a component while retaining the same lock access.
     ///
-    /// A panic in the closure releases the guard. Call this as
-    /// `MappedRwLockWriteGuard::filter_map(guard, f)`.
+    /// Call this as `MappedRwLockWriteGuard::filter_map(guard, f)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     pub fn filter_map<U, F>(mut orig: Self, f: F) -> Result<MappedRwLockWriteGuard<'a, U>, Self>
     where
         F: FnOnce(&mut T) -> Option<&mut U>,

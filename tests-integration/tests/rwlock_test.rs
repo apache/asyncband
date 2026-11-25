@@ -21,10 +21,9 @@ use std::pin::pin;
 use std::sync::Arc;
 
 use asyncband::rwlock::*;
+use tests_integration::expect_ready;
 use tests_integration::poll_once;
 use tokio::sync::Barrier;
-use tokio_test::assert_pending;
-use tokio_test::assert_ready;
 
 #[test]
 fn try_methods_respect_held_guards() {
@@ -275,16 +274,16 @@ async fn queued_writer_precedes_a_later_reader() {
     let mut writer = pin!(rwlock.write());
     let mut later_reader = pin!(rwlock.read());
 
-    assert_pending!(poll_once(writer.as_mut()));
-    assert_pending!(poll_once(later_reader.as_mut()));
+    assert!(poll_once(writer.as_mut()).is_pending());
+    assert!(poll_once(later_reader.as_mut()).is_pending());
 
     drop(first_reader);
-    let mut writer_guard = assert_ready!(poll_once(writer.as_mut()));
-    assert_pending!(poll_once(later_reader.as_mut()));
+    let mut writer_guard = expect_ready(poll_once(writer.as_mut()));
+    assert!(poll_once(later_reader.as_mut()).is_pending());
 
     *writer_guard = 100;
     drop(writer_guard);
-    let reader_guard = assert_ready!(poll_once(later_reader.as_mut()));
+    let reader_guard = expect_ready(poll_once(later_reader.as_mut()));
     assert_eq!(*reader_guard, 100);
 }
 
@@ -295,19 +294,19 @@ fn downgrade_preserves_queue_order_at_reader_limits() {
         let writer = lock.try_write().unwrap();
         let mut next_writer = pin!(lock.write());
         let mut reader = pin!(lock.read());
-        assert_pending!(poll_once(next_writer.as_mut()));
-        assert_pending!(poll_once(reader.as_mut()));
+        assert!(poll_once(next_writer.as_mut()).is_pending());
+        assert!(poll_once(reader.as_mut()).is_pending());
 
         let held_reader = writer.downgrade();
-        assert_pending!(poll_once(next_writer.as_mut()));
-        assert_pending!(poll_once(reader.as_mut()));
+        assert!(poll_once(next_writer.as_mut()).is_pending());
+        assert!(poll_once(reader.as_mut()).is_pending());
         assert!(lock.try_read().is_none());
         drop(held_reader);
 
-        let next_writer = assert_ready!(poll_once(next_writer.as_mut()));
-        assert_pending!(poll_once(reader.as_mut()));
+        let next_writer = expect_ready(poll_once(next_writer.as_mut()));
+        assert!(poll_once(reader.as_mut()).is_pending());
         drop(next_writer);
-        drop(assert_ready!(poll_once(reader.as_mut())));
+        drop(expect_ready(poll_once(reader.as_mut())));
         assert!(lock.try_write().is_some());
     }
 }
@@ -317,7 +316,7 @@ fn cancelling_granted_owned_requests_releases_access_and_ownership() {
     let lock = Arc::new(RwLock::new(0));
     let writer = lock.try_write().unwrap();
     let mut reader = Box::pin(lock.clone().read_owned());
-    assert_pending!(poll_once(reader.as_mut()));
+    assert!(poll_once(reader.as_mut()).is_pending());
     drop(writer);
     // The semaphore has granted the permit, but the future has not built a guard yet.
     drop(reader);
@@ -325,7 +324,7 @@ fn cancelling_granted_owned_requests_releases_access_and_ownership() {
 
     let reader = lock.try_read().unwrap();
     let mut writer = Box::pin(lock.clone().write_owned());
-    assert_pending!(poll_once(writer.as_mut()));
+    assert!(poll_once(writer.as_mut()).is_pending());
     drop(reader);
     drop(writer);
     assert_eq!(Arc::strong_count(&lock), 1);
@@ -364,12 +363,12 @@ fn cancelled_mapped_reader_admits_a_queued_writer() {
         let _mapped = RwLockReadGuard::map(rwlock.read().await, |values| &values[0]);
         pending::<()>().await;
     });
-    assert_pending!(poll_once(reader.as_mut()));
+    assert!(poll_once(reader.as_mut()).is_pending());
     let mut writer = pin!(rwlock.write());
-    assert_pending!(poll_once(writer.as_mut()));
+    assert!(poll_once(writer.as_mut()).is_pending());
 
     drop(reader);
-    let write_guard = assert_ready!(poll_once(writer.as_mut()));
+    let write_guard = expect_ready(poll_once(writer.as_mut()));
     assert_eq!(*write_guard, [1, 2]);
 }
 
@@ -382,12 +381,12 @@ fn cancelled_mapped_writer_admits_a_queued_reader() {
         *mapped = 10;
         pending::<()>().await;
     });
-    assert_pending!(poll_once(writer.as_mut()));
+    assert!(poll_once(writer.as_mut()).is_pending());
     let mut reader = pin!(rwlock.read());
-    assert_pending!(poll_once(reader.as_mut()));
+    assert!(poll_once(reader.as_mut()).is_pending());
 
     drop(writer);
-    let read_guard = assert_ready!(poll_once(reader.as_mut()));
+    let read_guard = expect_ready(poll_once(reader.as_mut()));
     assert_eq!(*read_guard, [10, 2]);
 }
 

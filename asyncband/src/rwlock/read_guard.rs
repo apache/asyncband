@@ -36,14 +36,13 @@ impl<T: ?Sized> RwLock<T> {
     /// An earlier queued writer must finish first. See [queue ordering](crate::rwlock) before
     /// acquiring recursively.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Pending lock requests complete in order. Cancelling this future loses its place among them
-    /// and releases any reserved permits.
+    /// Dropping a pending future removes the request and returns any permits already assigned to
+    /// it. Retrying joins the back of the queue.
     pub async fn read(&self) -> RwLockReadGuard<'_, T> {
-        self.s.acquire(1).await;
         RwLockReadGuard {
-            access: ReadAccess::new(self),
+            access: ReadAccess::acquire(self).await,
         }
     }
 
@@ -51,13 +50,9 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// Readers cannot bypass an earlier queued writer.
     pub fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
-        if self.s.try_acquire(1) {
-            Some(RwLockReadGuard {
-                access: ReadAccess::new(self),
-            })
-        } else {
-            None
-        }
+        Some(RwLockReadGuard {
+            access: ReadAccess::try_acquire(self)?,
+        })
     }
 }
 
@@ -95,22 +90,33 @@ impl<T: ?Sized> Deref for RwLockReadGuard<'_, T> {
 impl<'a, T: ?Sized> RwLockReadGuard<'a, T> {
     /// Selects a component while retaining the same lock access.
     ///
-    /// The closure runs while the original guard is held. If it panics, that guard is released.
+    /// The closure runs while the original guard is held.
     /// Call this as `RwLockReadGuard::map(guard, f)` to avoid shadowing methods of the value.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access.
     pub fn map<U, F>(orig: Self, f: F) -> MappedRwLockReadGuard<'a, U>
     where
         F: FnOnce(&T) -> &U,
         U: ?Sized,
     {
         let d = NonNull::from(f(&*orig));
-        MappedRwLockReadGuard::new(d, orig.access.into_semaphore())
+        MappedRwLockReadGuard::new(d, orig.access.into_state())
     }
 
-    /// Selects a component, or returns the still-held original guard when the closure returns
-    /// `None`.
+    /// Attempts to select a component while retaining the same lock access.
     ///
-    /// A panic in the closure releases the guard. Call this as
-    /// `RwLockReadGuard::filter_map(guard, f)`.
+    /// Call this as `RwLockReadGuard::filter_map(guard, f)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access.
     pub fn filter_map<U, F>(orig: Self, f: F) -> Result<MappedRwLockReadGuard<'a, U>, Self>
     where
         F: FnOnce(&T) -> Option<&U>,
@@ -119,7 +125,7 @@ impl<'a, T: ?Sized> RwLockReadGuard<'a, T> {
         match f(&*orig) {
             Some(d) => {
                 let d = NonNull::from(d);
-                Ok(MappedRwLockReadGuard::new(d, orig.access.into_semaphore()))
+                Ok(MappedRwLockReadGuard::new(d, orig.access.into_state()))
             }
             None => Err(orig),
         }

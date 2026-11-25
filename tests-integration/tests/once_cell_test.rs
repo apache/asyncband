@@ -107,7 +107,6 @@ fn cancelling_a_partial_waiter_does_not_start_another_initializer() {
     let (waker, wakes) = WakeCounter::new();
 
     assert!(poll_once(first.as_mut()).is_pending());
-    // This waiter holds the spare permit, but still cannot initialize the cell.
     assert!(poll_once(cancelled.as_mut()).is_pending());
     assert!(poll_with(next.as_mut(), &waker).is_pending());
     drop(cancelled);
@@ -170,16 +169,19 @@ fn completed_initialization_survives_cancellation_of_a_notified_waiter() {
     }));
     let mut cancelled = Box::pin(cell.get_or_init(async || unreachable!()));
     let mut next = pin!(cell.get_or_init(async || unreachable!()));
+    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
     let (old_waker, old_wakes) = WakeCounter::new();
     let (waker, wakes) = WakeCounter::new();
 
     assert!(poll_once(first.as_mut()).is_pending());
-    assert!(poll_once(cancelled.as_mut()).is_pending());
+    assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
     assert!(poll_with(next.as_mut(), &old_waker).is_pending());
     assert!(poll_with(next.as_mut(), &waker).is_pending());
     finish.send(()).unwrap();
     assert_eq!(expect_ready(poll_once(first.as_mut())), &[42; 32]);
-    assert_eq!(wakes.count(), 0);
+    assert_eq!(cancelled_wakes.count(), 1);
+    assert_eq!(old_wakes.count(), 0);
+    assert_eq!(wakes.count(), 1);
 
     drop(cancelled);
     assert_eq!(old_wakes.count(), 0);
@@ -189,6 +191,39 @@ fn completed_initialization_survives_cancellation_of_a_notified_waiter() {
     assert_eq!(
         expect_ready(poll_once(pin!(cell.get_or_init(async || unreachable!())))),
         &[42; 32]
+    );
+}
+
+#[test]
+fn completion_unblocks_trailing_waiters_while_the_head_waiter_stays_paused() {
+    let cell = OnceCell::new();
+    let (finish, ready) = tokio::sync::oneshot::channel();
+    let mut leader = pin!(cell.get_or_init(async || {
+        ready.await.unwrap();
+        99_u32
+    }));
+    let mut paused_head = std::pin::pin!(cell.get_or_init(async || unreachable!()));
+    let mut trailing = pin!(cell.get_or_init(async || unreachable!()));
+    let (paused_waker, paused_wakes) = WakeCounter::new();
+    let (trailing_waker, trailing_wakes) = WakeCounter::new();
+
+    assert!(poll_once(leader.as_mut()).is_pending());
+    assert!(poll_with(paused_head.as_mut(), &paused_waker).is_pending());
+    assert!(poll_with(trailing.as_mut(), &trailing_waker).is_pending());
+
+    finish.send(()).unwrap();
+    assert_eq!(expect_ready(poll_once(leader.as_mut())), &99);
+    assert_eq!(paused_wakes.count(), 1);
+    assert_eq!(trailing_wakes.count(), 1);
+
+    // Poll `trailing` before `paused_head` is polled or dropped.
+    assert_eq!(
+        expect_ready(poll_with(trailing.as_mut(), &trailing_waker)),
+        &99
+    );
+    assert_eq!(
+        expect_ready(poll_with(paused_head.as_mut(), &paused_waker)),
+        &99
     );
 }
 
@@ -206,12 +241,20 @@ fn registered_waiter_observes_completion_from_another_thread() {
         let (registered, registration) = mpsc::channel();
         thread::scope(|scope| {
             let cell = &cell;
+            let registered_observer = registered.clone();
             scope.spawn(move || {
                 let mut waiter = pin!(cell.get_or_init(async || unreachable!()));
                 assert!(poll_once(waiter.as_mut()).is_pending());
                 registered.send(()).unwrap();
                 assert_eq!(waiter.block_on(), &[42; 32]);
             });
+            scope.spawn(move || {
+                let mut observer = pin!(cell.wait());
+                assert!(poll_once(observer.as_mut()).is_pending());
+                registered_observer.send(()).unwrap();
+                assert_eq!(observer.block_on(), &[42; 32]);
+            });
+            registration.recv().unwrap();
             registration.recv().unwrap();
             finish.send(()).unwrap();
             assert_eq!(expect_ready(poll_once(first.as_mut())), &[42; 32]);
@@ -279,4 +322,46 @@ async fn exclusive_initialization_returns_mutable_access() {
         .await
         .unwrap();
     assert_eq!(value, 42);
+}
+
+#[test]
+fn wait_stays_pending_across_aborted_attempts_and_wakes_on_publication() {
+    let mut cell = OnceCell::new();
+    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
+    let (observer_waker, observer_wakes) = WakeCounter::new();
+
+    {
+        let mut cancelled_observer = Box::pin(cell.wait());
+        let mut observer = pin!(cell.wait());
+        assert!(poll_with(cancelled_observer.as_mut(), &cancelled_waker).is_pending());
+        assert!(poll_with(observer.as_mut(), &observer_waker).is_pending());
+
+        // Failed and cancelled initializers must not wake pure observers.
+        assert_eq!(
+            expect_ready(poll_once(pin!(
+                cell.get_or_try_init(async || Err::<u32, _>("retry"))
+            ))),
+            Err("retry")
+        );
+        assert_eq!(observer_wakes.count(), 0);
+
+        let mut aborted = Box::pin(cell.get_or_init(async || pending::<u32>().await));
+        assert!(poll_once(aborted.as_mut()).is_pending());
+        drop(cancelled_observer);
+        assert_eq!(cancelled_wakes.count(), 0);
+        drop(aborted);
+        assert_eq!(observer_wakes.count(), 0);
+        assert!(poll_with(observer.as_mut(), &observer_waker).is_pending());
+
+        assert_eq!(expect_ready(poll_once(pin!(cell.set(77)))), Ok(()));
+        assert_eq!(observer_wakes.count(), 1);
+        assert_eq!(
+            expect_ready(poll_with(observer.as_mut(), &observer_waker)),
+            &77
+        );
+        assert_eq!(expect_ready(poll_once(pin!(cell.wait()))), &77);
+    }
+
+    assert_eq!(cell.take(), Some(77));
+    assert!(poll_once(pin!(cell.wait())).is_pending());
 }

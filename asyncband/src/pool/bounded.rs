@@ -1,19 +1,24 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+// Portions of the bounded pool API originated from Fastpool 1.1.1.
 // Copyright 2025 FastLabs Developers
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// This file contains code ported from Fastpool 1.1.1.
-// The incorporated code has been modified for use in Apache Asyncband.
+// The Fastpool-derived portions remain licensed under the Apache License, Version 2.0.
+// Asyncband substantially rewrote pool state, capacity management, and replenishment; see LICENSE.
 // Upstream source:
 // https://github.com/fast/fastpool/blob/e4c65f1ed38395abc58d68eda8bd09925c13028e/fastpool/src/bounded.rs
 
@@ -79,16 +84,15 @@ use std::ops::DerefMut;
 use std::sync::Arc;
 use std::sync::Weak;
 
-use crate::internal::mutex::Mutex;
+use crate::internal::semaphore::Semaphore;
 use crate::pool::ManageObject;
 use crate::pool::ObjectStatus;
 use crate::pool::QueueStrategy;
 use crate::pool::RecycleCancelledStrategy;
 use crate::pool::RetainResult;
 use crate::pool::state::ObjectState;
-use crate::pool::state::PoolState;
-use crate::semaphore::OwnedSemaphorePermit;
-use crate::semaphore::Semaphore;
+use crate::pool::state::PoolCore;
+use crate::pool::state::UnreadyObject;
 
 /// The configuration of [`Pool`].
 #[derive(Clone, Copy, Debug)]
@@ -156,13 +160,10 @@ pub struct PoolStatus {
 ///
 /// See the [module level documentation](self) for more.
 pub struct Pool<M: ManageObject> {
-    config: PoolConfig,
-    manager: M,
-
+    max_size: usize,
     /// A semaphore that reserves capacity for checkouts and object creation.
-    permits: Arc<Semaphore>,
-    /// The objects tracked by the pool.
-    slots: Mutex<PoolState<M::Object>>,
+    permits: Semaphore,
+    core: PoolCore<M::Object, M>,
 }
 
 impl<M> fmt::Debug for Pool<M>
@@ -171,9 +172,14 @@ where
     M::Object: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let config = PoolConfig {
+            max_size: self.max_size,
+            queue_strategy: self.core.queue_strategy,
+            recycle_cancelled_strategy: self.core.recycle_cancelled_strategy,
+        };
         f.debug_struct("Pool")
-            .field("slots", &self.slots)
-            .field("config", &self.config)
+            .field("slots", &self.core.slots)
+            .field("config", &config)
             .field("permits", &self.permits)
             .finish()
     }
@@ -191,14 +197,14 @@ impl<M: ManageObject> Pool<M> {
             "bounded pool max_size must be greater than zero"
         );
 
-        let permits = Arc::new(Semaphore::new(config.max_size));
-        let slots = Mutex::new(PoolState::new());
-
         Arc::new(Self {
-            config,
-            manager,
-            permits,
-            slots,
+            max_size: config.max_size,
+            permits: Semaphore::new(config.max_size),
+            core: PoolCore::new(
+                config.queue_strategy,
+                config.recycle_cancelled_strategy,
+                manager,
+            ),
         })
     }
 
@@ -210,23 +216,44 @@ impl<M: ManageObject> Pool<M> {
     /// Concurrent calls and checkouts can change the observed idle count while this method is
     /// running, so the target is the best effort rather than a postcondition.
     ///
-    /// Returns the number of objects created. If [`ManageObject::create`] fails, objects created by
-    /// this call before the failure remain in the pool and the error is returned.
+    /// # Returns
     ///
-    /// # Cancel safety
+    /// Returns the number of objects created by this call, which may be less than the requested
+    /// target because of the capacity limit or concurrent checkouts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error from [`ManageObject::create`]. Objects created before the failure remain
+    /// in the pool.
+    ///
+    /// # Cancellation
     ///
     /// Cancelling this operation releases all reserved capacity. Objects created before
     /// cancellation remain idle in the pool; the in-progress [`ManageObject::create`] future is
     /// dropped.
     pub async fn replenish_to(&self, target_idle: usize) -> Result<usize, M::Error> {
-        let target_idle = target_idle.min(self.config.max_size);
-        let Some(mut reservation) = ReplenishReservation::reserve_up_to(&self.permits, target_idle)
-        else {
+        let target_idle = target_idle.min(self.max_size);
+        if target_idle == 0 {
             return Ok(0);
+        }
+        let needed = {
+            let slots = self.core.slots.lock();
+            let idle_count = slots.idle_count();
+            let missing_idle = target_idle.saturating_sub(idle_count);
+            let available_slots = self.permits.available_permits().saturating_sub(idle_count);
+            missing_idle.min(available_slots)
+        };
+        let reserved = self.permits.drain_permits(needed);
+        if reserved == 0 {
+            return Ok(0);
+        }
+        let mut reservation = PermitReservation {
+            permits: &self.permits,
+            reserved,
         };
 
-        let (idle_count, available_slots) = {
-            let slots = self.slots.lock();
+        let to_create = {
+            let slots = self.core.slots.lock();
             let idle_count = slots.idle_count();
 
             // Idle objects occupy pool slots without holding permits. Available permits plus this
@@ -235,25 +262,23 @@ impl<M: ManageObject> Pool<M> {
             let uncommitted_capacity = self
                 .permits
                 .available_permits()
-                .checked_add(reservation.permits())
+                .checked_add(reservation.reserved)
                 .expect("invariant broken: semaphore capacity must not overflow");
             let available_slots = uncommitted_capacity.saturating_sub(idle_count);
-            (idle_count, available_slots)
+            target_idle
+                .saturating_sub(idle_count)
+                .min(reservation.reserved)
+                .min(available_slots)
         };
-        let to_create = target_idle
-            .saturating_sub(idle_count)
-            .min(reservation.permits())
-            .min(available_slots);
-        reservation.release(reservation.permits() - to_create);
+        reservation.release(reservation.reserved - to_create);
 
         let mut replenished = 0;
         for _ in 0..to_create {
-            let object = self.manager.create().await?;
-            {
-                let mut slots = self.slots.lock();
-                slots.add_idle(ObjectState::new(object));
-            }
+            let object = self.core.manager.create().await?;
+            let state = ObjectState::new(object);
+            self.core.slots.lock().add_idle(state);
             replenished += 1;
+            // A waiting checkout can use this object while the next creation is in progress.
             reservation.release(1);
         }
 
@@ -266,64 +291,58 @@ impl<M: ManageObject> Pool<M> {
     /// object is returned to or detached from the pool.
     ///
     /// Idle objects are checked with [`ManageObject::is_recyclable`]. A failed check detaches the
-    /// object and retries checkout; its error is discarded. Only errors from
-    /// [`ManageObject::create`] are returned to the caller.
+    /// object and retries checkout; its error is discarded.
     ///
-    /// # Cancel safety
+    /// # Errors
+    ///
+    /// Returns errors from [`ManageObject::create`]. A failed creation does not add an object to
+    /// the pool.
+    ///
+    /// # Cancellation
     ///
     /// Cancelling while waiting for capacity or creating a new object restores the reserved pool
-    /// capacity. Cancelling while [`ManageObject::is_recyclable`] is checking an idle object
+    /// capacity and drops any in-progress creation future. Retrying does not retain a place in
+    /// the capacity queue. Objects already detached by failed recycling checks stay detached.
+    /// Cancelling while [`ManageObject::is_recyclable`] is checking an idle object
     /// follows [`PoolConfig::recycle_cancelled_strategy`].
     pub async fn get(self: &Arc<Self>) -> Result<Object<M>, M::Error> {
-        let permit = self.permits.clone().acquire_owned(1).await;
-
-        let object = loop {
-            let existing = self.slots.lock().pop(self.config.queue_strategy);
-
-            match existing {
+        if !self.permits.try_acquire(1) {
+            self.permits.acquire(1).await;
+        }
+        let permit = CheckoutPermit(Some(&self.permits));
+        loop {
+            match self.core.pop() {
                 None => {
-                    let object = self.manager.create().await?;
-                    let state = ObjectState::new(object);
-                    self.slots.lock().add_active();
-                    break Object {
-                        state: Some(state),
-                        permit,
-                        pool: Arc::downgrade(self),
-                    };
+                    let state = self.core.create_active().await?;
+                    return Ok(permit.into_object(state, self));
                 }
-                Some(object) => {
-                    let mut unready_object = UnreadyObject {
-                        state: Some(object),
-                        pool: self,
-                    };
-
-                    let state = unready_object.state();
-                    let status = state.status;
-                    if self
-                        .manager
-                        .is_recyclable(&mut state.o, &status)
-                        .await
-                        .is_ok()
-                    {
-                        state.status.mark_recycled();
-                        break unready_object.ready(permit);
-                    } else {
-                        // We need to manually detach here as the drop implementation
-                        // depends on the recycle cancelled strategy.
-                        unready_object.detach();
+                Some(state) => {
+                    let mut unready = UnreadyObject::new(&self.core, state);
+                    if unready.recycle().await.is_ok() {
+                        return Ok(permit.into_object(unready.into_ready(), self));
                     }
+                    // A rejected object must be detached even when cancellation would restore it.
+                    unready.detach();
                 }
-            };
-        };
-
-        Ok(object)
+            }
+        }
     }
 
     /// Retains idle objects for which `f` returns `true`.
     ///
-    /// Checked-out objects are skipped and may return to the pool later. The predicate runs while
-    /// the pool is locked and must not call back into it; detachment hooks run after the lock is
-    /// released.
+    /// Checked-out objects are skipped and may return to the pool later. Detachment hooks run
+    /// after the lock is released.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of idle objects retained and the removed objects after their detachment
+    /// hooks have run. Checked-out objects are not included in the retained count.
+    ///
+    /// # Deadlocks
+    ///
+    /// The predicate runs while the pool is locked and must not call back into it.
+    ///
+    /// # Examples
     ///
     /// The following example starts a background task that runs every 30 seconds and removes
     /// objects from the pool that have not been used for more than one minute. The task will
@@ -374,93 +393,61 @@ impl<M: ManageObject> Pool<M> {
         &self,
         f: impl FnMut(&mut M::Object, ObjectStatus) -> bool,
     ) -> RetainResult<M::Object> {
-        let mut result = {
-            let mut slots = self.slots.lock();
-            slots.retain(f)
-        };
-        for object in &mut result.removed {
-            self.manager.on_detached(object);
-        }
-        result
+        self.core.retain(f)
     }
 
     /// Returns a consistent snapshot of the objects currently tracked by the pool.
     pub fn status(&self) -> PoolStatus {
-        let slots = self.slots.lock();
+        let slots = self.core.slots.lock();
 
         PoolStatus {
-            max_size: self.config.max_size,
+            max_size: self.max_size,
             current_size: slots.current_size(),
             idle_count: slots.idle_count(),
         }
     }
+}
 
-    fn return_object(&self, mut state: ObjectState<M::Object>) {
-        state.status.mark_returned();
-        self.restore_idle(state);
-    }
+struct PermitReservation<'a> {
+    permits: &'a Semaphore,
+    reserved: usize,
+}
 
-    fn restore_idle(&self, state: ObjectState<M::Object>) {
-        let mut slots = self.slots.lock();
-
-        assert!(
-            slots.current_size() <= self.config.max_size,
-            "invariant broken: current_size <= max_size (actual: {} <= {})",
-            slots.current_size(),
-            self.config.max_size,
-        );
-
-        slots.return_idle(state);
-    }
-
-    fn detach_object(&self, o: &mut M::Object) {
-        let mut slots = self.slots.lock();
-
-        assert!(
-            slots.current_size() <= self.config.max_size,
-            "invariant broken: current_size <= max_size (actual: {} <= {})",
-            slots.current_size(),
-            self.config.max_size,
-        );
-
-        slots.detach();
-        drop(slots);
-
-        self.manager.on_detached(o);
+impl PermitReservation<'_> {
+    fn release(&mut self, n: usize) {
+        assert!(n <= self.reserved, "released more permits than reserved");
+        self.reserved -= n;
+        self.permits.release(n);
     }
 }
 
-// Temporarily removes capacity while `replenish_to` creates objects. Idle objects do not consume
-// semaphore permits, so successful insertions release their reservation. Dropping the guard
-// restores any unfinished capacity after an error or cancellation.
-struct ReplenishReservation<'a> {
-    semaphore: &'a Semaphore,
-    permits: usize,
-}
-
-impl<'a> ReplenishReservation<'a> {
-    fn reserve_up_to(semaphore: &'a Semaphore, up_to: usize) -> Option<Self> {
-        let permits = semaphore.drain_permits(up_to);
-        (permits != 0).then_some(Self { semaphore, permits })
-    }
-
-    fn permits(&self) -> usize {
-        self.permits
-    }
-
-    fn release(&mut self, permits: usize) {
-        assert!(
-            permits <= self.permits,
-            "cannot release more permits than this reservation holds"
-        );
-        self.permits -= permits;
-        self.semaphore.release(permits);
-    }
-}
-
-impl Drop for ReplenishReservation<'_> {
+impl Drop for PermitReservation<'_> {
     fn drop(&mut self) {
-        self.semaphore.release(self.permits);
+        self.permits.release(self.reserved);
+    }
+}
+
+struct CheckoutPermit<'a>(Option<&'a Semaphore>);
+
+impl CheckoutPermit<'_> {
+    fn into_object<M: ManageObject>(
+        mut self,
+        state: ObjectState<M::Object>,
+        pool: &Arc<Pool<M>>,
+    ) -> Object<M> {
+        self.0 = None;
+        Object {
+            state: Some(state),
+            pool: Arc::downgrade(pool),
+        }
+    }
+}
+
+impl Drop for CheckoutPermit<'_> {
+    fn drop(&mut self) {
+        if let Some(permits) = self.0 {
+            permits.release(1);
+        }
     }
 }
 
@@ -473,7 +460,6 @@ impl Drop for ReplenishReservation<'_> {
 /// call [`Object::detach`] to detach the object from the pool before dropping it.
 pub struct Object<M: ManageObject> {
     state: Option<ObjectState<M::Object>>,
-    permit: OwnedSemaphorePermit,
     pool: Weak<Pool<M>>,
 }
 
@@ -485,17 +471,17 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Object")
             .field("state", &self.state)
-            .field("permit", &self.permit)
             .finish()
     }
 }
 
 impl<M: ManageObject> Drop for Object<M> {
     fn drop(&mut self) {
-        if let Some(state) = self.state.take() {
-            if let Some(pool) = self.pool.upgrade() {
-                pool.return_object(state);
+        if let Some(pool) = self.pool.upgrade() {
+            if let Some(state) = self.state.take() {
+                pool.core.return_object(state);
             }
+            pool.permits.release(1);
         }
     }
 }
@@ -538,7 +524,7 @@ impl<M: ManageObject> Object<M> {
         // INVARIANT: `state` is `Some` until this object is detached or dropped.
         let mut o = self.state.take().unwrap().o;
         if let Some(pool) = self.pool.upgrade() {
-            pool.detach_object(&mut o);
+            pool.core.detach_object(&mut o);
         }
         o
     }
@@ -547,56 +533,5 @@ impl<M: ManageObject> Object<M> {
     pub fn status(&self) -> ObjectStatus {
         // INVARIANT: `state` is `Some` until this object is detached or dropped.
         self.state.as_ref().unwrap().status
-    }
-}
-
-/// A wrapper of ObjectState used during the `is_recyclable` check in `Pool::get`.
-///
-/// If the check passes, the object is converted to a ready `Object` via `ready()`.
-/// If the check fails, `detach()` should be called to permanently remove the object
-/// from the pool. If dropped without calling either method (due to being cancelled),
-/// the behavior depends on the pool's [`RecycleCancelledStrategy`] configuration.
-struct UnreadyObject<'a, M: ManageObject> {
-    state: Option<ObjectState<M::Object>>,
-    // The enclosing `get` call keeps the pool alive through cancellation cleanup.
-    pool: &'a Arc<Pool<M>>,
-}
-
-impl<M: ManageObject> Drop for UnreadyObject<'_, M> {
-    fn drop(&mut self) {
-        if let Some(mut state) = self.state.take() {
-            match self.pool.config.recycle_cancelled_strategy {
-                RecycleCancelledStrategy::Detach => {
-                    self.pool.detach_object(&mut state.o);
-                }
-                RecycleCancelledStrategy::ReturnToPool => {
-                    self.pool.restore_idle(state);
-                }
-            }
-        }
-    }
-}
-
-impl<M: ManageObject> UnreadyObject<'_, M> {
-    fn ready(mut self, permit: OwnedSemaphorePermit) -> Object<M> {
-        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
-        let state = Some(self.state.take().unwrap());
-        let pool = Arc::downgrade(self.pool);
-        Object {
-            state,
-            permit,
-            pool,
-        }
-    }
-
-    fn detach(&mut self) {
-        if let Some(mut state) = self.state.take() {
-            self.pool.detach_object(&mut state.o);
-        }
-    }
-
-    fn state(&mut self) -> &mut ObjectState<M::Object> {
-        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
-        self.state.as_mut().unwrap()
     }
 }

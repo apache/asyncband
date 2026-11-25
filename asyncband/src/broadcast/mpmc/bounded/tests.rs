@@ -18,7 +18,11 @@
 // These run under Miri via `cargo x miri`, so they stay single-threaded and small. Behavior
 // reachable from the public API is covered in `tests-integration/tests/broadcast_test/bounded.rs`.
 
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::pin::pin;
+use std::sync::atomic::AtomicBool;
+use std::task::Wake;
 use std::task::Waker;
 
 use super::*;
@@ -32,10 +36,34 @@ fn bounded_panics_on_zero_capacity() {
 #[test]
 #[should_panic(expected = "broadcast channel version counter overflowed")]
 fn send_panics_on_version_overflow() {
-    // The receiver is dropped right away: the doctored counter would make its own drop overflow.
     let (tx, _) = bounded(1);
     tx.shared.inner.lock().log.set_tail(u64::MAX);
     let _ = tx.try_send(());
+}
+
+#[test]
+fn overflow_drops_payload_outside_the_channel_lock() {
+    for has_receiver in [false, true] {
+        let (tx, _) = bounded(1);
+        tx.shared.inner.lock().log.set_tail(u64::MAX);
+        let _receiver = has_receiver.then(|| tx.subscribe());
+        let shared = tx.shared.clone();
+        common::tests::assert_overflow_drops_unlocked(
+            move || shared.inner.try_lock().map(|inner| inner.log.retained()),
+            |value| {
+                let _ = tx.try_send(value);
+            },
+        );
+    }
+}
+
+#[test]
+fn full_channel_rejects_the_value_at_the_last_version() {
+    let (tx, _) = bounded(1);
+    tx.shared.inner.lock().log.set_tail(u64::MAX - 1);
+    let _receiver = tx.subscribe();
+    tx.try_send(1).unwrap();
+    assert!(matches!(tx.try_send(2), Err(TrySendError::Full(2))));
 }
 
 #[test]
@@ -61,10 +89,10 @@ fn buffer_is_preallocated_and_never_shrinks() {
 }
 
 #[test]
-fn a_large_reclaim_leaves_no_permit_slack() {
+fn a_large_reclaim_leaves_no_sender_slack() {
     // Dropping a lagging subscription frees the whole backlog in one step, far more slots than the
-    // single parked producer can use. Permits beyond that producer would sit in the semaphore, and
-    // the next producer to wait would burn each one on a publication attempt that cannot succeed.
+    // single parked producer can use. Once that producer publishes, no unconsumed sender nodes or
+    // wakeups remain queued.
     let capacity = 64;
     let (tx, mut fast) = bounded(capacity);
     let lagging = tx.subscribe();
@@ -81,5 +109,49 @@ fn a_large_reclaim_leaves_no_permit_slack() {
 
     drop(lagging);
     assert!(send.as_mut().poll(&mut cx).is_ready());
-    assert_eq!(tx.shared.tx_permits.available_permits(), 0);
+    assert!(tx.shared.inner.lock().send_waiters.waiters.is_empty());
+}
+
+#[test]
+fn overflow_in_permit_and_pending_send_releases_slot_unlocked() {
+    #[derive(Default)]
+    struct Woke(AtomicBool);
+
+    impl Wake for Woke {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    let (tx, rx) = bounded(1);
+    drop(rx);
+    tx.shared.inner.lock().log.set_tail(u64::MAX);
+    let _receiver = tx.subscribe();
+
+    let permit = tx.try_reserve().unwrap();
+    let mut noop_cx = Context::from_waker(Waker::noop());
+    let mut send = pin!(tx.send(None));
+    assert!(send.as_mut().poll(&mut noop_cx).is_pending());
+
+    let woke = Arc::new(Woke::default());
+    let waker = Waker::from(woke.clone());
+    let mut cx = Context::from_waker(&waker);
+    let mut waiting = pin!(tx.reserve());
+    assert!(waiting.as_mut().poll(&mut cx).is_pending());
+
+    let shared = tx.shared.clone();
+    common::tests::assert_overflow_drops_unlocked(
+        move || {
+            shared
+                .inner
+                .try_lock()
+                .map(|inner| inner.log.retained() + inner.send_waiters.reserved)
+        },
+        |value| permit.send(Some(value)),
+    );
+
+    assert!(!woke.0.load(Ordering::Relaxed));
+    assert!(catch_unwind(AssertUnwindSafe(|| send.as_mut().poll(&mut noop_cx))).is_err());
+    assert!(woke.0.load(Ordering::Relaxed));
+    assert!(waiting.as_mut().poll(&mut cx).is_ready());
 }

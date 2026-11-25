@@ -372,18 +372,23 @@ fn wakes_blocked_senders_as_capacity_frees() {
     let (tx, mut rx) = bounded(1);
     tx.try_send(0).unwrap();
 
+    let (first_waker, first_wakes) = WakeCounter::new();
+    let (second_waker, second_wakes) = WakeCounter::new();
     let mut first = pin!(tx.send(1));
     let mut second = pin!(tx.send(2));
-    assert!(poll_once(first.as_mut()).is_pending());
-    assert!(poll_once(second.as_mut()).is_pending());
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
 
-    // One freed slot admits exactly one producer.
+    // One freed slot wakes and admits only the first queued producer.
     assert_eq!(rx.try_recv().as_deref(), Ok(&0));
-    assert!(poll_once(first.as_mut()).is_ready());
-    assert!(poll_once(second.as_mut()).is_pending());
+    assert_eq!(first_wakes.count(), 1);
+    assert_eq!(second_wakes.count(), 0);
+    assert!(poll_with(first.as_mut(), &first_waker).is_ready());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
 
     assert_eq!(rx.try_recv().as_deref(), Ok(&1));
-    assert!(poll_once(second.as_mut()).is_ready());
+    assert_eq!(second_wakes.count(), 1);
+    assert!(poll_with(second.as_mut(), &second_waker).is_ready());
     assert_eq!(rx.try_recv().as_deref(), Ok(&2));
 }
 
@@ -393,14 +398,17 @@ fn dropping_a_lagging_receiver_wakes_blocked_senders() {
     let rx2 = tx.subscribe();
     tx.try_send(0).unwrap();
 
+    let (waker, wakes) = WakeCounter::new();
     let mut send = pin!(tx.send(1));
     assert_eq!(rx1.try_recv().as_deref(), Ok(&0));
-    assert!(poll_once(send.as_mut()).is_pending());
+    assert!(poll_with(send.as_mut(), &waker).is_pending());
+    assert_eq!(wakes.count(), 0);
 
-    // `rx2` is the one holding the backlog; dropping it releases the slot.
+    // `rx2` is the one holding the backlog; dropping it releases the slot and wakes the producer.
     drop(rx2);
     assert_eq!(tx.retained_message_count(), 0);
-    assert!(poll_once(send.as_mut()).is_ready());
+    assert_eq!(wakes.count(), 1);
+    assert!(poll_with(send.as_mut(), &waker).is_ready());
 }
 
 #[test]
@@ -513,16 +521,49 @@ fn cancelled_notified_sender_passes_capacity_to_the_next_sender() {
     let (tx, mut rx) = bounded(1);
     tx.try_send(0).unwrap();
 
+    let (first_waker, first_wakes) = WakeCounter::new();
+    let (second_waker, second_wakes) = WakeCounter::new();
     let mut first = Box::pin(tx.send(1));
     let mut second = pin!(tx.send(2));
-    assert!(poll_once(first.as_mut()).is_pending());
-    assert!(poll_once(second.as_mut()).is_pending());
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+    assert_eq!(first_wakes.count(), 0);
 
     assert_eq!(rx.try_recv().as_deref(), Ok(&0));
-    drop(first);
+    assert_eq!(first_wakes.count(), 1);
+    assert_eq!(second_wakes.count(), 0);
 
-    assert!(poll_once(second.as_mut()).is_ready());
+    drop(first);
+    assert_eq!(second_wakes.count(), 1);
+    assert!(poll_with(second.as_mut(), &second_waker).is_ready());
     assert_eq!(rx.try_recv().as_deref(), Ok(&2));
+}
+
+#[test]
+fn cancelled_notified_sender_does_not_wake_follower_once_slot_is_refilled() {
+    let (tx, mut rx) = bounded(1);
+    tx.try_send(0).unwrap();
+
+    let (first_waker, first_wakes) = WakeCounter::new();
+    let (second_waker, second_wakes) = WakeCounter::new();
+    let mut first = Box::pin(tx.send(1));
+    let mut second = pin!(tx.send(2));
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+
+    assert_eq!(rx.try_recv().as_deref(), Ok(&0));
+    assert_eq!(first_wakes.count(), 1);
+
+    // Another producer claims the freed slot before `first` is dropped; no capacity remains to
+    // pass on to `second`.
+    tx.try_send(99).unwrap();
+    drop(first);
+    assert_eq!(second_wakes.count(), 0);
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+
+    assert_eq!(rx.try_recv().as_deref(), Ok(&99));
+    assert_eq!(second_wakes.count(), 1);
+    assert!(poll_with(second.as_mut(), &second_waker).is_ready());
 }
 
 #[test]
@@ -765,16 +806,18 @@ fn panicking_payload_destructor_still_releases_capacity() {
         rx1.try_recv().unwrap();
     }
 
+    let (waker, wakes) = WakeCounter::new();
     let mut send = pin!(tx.send(PanicOnDrop { armed: false }));
-    assert!(poll_once(send.as_mut()).is_pending());
+    assert!(poll_with(send.as_mut(), &waker).is_pending());
 
     // Dropping `rx2` reclaims all three retained messages and their destructors panic. The
-    // capacity they released must already have reached the parked producer by then.
+    // capacity they released must already have woken the parked producer by then.
     let result = catch_unwind(AssertUnwindSafe(|| drop(rx2)));
     assert!(result.is_err());
 
+    assert_eq!(wakes.count(), 1);
     assert!(
-        poll_once(send.as_mut()).is_ready(),
+        poll_with(send.as_mut(), &waker).is_ready(),
         "a panicking payload destructor must not strand a producer on capacity it already freed"
     );
 }
@@ -941,4 +984,164 @@ fn bounded_concurrent_producers_commit_one_order_seen_by_every_receiver() {
         sorted.sort_unstable();
         assert_eq!(sorted, (0..TOTAL).collect::<Vec<_>>());
     });
+}
+
+#[test]
+fn bounded_receiver_queries_track_sender_liveness_and_cursor_backlog() {
+    let (tx1, mut fast) = bounded(2);
+    let tx2 = tx1.clone();
+    let mut slow = tx1.subscribe();
+
+    assert!(!fast.is_disconnected());
+    assert!(fast.is_empty());
+    assert!(slow.is_empty());
+
+    tx1.try_send(10).unwrap();
+    assert!(!fast.is_empty());
+    assert!(!slow.is_empty());
+
+    // Consuming on `fast` makes `fast` empty even while `slow` still retains the message.
+    assert_eq!(*fast.try_recv().unwrap(), 10);
+    assert!(fast.is_empty());
+    assert!(!slow.is_empty());
+    assert_eq!(tx1.retained_message_count(), 1);
+
+    drop(tx1);
+    assert!(!fast.is_disconnected());
+    assert!(!slow.is_disconnected());
+
+    drop(tx2);
+    assert!(fast.is_disconnected());
+    assert!(slow.is_disconnected());
+    assert!(!slow.is_empty());
+    assert_eq!(*slow.try_recv().unwrap(), 10);
+    assert!(slow.is_empty());
+}
+
+#[test]
+fn try_reserve_and_permit_send_commit_in_send_order_without_sequence_gaps() {
+    let (tx, mut rx1) = bounded(2);
+    let mut rx2 = tx.subscribe();
+
+    let dropped_permit = tx.try_reserve().unwrap();
+    let first_permit = tx.try_reserve().unwrap();
+    assert_eq!(tx.retained_message_count(), 0);
+    assert!(rx1.is_empty());
+    assert_eq!(tx.try_send(99), Err(TrySendError::Full(99)));
+    assert_eq!(tx.try_reserve().unwrap_err(), TrySendError::Full(()));
+
+    // Dropping an unused permit frees one slot without publishing or advancing cursors.
+    drop(dropped_permit);
+    let second_permit = tx.try_reserve().unwrap();
+    assert_eq!(tx.try_reserve().unwrap_err(), TrySendError::Full(()));
+
+    // Publication order follows `Permit::send`, not reservation order.
+    second_permit.send(20);
+    first_permit.send(10);
+
+    assert_eq!(*rx1.try_recv().unwrap(), 20);
+    assert_eq!(*rx1.try_recv().unwrap(), 10);
+    assert_eq!(*rx2.try_recv().unwrap(), 20);
+    assert_eq!(*rx2.try_recv().unwrap(), 10);
+}
+
+#[test]
+fn reserve_waits_for_slowest_receiver_and_yields_usable_permit() {
+    let (tx, mut fast) = bounded(1);
+    let mut slow = tx.subscribe();
+    tx.try_send(1).unwrap();
+
+    let tracker = Arc::new(WakeCounter::default());
+    let waker = Waker::from(tracker.clone());
+    let mut reserve = pin!(tx.reserve());
+    assert!(poll_with(reserve.as_mut(), &waker).is_pending());
+
+    // Fast receiver draining does not free the shared slot while `slow` lags.
+    assert_eq!(*fast.try_recv().unwrap(), 1);
+    assert_eq!(tracker.count(), 0);
+    assert!(poll_with(reserve.as_mut(), &waker).is_pending());
+
+    // Once `slow` consumes the retained message, `reserve` wakes and acquires a usable permit.
+    assert_eq!(*slow.try_recv().unwrap(), 1);
+    assert_eq!(tracker.count(), 1);
+    let Poll::Ready(permit) = poll_with(reserve.as_mut(), &waker) else {
+        panic!("expected reserve to complete once the slowest receiver freed a slot");
+    };
+    permit.send(2);
+
+    assert_eq!(*fast.try_recv().unwrap(), 2);
+    assert_eq!(*slow.try_recv().unwrap(), 2);
+}
+
+#[test]
+fn cancelling_notified_reserve_forwards_wakeup_to_next_producer() {
+    let (tx, mut rx) = bounded(1);
+    tx.try_send(1).unwrap();
+
+    let first_tracker = Arc::new(WakeCounter::default());
+    let second_tracker = Arc::new(WakeCounter::default());
+    let first_waker = Waker::from(first_tracker.clone());
+    let second_waker = Waker::from(second_tracker.clone());
+
+    let mut first = Box::pin(tx.reserve());
+    let mut second = pin!(tx.reserve());
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+
+    assert_eq!(*rx.try_recv().unwrap(), 1);
+    assert_eq!(first_tracker.count(), 1);
+    assert_eq!(second_tracker.count(), 0);
+
+    // Dropping the woken `reserve` before it claims the slot forwards the wakeup to `second`.
+    drop(first);
+    assert_eq!(second_tracker.count(), 1);
+    let Poll::Ready(permit) = poll_with(second.as_mut(), &second_waker) else {
+        panic!("expected follower reserve to acquire the forwarded slot");
+    };
+    permit.send(2);
+    assert_eq!(*rx.try_recv().unwrap(), 2);
+}
+
+#[test]
+fn permits_cap_capacity_across_zero_receivers_and_late_subscriptions() {
+    let (tx, rx) = bounded(1);
+    let held = tx.try_reserve().unwrap();
+    assert_eq!(tx.try_reserve().unwrap_err(), TrySendError::Full(()));
+
+    let (send_waker, send_wakes) = WakeCounter::new();
+    let (reserve_waker, reserve_wakes) = WakeCounter::new();
+    let mut blocked_send = pin!(tx.send(100));
+    let mut blocked_reserve = pin!(tx.reserve());
+    assert!(poll_with(blocked_send.as_mut(), &send_waker).is_pending());
+    assert!(poll_with(blocked_reserve.as_mut(), &reserve_waker).is_pending());
+
+    // Dropping the last receiver lets `send` discard immediately while `reserve` stays bounded by
+    // the held permit.
+    drop(rx);
+    assert_eq!(send_wakes.count(), 1);
+    assert!(poll_with(blocked_send.as_mut(), &send_waker).is_ready());
+    assert!(poll_with(blocked_reserve.as_mut(), &reserve_waker).is_pending());
+    tx.try_send(101).unwrap();
+
+    // A receiver subscribed before `Permit::send` receives the value within the channel's capacity.
+    let mut subscribed = tx.subscribe();
+    held.send(42);
+    assert_eq!(tx.retained_message_count(), 1);
+    let wakes_before_reclaim = reserve_wakes.count();
+    assert_eq!(*subscribed.try_recv().unwrap(), 42);
+    assert_eq!(reserve_wakes.count(), wakes_before_reclaim + 1);
+    drop(subscribed);
+
+    // Once the retained message leaves with `subscribed`, `blocked_reserve` acquires the freed
+    // slot; sending through a permit with no receivers also releases its slot to any waiter.
+    let Poll::Ready(held) = poll_with(blocked_reserve.as_mut(), &reserve_waker) else {
+        panic!("expected reserve to complete once capacity freed");
+    };
+    let (next_waker, next_wakes) = WakeCounter::new();
+    let mut next_reserve = pin!(tx.reserve());
+    assert!(poll_with(next_reserve.as_mut(), &next_waker).is_pending());
+
+    held.send(99);
+    assert_eq!(next_wakes.count(), 1);
+    assert!(poll_with(next_reserve.as_mut(), &next_waker).is_ready());
 }

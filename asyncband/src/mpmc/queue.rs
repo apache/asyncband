@@ -24,6 +24,8 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
+use crate::internal::retry_waiter::RetryWaiter;
+use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::mpmc::RecvError;
@@ -45,7 +47,7 @@ struct State<T> {
     available: Option<usize>,
     senders: usize,
     receivers: usize,
-    recv_waiters: WaitList<RecvWaiter>,
+    recv_waiters: WaitList<RetryWaiter>,
     send_waiters: WaitList<SendWaiter>,
 }
 
@@ -99,53 +101,10 @@ impl<T> State<T> {
     }
 }
 
-/// A receiver notification makes the task runnable without reserving a value.
-enum RecvWaiter {
-    Waiting(Waker),
-    Notified,
-}
-
 /// A grant assigns capacity to a detached waiter node until its future claims or releases it.
 enum SendWaiter {
     Waiting(Waker),
     Granted,
-}
-
-fn remove_waiter<W>(waiters: &mut WaitList<W>, id: WaiterId) -> W {
-    // Unlinking is idempotent, so detached waiters are removed the same way as linked ones.
-    waiters.unlink_waiter(id, |_| true);
-    waiters.remove_unlinked_waiter(id)
-}
-
-impl WaitList<RecvWaiter> {
-    fn notify_one(&mut self) -> Option<Waker> {
-        let (_, waiter) = self.unlink_first_waiter(|_| true)?;
-        let RecvWaiter::Waiting(waker) = mem::replace(waiter, RecvWaiter::Notified) else {
-            unreachable!("only waiting operations remain linked");
-        };
-        Some(waker)
-    }
-
-    /// Registers a pending operation's waker or refreshes an existing registration.
-    ///
-    /// If the future finds no value after notification, its waiter rejoins the queue.
-    #[must_use = "drop the replaced waker after releasing the queue lock"]
-    fn register(&mut self, id: &mut Option<WaiterId>, current: &Waker) -> Option<Waker> {
-        if let Some(queued) = *id {
-            if let RecvWaiter::Waiting(waker) = self.waiter_mut(queued) {
-                if waker.will_wake(current) {
-                    return None;
-                }
-                return Some(mem::replace(waker, current.clone()));
-            }
-        }
-        if let Some(notified) = id.take() {
-            // The notification already took this node's waker, so nothing is retired.
-            remove_waiter(self, notified);
-        }
-        *id = Some(self.push_back(RecvWaiter::Waiting(current.clone())));
-        None
-    }
 }
 
 impl WaitList<SendWaiter> {
@@ -156,17 +115,14 @@ impl WaitList<SendWaiter> {
             let SendWaiter::Waiting(waker) = self.waiter_mut(queued) else {
                 unreachable!("a granted waiter must be claimed before registration");
             };
-            if waker.will_wake(current) {
-                return None;
-            }
-            return Some(mem::replace(waker, current.clone()));
+            return update_waker(waker, current);
         }
         *id = Some(self.push_back(SendWaiter::Waiting(current.clone())));
         None
     }
 
     fn grant_one(&mut self) -> Option<Waker> {
-        let (_, waiter) = self.unlink_first_waiter(|_| true)?;
+        let (_, waiter) = self.unlink_first_waiter()?;
         let SendWaiter::Waiting(waker) = mem::replace(waiter, SendWaiter::Granted) else {
             unreachable!("only waiting operations remain linked");
         };
@@ -174,7 +130,7 @@ impl WaitList<SendWaiter> {
     }
 
     fn take_waiting_waker(&mut self) -> Option<Waker> {
-        let (id, _) = self.unlink_first_waiter(|_| true)?;
+        let (id, _) = self.unlink_first_waiter()?;
         let SendWaiter::Waiting(waker) = self.remove_unlinked_waiter(id) else {
             unreachable!("only waiting operations remain linked");
         };
@@ -340,9 +296,13 @@ impl<T> fmt::Debug for Permit<'_, T> {
 }
 
 impl<T> Permit<'_, T> {
-    /// Enqueues a value using the reserved capacity without waiting for space.
+    /// Publishes a value using this reserved capacity without waiting for space.
     ///
-    /// If the last receiver has been dropped, the error returns ownership of the value.
+    /// This consumes the permit, including when sending fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError`] containing the unsent value if all receivers have been dropped.
     pub fn send(self, value: T) -> Result<(), SendError<T>> {
         let waker = {
             let mut state = self.shared.state.lock();
@@ -424,7 +384,7 @@ impl<T> Drop for Reserve<'_, T> {
             if state.receivers == 0 {
                 return;
             }
-            let retired = remove_waiter(&mut state.send_waiters, id);
+            let retired = state.send_waiters.remove(id);
             // A grant already owns a slot, so returning it does not require a capacity check.
             let waker = if matches!(retired, SendWaiter::Granted) {
                 state.release()
@@ -462,10 +422,7 @@ impl<T> Recv<'_, T> {
                 return Poll::Pending;
             }
         };
-        let retired = self
-            .waiter
-            .take()
-            .map(|id| remove_waiter(&mut state.recv_waiters, id));
+        let retired = self.waiter.take().map(|id| state.recv_waiters.remove(id));
         drop(state);
         let result = outcome.map(|(value, waker)| {
             if let Some(waker) = waker {
@@ -488,9 +445,9 @@ impl<T> Drop for Recv<'_, T> {
             if state.senders == 0 {
                 return;
             }
-            let retired = remove_waiter(&mut state.recv_waiters, id);
+            let retired = state.recv_waiters.remove(id);
             // Hand an unconsumed notification to the next receiver while a value still waits.
-            let waker = if matches!(retired, RecvWaiter::Notified) && !state.values.is_empty() {
+            let waker = if matches!(retired, RetryWaiter::Notified) && !state.values.is_empty() {
                 state.recv_waiters.notify_one()
             } else {
                 None

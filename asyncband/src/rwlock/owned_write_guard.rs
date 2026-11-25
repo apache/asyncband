@@ -38,15 +38,17 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// Ordering follows [`Self::write`].
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
-    /// Pending lock requests complete in order. Cancelling this future loses its place among them
-    /// and releases any reserved permits.
+    /// Dropping a pending future removes the request and returns any permits already assigned to
+    /// it. Retrying joins the back of the queue. The future also releases its owned `Arc`.
     pub async fn write_owned(self: Arc<Self>) -> OwnedRwLockWriteGuard<T> {
-        self.s.acquire(self.max_readers).await;
-        let permits_acquired = self.max_readers;
+        self.state
+            .semaphore()
+            .acquire(self.state.writer_permits())
+            .await;
         OwnedRwLockWriteGuard {
-            access: WriteAccess::new(self, permits_acquired),
+            access: WriteAccess::new(self),
         }
     }
 
@@ -54,10 +56,13 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// This consumes the passed `Arc` even when acquisition fails.
     pub fn try_write_owned(self: Arc<Self>) -> Option<OwnedRwLockWriteGuard<T>> {
-        if self.s.try_acquire(self.max_readers) {
-            let permits_acquired = self.max_readers;
+        if self
+            .state
+            .semaphore()
+            .try_acquire(self.state.writer_permits())
+        {
             Some(OwnedRwLockWriteGuard {
-                access: WriteAccess::new(self, permits_acquired),
+                access: WriteAccess::new(self),
             })
         } else {
             None
@@ -105,9 +110,14 @@ impl<T: ?Sized> DerefMut for OwnedRwLockWriteGuard<T> {
 impl<T: ?Sized> OwnedRwLockWriteGuard<T> {
     /// Selects a component while retaining the same lock access.
     ///
-    /// The closure runs while the original guard is held. If it panics, that guard is released.
+    /// The closure runs while the original guard is held.
     /// Call this as `OwnedRwLockWriteGuard::map(guard, f)` to avoid shadowing methods of the
     /// value.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     pub fn map<U, F>(mut orig: Self, f: F) -> OwnedMappedRwLockWriteGuard<T, U>
     where
         F: FnOnce(&mut T) -> &mut U,
@@ -117,11 +127,19 @@ impl<T: ?Sized> OwnedRwLockWriteGuard<T> {
         OwnedMappedRwLockWriteGuard::new(d, orig.access)
     }
 
-    /// Selects a component, or returns the still-held original guard when the closure returns
-    /// `None`.
+    /// Attempts to select a component while retaining the same lock access.
     ///
-    /// A panic in the closure releases the guard. Call this as
-    /// `OwnedRwLockWriteGuard::filter_map(guard, f)`.
+    /// Call this as `OwnedRwLockWriteGuard::filter_map(guard, f)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(orig)` if `f` returns `None`. The original guard still holds its lock access;
+    /// no unlock occurs on this path.
+    ///
+    /// # Panics
+    ///
+    /// If `f` panics, unwinding drops the consumed guard and releases its lock access. Changes
+    /// already made through the guard are not rolled back.
     pub fn filter_map<U, F>(mut orig: Self, f: F) -> Result<OwnedMappedRwLockWriteGuard<T, U>, Self>
     where
         F: FnOnce(&mut T) -> Option<&mut U>,

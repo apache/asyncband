@@ -35,9 +35,7 @@ use asyncband::mpsc::TrySendError;
 use tests_integration::WakeCounter;
 use tests_integration::poll_once;
 use tests_integration::poll_with;
-use tests_integration::test_runtime;
 use tokio::sync::oneshot;
-use tokio_test::assert_ok;
 
 #[test]
 fn publication_racing_with_close_drops_every_payload_once() {
@@ -266,27 +264,30 @@ fn last_sender_drop_racing_with_receiver_registration_cannot_lose_wakeup() {
     }
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
-fn unbounded_collects_from_multiple_producers() {
+async fn unbounded_collects_from_multiple_producers() {
     let (tx, mut rx) = mpsc::unbounded();
 
-    test_runtime().block_on(async move {
-        for i in 0..8 {
+    let producers = (0..8)
+        .map(|i| {
             let tx = tx.clone();
             tokio::spawn(async move {
                 tx.send(i).unwrap();
-            });
-        }
-        drop(tx);
+            })
+        })
+        .collect::<Vec<_>>();
+    drop(tx);
 
-        let mut received = vec![];
-        while let Ok(i) = rx.recv().await {
-            received.push(i);
-        }
-        received.sort_unstable();
-        assert_eq!(received, (0..8).collect::<Vec<_>>());
-    });
+    let mut received = vec![];
+    while let Ok(i) = rx.recv().await {
+        received.push(i);
+    }
+    for producer in producers {
+        producer.await.unwrap();
+    }
+    received.sort_unstable();
+    assert_eq!(received, (0..8).collect::<Vec<_>>());
 }
 
 #[tokio::test]
@@ -311,71 +312,105 @@ async fn bounded_backpressure_progresses_on_an_executor() {
     assert_eq!(Err(RecvError::Disconnected), rx.recv().await);
 }
 
-#[tokio::test]
-#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
-async fn selection_preserves_messages_across_cancelled_receives() {
-    let (tx1, mut rx1) = mpsc::unbounded::<i32>();
-    let (tx2, mut rx2) = mpsc::unbounded::<i32>();
-    let (tx3, mut rx3) = mpsc::bounded(1);
-    let (tx4, mut rx4) = mpsc::bounded(1);
+#[test]
+fn selection_preserves_messages_across_cancelled_receives() {
+    let (bounded_tx, mut bounded_rx) = mpsc::bounded(1);
+    let (unbounded_tx, mut unbounded_rx) = mpsc::unbounded();
+    let (cancel, cancelled) = oneshot::channel();
+    let (waker, wakes) = WakeCounter::new();
 
-    tokio::spawn(async move {
-        assert_ok!(tx2.send(1));
-        tokio::task::yield_now().await;
-
-        assert_ok!(tx1.send(2));
-        tokio::task::yield_now().await;
-
-        assert_ok!(tx2.send(3));
-        tokio::task::yield_now().await;
-
-        assert_ok!(tx3.send(4).await);
-        tokio::task::yield_now().await;
-
-        assert_ok!(tx4.send(5).await);
-        tokio::task::yield_now().await;
-
-        assert_ok!(tx3.send(6).await);
-        tokio::task::yield_now().await;
-
-        drop((tx1, tx2));
-    });
-
-    let mut msgs = vec![];
-    let mut rx1_disconnected = false;
-    let mut rx2_disconnected = false;
-    let mut rx3_disconnected = false;
-    let mut rx4_disconnected = false;
-
-    while !(rx1_disconnected && rx2_disconnected && rx3_disconnected && rx4_disconnected) {
-        tokio::select! {
-            result = rx1.recv(), if !rx1_disconnected => {
-                match result {
-                    Ok(x) => msgs.push(x),
-                    Err(RecvError::Disconnected) => rx1_disconnected = true,
-                }
+    {
+        let mut selection = pin!(async {
+            tokio::select! {
+                biased;
+                Ok(()) = cancelled => (),
+                _ = bounded_rx.recv() => panic!("bounded receive won the selection"),
+                _ = unbounded_rx.recv() => panic!("unbounded receive won the selection"),
             }
-            result = rx2.recv(), if !rx2_disconnected => {
-                match result {
-                    Ok(y) => msgs.push(y),
-                    Err(RecvError::Disconnected) => rx2_disconnected = true,
-                }
-            }
-            result = rx3.recv(), if !rx3_disconnected => {
-                match result {
-                    Ok(z) => msgs.push(z),
-                    Err(RecvError::Disconnected) => rx3_disconnected = true,
-                }
-            }
-            result = rx4.recv(), if !rx4_disconnected => {
-                match result {
-                    Ok(w) => msgs.push(w),
-                    Err(RecvError::Disconnected) => rx4_disconnected = true,
-                }
-            }
-        }
+        });
+        assert!(poll_with(selection.as_mut(), &waker).is_pending());
+        bounded_tx.try_send(1).unwrap();
+        assert!(wakes.take() > 0);
+        unbounded_tx.send(2).unwrap();
+        assert!(wakes.take() > 0);
+
+        cancel.send(()).unwrap();
+        assert!(poll_with(selection.as_mut(), &waker).is_ready());
     }
 
-    msgs.sort_unstable();
-    assert_eq!(&msgs[..], &[1, 2, 3, 4, 5, 6]);
+    assert_eq!(bounded_rx.try_recv(), Ok(1));
+    assert_eq!(unbounded_rx.try_recv(), Ok(2));
+}
+
+#[test]
+fn bounded_receiver_drop_never_reports_full_on_non_full_channel() {
+    let rounds = if cfg!(miri) { 16 } else { 512 };
+    for _ in 0..rounds {
+        let (tx, rx) = mpsc::bounded::<usize>(8);
+        let start = Barrier::new(4);
+        thread::scope(|scope| {
+            for worker in 0..3 {
+                let tx = tx.clone();
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    if worker % 2 == 0 {
+                        match tx.try_send(worker) {
+                            Ok(()) => {}
+                            Err(TrySendError::Disconnected(_)) => {
+                                assert!(tx.is_disconnected());
+                            }
+                            Err(TrySendError::Full(_)) => {
+                                panic!("3 sends into capacity 8 cannot fill the channel");
+                            }
+                        }
+                    } else {
+                        match tx.try_reserve() {
+                            Ok(permit) => {
+                                let _ = permit.send(worker);
+                            }
+                            Err(TrySendError::Disconnected(())) => {
+                                assert!(tx.is_disconnected());
+                            }
+                            Err(TrySendError::Full(())) => {
+                                panic!("3 reservations on capacity 8 cannot fill the channel");
+                            }
+                        }
+                    }
+                });
+            }
+            start.wait();
+            drop(rx);
+        });
+    }
+}
+
+#[test]
+fn bounded_completed_receives_free_exact_capacity_under_concurrent_try_sends() {
+    let rounds = if cfg!(miri) { 8 } else { 256 };
+    for _ in 0..rounds {
+        let (tx, mut rx) = mpsc::bounded(64);
+        for i in 0..64 {
+            tx.try_send(i).unwrap();
+        }
+        // Free 15 slots (below a typical batch threshold) before launching 12 concurrent sends, so
+        // total occupancy never exceeds 61 / 64 slots and no `try_send` may report `Full`.
+        for i in 0..15 {
+            assert_eq!(rx.try_recv(), Ok(i));
+        }
+
+        let start = Barrier::new(4);
+        thread::scope(|scope| {
+            for producer in 0..4 {
+                let tx = tx.clone();
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    for offset in 0..3 {
+                        tx.try_send(100 + producer * 3 + offset).unwrap();
+                    }
+                });
+            }
+        });
+    }
 }

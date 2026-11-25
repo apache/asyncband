@@ -17,6 +17,7 @@
 
 use std::pin::pin;
 use std::task::Poll;
+use std::thread;
 
 use asyncband::pool::bounded::Pool;
 use asyncband::pool::bounded::PoolConfig;
@@ -150,4 +151,54 @@ fn cancellation_keeps_finished_objects_and_releases_unfilled_reservations() {
         drop(active);
         assert_eq!(pool.status().idle_count, 3);
     }
+}
+
+#[test]
+fn saturated_replenish_does_not_steal_permits_from_idle_checkouts() {
+    const ROUNDS: usize = if cfg!(miri) { 32 } else { 2_000 };
+
+    let pool = Pool::new(PoolConfig::new(2), Manager::default());
+    let _held = ready(pool.get()).unwrap();
+    drop(ready(pool.get()).unwrap());
+    assert_eq!(pool.status().current_size, 2);
+    assert_eq!(pool.status().idle_count, 1);
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            for _ in 0..ROUNDS {
+                assert_eq!(ready(pool.replenish_to(2)), Ok(0));
+            }
+        });
+        scope.spawn(|| {
+            for _ in 0..ROUNDS {
+                let object = ready(pool.get()).unwrap();
+                drop(object);
+            }
+        });
+    });
+
+    // An in-flight creation occupies the second slot via a permit before `current_size` grows.
+    let manager = Manager::default();
+    let pool = Pool::new(PoolConfig::new(2), manager.clone());
+    let first = ready(pool.get()).unwrap();
+    let _in_flight_create = manager.pause_create();
+    let mut creating = pin!(pool.get());
+    assert!(poll_once(creating.as_mut()).is_pending());
+    drop(first);
+    assert_eq!(pool.status().current_size, 1);
+    assert_eq!(pool.status().idle_count, 1);
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            for _ in 0..ROUNDS {
+                assert_eq!(ready(pool.replenish_to(2)), Ok(0));
+            }
+        });
+        scope.spawn(|| {
+            for _ in 0..ROUNDS {
+                let object = ready(pool.get()).unwrap();
+                drop(object);
+            }
+        });
+    });
 }

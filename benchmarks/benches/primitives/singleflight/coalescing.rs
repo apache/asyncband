@@ -58,9 +58,9 @@ fn complete_coalesced(bencher: Bencher, caller_count: usize) {
     });
 }
 
-// The first leader fails; each waiter then retries with an immediately ready initializer.
-// Those retries complete sequentially, so they do not coalesce with each other.
-fn sequential_retries_after_leader_error(bencher: Bencher, caller_count: usize) {
+// All followers join the same entry before the leader fails. One follower retries and the
+// others share its successful result.
+fn coalesced_retry_after_leader_error(bencher: Bencher, caller_count: usize) {
     let group = BenchGroup::default();
     let mut context = bench_context();
     bencher.bench_local(|| {
@@ -71,17 +71,17 @@ fn sequential_retries_after_leader_error(bencher: Bencher, caller_count: usize) 
         }));
         poll_pending(leader.as_mut(), &mut context);
 
-        let mut retries = (1..caller_count)
+        let mut followers = (1..caller_count)
             .map(|_| Box::pin(group.try_work(0, || async { Ok::<usize, ()>(1) })))
             .collect::<Vec<_>>();
-        for retry in &mut retries {
-            poll_pending(retry.as_mut(), &mut context);
+        for follower in &mut followers {
+            poll_pending(follower.as_mut(), &mut context);
         }
 
         gate.set(true);
         let _ = black_box(poll_pinned_ready(leader.as_mut(), &mut context));
-        for mut retry in retries {
-            let _ = black_box(poll_pinned_ready(retry.as_mut(), &mut context));
+        for mut follower in followers {
+            let _ = black_box(poll_pinned_ready(follower.as_mut(), &mut context));
         }
     });
 }
@@ -93,7 +93,7 @@ pub fn register(runner: &mut Runner) {
     for &arg in BATCH_SIZES {
         primitive!(
             runner,
-            sequential_retries_after_leader_error(arg),
+            coalesced_retry_after_leader_error(arg),
             (3_000_000 / arg).max(1)
         );
     }

@@ -451,8 +451,12 @@ fn parked_recv_wakes_when_the_last_sender_drops() {
 
     drop(extra);
     assert_eq!(tracker.count(), 1);
-
+    assert_eq!(
+        expect_ready(recv.as_mut().poll(&mut context)),
+        Err(RecvError::Disconnected)
+    );
     drop(recv);
+
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
 }
 
@@ -500,7 +504,7 @@ async fn recv_reports_disconnection_without_any_message() {
 #[test]
 fn concurrent_senders_deliver_every_message_to_every_receiver() {
     const SENDERS: u64 = 4;
-    const PER_SENDER: u64 = if cfg!(miri) { 8 } else { 512 };
+    const PER_SENDER: u64 = if cfg!(miri) { 16 } else { 600 };
 
     let (tx, rx) = unbounded();
     let mut receivers = Vec::with_capacity(4);
@@ -594,7 +598,332 @@ fn randomized_operations_track_the_reference_model() {
                     (tail - cursor) as usize,
                     "seed {seed}"
                 );
+                assert_eq!(receiver.is_empty(), *cursor == tail, "seed {seed}");
             }
         }
+    }
+}
+
+#[test]
+fn unbounded_receiver_is_disconnected_tracks_final_sender_drop_with_backlog() {
+    let (tx1, mut rx) = unbounded();
+    let tx2 = tx1.clone();
+
+    assert!(!rx.is_disconnected());
+    assert!(rx.is_empty());
+
+    tx1.send(42);
+    drop(tx1);
+    assert!(!rx.is_disconnected());
+    assert!(!rx.is_empty());
+
+    drop(tx2);
+    assert!(rx.is_disconnected());
+    assert!(!rx.is_empty());
+    assert_eq!(*rx.try_recv().unwrap(), 42);
+    assert!(rx.is_empty());
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
+fn recv_and_recv_cloned_panic_when_polled_after_completion() {
+    let (waker, _) = WakeCounter::new();
+
+    let (tx, mut rx) = unbounded();
+    tx.send(7usize);
+    {
+        let mut fut = pin!(rx.recv());
+        assert_eq!(
+            expect_ready(poll_with(fut.as_mut(), &waker)).as_deref(),
+            Ok(&7)
+        );
+        let repoll = catch_unwind(AssertUnwindSafe(|| poll_with(fut.as_mut(), &waker)));
+        assert!(repoll.is_err());
+    }
+
+    tx.send(8usize);
+    {
+        let mut fut = pin!(rx.recv_cloned());
+        assert_eq!(expect_ready(poll_with(fut.as_mut(), &waker)), Ok(8));
+        let repoll = catch_unwind(AssertUnwindSafe(|| poll_with(fut.as_mut(), &waker)));
+        assert!(repoll.is_err());
+    }
+
+    drop(tx);
+    let mut fut = pin!(rx.recv());
+    assert_eq!(
+        expect_ready(poll_with(fut.as_mut(), &waker)),
+        Err(RecvError::Disconnected)
+    );
+    let repoll = catch_unwind(AssertUnwindSafe(|| poll_with(fut.as_mut(), &waker)));
+    assert!(repoll.is_err());
+}
+
+#[test]
+fn overflow_waiters_wake_cancel_and_reuse_slots_cleanly() {
+    let (tx, mut rx0) = unbounded::<usize>();
+    let mut rx1 = tx.subscribe();
+    let mut rx2 = tx.subscribe();
+    let mut rx3 = tx.subscribe();
+
+    let (w0, c0) = WakeCounter::new();
+    let (w1, c1) = WakeCounter::new();
+    let (w1_replacement, c1_replacement) = WakeCounter::new();
+    let (w2, c2) = WakeCounter::new();
+    let (w3, c3) = WakeCounter::new();
+
+    let mut f0 = pin!(rx0.recv());
+    let mut f1 = pin!(rx1.recv());
+    let mut f2 = Box::pin(rx2.recv());
+    assert!(poll_with(f0.as_mut(), &w0).is_pending());
+    assert!(poll_with(f1.as_mut(), &w1).is_pending());
+    assert!(poll_with(f2.as_mut(), &w2).is_pending());
+
+    // Replace an overflow waiter's waker and cancel another overflow waiter so its slot reuses.
+    assert!(poll_with(f1.as_mut(), &w1_replacement).is_pending());
+    drop(f2);
+
+    let mut f3 = pin!(rx3.recv());
+    assert!(poll_with(f3.as_mut(), &w3).is_pending());
+
+    tx.send(99);
+    assert_eq!(c0.count(), 1);
+    assert_eq!(c1.count(), 0);
+    assert_eq!(c1_replacement.count(), 1);
+    assert_eq!(c2.count(), 0);
+    assert_eq!(c3.count(), 1);
+
+    assert_eq!(
+        expect_ready(poll_with(f0.as_mut(), &w0)).as_deref(),
+        Ok(&99)
+    );
+    assert_eq!(
+        expect_ready(poll_with(f1.as_mut(), &w1_replacement)).as_deref(),
+        Ok(&99)
+    );
+    assert_eq!(
+        expect_ready(poll_with(f3.as_mut(), &w3)).as_deref(),
+        Ok(&99)
+    );
+    assert_eq!(rx2.try_recv().as_deref(), Ok(&99));
+    assert_eq!(tx.retained_message_count(), 0);
+}
+
+#[test]
+fn concurrent_subscribe_drop_and_publish_across_segments() {
+    const PRODUCERS: u64 = 3;
+    const MSGS_PER_PRODUCER: u64 = if cfg!(miri) { 12 } else { 320 };
+    const SUBSCRIBER_THREADS: usize = if cfg!(miri) { 2 } else { 6 };
+
+    let (tx, initial_rx) = unbounded::<u64>();
+    drop(initial_rx);
+
+    let producers = (0..PRODUCERS)
+        .map(|p| {
+            let tx = tx.clone();
+            thread::spawn(move || {
+                for seq in 0..MSGS_PER_PRODUCER {
+                    tx.send((p << 32) | seq);
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let subscribers = (0..SUBSCRIBER_THREADS)
+        .map(|_| {
+            let tx = tx.clone();
+            thread::spawn(move || {
+                for round in 0..4 {
+                    let mut rx = tx.subscribe();
+                    let mut last_per_producer = [None::<u64>; PRODUCERS as usize];
+                    for _ in 0..(if cfg!(miri) { 4 } else { 96 }) {
+                        if let Ok(msg) = rx.try_recv() {
+                            let p = (*msg >> 32) as usize;
+                            let seq = *msg & 0xFFFF_FFFF;
+                            if let Some(prev) = last_per_producer[p] {
+                                assert!(seq > prev);
+                            }
+                            last_per_producer[p] = Some(seq);
+                        } else {
+                            thread::yield_now();
+                        }
+                    }
+                    if round % 2 == 0 {
+                        let mut resub = rx.resubscribe();
+                        let _ = resub.try_recv();
+                    }
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in producers {
+        handle.join().unwrap();
+    }
+    for handle in subscribers {
+        handle.join().unwrap();
+    }
+    assert_eq!(tx.retained_message_count(), 0);
+}
+
+#[test]
+fn close_vs_try_recv_linearizability() {
+    let rounds = if cfg!(miri) { 8 } else { 256 };
+    for round in 0..rounds {
+        let (tx1, rx1) = unbounded::<usize>();
+        let rx2 = tx1.subscribe();
+        let tx2 = tx1.clone();
+
+        let p1 = thread::spawn(move || {
+            for i in 0..4 {
+                tx1.send(round * 8 + i);
+            }
+            drop(tx1);
+        });
+        let p2 = thread::spawn(move || {
+            for i in 4..8 {
+                tx2.send(round * 8 + i);
+            }
+            drop(tx2);
+        });
+
+        let drain = |mut rx: UnboundedReceiver<usize>| {
+            thread::spawn(move || {
+                let mut got = Vec::with_capacity(8);
+                loop {
+                    match rx.try_recv() {
+                        Ok(val) => got.push(*val),
+                        Err(TryRecvError::Empty) => thread::yield_now(),
+                        Err(TryRecvError::Disconnected) => {
+                            assert!(rx.is_disconnected());
+                            assert!(rx.is_empty());
+                            break;
+                        }
+                    }
+                }
+                got.sort_unstable();
+                got
+            })
+        };
+
+        let d1 = drain(rx1);
+        let d2 = drain(rx2);
+        p1.join().unwrap();
+        p2.join().unwrap();
+        let expected: Vec<usize> = (round * 8..round * 8 + 8).collect();
+        assert_eq!(d1.join().unwrap(), expected);
+        assert_eq!(d2.join().unwrap(), expected);
+    }
+}
+
+#[test]
+fn completed_recv_futures_can_move_by_value_after_payload_is_dropped() {
+    use std::hint::black_box;
+    use std::pin::Pin;
+
+    let (waker, _) = WakeCounter::new();
+    let (tx, mut rx) = unbounded();
+
+    tx.send(Box::new(42_u64));
+    let mut shared_recv = rx.recv();
+    let arc_box = expect_ready(poll_with(Pin::new(&mut shared_recv), &waker)).unwrap();
+    assert_eq!(**arc_box, 42);
+    drop(arc_box);
+    drop(black_box(shared_recv));
+
+    tx.send(Box::new(99_u64));
+    let mut cloned_recv = rx.recv_cloned();
+    let owned_box = expect_ready(poll_with(Pin::new(&mut cloned_recv), &waker)).unwrap();
+    assert_eq!(*owned_box, 99);
+    drop(owned_box);
+    drop(black_box(cloned_recv));
+}
+
+#[test]
+fn concurrent_drop_last_receiver_and_resubscribe_preserves_retained_count() {
+    use std::sync::Barrier;
+
+    let rounds = if cfg!(miri) { 8 } else { 256 };
+    for _ in 0..rounds {
+        let (tx, rx1) = unbounded::<usize>();
+        for i in 0..12 {
+            tx.send(i);
+        }
+        assert_eq!(tx.retained_message_count(), 12);
+
+        let start = Barrier::new(2);
+        let start_ref = &start;
+        let tx_sub = tx.clone();
+        let mut rx2 = None;
+
+        thread::scope(|scope| {
+            let dropper = scope.spawn(|| {
+                start_ref.wait();
+                drop(rx1);
+            });
+            start.wait();
+            let sub = tx_sub.subscribe();
+            for i in 100..105 {
+                tx_sub.send(i);
+            }
+            rx2 = Some(sub);
+            dropper.join().unwrap();
+        });
+
+        let mut rx2 = rx2.unwrap();
+        assert_eq!(tx.retained_message_count(), 5);
+        for i in 100..105 {
+            assert_eq!(rx2.try_recv().as_deref(), Ok(&i));
+        }
+        assert_eq!(tx.retained_message_count(), 0);
+    }
+}
+
+#[test]
+fn concurrent_lagging_and_caught_up_drops_with_resubscribe_never_corrupt_inline_segment() {
+    use std::sync::Barrier;
+
+    let rounds = if cfg!(miri) { 8 } else { 256 };
+    for _ in 0..rounds {
+        let (tx, rx_lag) = unbounded::<Box<usize>>();
+        let mut rx_fast = tx.subscribe();
+
+        // Cross `INLINE_CAP` (`8`) onto a heap segment while `rx_lag` stays parked on slot 0 of
+        // `inline_seg0` and `rx_fast` drains to the heap segment.
+        for i in 0..14 {
+            tx.send(Box::new(i));
+            assert_eq!(**rx_fast.try_recv().unwrap(), i);
+        }
+
+        let start = Barrier::new(3);
+        let start_ref = &start;
+        let tx_resub = tx.clone();
+        let mut rx_fresh = None;
+
+        thread::scope(|scope| {
+            let lag_drop = scope.spawn(|| {
+                start_ref.wait();
+                drop(rx_lag);
+            });
+            let fast_drop = scope.spawn(|| {
+                start_ref.wait();
+                drop(rx_fast);
+            });
+            start.wait();
+            let sub = tx_resub.subscribe();
+            for i in 1000..1010 {
+                tx_resub.send(Box::new(i));
+            }
+            rx_fresh = Some(sub);
+            lag_drop.join().unwrap();
+            fast_drop.join().unwrap();
+        });
+
+        let mut rx_fresh = rx_fresh.unwrap();
+        for i in 1000..1010 {
+            assert_eq!(**rx_fresh.try_recv().unwrap(), i);
+        }
+        assert_eq!(rx_fresh.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(tx.retained_message_count(), 0);
     }
 }

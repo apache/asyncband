@@ -15,18 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A bounded multi-producer, single-consumer queue for sending values between asynchronous
-//! tasks with backpressure control.
+//! Bounded multi-producer, single-consumer channel with capacity backpressure.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::task::Waker;
+use std::num::NonZeroUsize;
 
-use crate::internal::mutex::Mutex;
-use crate::internal::waitlist::WaitList;
-use crate::mpsc::TryRecvError;
-use crate::mpsc::TrySendError;
+use crate::mpsc::bounded::queue::Shared;
 
+mod queue;
 mod receiver;
 mod sender;
 
@@ -41,10 +36,12 @@ pub use self::sender::Permit;
 /// `reserve` operations enter the wait queue; new senders cannot take an already granted slot.
 ///
 /// Message storage is preallocated for `buffer` values. Queued messages and outstanding
-/// reservations together occupy at most `buffer` capacity units.
-///
-/// The `try_*` methods do not wait for capacity or messages, but may briefly block on an internal
-/// mutex.
+/// reservations together occupy at most `buffer` capacity units. Sending is a two-step operation:
+/// [`BoundedSender::send`] and [`BoundedSender::try_send`] first acquire a capacity unit (just like
+/// [`BoundedSender::reserve`]) and then claim the next queue position to copy the message. While a
+/// concurrent send is between those two steps, another producer can observe
+/// [`TrySendError::Full`](crate::mpsc::TrySendError::Full) before the message becomes visible to
+/// [`BoundedReceiver::try_recv`] or [`BoundedReceiver::is_empty`].
 ///
 /// # Panics
 ///
@@ -52,73 +49,12 @@ pub use self::sender::Permit;
 /// limit.
 #[track_caller]
 pub fn bounded<T>(buffer: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
-    assert!(
-        buffer > 0,
-        "mpsc bounded channel capacity {buffer} must be nonzero",
-    );
-    let shared = Arc::new(Mutex::new(State {
-        queue: VecDeque::with_capacity(buffer),
-        available: buffer,
-        senders: 1,
-        receiver: true,
-        recv_waker: None,
-        send_waiters: WaitList::new(),
-    }));
+    let Some(capacity) = NonZeroUsize::new(buffer) else {
+        panic!("mpsc bounded channel capacity {buffer} must be nonzero");
+    };
+    let shared = Shared::new(capacity);
     (
         BoundedSender::new(shared.clone()),
         BoundedReceiver::new(shared),
     )
-}
-
-// While open, capacity belongs to available, a queued message, a Permit, or a granted waiter.
-// All transitions hold one mutex. Wake callbacks and waker or message destruction run unlocked.
-struct State<T> {
-    queue: VecDeque<T>,
-    available: usize,
-    senders: usize,
-    // True while the receiving endpoint is alive.
-    receiver: bool,
-    recv_waker: Option<Waker>,
-    send_waiters: WaitList<Waiter>,
-}
-
-impl<T> State<T> {
-    fn acquire(&mut self) -> Result<(), TrySendError<()>> {
-        if !self.receiver {
-            Err(TrySendError::Disconnected(()))
-        } else if self.available == 0 {
-            Err(TrySendError::Full(()))
-        } else {
-            self.available -= 1;
-            Ok(())
-        }
-    }
-
-    fn release(&mut self) -> Option<Waker> {
-        if !self.receiver {
-            return None;
-        }
-        if let Some((_, waiter)) = self.send_waiters.unlink_first_waiter(|_| true) {
-            // The detached node owns capacity until its future claims or cancels the grant.
-            waiter.grant = true;
-            return waiter.waker.take();
-        }
-        self.available += 1;
-        None
-    }
-
-    fn pop(&mut self) -> Result<(T, Option<Waker>), TryRecvError> {
-        if let Some(value) = self.queue.pop_front() {
-            Ok((value, self.release()))
-        } else if self.senders == 0 {
-            Err(TryRecvError::Disconnected)
-        } else {
-            Err(TryRecvError::Empty)
-        }
-    }
-}
-
-struct Waiter {
-    grant: bool,
-    waker: Option<Waker>,
 }

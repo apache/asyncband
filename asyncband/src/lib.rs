@@ -20,9 +20,10 @@
 
 //! Composable, runtime-agnostic concurrency building blocks for async Rust.
 //!
-//! `asyncband` provides synchronization, initialization, task coordination, channels, resource
-//! reuse, and workload control without choosing an executor for the application. Its async APIs use
-//! standard futures and wakers, so they can run on Tokio, async-std, smol, or a custom executor.
+//! Apache Asyncband™ (Incubating) provides synchronization, initialization, task coordination,
+//! channels, resource reuse, and workload control without choosing an executor for the
+//! application. Its async APIs use standard futures and wakers, so they can run on Tokio,
+//! async-std, smol, or a custom executor.
 //!
 //! # Getting started
 //!
@@ -30,7 +31,7 @@
 //! Enable the APIs your application needs:
 //!
 //! ```toml
-//! asyncband = { version = "0.7", features = ["mutex", "oneshot"] }
+//! asyncband = { version = "0.8", features = ["mutex", "oneshot"] }
 //! ```
 //!
 //! Then use the selected APIs directly:
@@ -124,6 +125,17 @@
 //!
 //! While incubation status is not necessarily a reflection of the completeness or stability of the
 //! code, it does indicate that the project has yet to be fully endorsed by the ASF.
+//!
+//! # Branding and Trademarks
+//!
+//! Licensed under the [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+//!
+//! Apache Asyncband, Asyncband, Apache, the Apache logo, and the Apache Asyncband project logo are
+//! either registered trademarks or trademarks of The Apache Software Foundation in the United
+//! States and/or other countries. The first and most prominent mentions must use the full form
+//! **Apache Asyncband™**; see the [Apache Product Name Usage
+//! Guide](https://www.apache.org/foundation/marks/guide) and the [ASF Trademark
+//! Policy](https://www.apache.org/foundation/marks/).
 mod internal;
 
 #[cfg(feature = "barrier")]

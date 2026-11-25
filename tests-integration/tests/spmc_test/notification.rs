@@ -252,3 +252,83 @@ fn last_receiver_wakes_pending_sender_and_returns_its_value() {
     let error = expect_ready(poll_once(pending.as_mut())).unwrap_err();
     assert_eq!(error.into_inner(), 1);
 }
+
+#[test]
+fn reservation_waits_for_capacity_handles_cancellation_and_reports_disconnection() {
+    let (mut sender, receiver) = spmc::bounded(1);
+    let competing = receiver.clone();
+
+    let unused = sender.try_reserve().unwrap();
+    assert!(receiver.is_empty());
+    drop(unused);
+
+    let first = sender.try_reserve().unwrap();
+    first.send(10).unwrap();
+    assert!(matches!(sender.try_reserve(), Err(TrySendError::Full(()))));
+
+    // Cancelling a pending reservation before or after notification keeps the slot usable.
+    {
+        let mut cancelled = pin!(sender.reserve());
+        assert!(poll_once(cancelled.as_mut()).is_pending());
+    }
+    let (waker, wakes) = WakeCounter::new();
+    {
+        let mut notified_then_cancelled = pin!(sender.reserve());
+        assert!(poll_with(notified_then_cancelled.as_mut(), &waker).is_pending());
+        assert_eq!(receiver.try_recv(), Ok(10));
+        assert_eq!(wakes.count(), 1);
+    }
+
+    // A pending reservation woken by freeing capacity resolves to a usable permit.
+    sender.try_send(15).unwrap();
+    let (waker, wakes) = WakeCounter::new();
+    {
+        let mut waiting_reserve = pin!(sender.reserve());
+        assert!(poll_with(waiting_reserve.as_mut(), &waker).is_pending());
+        assert_eq!(receiver.try_recv(), Ok(15));
+        assert_eq!(wakes.count(), 1);
+        let permit = expect_ready(poll_once(waiting_reserve.as_mut())).unwrap();
+        permit.send(18).unwrap();
+    }
+    assert_eq!(competing.try_recv(), Ok(18));
+
+    let (rx_waker, rx_wakes) = WakeCounter::new();
+    {
+        let mut waiting_recv = pin!(competing.recv());
+        assert!(poll_with(waiting_recv.as_mut(), &rx_waker).is_pending());
+
+        let permit = sender.try_reserve().unwrap();
+        assert_eq!(rx_wakes.count(), 0);
+        permit.send(20).unwrap();
+        assert_eq!(rx_wakes.count(), 1);
+        assert_eq!(poll_once(waiting_recv.as_mut()), Poll::Ready(Ok(20)));
+    }
+
+    // Receiver disconnection wakes a pending reservation and rejects a previously reserved permit.
+    sender.try_send(30).unwrap();
+    let (reserve_waker, reserve_wakes) = WakeCounter::new();
+    {
+        let mut pending_reserve = pin!(sender.reserve());
+        assert!(poll_with(pending_reserve.as_mut(), &reserve_waker).is_pending());
+        drop(receiver);
+        assert_eq!(reserve_wakes.count(), 0);
+        drop(competing);
+        assert_eq!(reserve_wakes.count(), 1);
+        assert_eq!(
+            expect_ready(poll_once(pending_reserve.as_mut()))
+                .unwrap_err()
+                .into_inner(),
+            ()
+        );
+    }
+    assert!(matches!(
+        sender.try_reserve(),
+        Err(TrySendError::Disconnected(()))
+    ));
+
+    let (mut sender, receiver) = spmc::bounded(1);
+    let permit = sender.try_reserve().unwrap();
+    drop(receiver);
+    assert_eq!(permit.send(40).unwrap_err().into_inner(), 40);
+    assert!(sender.is_disconnected());
+}

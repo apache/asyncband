@@ -25,8 +25,23 @@ use std::task::Poll;
 use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
+use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
+
+enum Waiter {
+    Waiting(Waker),
+    Notified,
+}
+
+impl Waiter {
+    fn mark_notified(&mut self) -> Waker {
+        let Self::Waiting(waker) = mem::replace(self, Self::Notified) else {
+            unreachable!("only waiting nodes remain queued");
+        };
+        waker
+    }
+}
 
 /// A reusable signal that releases one waiter and resets automatically.
 ///
@@ -163,7 +178,7 @@ impl AutoResetEvent {
     /// Merely creating this future neither reserves a signal nor registers the wait.
     /// Signals assigned to other waits cannot be consumed by this wait.
     ///
-    /// # Cancel safety
+    /// # Cancellation
     ///
     /// Dropping this future before it returns `Ready` removes its registration. If a signal was
     /// assigned to it, that signal is passed to another registered wait or stored for a future
@@ -177,10 +192,14 @@ impl AutoResetEvent {
         .await
     }
 
-    /// Waits without borrowing the event.
+    /// Waits for and consumes one signal while owning this [`Arc`].
     ///
-    /// The future owns the [`Arc`], making it suitable for spawned tasks. Its waiting and
-    /// cancellation semantics match [`wait`](Self::wait).
+    /// The future keeps the event alive without borrowing the caller's handle.
+    ///
+    /// # Cancellation
+    ///
+    /// Cancellation has the same signal semantics as [`wait`](Self::wait) and releases the
+    /// future's `Arc`.
     ///
     /// # Examples
     ///
@@ -211,11 +230,7 @@ impl AutoResetEvent {
                         *waiter_id = None;
                         (Poll::Ready(()), None)
                     }
-                    Waiter::Waiting(waker) => {
-                        let retired = (!waker.will_wake(cx.waker()))
-                            .then(|| mem::replace(waker, cx.waker().clone()));
-                        (Poll::Pending, retired)
-                    }
+                    Waiter::Waiting(waker) => (Poll::Pending, update_waker(waker, cx.waker())),
                 },
                 None if state.is_set => {
                     state.is_set = false;
@@ -235,8 +250,7 @@ impl AutoResetEvent {
         let (waiter, waker) = {
             let mut state = self.state.lock();
             // A selected waiter is already detached, but still owns its signal until removal.
-            state.waiters.unlink_waiter(id, |_| true);
-            let waiter = state.waiters.remove_unlinked_waiter(id);
+            let waiter = state.waiters.remove(id);
             let waker = match &waiter {
                 Waiter::Notified => state.signal(),
                 Waiter::Waiting(_) => None,
@@ -274,21 +288,13 @@ struct State {
 
 impl State {
     fn signal(&mut self) -> Option<Waker> {
-        if let Some((_, waiter)) = self.waiters.unlink_first_waiter(|_| true) {
-            let Waiter::Waiting(waker) = mem::replace(waiter, Waiter::Notified) else {
-                unreachable!("only unselected waits remain queued")
-            };
-            Some(waker)
+        if let Some((_, waiter)) = self.waiters.unlink_first_waiter() {
+            Some(waiter.mark_notified())
         } else {
             self.is_set = true;
             None
         }
     }
-}
-
-enum Waiter {
-    Waiting(Waker),
-    Notified,
 }
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]

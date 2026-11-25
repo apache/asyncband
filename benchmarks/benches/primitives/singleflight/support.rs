@@ -19,15 +19,8 @@ use std::hash::BuildHasherDefault;
 use std::hash::DefaultHasher;
 
 use asyncband::singleflight::Group;
-use benchmarks::support::thread_slot_ticket;
 
 pub const BATCH_SIZES: &[usize] = &[2, 4, 16];
 pub const THREAD_COUNTS: &[usize] = &[1, 2, 4, 8];
 
 pub type BenchGroup = Group<usize, usize, BuildHasherDefault<DefaultHasher>>;
-
-// A worker has at most one call in flight, so its process-unique slot is sufficient. Reusing
-// that key still exercises insert/work/remove because Group does not cache completed values.
-pub fn unique_thread_key() -> usize {
-    thread_slot_ticket().0
-}

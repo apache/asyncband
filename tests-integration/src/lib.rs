@@ -22,7 +22,6 @@ use std::panic::resume_unwind;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -33,21 +32,15 @@ use std::task::RawWakerVTable;
 use std::task::Wake;
 use std::task::Waker;
 use std::thread;
+#[cfg(not(miri))]
 use std::time::Duration;
-
-use tokio::runtime::Runtime;
 
 /// Polls a pinned future once with a no-op waker.
 pub fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(Waker::noop()))
 }
 
-/// Returns the runtime shared by synchronous integration tests.
-pub fn test_runtime() -> &'static Runtime {
-    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| Runtime::new().unwrap())
-}
-
+#[track_caller]
 pub fn expect_ready<T>(poll: Poll<T>) -> T {
     match poll {
         Poll::Ready(value) => value,
@@ -84,6 +77,34 @@ impl Wake for WakeCounter {
 
     fn wake_by_ref(self: &Arc<Self>) {
         self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub struct TestTask<F> {
+    future: Pin<Box<F>>,
+    waker: Waker,
+    wakes: Arc<WakeCounter>,
+}
+
+impl<F: Future> TestTask<F> {
+    pub fn new(future: F) -> Self {
+        let (waker, wakes) = WakeCounter::new();
+        Self {
+            future: Box::pin(future),
+            waker,
+            wakes,
+        }
+    }
+
+    pub fn poll(&mut self) -> Poll<F::Output> {
+        self.wakes.take();
+        self.future
+            .as_mut()
+            .poll(&mut Context::from_waker(&self.waker))
+    }
+
+    pub fn is_woken(&self) -> bool {
+        self.wakes.count() > 0
     }
 }
 
