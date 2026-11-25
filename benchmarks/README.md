@@ -31,7 +31,7 @@ One `benchmarks` target (`cargo x bench`) unifies three complementary views:
 
 1. **Self-comparison (`--baseline-only`)**: runs only the reference implementation on matching scenarios, covering fast-path operations, stack-pinned handoffs, and targeted cancellation or reclamation checks on Asyncband's own state machines.
 2. **Classic concurrency workloads**: single-thread batch queues (`seq-batch`), scheduled Tokio `multi_thread` (`4w`) and `current_thread` topologies (`1p1c`, `4p1c`, `1p4c`, `4p4c`, `1p4r`, `request-reply`), and contended locks, semaphores, watch, and wait groups.
-3. **Ecosystem comparisons (`--peers-only`)**: filters to multi-implementation comparisons using contract-matched adapters against `tokio::sync`, `flume`, `async-channel`, `async-broadcast`, and `tokio_util::task::TaskTracker`. Lossless bounded broadcast excludes Tokio's overwrite-on-full channel, whereas unbackpressured broadcast sizes bounded rings for the full batch so no values drop.
+3. **Ecosystem comparisons (`--peers-only`)**: filters to multi-implementation comparisons using contract-matched adapters against `tokio::sync`, `flume`, `async-channel`, `async-broadcast`, and `tokio_util::task::TaskTracker`. Lossless bounded broadcast excludes Tokio's overwrite-on-full channel, unbackpressured broadcast sizes bounded rings for the full batch so no values drop, and `-shared` broadcast controls wrap owning peers' messages in `Arc` to match Asyncband's shared `Arc<T>` delivery contract.
 
 ## Usage
 

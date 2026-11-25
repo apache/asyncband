@@ -18,6 +18,7 @@
 use std::future::Future;
 use std::hint::black_box;
 use std::pin::pin;
+use std::sync::Arc;
 
 use benchmarks::harness::Runner;
 use benchmarks::implementations;
@@ -186,6 +187,47 @@ impl BackpressureBroadcastPeer for AsyncBroadcast {
     }
 }
 
+/// Wraps each message in `Arc<usize>` so `async-broadcast` matches Asyncband's shared `Arc<T>`
+/// delivery contract.
+struct AsyncBroadcastShared;
+
+impl BroadcastPeer for AsyncBroadcastShared {
+    type Tx = async_broadcast::Sender<Arc<usize>>;
+    type Rx = async_broadcast::Receiver<Arc<usize>>;
+
+    fn channel(capacity: usize) -> (Self::Tx, Self::Rx) {
+        async_broadcast::broadcast(capacity)
+    }
+
+    fn subscribe(tx: &Self::Tx) -> Self::Rx {
+        tx.new_receiver()
+    }
+
+    #[inline]
+    fn try_send(tx: &Self::Tx, value: usize) {
+        tx.try_broadcast(Arc::new(value)).unwrap();
+    }
+
+    #[inline]
+    fn try_recv(rx: &mut Self::Rx) -> usize {
+        *black_box(rx.try_recv().unwrap())
+    }
+
+    async fn send_range(tx: Self::Tx, start: usize, end: usize) {
+        for value in start..end {
+            tx.broadcast_direct(Arc::new(value)).await.unwrap();
+        }
+    }
+
+    async fn recv_exact(mut rx: Self::Rx, count: usize) -> usize {
+        let mut sum = 0usize;
+        for _ in 0..count {
+            sum = sum.wrapping_add(*black_box(rx.recv_direct().await.unwrap()));
+        }
+        sum
+    }
+}
+
 struct Tokio;
 
 impl BroadcastPeer for Tokio {
@@ -225,22 +267,98 @@ impl BroadcastPeer for Tokio {
     }
 }
 
+/// Wraps each message in `Arc<usize>` so `tokio::sync::broadcast` matches Asyncband's shared
+/// `Arc<T>` delivery contract.
+struct TokioShared;
+
+impl BroadcastPeer for TokioShared {
+    type Tx = tokio::sync::broadcast::Sender<Arc<usize>>;
+    type Rx = tokio::sync::broadcast::Receiver<Arc<usize>>;
+
+    fn channel(capacity: usize) -> (Self::Tx, Self::Rx) {
+        tokio::sync::broadcast::channel(capacity)
+    }
+
+    fn subscribe(tx: &Self::Tx) -> Self::Rx {
+        tx.subscribe()
+    }
+
+    #[inline]
+    fn try_send(tx: &Self::Tx, value: usize) {
+        tx.send(Arc::new(value)).unwrap();
+    }
+
+    #[inline]
+    fn try_recv(rx: &mut Self::Rx) -> usize {
+        *black_box(rx.try_recv().unwrap())
+    }
+
+    async fn send_range(tx: Self::Tx, start: usize, end: usize) {
+        for value in start..end {
+            tx.send(Arc::new(value)).unwrap();
+        }
+    }
+
+    async fn recv_exact(mut rx: Self::Rx, count: usize) -> usize {
+        let mut sum = 0usize;
+        for _ in 0..count {
+            sum = sum.wrapping_add(*black_box(rx.recv().await.unwrap()));
+        }
+        sum
+    }
+}
+
+fn bench_try_fanout_4<B: BroadcastPeer>(bencher: benchmarks::harness::Bencher<'_>) {
+    let (tx, r0) = B::channel(BOUNDED_CAPACITY);
+    let mut receivers = [r0, B::subscribe(&tx), B::subscribe(&tx), B::subscribe(&tx)];
+    bencher.bench_local(|| {
+        B::try_send(&tx, black_box(1usize));
+        let mut sum = 0usize;
+        for rx in &mut receivers {
+            sum = sum.wrapping_add(B::try_recv(rx));
+        }
+        sum
+    });
+}
+
+fn bench_no_backpressure_tasks_1p4r<B: BroadcastPeer>(bencher: benchmarks::harness::Bencher<'_>) {
+    let runtime = multi_thread(WORKERS);
+    bencher.bench_local(|| {
+        let (tx, r0) = B::channel(BROADCAST_MESSAGES);
+        let receivers = vec![r0, B::subscribe(&tx), B::subscribe(&tx), B::subscribe(&tx)];
+        run_broadcast_batch(
+            &runtime,
+            BROADCAST_MESSAGES,
+            vec![tx],
+            receivers,
+            B::send_range,
+            B::recv_exact,
+        );
+    });
+}
+
 pub fn register(runner: &mut Runner) {
     runner.compare(
         "broadcast/bounded/try-fanout-4",
         6_500_000,
-        implementations!([AsyncbandBounded, AsyncBroadcast, Tokio], |B, bencher| {
-            let (tx, r0) = B::channel(BOUNDED_CAPACITY);
-            let mut receivers = [r0, B::subscribe(&tx), B::subscribe(&tx), B::subscribe(&tx)];
-            bencher.bench_local(|| {
-                B::try_send(&tx, black_box(1usize));
-                let mut sum = 0usize;
-                for rx in &mut receivers {
-                    sum = sum.wrapping_add(B::try_recv(rx));
-                }
-                sum
-            });
-        }),
+        implementations!(
+            [AsyncbandBounded, AsyncbandUnbounded, AsyncBroadcast, Tokio],
+            |B, bencher| bench_try_fanout_4::<B>(bencher)
+        ),
+    );
+
+    runner.compare(
+        "broadcast/bounded/try-fanout-4-shared",
+        6_500_000,
+        implementations!(
+            [
+                AsyncbandBounded,
+                AsyncbandUnbounded,
+                AsyncBroadcastShared,
+                TokioShared,
+            ],
+            |B, bencher| bench_try_fanout_4::<B>(bencher)
+        ),
     );
 
     runner.compare(
@@ -358,22 +476,21 @@ pub fn register(runner: &mut Runner) {
         350,
         implementations!(
             [AsyncbandBounded, AsyncbandUnbounded, Tokio, AsyncBroadcast],
-            |B, bencher| {
-                let runtime = multi_thread(WORKERS);
-                bencher.bench_local(|| {
-                    let (tx, r0) = B::channel(BROADCAST_MESSAGES);
-                    let receivers =
-                        vec![r0, B::subscribe(&tx), B::subscribe(&tx), B::subscribe(&tx)];
-                    run_broadcast_batch(
-                        &runtime,
-                        BROADCAST_MESSAGES,
-                        vec![tx],
-                        receivers,
-                        B::send_range,
-                        B::recv_exact,
-                    );
-                });
-            }
+            |B, bencher| bench_no_backpressure_tasks_1p4r::<B>(bencher)
+        ),
+    );
+
+    runner.compare(
+        "broadcast/no-backpressure/tasks-1p4r-shared",
+        350,
+        implementations!(
+            [
+                AsyncbandBounded,
+                AsyncbandUnbounded,
+                TokioShared,
+                AsyncBroadcastShared,
+            ],
+            |B, bencher| bench_no_backpressure_tasks_1p4r::<B>(bencher)
         ),
     );
 }

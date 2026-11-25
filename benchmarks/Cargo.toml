@@ -25,7 +25,11 @@ rust-version.workspace = true
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = [
+  "parking_lot",
+  "rt-multi-thread",
+  "sync",
+] }
 
 [dev-dependencies]
 async-broadcast = { workspace = true }
