@@ -17,7 +17,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Apache Asyncband (Incubating)
+# Apache Asyncband™ (Incubating)
 
 [![Crates.io][crates-badge]][crates-url]
 [![Documentation][docs-badge]][docs-url]
@@ -37,7 +37,7 @@ under the License.
 
 > [!IMPORTANT]
 >
-> Apache Asyncband (incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC.
+> Apache Asyncband (Incubating) is an effort undergoing incubation at the Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC.
 >
 > Please read the [DISCLAIMER](DISCLAIMER) and a full explanation of ["incubating"](https://incubator.apache.org/policy/incubation.html).
 >
@@ -45,7 +45,7 @@ under the License.
 
 ## Overview
 
-Asyncband is a focused collection of composable, runtime-agnostic concurrency building blocks for async Rust. It provides synchronization, initialization, task coordination, channels, resource reuse, and workload control without choosing an executor for the application.
+Apache Asyncband™ is a focused collection of composable, runtime-agnostic concurrency building blocks for async Rust. It provides synchronization, initialization, task coordination, channels, resource reuse, and workload control without choosing an executor for the application.
 
 Asyncband's async APIs build on standard Rust `Future` and `Waker` contracts without binding to a concrete executor, I/O reactor, or OS timer driver, and compose directly with native `async`/`await` control flow rather than callback or combinator chains. Applications can poll its futures on Tokio, async-std, smol, or a custom executor; see [DESIGN.md](DESIGN.md) for the project's architectural guidelines.
 
@@ -161,8 +161,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to build, test, and contribute to Asyncba
 
 Report suspected vulnerabilities privately to [security@apache.org](mailto:security@apache.org), with "Asyncband" in the subject. Follow the [ASF vulnerability reporting process](https://security.apache.org/report/) and see [SECURITY-THREAT-MODEL.md](SECURITY-THREAT-MODEL.md) for scope details.
 
+## Branding
+
+The first and most prominent mentions must use the full form: **Apache Asyncband™** (and **Apache Asyncband™ (Incubating)** while undergoing incubation) for any individual usage (webpage, handout, slides, etc.). Depending on the context and writing style, you should use the full form of the name sufficiently often to ensure that readers clearly understand the association of both the Asyncband project and the Asyncband software product to the ASF as the parent organization.
+
+Source code is licensed under the Apache License, Version 2.0, which does not grant rights to use the project names, logos, or icons; third-party distributions or derivative works must comply with the [ASF Trademark Policy](https://www.apache.org/foundation/marks/) and use distinct branding.
+
+For more details, see the [Apache Product Name Usage Guide](https://www.apache.org/foundation/marks/guide).
+
 ## License and Trademarks
 
 This project is licensed under [Apache License, Version 2.0](LICENSE); the license file also records incorporated third-party works and their terms.
 
-Apache Asyncband, Asyncband, and Apache are either registered trademarks or trademarks of The Apache Software Foundation in the United States and/or other countries.
+Apache Asyncband, Asyncband, Apache, the Apache logo, and the Apache Asyncband project logo are either registered trademarks or trademarks of The Apache Software Foundation in the United States and/or other countries. All other marks mentioned may be trademarks or registered trademarks of their respective owners.

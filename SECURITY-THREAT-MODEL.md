@@ -19,7 +19,7 @@ under the License.
 
 # Security Threat Model
 
-This model describes the security boundary of Apache Asyncband (Incubating), including its synchronization primitives, channels, initialization and work-coalescing utilities, object pools, and blocking adapter. Use it alongside the affected version's API documentation when assessing a report.
+This model describes the security boundary of Apache Asyncband™ (Incubating), including its synchronization primitives, channels, initialization and work-coalescing utilities, object pools, and blocking adapter. Use it alongside the affected version's API documentation when assessing a report.
 
 ## Reporting a vulnerability
 

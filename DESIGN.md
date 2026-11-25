@@ -19,7 +19,7 @@ under the License.
 
 # Architectural Design Guidelines
 
-This document states the high-level architectural direction for Apache Asyncband (Incubating). Concrete layouts, naming, and state transitions belong in the code; workspace conventions live in [AGENTS.md](AGENTS.md), and security boundaries live in [SECURITY-THREAT-MODEL.md](SECURITY-THREAT-MODEL.md).
+This document states the high-level architectural direction for Apache Asyncband™ (Incubating). Concrete layouts, naming, and state transitions belong in the code; workspace conventions live in [AGENTS.md](AGENTS.md), and security boundaries live in [SECURITY-THREAT-MODEL.md](SECURITY-THREAT-MODEL.md).
 
 ## Scope and Composition
 

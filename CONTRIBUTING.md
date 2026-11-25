@@ -19,7 +19,7 @@ under the License.
 
 # Contributing
 
-Thank you for contributing to Apache Asyncband (Incubating)!
+Thank you for contributing to Apache Asyncband™ (Incubating)!
 
 Architectural guidelines live in [DESIGN.md](DESIGN.md). Workspace structure, development commands, Rust style, waker and API documentation contracts, changelog rules, and pull request conventions for all contributors (human and AI) live in [AGENTS.md](AGENTS.md). Read both before planning or submitting changes.
 
