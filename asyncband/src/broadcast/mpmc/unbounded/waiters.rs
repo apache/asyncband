@@ -15,16 +15,72 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::sync::Arc;
+use std::sync::Condvar;
+use std::sync::PoisonError;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Waker;
 
+use crate::internal::mutex::Mutex;
 use crate::internal::register_waker;
 use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
+pub struct SlotPark {
+    active: AtomicUsize,
+    seq: Mutex<u64>,
+    condvar: Condvar,
+}
+
+impl SlotPark {
+    fn new() -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            seq: Mutex::new(0),
+            condvar: Condvar::new(),
+        }
+    }
+
+    #[inline]
+    pub fn snapshot(&self) -> u64 {
+        *self.seq.lock()
+    }
+
+    pub fn wait(&self, seen: u64) {
+        let cur = self.seq.lock();
+        if *cur == seen {
+            drop(
+                self.condvar
+                    .wait(cur)
+                    .unwrap_or_else(PoisonError::into_inner),
+            );
+        }
+    }
+
+    pub fn notify_all(&self) {
+        let mut seq = self.seq.lock();
+        *seq = seq.wrapping_add(1);
+        drop(seq);
+        self.condvar.notify_all();
+    }
+
+    #[inline]
+    pub fn leave(&self) -> bool {
+        self.active.fetch_sub(1, Ordering::AcqRel) == 1
+    }
+
+    #[inline]
+    pub fn is_idle(&self) -> bool {
+        self.active.load(Ordering::Acquire) == 0
+    }
+}
+
 pub struct Waiters {
     pub slot0: Option<Waker>,
     overflow: WakerSet,
+    sync_park: Option<Arc<SlotPark>>,
 }
 
 impl Waiters {
@@ -32,12 +88,42 @@ impl Waiters {
         Self {
             slot0: None,
             overflow: WakerSet::new(),
+            sync_park: None,
         }
     }
 
     #[inline]
+    pub fn has_active_sync(&self) -> bool {
+        self.sync_park.as_ref().is_some_and(|park| !park.is_idle())
+    }
+
+    #[inline]
+    pub fn active_sync_park(&self) -> Option<Arc<SlotPark>> {
+        self.sync_park
+            .as_ref()
+            .filter(|park| !park.is_idle())
+            .cloned()
+    }
+
+    pub fn enter_sync(&mut self) -> Arc<SlotPark> {
+        let park = self
+            .sync_park
+            .get_or_insert_with(|| Arc::new(SlotPark::new()))
+            .clone();
+        park.active.fetch_add(1, Ordering::Relaxed);
+        park
+    }
+
+    #[cfg(test)]
+    pub fn sync_waiter_count(&self) -> usize {
+        self.sync_park
+            .as_ref()
+            .map_or(0, |park| park.active.load(Ordering::Acquire))
+    }
+
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.slot0.is_none() && self.overflow.is_empty()
+        self.slot0.is_none() && self.overflow.is_empty() && !self.has_active_sync()
     }
 
     #[inline]
