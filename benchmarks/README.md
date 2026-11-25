@@ -19,45 +19,39 @@ under the License.
 
 # Benchmarks
 
-[Benchmark In Milliseconds](https://matklad.github.io/2026/10/05/benchmark-milliseconds.html) suggests timing enough useful work to take about 300 ms. Here that target applies to a **reference revision of Asyncband**: once a scenario has a fixed round count, every implementation and later revision runs that exact workload, and a faster implementation takes less time.
+Following [Benchmark In Milliseconds](https://matklad.github.io/2026/10/05/benchmark-milliseconds.html), each scenario fixes a round count calibrated so the Asyncband reference finishes near 300 ms on a reference run. Every implementation and revision runs that exact same workload, so a faster implementation takes less wall time. Runs interleave peers and rotate which implementation starts first, reporting integer-millisecond medians alongside the full `min..max` range (and raw sample milliseconds with `--raw`).
 
-`cargo x bench` runs the `ecosystem` and `primitives` targets by default (`upgradable_stages` is selected explicitly with `--bench upgradable_stages`):
+## Timing Contract
+
+`Bencher` times only the measured operation loop or barrier-gated parallel window. Runtime worker creation and teardown and reusable fixture setup happen outside the clock, whereas single-use primitives (`oneshot`, `Once`, `Completion`, `WaitGroup`, `Shutdown`) and per-batch task spawns execute inside the timed round as part of their workload contract, while each repetition still starts from fresh state. Hand-polled scenarios stack-pin waiter futures with `std::pin::pin!`, and wakeup scenarios poll all woken waiters to `Poll::Ready` unless cancellation itself is under test.
+
+## Suite Roles
+
+One `benchmarks` target (`cargo x bench`) unifies three complementary views:
+
+1. **Self-comparison (`--baseline-only`)**: runs only the reference implementation on matching scenarios, covering fast-path operations, stack-pinned handoffs, and targeted cancellation or reclamation checks on Asyncband's own state machines.
+2. **Classic concurrency workloads**: single-thread batch queues (`seq-batch`), scheduled Tokio `multi_thread` (`4w`) and `current_thread` topologies (`1p1c`, `4p1c`, `1p4c`, `4p4c`, `1p4r`, `request-reply`), and contended locks, semaphores, watch, and wait groups.
+3. **Ecosystem comparisons (`--peers-only`)**: filters to multi-implementation comparisons using contract-matched adapters against `tokio::sync`, `flume`, `async-channel`, `async-broadcast`, and `tokio_util::task::TaskTracker`. Lossless bounded broadcast excludes Tokio's overwrite-on-full channel, unbackpressured broadcast sizes bounded rings for the full batch so no values drop, and `-shared` broadcast controls wrap owning peers' messages in `Arc` to match Asyncband's shared `Arc<T>` delivery contract.
+
+## Usage
 
 ```shell
 cargo x bench --no-run
+cargo x bench -- --list
 cargo x bench -- --test
+cargo x bench -- mutex/uncontended --repeat 10 --raw
+cargo x bench -- --peers-only --repeat 5
+cargo x bench -- mutex/uncontended --baseline-only --rounds 50000000 --repeat 5
 ```
 
-## Compare implementations (`ecosystem`)
+Substrings passed as positional filters must all match the scenario name. Use `--test` in CI and local smoke checks to execute every workload once per worker without timing claims.
 
-```shell
-cargo x bench --bench ecosystem -- --list
-cargo x bench --bench ecosystem -- mpsc/bounded/try-roundtrip --repeat 10 --raw
-cargo x bench --bench ecosystem -- tasks-1p1c-cap1024 --rounds 320 --repeat 10
-```
+## Calibrating Baselines
 
-Each scenario fixes the payload, topology, runtime configuration, observable delivery contract, and round count; filters are substrings that a scenario name must match in full. Each table reports the median elapsed time, full `min..max` range in integer milliseconds, and ratio against the scenario's reference implementation across five interleaved, order-rotated runs (`--raw` prints individual runs in measurement order). The clock covers fixture setup through worker shutdown and cleanup.
+1. Run the scenario with `--baseline-only` and adjust `--rounds` until the Asyncband reference median lands near 300 ms on the target machine.
+2. Record that round count in the scenario registration and run all peers under the same workload, toolchain, and hardware.
+3. If a scenario's work unit, adapter contract, or timing boundary changes, recalibrate and treat the result as a new baseline.
 
-Independently sized scenarios are not a throughput ranking; pass `--rounds N` when comparing different scenarios whose work units match. Notable workload conventions:
+## Adding Benchmarks
 
-- **Batch sizes**: a round transfers 16,384 messages for MPSC, MPMC, and SPMC, publishes 4,096 values to every broadcast subscriber, or performs one send and receive in `*-roundtrip`.
-- **MPSC**: scheduled task cases share a Tokio runtime and run one priming batch inside the timed interval; `-inline1k` and `-boxed1k` compare inline copying against heap indirection (including box allocation and drop).
-- **Broadcast**: lossless bounded cases exclude Tokio (which overwrites at capacity); no-backpressure cases size bounded peers for the entire batch, `-shared` controls require every peer to deliver a shared `Arc` per message, and `sequential-drain-4r` vs `drain-4r` separates single-thread cursor work from parallel receiver contention on a reused channel.
-- **SPMC and WaitGroup**: SPMC uses Asyncband's SPMC channel as the reference with MPMC as a peer; WaitGroup's four-observer drain adapts single-waiter `waitgroup` via `FutureExt::shared` and Tokio via a closed `TaskTracker`.
-
-## Set and preserve a baseline
-
-1. Pick a fixed reference revision (currently `c37b1a4` for the initial ecosystem suite).
-2. Run `--baseline-only --rounds <N> --repeat 5` and choose a round count that puts the reference median near 300 ms, checking the `min..max` range for noise.
-3. Commit that count in the scenario registration so all peers and later revisions run the identical work size.
-4. When a workload definition or timing boundary changes, recalibrate and treat both sides under the new definition as a new baseline.
-
-## Diagnose Asyncband primitives (`primitives` and `upgradable_stages`)
-
-```shell
-cargo x bench --bench primitives -- --list
-cargo x bench --bench primitives -- mutex::lock::uncontended_reuse --repeat 10
-cargo x bench --bench upgradable_stages
-```
-
-`primitives` measures Asyncband-only operation cycles for before/after comparisons: hand-polled cases use a reference-counted non-scheduling waker, and `threads=N` cases synchronize at a barrier and split a constant total round count across workers. `upgradable_stages` breaks `UpgradableRwLock` down into hand-polled acquisition and promotion stages alongside an empty timing interval (`-- --test` runs one smoke pass in CI; use `upgradable_read_then_upgrade` in `primitives` for uninstrumented whole-cycle timing).
+Add scenarios only for genuine hot paths, representative multi-task topologies, or targeted reclamation regressions. Avoid cold-path method completionism, allocator-dominated boxed payloads that mask queue or lock behavior, and issue-specific throwaway harnesses.

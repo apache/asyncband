@@ -28,12 +28,6 @@ pub struct CommandBench {
     no_run: bool,
 
     #[arg(
-        long,
-        help = "Select a target (ecosystem, primitives, or upgradable_stages; default: ecosystem and primitives)."
-    )]
-    bench: Option<String>,
-
-    #[arg(
         last = true,
         conflicts_with = "no_run",
         help = "Arguments passed to the fixed-workload benchmark runner (see -- --help)."
@@ -43,21 +37,19 @@ pub struct CommandBench {
 
 impl CommandBench {
     pub fn run(self) {
-        run_command(make_bench_cmd(
-            self.no_run,
-            self.bench.as_deref(),
-            &self.args,
-        ));
+        run_command(make_bench_cmd(self.no_run, &self.args));
     }
 }
 
-fn make_bench_cmd(no_run: bool, bench: Option<&str>, args: &[String]) -> process::Command {
+fn make_bench_cmd(no_run: bool, args: &[String]) -> process::Command {
     let mut cmd = find_command("cargo");
-    cmd.args(["bench", "--workspace", "--all-features"]);
-    match bench {
-        Some(bench) => cmd.args(["--bench", bench]),
-        None => cmd.args(["--bench", "ecosystem", "--bench", "primitives"]),
-    };
+    cmd.args([
+        "bench",
+        "--workspace",
+        "--all-features",
+        "--bench",
+        "benchmarks",
+    ]);
     if no_run {
         cmd.arg("--no-run");
     }

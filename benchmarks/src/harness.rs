@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::cell::Cell;
 use std::hint::black_box;
 use std::num::NonZeroUsize;
 use std::sync::Barrier;
@@ -24,31 +25,19 @@ use std::time::Instant;
 
 use clap::Parser;
 
-/// Register a primitive by its Rust path, including its input and worker count when present.
-#[macro_export]
-macro_rules! primitive {
-    ($runner:expr, $op:ident $(($arg:ident))?, $rounds:expr $(, threads = $threads:ident)?) => {{
-        let name = concat!(module_path!(), "::", stringify!($op));
-        $(let name = format!("{name}/{}", $arg);)?
-        $(let name = format!("{name}/threads={}", $threads);)?
-        $runner.case(name, $rounds, $crate::primitive!(@threads $($threads)?), |b| $op(b $(, $arg)?));
-    }};
-    (@threads) => { 1 };
-    (@threads $threads:ident) => { $threads };
-}
-
 /// Instantiate the same operation and parameters for each adapter. The first is the reference.
 #[macro_export]
 macro_rules! implementations {
     ([$($implementation:ident),+ $(,)?], |$adapter:ident, $bench:ident| $work:expr) => {
-        &[$((stringify!($implementation), &(|$bench| {
+        &[$((stringify!($implementation), &(|$bench: $crate::harness::Bencher<'_>| {
             type $adapter = $implementation;
             $work
-        }) as &dyn Fn($crate::harness::Bencher))),+]
+        }) as &dyn Fn($crate::harness::Bencher<'_>))),+]
     };
 }
 
-type Implementation<'a> = (&'a str, &'a dyn Fn(Bencher));
+/// Named benchmark workload closure used in comparison scenarios.
+pub type Implementation<'a> = (&'a str, &'a dyn Fn(Bencher<'_>));
 
 #[derive(Parser)]
 #[command(about = "Compare implementations at a fixed amount of work.")]
@@ -70,6 +59,9 @@ struct Options {
     /// Run only the scenario's Asyncband reference, e.g. to choose its fixed work size.
     #[arg(long)]
     baseline_only: bool,
+    /// Run only comparison scenarios that include peer implementations.
+    #[arg(long, conflicts_with = "baseline_only")]
+    peers_only: bool,
     /// Include individual elapsed times in their original order.
     #[arg(long)]
     raw: bool,
@@ -78,12 +70,14 @@ struct Options {
     _bench: bool,
 }
 
+/// Fixed-workload benchmark runner with interleaved peer execution and rotation.
 pub struct Runner {
     options: Options,
     matched: usize,
 }
 
 impl Runner {
+    /// Parses benchmark CLI options from the process arguments.
     pub fn from_args() -> Self {
         Self {
             options: Options::parse(),
@@ -91,18 +85,23 @@ impl Runner {
         }
     }
 
-    /// A primitive workload has a single implementation and may divide rounds among threads.
-    pub fn case(
-        &mut self,
-        name: impl AsRef<str>,
-        rounds: usize,
-        threads: usize,
-        workload: impl Fn(Bencher),
-    ) {
-        self.run(name.as_ref(), rounds, threads, &[("Asyncband", &workload)]);
+    /// Runs a single-threaded Asyncband workload for `rounds` iterations.
+    pub fn local(&mut self, name: &str, rounds: usize, workload: impl Fn(Bencher<'_>)) {
+        self.run(name, rounds, 1, &[("Asyncband", &workload)]);
     }
 
-    /// All adapters for one scenario use the same rounds. The first is its Asyncband reference.
+    /// Runs an Asyncband workload dividing `rounds` across `threads` OS threads.
+    pub fn parallel(
+        &mut self,
+        name: &str,
+        rounds: usize,
+        threads: usize,
+        workload: impl Fn(Bencher<'_>),
+    ) {
+        self.run(name, rounds, threads, &[("Asyncband", &workload)]);
+    }
+
+    /// Compares implementations on the same `rounds` budget. The first entry is the reference.
     pub fn compare(&mut self, name: &str, rounds: usize, implementations: &[Implementation<'_>]) {
         self.run(name, rounds, 1, implementations);
     }
@@ -120,6 +119,9 @@ impl Runner {
             .iter()
             .all(|filter| name.contains(filter))
         {
+            return;
+        }
+        if self.options.peers_only && implementations.len() <= 1 {
             return;
         }
         self.matched += 1;
@@ -151,7 +153,16 @@ impl Runner {
         }
         if self.options.test {
             for (label, workload) in implementations {
-                workload(Bencher { rounds, threads });
+                let elapsed = Cell::new(None);
+                workload(Bencher {
+                    rounds,
+                    threads,
+                    elapsed: &elapsed,
+                });
+                assert!(
+                    elapsed.get().is_some(),
+                    "{name} / {label}: workload did not invoke Bencher"
+                );
                 println!("ok  {name} / {label}");
             }
             return;
@@ -164,18 +175,31 @@ impl Runner {
             // cold.
             for offset in 0..implementations.len() {
                 let index = (repetition + offset) % implementations.len();
-                let workload = implementations[index].1;
-                let start = Instant::now();
-                workload(Bencher { rounds, threads });
-                samples[index].push(start.elapsed());
+                let (label, workload) = implementations[index];
+                let elapsed = Cell::new(None);
+                workload(Bencher {
+                    rounds,
+                    threads,
+                    elapsed: &elapsed,
+                });
+                let duration = elapsed
+                    .get()
+                    .unwrap_or_else(|| panic!("{name} / {label}: workload did not invoke Bencher"));
+                samples[index].push(duration);
             }
         }
+        let width = implementations
+            .iter()
+            .map(|(label, _)| label.len())
+            .max()
+            .unwrap_or(16)
+            .max(16);
         println!(
             "\n{name}  ({rounds} rounds, {repeat} runs; reference: {})",
             implementations[0].0
         );
         println!(
-            "  {:<16} {:>10} {:>15} {:>9}",
+            "  {:<width$} {:>10} {:>15} {:>9}",
             "implementation", "median ms", "min..max ms", "vs ref"
         );
         let reference = summary(&samples[0]).1;
@@ -188,19 +212,22 @@ impl Runner {
                 format!("{:.2}x", median.as_secs_f64() / reference.as_secs_f64())
             };
             print!(
-                "  {label:<16} {:>10} {range:>15} {ratio:>9}",
+                "  {label:<width$} {:>10} {range:>15} {ratio:>9}",
                 median.as_millis()
             );
             if self.options.raw {
-                print!(
-                    "  {:?}",
-                    times.iter().map(Duration::as_millis).collect::<Vec<_>>()
-                );
+                let raw = times
+                    .iter()
+                    .map(|d| format!("{:.2}", d.as_secs_f64() * 1_000.0))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                print!("  [{raw}]");
             }
             println!();
         }
     }
 
+    /// Exits with a non-zero status if no scenarios matched the active filters.
     pub fn finish(self) {
         if self.matched == 0 {
             eprintln!("No matching scenarios. Use --list for this target.");
@@ -218,52 +245,99 @@ pub fn summary(samples: &[Duration]) -> (Duration, Duration, Duration) {
     (sorted[0], lo + (hi - lo) / 2, sorted[sorted.len() - 1])
 }
 
-/// Executes a fixed total number of rounds; the runner times the enclosing workload.
-pub struct Bencher {
+/// Executes a fixed total number of rounds, timing only the measured loop.
+pub struct Bencher<'a> {
     rounds: usize,
     threads: usize,
+    elapsed: &'a Cell<Option<Duration>>,
 }
 
-impl Bencher {
+impl Bencher<'_> {
+    /// Times `self.rounds` sequential invocations of `operation` on the current thread.
     pub fn bench_local<O>(self, mut operation: impl FnMut() -> O) {
         assert_eq!(self.threads, 1);
+        let start = Instant::now();
         for _ in 0..self.rounds {
             black_box(operation());
         }
+        self.elapsed.set(Some(start.elapsed()));
     }
 
+    /// Times `self.rounds` invocations of `operation` divided across `self.threads` workers.
     pub fn bench<O>(self, operation: impl Fn() -> O + Sync) {
         if self.threads == 1 {
             self.bench_local(operation);
             return;
         }
-        let start = Barrier::new(self.threads);
-        thread::scope(|scope| {
-            for worker in 0..self.threads {
-                let operation = &operation;
-                let start = &start;
-                // Keep total work constant across thread counts, including uneven divisions.
-                let rounds =
-                    self.rounds / self.threads + usize::from(worker < self.rounds % self.threads);
-                scope.spawn(move || {
-                    start.wait();
-                    for _ in 0..rounds {
-                        black_box(operation());
-                    }
-                });
+        let start_gate = Barrier::new(self.threads);
+        let (earliest_start, latest_end) = thread::scope(|scope| {
+            let handles: Vec<_> = (0..self.threads)
+                .map(|worker| {
+                    let operation = &operation;
+                    let start_gate = &start_gate;
+                    // Keep total work constant across thread counts, including uneven divisions.
+                    let rounds = self.rounds / self.threads
+                        + usize::from(worker < self.rounds % self.threads);
+                    scope.spawn(move || {
+                        start_gate.wait();
+                        let worker_start = Instant::now();
+                        for _ in 0..rounds {
+                            black_box(operation());
+                        }
+                        (worker_start, Instant::now())
+                    })
+                })
+                .collect();
+            let mut earliest_start: Option<Instant> = None;
+            let mut latest_end: Option<Instant> = None;
+            for handle in handles {
+                let (start, end) = handle.join().expect("benchmark worker panicked");
+                earliest_start = Some(earliest_start.map_or(start, |prev| prev.min(start)));
+                latest_end = Some(latest_end.map_or(end, |prev| prev.max(end)));
             }
+            (
+                earliest_start.expect("threads > 0"),
+                latest_end.expect("threads > 0"),
+            )
         });
+        self.elapsed
+            .set(Some(latest_end.saturating_duration_since(earliest_start)));
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::array;
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::sync::Mutex;
+    use std::sync::OnceLock;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
     use super::*;
+
+    #[test]
+    fn untimed_setup_and_teardown_are_excluded_from_sample() {
+        let elapsed = Cell::new(None);
+        let bencher = Bencher {
+            rounds: 1,
+            threads: 1,
+            elapsed: &elapsed,
+        };
+        thread::sleep(Duration::from_millis(20));
+        let after_setup = Instant::now();
+        bencher.bench_local(|| 1usize);
+        let before_teardown = Instant::now();
+        thread::sleep(Duration::from_millis(20));
+
+        let measured = elapsed.get().expect("sample should be recorded");
+        let outer_wall_span = before_teardown.saturating_duration_since(after_setup);
+        assert!(
+            measured <= outer_wall_span,
+            "measured loop {measured:?} exceeded untimed bracket {outer_wall_span:?}"
+        );
+    }
 
     #[test]
     fn repeated_workloads_recreate_state_and_finish_cleanup() {
@@ -280,7 +354,7 @@ mod tests {
             options,
             matched: 0,
         };
-        runner.case("lifecycle", 100, 1, |bencher| {
+        runner.local("lifecycle", 100, |bencher| {
             assert_eq!(live.get(), 0);
             let mut rounds = 0;
             bencher.bench_local(|| {
@@ -304,7 +378,7 @@ mod tests {
             matched: 0,
         };
         let order = RefCell::new(Vec::new());
-        let workload = |label, b: Bencher| {
+        let workload = |label, b: Bencher<'_>| {
             let mut n = 0;
             b.bench_local(|| n += 1);
             order.borrow_mut().push((label, n));
@@ -321,6 +395,99 @@ mod tests {
             order.into_inner(),
             [('A', 7), ('B', 7), ('B', 7), ('A', 7), ('A', 7), ('B', 7)]
         );
+
+        struct ImplA;
+        struct ImplB;
+        trait Tag {
+            const TAG: char;
+        }
+        impl Tag for ImplA {
+            const TAG: char = 'A';
+        }
+        impl Tag for ImplB {
+            const TAG: char = 'B';
+        }
+        let captured = RefCell::new(Vec::new());
+        runner.compare(
+            "macro-capture",
+            100,
+            crate::implementations!([ImplA, ImplB], |C, b| {
+                b.bench_local(|| ());
+                captured.borrow_mut().push(C::TAG);
+            }),
+        );
+        assert_eq!(captured.into_inner(), ['A', 'B', 'B', 'A', 'A', 'B']);
+    }
+
+    #[test]
+    fn peers_only_and_baseline_only_filtering() {
+        assert!(Options::try_parse_from(["bench", "--peers-only", "--baseline-only"]).is_err());
+
+        let peers_options =
+            Options::try_parse_from(["bench", "--peers-only", "--repeat", "1", "--rounds", "1"])
+                .unwrap();
+        let mut peers_runner = Runner {
+            options: peers_options,
+            matched: 0,
+        };
+        let ran = RefCell::new(Vec::new());
+        peers_runner.local("local-only", 1, |b| {
+            ran.borrow_mut().push("local");
+            b.bench_local(|| ());
+        });
+        peers_runner.parallel("parallel-only", 2, 2, |b| {
+            ran.borrow_mut().push("parallel");
+            b.bench(|| ());
+        });
+        peers_runner.compare(
+            "single-compare",
+            1,
+            &[("Asyncband", &|b| {
+                ran.borrow_mut().push("single");
+                b.bench_local(|| ());
+            })],
+        );
+        peers_runner.compare(
+            "multi-compare",
+            1,
+            &[
+                ("Asyncband", &|b| {
+                    ran.borrow_mut().push("multi-a");
+                    b.bench_local(|| ());
+                }),
+                ("Tokio", &|b| {
+                    ran.borrow_mut().push("multi-b");
+                    b.bench_local(|| ());
+                }),
+            ],
+        );
+        assert_eq!(peers_runner.matched, 1);
+        assert_eq!(ran.into_inner(), ["multi-a", "multi-b"]);
+
+        let baseline_options =
+            Options::try_parse_from(["bench", "--baseline-only", "--repeat", "1", "--rounds", "1"])
+                .unwrap();
+        let mut baseline_runner = Runner {
+            options: baseline_options,
+            matched: 0,
+        };
+        let baseline_ran = RefCell::new(Vec::new());
+        baseline_runner.compare(
+            "multi-compare",
+            1,
+            &[
+                ("Asyncband", &|b| {
+                    baseline_ran.borrow_mut().push("a");
+                    b.bench_local(|| ());
+                }),
+                ("Tokio", &|b| {
+                    baseline_ran.borrow_mut().push("b");
+                    b.bench_local(|| ());
+                }),
+            ],
+        );
+        assert_eq!(baseline_runner.matched, 1);
+        assert_eq!(baseline_ran.into_inner(), ["a"]);
     }
 
     #[test]
@@ -335,9 +502,11 @@ mod tests {
     #[test]
     fn parallel_rounds_share_state_and_preserve_total_work() {
         let workers = Mutex::new(HashMap::new());
+        let elapsed = Cell::new(None);
         Bencher {
             rounds: 19,
             threads: 4,
+            elapsed: &elapsed,
         }
         .bench(|| {
             *workers
@@ -346,8 +515,54 @@ mod tests {
                 .entry(thread::current().id())
                 .or_insert(0) += 1;
         });
+        assert!(elapsed.get().is_some());
         let mut counts: Vec<_> = workers.into_inner().unwrap().into_values().collect();
         counts.sort_unstable();
         assert_eq!(counts, [4, 5, 5, 5]);
+    }
+
+    #[test]
+    fn parallel_timing_excludes_setup_and_records_wall_time() {
+        let elapsed = Cell::new(None);
+        let slots: [OnceLock<(Instant, Instant)>; 4] = array::from_fn(|_| OnceLock::new());
+        let next_id = AtomicUsize::new(0);
+        let all_started = Barrier::new(4);
+
+        thread::sleep(Duration::from_millis(20));
+        let after_setup = Instant::now();
+        Bencher {
+            rounds: 4,
+            threads: 4,
+            elapsed: &elapsed,
+        }
+        .bench(|| {
+            let id = next_id.fetch_add(1, Ordering::Relaxed);
+            let op_start = Instant::now();
+            all_started.wait();
+            if id < 2 {
+                thread::sleep(Duration::from_millis(15));
+            }
+            let op_end = Instant::now();
+            slots[id].set((op_start, op_end)).unwrap();
+        });
+        let before_teardown = Instant::now();
+        thread::sleep(Duration::from_millis(20));
+
+        let measured = elapsed.get().expect("sample should be recorded");
+        let first_op_start = slots.iter().map(|s| s.get().unwrap().0).min().unwrap();
+        let last_op_end = slots.iter().map(|s| s.get().unwrap().1).max().unwrap();
+        let inner_wall_span = last_op_end.saturating_duration_since(first_op_start);
+        let outer_wall_span = before_teardown.saturating_duration_since(after_setup);
+
+        // Allow a small margin for cross-core Instant read skew on virtualized CI runners.
+        let skew_margin = Duration::from_millis(1);
+        assert!(
+            measured.saturating_add(skew_margin) >= inner_wall_span,
+            "measured {measured:?} shorter than synchronized inner span {inner_wall_span:?}"
+        );
+        assert!(
+            measured <= outer_wall_span.saturating_add(skew_margin),
+            "measured {measured:?} exceeded untimed bracket {outer_wall_span:?}"
+        );
     }
 }
