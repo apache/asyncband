@@ -17,6 +17,7 @@
 
 use std::future::Future;
 use std::hint::black_box;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::task::Context;
 
@@ -27,88 +28,17 @@ pub struct Asyncband;
 pub struct Tokio;
 pub struct AsyncBroadcast;
 
-/// Selects the shared `Arc<T>` delivery contract across all broadcast adapters.
-///
-/// Asyncband returns its own shared `Arc<T>` directly from `recv` and `try_recv`; Tokio and
-/// `async-broadcast` wrap each published `T` in `Arc::new` so every subscriber receives `Arc<T>`.
-pub struct Shared<T = usize>(pub T);
+/// Adapts a broadcast peer so every published message is delivered as a shared `Arc<usize>`.
+pub struct Shared<C>(PhantomData<C>);
 
-pub trait Payload: Send + Sync + 'static {
-    type Output: Send;
-
-    fn new(sequence: usize) -> Self;
-    fn sequence(&self) -> usize;
-    fn output_sequence(output: Self::Output) -> usize;
-}
-
-impl Payload for usize {
-    type Output = usize;
-
-    #[inline]
-    fn new(sequence: usize) -> Self {
-        sequence
-    }
-
-    #[inline]
-    fn sequence(&self) -> usize {
-        *self
-    }
-
-    #[inline]
-    fn output_sequence(output: usize) -> usize {
-        output
-    }
-}
-
-impl Payload for [u8; 1024] {
-    type Output = [u8; 1024];
-
-    #[inline]
-    fn new(sequence: usize) -> Self {
-        let mut value = [1; 1024];
-        value[..size_of::<usize>()].copy_from_slice(&sequence.to_le_bytes());
-        value
-    }
-
-    #[inline]
-    fn sequence(&self) -> usize {
-        assert_eq!(self[1023], 1);
-        usize::from_le_bytes(self[..size_of::<usize>()].try_into().unwrap())
-    }
-
-    #[inline]
-    fn output_sequence(output: [u8; 1024]) -> usize {
-        black_box(output).sequence()
-    }
-}
-
-impl<T: Payload> Payload for Shared<T> {
-    type Output = Arc<T>;
-
-    #[inline]
-    fn new(sequence: usize) -> Self {
-        Shared(T::new(sequence))
-    }
-
-    #[inline]
-    fn sequence(&self) -> usize {
-        self.0.sequence()
-    }
-
-    #[inline]
-    fn output_sequence(output: Arc<T>) -> usize {
-        black_box(output).sequence()
-    }
-}
-
-pub trait BroadcastMpmc<M: Payload = usize>: Send + Sync + 'static {
+pub trait BroadcastMpmc<T = usize>: Send + Sync + 'static {
     type Sender: Clone + Send + 'static;
     type Receiver: Send + 'static;
 
     fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>);
-    fn send(sender: &Self::Sender, value: M);
-    fn try_recv(receiver: &mut Self::Receiver) -> Option<M::Output>;
-    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> M::Output;
+    fn send(sender: &Self::Sender, value: T);
+    fn try_recv(receiver: &mut Self::Receiver) -> Option<T>;
+    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> T;
 }
 
 impl BroadcastMpmc for Asyncband {
@@ -144,73 +74,7 @@ impl BroadcastMpmc for Asyncband {
     }
 }
 
-impl BroadcastMpmc<[u8; 1024]> for Asyncband {
-    type Receiver = asyncband::broadcast::mpmc::UnboundedReceiver<[u8; 1024]>;
-    type Sender = asyncband::broadcast::mpmc::UnboundedSender<[u8; 1024]>;
-
-    fn channel(_capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
-        let (sender, receiver) = asyncband::broadcast::mpmc::unbounded();
-        let mut receivers = Vec::with_capacity(receiver_count);
-        receivers.push(receiver);
-        for _ in 1..receiver_count {
-            receivers.push(sender.subscribe());
-        }
-        (sender, receivers)
-    }
-
-    fn send(sender: &Self::Sender, value: [u8; 1024]) {
-        sender.send(value);
-    }
-
-    fn try_recv(receiver: &mut Self::Receiver) -> Option<[u8; 1024]> {
-        match receiver.try_recv_cloned() {
-            Ok(value) => Some(value),
-            Err(asyncband::broadcast::mpmc::TryRecvError::Empty) => None,
-            Err(asyncband::broadcast::mpmc::TryRecvError::Disconnected) => {
-                panic!("asyncband channel closed during benchmark")
-            }
-        }
-    }
-
-    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> [u8; 1024] {
-        poll_ready(receiver.recv_cloned(), context).unwrap()
-    }
-}
-
-impl<T: Payload> BroadcastMpmc<Shared<T>> for Asyncband {
-    type Receiver = asyncband::broadcast::mpmc::UnboundedReceiver<T>;
-    type Sender = asyncband::broadcast::mpmc::UnboundedSender<T>;
-
-    fn channel(_capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
-        let (sender, receiver) = asyncband::broadcast::mpmc::unbounded();
-        let mut receivers = Vec::with_capacity(receiver_count);
-        receivers.push(receiver);
-        for _ in 1..receiver_count {
-            receivers.push(sender.subscribe());
-        }
-        (sender, receivers)
-    }
-
-    fn send(sender: &Self::Sender, Shared(value): Shared<T>) {
-        sender.send(value);
-    }
-
-    fn try_recv(receiver: &mut Self::Receiver) -> Option<Arc<T>> {
-        match receiver.try_recv() {
-            Ok(value) => Some(value),
-            Err(asyncband::broadcast::mpmc::TryRecvError::Empty) => None,
-            Err(asyncband::broadcast::mpmc::TryRecvError::Disconnected) => {
-                panic!("asyncband channel closed during benchmark")
-            }
-        }
-    }
-
-    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> Arc<T> {
-        poll_ready(receiver.recv(), context).unwrap()
-    }
-}
-
-impl<T: Payload<Output = T> + Clone> BroadcastMpmc<T> for Tokio {
+impl<T: Clone + Send + Sync + 'static> BroadcastMpmc<T> for Tokio {
     type Receiver = tokio::sync::broadcast::Receiver<T>;
     type Sender = tokio::sync::broadcast::Sender<T>;
 
@@ -244,41 +108,7 @@ impl<T: Payload<Output = T> + Clone> BroadcastMpmc<T> for Tokio {
     }
 }
 
-impl<T: Payload> BroadcastMpmc<Shared<T>> for Tokio {
-    type Receiver = tokio::sync::broadcast::Receiver<Arc<T>>;
-    type Sender = tokio::sync::broadcast::Sender<Arc<T>>;
-
-    fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
-        let (sender, receiver) = tokio::sync::broadcast::channel(capacity);
-        let mut receivers = Vec::with_capacity(receiver_count);
-        receivers.push(receiver);
-        for _ in 1..receiver_count {
-            receivers.push(sender.subscribe());
-        }
-        (sender, receivers)
-    }
-
-    fn send(sender: &Self::Sender, Shared(value): Shared<T>) {
-        assert!(
-            sender.send(Arc::new(value)).is_ok(),
-            "Tokio broadcast channel closed during benchmark"
-        );
-    }
-
-    fn try_recv(receiver: &mut Self::Receiver) -> Option<Arc<T>> {
-        match receiver.try_recv() {
-            Ok(value) => Some(value),
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => None,
-            Err(error) => panic!("unexpected Tokio receive error: {error}"),
-        }
-    }
-
-    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> Arc<T> {
-        poll_ready(receiver.recv(), context).unwrap()
-    }
-}
-
-impl<T: Payload<Output = T> + Clone> BroadcastMpmc<T> for AsyncBroadcast {
+impl<T: Clone + Send + Sync + 'static> BroadcastMpmc<T> for AsyncBroadcast {
     type Receiver = async_broadcast::Receiver<T>;
     type Sender = async_broadcast::Sender<T>;
 
@@ -313,40 +143,59 @@ impl<T: Payload<Output = T> + Clone> BroadcastMpmc<T> for AsyncBroadcast {
     }
 }
 
-impl<T: Payload> BroadcastMpmc<Shared<T>> for AsyncBroadcast {
-    type Receiver = async_broadcast::Receiver<Arc<T>>;
-    type Sender = async_broadcast::Sender<Arc<T>>;
+impl BroadcastMpmc for Shared<Asyncband> {
+    type Receiver = <Asyncband as BroadcastMpmc>::Receiver;
+    type Sender = <Asyncband as BroadcastMpmc>::Sender;
 
     fn channel(capacity: usize, receiver_count: usize) -> (Self::Sender, Vec<Self::Receiver>) {
-        let (sender, receiver) = async_broadcast::broadcast(capacity);
-        let mut receivers = Vec::with_capacity(receiver_count);
-        receivers.push(receiver);
-        for _ in 1..receiver_count {
-            let receiver = receivers[0].clone();
-            receivers.push(receiver);
-        }
-        (sender, receivers)
+        <Asyncband as BroadcastMpmc>::channel(capacity, receiver_count)
     }
 
-    fn send(sender: &Self::Sender, Shared(value): Shared<T>) {
-        assert!(
-            sender.try_broadcast(Arc::new(value)).is_ok(),
-            "async-broadcast channel rejected benchmark send"
-        );
+    fn send(sender: &Self::Sender, value: usize) {
+        <Asyncband as BroadcastMpmc>::send(sender, value);
     }
 
-    fn try_recv(receiver: &mut Self::Receiver) -> Option<Arc<T>> {
-        match receiver.try_recv() {
-            Ok(value) => Some(value),
-            Err(async_broadcast::TryRecvError::Empty) => None,
-            Err(error) => panic!("unexpected async-broadcast receive error: {error}"),
-        }
+    fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
+        <Asyncband as BroadcastMpmc>::try_recv(receiver)
     }
 
-    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> Arc<T> {
-        poll_ready(receiver.recv_direct(), context).unwrap()
+    fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
+        <Asyncband as BroadcastMpmc>::recv_ready(receiver, context)
     }
 }
+
+macro_rules! impl_shared_arc {
+    ($peer:ty) => {
+        impl BroadcastMpmc for Shared<$peer> {
+            type Receiver = <$peer as BroadcastMpmc<Arc<usize>>>::Receiver;
+            type Sender = <$peer as BroadcastMpmc<Arc<usize>>>::Sender;
+
+            fn channel(
+                capacity: usize,
+                receiver_count: usize,
+            ) -> (Self::Sender, Vec<Self::Receiver>) {
+                <$peer as BroadcastMpmc<Arc<usize>>>::channel(capacity, receiver_count)
+            }
+
+            fn send(sender: &Self::Sender, value: usize) {
+                <$peer as BroadcastMpmc<Arc<usize>>>::send(sender, Arc::new(value));
+            }
+
+            fn try_recv(receiver: &mut Self::Receiver) -> Option<usize> {
+                <$peer as BroadcastMpmc<Arc<usize>>>::try_recv(receiver).map(|v| *black_box(v))
+            }
+
+            fn recv_ready(receiver: &mut Self::Receiver, context: &mut Context<'_>) -> usize {
+                *black_box(<$peer as BroadcastMpmc<Arc<usize>>>::recv_ready(
+                    receiver, context,
+                ))
+            }
+        }
+    };
+}
+
+impl_shared_arc!(Tokio);
+impl_shared_arc!(AsyncBroadcast);
 
 /// Every subscription receives each accepted value; producers wait when capacity is exhausted.
 pub trait BoundedBroadcastMpmc: Send + Sync + 'static {
