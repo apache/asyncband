@@ -16,6 +16,7 @@
 # under the License.
 
 [package]
+autobenches = false
 name = "benchmarks"
 publish = false
 
@@ -23,6 +24,11 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+
+[dev-dependencies]
+async-broadcast = { workspace = true }
 async-channel = { workspace = true }
 asyncband = { workspace = true, features = [
   "barrier",
@@ -50,15 +56,8 @@ asyncband = { workspace = true, features = [
   "waitgroup",
   "watch",
 ] }
-clap = { workspace = true, features = ["derive"] }
 flume = { workspace = true, features = ["async"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
-
-[dev-dependencies]
-async-broadcast = { workspace = true }
-futures-util = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
-waitgroup = { workspace = true }
 
 [lib]
 bench = false
@@ -66,18 +65,8 @@ doctest = false
 
 [[bench]]
 harness = false
-name = "primitives"
-path = "benches/primitives/main.rs"
-
-[[bench]]
-harness = false
-name = "ecosystem"
-path = "benches/ecosystem/main.rs"
-
-[[bench]]
-harness = false
-name = "upgradable_stages"
-path = "benches/upgradable_stages.rs"
+name = "benchmarks"
+path = "benches/main.rs"
 
 [lints]
 workspace = true
