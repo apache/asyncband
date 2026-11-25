@@ -18,13 +18,12 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 
-//! Apache Asyncband™ (Incubating): composable, runtime-agnostic concurrency building blocks for
-//! async Rust.
+//! Composable, runtime-agnostic concurrency building blocks for async Rust.
 //!
-//! Apache Asyncband provides synchronization, initialization, task coordination, channels,
-//! resource reuse, and workload control without choosing an executor for the application. Its async
-//! APIs use standard futures and wakers, so they can run on Tokio, async-std, smol, or a custom
-//! executor.
+//! Apache Asyncband™ (Incubating) provides synchronization, initialization, task coordination,
+//! channels, resource reuse, and workload control without choosing an executor for the
+//! application. Its async APIs use standard futures and wakers, so they can run on Tokio,
+//! async-std, smol, or a custom executor.
 //!
 //! # Getting started
 //!

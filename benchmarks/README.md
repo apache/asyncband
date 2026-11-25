@@ -19,7 +19,7 @@ under the License.
 
 # Benchmarks
 
-[Benchmark In Milliseconds](https://matklad.github.io/2026/10/05/benchmark-milliseconds.html) suggests timing enough useful work to take about 300 ms. Here that target applies to a **reference revision of Apache Asyncband™ (Incubating)**. Once a scenario has a round count, every implementation and every revision runs that exact workload. A faster peer should take less time.
+[Benchmark In Milliseconds](https://matklad.github.io/2026/10/05/benchmark-milliseconds.html) suggests timing enough useful work to take about 300 ms. Here that target applies to a **reference revision of Asyncband**. Once a scenario has a round count, every implementation and every revision runs that exact workload. A faster peer should take less time.
 
 `cargo x bench` runs both the `ecosystem` and `primitives` targets by default. To compile or smoke-test both:
 
