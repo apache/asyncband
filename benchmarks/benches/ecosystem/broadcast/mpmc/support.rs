@@ -19,6 +19,8 @@ use std::hint::black_box;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Barrier;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::thread::JoinHandle;
 
@@ -29,6 +31,7 @@ use crate::broadcast::mpmc::adapters::BoundedBroadcastMpmc;
 use crate::broadcast::mpmc::adapters::BroadcastMpmc;
 
 pub const BATCH_MESSAGES: usize = 4096;
+pub const EXPECTED_BATCH_CHECKSUM: usize = BATCH_MESSAGES * (BATCH_MESSAGES - 1) / 2;
 pub const ROUND_TRIP_CAPACITY: usize = 64;
 
 #[derive(Clone, Copy)]
@@ -44,14 +47,16 @@ pub const BACKPRESSURE_SHAPE: BoundedShape = BoundedShape {
     receivers: 4,
 };
 
-fn recv<C: BroadcastMpmc>(receiver: &mut C::Receiver) -> usize {
+pub fn recv<C: BroadcastMpmc>(receiver: &mut C::Receiver) -> usize {
     C::try_recv(receiver).expect("the published benchmark batch must be ready")
 }
 
+/// Reuses one channel and persistent producer threads across rounds.
 pub struct ConcurrentSend<C: BroadcastMpmc> {
     receiver: C::Receiver,
     start: Arc<Barrier>,
     done: Arc<Barrier>,
+    stop: Arc<AtomicBool>,
     workers: Vec<JoinHandle<()>>,
     channel: PhantomData<C>,
 }
@@ -63,19 +68,26 @@ impl<C: BroadcastMpmc> ConcurrentSend<C> {
         let receiver = receivers.pop().unwrap();
         let start = Arc::new(Barrier::new(producer_count + 1));
         let done = Arc::new(Barrier::new(producer_count + 1));
+        let stop = Arc::new(AtomicBool::new(false));
         let messages_per_producer = BATCH_MESSAGES / producer_count;
         let workers = (0..producer_count)
             .map(|producer| {
                 let sender = sender.clone();
                 let start = start.clone();
                 let done = done.clone();
+                let stop = stop.clone();
                 thread::spawn(move || {
-                    start.wait();
-                    let first = producer * messages_per_producer;
-                    for value in first..first + messages_per_producer {
-                        C::send(&sender, black_box(value));
+                    loop {
+                        start.wait();
+                        if stop.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let first = producer * messages_per_producer;
+                        for value in first..first + messages_per_producer {
+                            C::send(&sender, black_box(value));
+                        }
+                        done.wait();
                     }
-                    done.wait();
                 })
             })
             .collect();
@@ -85,6 +97,7 @@ impl<C: BroadcastMpmc> ConcurrentSend<C> {
             receiver,
             start,
             done,
+            stop,
             workers,
             channel: PhantomData,
         }
@@ -98,6 +111,7 @@ impl<C: BroadcastMpmc> ConcurrentSend<C> {
         for _ in 0..BATCH_MESSAGES {
             checksum = checksum.wrapping_add(recv::<C>(&mut self.receiver));
         }
+        assert_eq!(checksum, EXPECTED_BATCH_CHECKSUM);
         black_box(checksum)
     }
 }
@@ -105,6 +119,10 @@ impl<C: BroadcastMpmc> ConcurrentSend<C> {
 impl<C: BroadcastMpmc> Drop for ConcurrentSend<C> {
     fn drop(&mut self) {
         let panicking = thread::panicking();
+        self.stop.store(true, Ordering::Release);
+        if !panicking {
+            self.start.wait();
+        }
         for worker in self.workers.drain(..) {
             let result = worker.join();
             if !panicking {
@@ -114,10 +132,12 @@ impl<C: BroadcastMpmc> Drop for ConcurrentSend<C> {
     }
 }
 
+/// Reuses one channel and persistent receiver threads across rounds.
 pub struct Fanout<C: BroadcastMpmc> {
     sender: C::Sender,
     start: Arc<Barrier>,
     done: Arc<Barrier>,
+    stop: Arc<AtomicBool>,
     workers: Vec<JoinHandle<()>>,
 }
 
@@ -126,19 +146,27 @@ impl<C: BroadcastMpmc> Fanout<C> {
         let (sender, receivers) = C::channel(BATCH_MESSAGES, receiver_count);
         let start = Arc::new(Barrier::new(receiver_count + 1));
         let done = Arc::new(Barrier::new(receiver_count + 1));
+        let stop = Arc::new(AtomicBool::new(false));
         let workers = receivers
             .into_iter()
             .map(|mut receiver| {
                 let start = start.clone();
                 let done = done.clone();
+                let stop = stop.clone();
                 thread::spawn(move || {
-                    start.wait();
-                    let mut checksum = 0usize;
-                    for _ in 0..BATCH_MESSAGES {
-                        checksum = checksum.wrapping_add(recv::<C>(&mut receiver));
+                    loop {
+                        start.wait();
+                        if stop.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let mut checksum = 0usize;
+                        for _ in 0..BATCH_MESSAGES {
+                            checksum = checksum.wrapping_add(recv::<C>(&mut receiver));
+                        }
+                        assert_eq!(checksum, EXPECTED_BATCH_CHECKSUM);
+                        black_box(checksum);
+                        done.wait();
                     }
-                    black_box(checksum);
-                    done.wait();
                 })
             })
             .collect();
@@ -147,6 +175,7 @@ impl<C: BroadcastMpmc> Fanout<C> {
             sender,
             start,
             done,
+            stop,
             workers,
         }
     }
@@ -163,6 +192,10 @@ impl<C: BroadcastMpmc> Fanout<C> {
 impl<C: BroadcastMpmc> Drop for Fanout<C> {
     fn drop(&mut self) {
         let panicking = thread::panicking();
+        self.stop.store(true, Ordering::Release);
+        if !panicking {
+            self.start.wait();
+        }
         for worker in self.workers.drain(..) {
             let result = worker.join();
             if !panicking {
@@ -198,7 +231,7 @@ impl BoundedConcurrent {
                 for _ in 0..BATCH_MESSAGES {
                     checksum = checksum.wrapping_add(C::recv_blocking(&mut receiver));
                 }
-                assert_eq!(checksum, BATCH_MESSAGES * (BATCH_MESSAGES - 1) / 2);
+                assert_eq!(checksum, EXPECTED_BATCH_CHECKSUM);
             }));
         }
         for producer in 0..producers {
@@ -250,7 +283,7 @@ impl BoundedTasks {
                     for _ in 0..BATCH_MESSAGES {
                         checksum = checksum.wrapping_add(C::recv_async(&mut receiver).await);
                     }
-                    assert_eq!(checksum, BATCH_MESSAGES * (BATCH_MESSAGES - 1) / 2);
+                    assert_eq!(checksum, EXPECTED_BATCH_CHECKSUM);
                 },
                 runtime.handle(),
             );
