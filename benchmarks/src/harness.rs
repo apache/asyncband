@@ -307,9 +307,13 @@ impl Bencher<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::array;
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::sync::Mutex;
+    use std::sync::OnceLock;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
     use super::*;
 
@@ -321,13 +325,17 @@ mod tests {
             threads: 1,
             elapsed: &elapsed,
         };
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(20));
+        let after_setup = Instant::now();
         bencher.bench_local(|| 1usize);
-        thread::sleep(Duration::from_millis(25));
+        let before_teardown = Instant::now();
+        thread::sleep(Duration::from_millis(20));
+
         let measured = elapsed.get().expect("sample should be recorded");
+        let outer_wall_span = before_teardown.saturating_duration_since(after_setup);
         assert!(
-            measured < Duration::from_millis(15),
-            "measured loop unexpectedly included setup/teardown: {measured:?}"
+            measured <= outer_wall_span,
+            "measured loop {measured:?} exceeded untimed bracket {outer_wall_span:?}"
         );
     }
 
@@ -516,19 +524,45 @@ mod tests {
     #[test]
     fn parallel_timing_excludes_setup_and_records_wall_time() {
         let elapsed = Cell::new(None);
-        thread::sleep(Duration::from_millis(60));
+        let slots: [OnceLock<(Instant, Instant)>; 4] = array::from_fn(|_| OnceLock::new());
+        let next_id = AtomicUsize::new(0);
+        let all_started = Barrier::new(4);
+
+        thread::sleep(Duration::from_millis(20));
+        let after_setup = Instant::now();
         Bencher {
             rounds: 4,
             threads: 4,
             elapsed: &elapsed,
         }
         .bench(|| {
-            thread::sleep(Duration::from_millis(20));
+            let id = next_id.fetch_add(1, Ordering::Relaxed);
+            let op_start = Instant::now();
+            all_started.wait();
+            if id < 2 {
+                thread::sleep(Duration::from_millis(15));
+            }
+            let op_end = Instant::now();
+            slots[id].set((op_start, op_end)).unwrap();
         });
+        let before_teardown = Instant::now();
+        thread::sleep(Duration::from_millis(20));
+
         let measured = elapsed.get().expect("sample should be recorded");
+        let first_op_start = slots.iter().map(|s| s.get().unwrap().0).min().unwrap();
+        let last_op_end = slots.iter().map(|s| s.get().unwrap().1).max().unwrap();
+        let inner_wall_span = last_op_end.saturating_duration_since(first_op_start);
+        let outer_wall_span = before_teardown.saturating_duration_since(after_setup);
+
+        // Allow a small margin for cross-core Instant read skew on virtualized CI runners.
+        let skew_margin = Duration::from_millis(1);
         assert!(
-            measured >= Duration::from_millis(15) && measured < Duration::from_millis(55),
-            "unexpected parallel timing: {measured:?}"
+            measured.saturating_add(skew_margin) >= inner_wall_span,
+            "measured {measured:?} shorter than synchronized inner span {inner_wall_span:?}"
+        );
+        assert!(
+            measured <= outer_wall_span.saturating_add(skew_margin),
+            "measured {measured:?} exceeded untimed bracket {outer_wall_span:?}"
         );
     }
 }
