@@ -52,7 +52,11 @@ asyncband = { workspace = true, features = [
 ] }
 clap = { workspace = true, features = ["derive"] }
 flume = { workspace = true, features = ["async"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = [
+  "parking_lot",
+  "rt-multi-thread",
+  "sync",
+] }
 
 [dev-dependencies]
 async-broadcast = { workspace = true }
