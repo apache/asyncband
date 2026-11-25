@@ -131,7 +131,7 @@ project:
 
 github:
   description: >-
-    This crate provides concurrency control and async coordination primitives that are runtime agnostic.
+    Apache Asyncband™ (Incubating): Composable, runtime-agnostic concurrency building blocks for async Rust.
   homepage: https://asyncband.apache.org
   labels:
     - asynchronous

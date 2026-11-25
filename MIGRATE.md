@@ -19,7 +19,7 @@ under the License.
 
 # Migrating from MEA
 
-Asyncband continues the codebase formerly published as [`mea`](https://crates.io/crates/mea), but it uses a new Cargo package and Rust crate name. Existing `mea` releases remain available for builds that have not migrated, but they receive no further development.
+Apache Asyncband™ (Incubating) continues the codebase formerly published as [`mea`](https://crates.io/crates/mea), but it uses a new Cargo package and Rust crate name. Existing `mea` releases remain available for builds that have not migrated, but they receive no further development.
 
 ## Recommended migration path
 
