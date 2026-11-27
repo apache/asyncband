@@ -46,15 +46,6 @@ impl<T> ObjectState<T> {
             status: ObjectStatus::default(),
         }
     }
-
-    async fn try_recycle<M: ManageObject<Object = T>>(
-        &mut self,
-        manager: &M,
-    ) -> Result<(), M::Error> {
-        manager.is_recyclable(&mut self.o, &self.status).await?;
-        self.status.mark_recycled();
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
@@ -177,12 +168,9 @@ impl<T, M: ManageObject<Object = T>> PoolCore<T, M> {
             match self.pop() {
                 None => return self.create_active().await,
                 Some(state) => {
-                    let mut unready = UnreadyObject::new(self, state);
-                    if unready.recycle().await.is_ok() {
-                        return Ok(unready.into_ready());
+                    if let Some(ready) = UnreadyObject::new(self, state).recycle().await {
+                        return Ok(ready);
                     }
-                    // A rejected object must be detached even when cancellation would restore it.
-                    unready.detach();
                 }
             }
         }
@@ -230,8 +218,8 @@ impl<T, M: ManageObject<Object = T>> PoolCore<T, M> {
 
 /// Owns an idle object while `ManageObject::is_recyclable` runs during `Pool::get`.
 ///
-/// Passing validation extracts the `ObjectState` via `into_ready()`. Rejection detaches the
-/// object; cancellation applies the pool's [`RecycleCancelledStrategy`].
+/// Completing `recycle` takes ownership to either mark the object recycled or detach it on
+/// rejection; dropping the in-flight future applies [`RecycleCancelledStrategy`].
 struct UnreadyObject<'a, T, M: ManageObject<Object = T>> {
     state: Option<ObjectState<T>>,
     core: &'a PoolCore<T, M>,
@@ -262,24 +250,25 @@ impl<'a, T, M: ManageObject<Object = T>> UnreadyObject<'a, T, M> {
     }
 
     #[inline]
-    async fn recycle(&mut self) -> Result<(), M::Error> {
-        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
-        self.state
-            .as_mut()
-            .unwrap()
-            .try_recycle(&self.core.manager)
-            .await
-    }
-
-    #[inline]
-    fn into_ready(mut self) -> ObjectState<T> {
-        // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
-        self.state.take().unwrap()
-    }
-
-    fn detach(&mut self) {
-        if let Some(mut state) = self.state.take() {
-            self.core.detach_object(&mut state.o);
+    async fn recycle(mut self) -> Option<ObjectState<T>> {
+        let result = {
+            // INVARIANT: `state` remains `Some` until `is_recyclable` finishes or `self` drops.
+            let state = self.state.as_mut().unwrap();
+            self.core
+                .manager
+                .is_recyclable(&mut state.o, &state.status)
+                .await
+        };
+        let mut state = self.state.take().unwrap();
+        match result {
+            Ok(()) => {
+                state.status.mark_recycled();
+                Some(state)
+            }
+            Err(_) => {
+                self.core.detach_object(&mut state.o);
+                None
+            }
         }
     }
 }
