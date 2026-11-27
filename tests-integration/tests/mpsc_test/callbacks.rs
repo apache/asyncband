@@ -83,22 +83,36 @@ fn unbounded_receiver_drop_releases_registered_waker() {
 fn wake_callbacks_can_send_into_the_same_channel() {
     assert_completes_without_deadlock(|| {
         let (tx, mut rx) = mpsc::bounded(2);
+        let wakes = Arc::new(AtomicUsize::new(0));
         let waker = waker_on_wake({
             let tx = tx.clone();
-            move || tx.try_send(2).unwrap()
+            let wakes = wakes.clone();
+            move || {
+                tx.try_send(2).unwrap();
+                // Polling `reserve` on a now-full channel enters the control lock, deadlocking if
+                // waking the receiver still held that lock.
+                assert!(poll_once(pin!(tx.reserve())).is_pending());
+                wakes.fetch_add(1, Ordering::Relaxed);
+            }
         });
         assert!(poll_with(pin!(rx.recv()), &waker).is_pending());
         tx.try_send(1).unwrap();
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
         assert_eq!(rx.try_recv(), Ok(1));
         assert_eq!(rx.try_recv(), Ok(2));
 
         let (tx, mut rx) = mpsc::unbounded();
         let waker = waker_on_wake({
             let tx = tx.clone();
-            move || tx.send(2).unwrap()
+            let wakes = wakes.clone();
+            move || {
+                tx.send(2).unwrap();
+                wakes.fetch_add(1, Ordering::Relaxed);
+            }
         });
         assert!(poll_with(pin!(rx.recv()), &waker).is_pending());
         tx.send(1).unwrap();
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
         assert_eq!(rx.try_recv(), Ok(1));
         assert_eq!(rx.try_recv(), Ok(2));
     });
@@ -115,7 +129,9 @@ fn bounded_waiter_waker_replacement_and_cancellation_can_reenter() {
                 let tx = tx.clone();
                 let drops = drops.clone();
                 move || {
-                    assert_eq!(tx.try_send(9), Err(mpsc::TrySendError::Full(9)));
+                    // Polling `reserve` on a full channel enters the control lock to register and
+                    // cancel a waiter, deadlocking if waker destruction ran under that lock.
+                    assert!(poll_once(pin!(tx.reserve())).is_pending());
                     drops.fetch_add(1, Ordering::Relaxed);
                 }
             });
