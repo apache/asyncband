@@ -47,7 +47,7 @@ impl<T> ObjectState<T> {
         }
     }
 
-    pub async fn try_recycle<M: ManageObject<Object = T>>(
+    async fn try_recycle<M: ManageObject<Object = T>>(
         &mut self,
         manager: &M,
     ) -> Result<(), M::Error> {
@@ -172,13 +172,29 @@ impl<T, M> PoolCore<T, M> {
 }
 
 impl<T, M: ManageObject<Object = T>> PoolCore<T, M> {
+    pub async fn acquire(&self) -> Result<ObjectState<T>, M::Error> {
+        loop {
+            match self.pop() {
+                None => return self.create_active().await,
+                Some(state) => {
+                    let mut unready = UnreadyObject::new(self, state);
+                    if unready.recycle().await.is_ok() {
+                        return Ok(unready.into_ready());
+                    }
+                    // A rejected object must be detached even when cancellation would restore it.
+                    unready.detach();
+                }
+            }
+        }
+    }
+
     #[inline]
-    pub fn pop(&self) -> Option<ObjectState<T>> {
+    fn pop(&self) -> Option<ObjectState<T>> {
         self.slots.lock().pop(self.queue_strategy)
     }
 
     #[inline]
-    pub async fn create_active(&self) -> Result<ObjectState<T>, M::Error> {
+    async fn create_active(&self) -> Result<ObjectState<T>, M::Error> {
         let object = self.manager.create().await?;
         let state = ObjectState::new(object);
         self.slots.lock().add_active();
@@ -200,7 +216,7 @@ impl<T, M: ManageObject<Object = T>> PoolCore<T, M> {
     }
 
     #[inline]
-    pub fn restore_idle(&self, state: ObjectState<T>) {
+    fn restore_idle(&self, state: ObjectState<T>) {
         self.slots.lock().return_idle(state);
     }
 
@@ -216,7 +232,7 @@ impl<T, M: ManageObject<Object = T>> PoolCore<T, M> {
 ///
 /// Passing validation extracts the `ObjectState` via `into_ready()`. Rejection detaches the
 /// object; cancellation applies the pool's [`RecycleCancelledStrategy`].
-pub struct UnreadyObject<'a, T, M: ManageObject<Object = T>> {
+struct UnreadyObject<'a, T, M: ManageObject<Object = T>> {
     state: Option<ObjectState<T>>,
     core: &'a PoolCore<T, M>,
 }
@@ -238,7 +254,7 @@ impl<T, M: ManageObject<Object = T>> Drop for UnreadyObject<'_, T, M> {
 
 impl<'a, T, M: ManageObject<Object = T>> UnreadyObject<'a, T, M> {
     #[inline]
-    pub fn new(core: &'a PoolCore<T, M>, state: ObjectState<T>) -> Self {
+    fn new(core: &'a PoolCore<T, M>, state: ObjectState<T>) -> Self {
         Self {
             state: Some(state),
             core,
@@ -246,7 +262,7 @@ impl<'a, T, M: ManageObject<Object = T>> UnreadyObject<'a, T, M> {
     }
 
     #[inline]
-    pub async fn recycle(&mut self) -> Result<(), M::Error> {
+    async fn recycle(&mut self) -> Result<(), M::Error> {
         // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
         self.state
             .as_mut()
@@ -256,12 +272,12 @@ impl<'a, T, M: ManageObject<Object = T>> UnreadyObject<'a, T, M> {
     }
 
     #[inline]
-    pub fn into_ready(mut self) -> ObjectState<T> {
+    fn into_ready(mut self) -> ObjectState<T> {
         // INVARIANT: `state` is `Some` until this object becomes ready, detaches, or is dropped.
         self.state.take().unwrap()
     }
 
-    pub fn detach(&mut self) {
+    fn detach(&mut self) {
         if let Some(mut state) = self.state.take() {
             self.core.detach_object(&mut state.o);
         }
