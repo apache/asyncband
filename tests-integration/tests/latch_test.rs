@@ -105,6 +105,7 @@ async fn owned_wait_can_move_to_another_task() {
     waiter.await.unwrap();
 }
 
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_arrivals_complete_the_latch() {
     const TASKS: usize = 32;

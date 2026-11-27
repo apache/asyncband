@@ -641,7 +641,6 @@ fn participant_wait_drops_replaced_and_cancelled_wakers_outside_the_lock() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn participant_can_wait_from_a_spawned_task() {
     let phaser = Phaser::new();
     let mut first = phaser.register_one().unwrap();
@@ -656,7 +655,6 @@ async fn participant_can_wait_from_a_spawned_task() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn observer_waits_without_becoming_a_party() {
     let phaser = Phaser::new();
     let observed = phaser.phase();
@@ -705,7 +703,6 @@ fn arrivals_publish_each_workers_writes_across_threads() {
 }
 
 #[tokio::test]
-#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 async fn a_failed_task_can_close_the_group_without_reporting_phase_completion() {
     let phaser = Phaser::new();
     let mut worker = phaser.register_one().unwrap();

@@ -103,6 +103,7 @@ fn notify_one_wakes_one_waiter_at_a_time() {
     drop(expect_ready(poll_once(second.as_mut())));
 }
 
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn notify_all_wakes_current_waiters_using_a_predicate_loop() {
     const WAITERS: usize = 10;

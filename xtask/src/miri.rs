@@ -34,29 +34,11 @@ impl CommandMiri {
             "--lib",
             "--all-features",
         ]));
-        let mut args = vec!["--package", "tests-integration"];
-        for target in [
-            "barrier_test",
-            "broadcast_test",
-            "completion_test",
-            "event_test",
-            "mpmc_test",
-            "mpsc_test",
-            "oneshot_test",
-            "phaser_test",
-            "pool_test",
-            "semaphore_ordering_test",
-            "shutdown_test",
-            "spmc_test",
-            "traits_test",
-            "unsafe_paths_test",
-            "upgradable_rwlock_test",
-            "waitgroup_test",
-            "watch_test",
-        ] {
-            args.extend(["--test", target]);
-        }
-        run_command(make_miri_cmd(&args));
+        run_command(make_miri_cmd(&[
+            "--package",
+            "tests-integration",
+            "--tests",
+        ]));
     }
 }
 
