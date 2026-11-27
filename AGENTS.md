@@ -53,7 +53,7 @@ Use the shared [release skill](.agents/skills/release/SKILL.md) for release prep
 
 Use the shared [license-audit skill](.agents/skills/license-audit/SKILL.md) for license audits and release licensing checks. For a delegated Codex review, use the [`license_auditor`](.codex/agents/license_auditor.toml) agent, which reads the same skill. Other agents can follow the skill directly.
 
-Use the shared [dislopify skill](.agents/skills/dislopify/SKILL.md) to survey Asyncband for simplifications or implement findings a maintainer has selected.
+Use the shared [deslopify skill](.agents/skills/deslopify/SKILL.md) to survey Asyncband for simplifications or implement findings a maintainer has selected.
 
 ## Rust Style
 
