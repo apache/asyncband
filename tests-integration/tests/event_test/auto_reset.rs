@@ -22,7 +22,6 @@ use std::sync::Barrier;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
-use std::task::Wake;
 use std::task::Waker;
 use std::thread;
 
@@ -31,6 +30,9 @@ use asyncband::event::AutoResetEvent;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
 use tests_integration::poll_once;
+use tests_integration::poll_with;
+use tests_integration::waker_on_drop;
+use tests_integration::waker_on_wake;
 
 #[test]
 fn unpolled_waits_do_not_reserve_stored_signals() {
@@ -250,63 +252,51 @@ fn waker_replacement_and_cancellation_release_registrations() {
     assert!(event.try_wait());
 }
 
-struct ReentrantWaker(Arc<AutoResetEvent>);
-
-impl Wake for ReentrantWaker {
-    fn wake(self: Arc<Self>) {
-        self.0.try_wait();
-    }
-}
-
-impl Drop for ReentrantWaker {
-    fn drop(&mut self) {
-        self.0.try_wait();
-    }
-}
-
 #[test]
 fn wake_and_waker_destruction_happen_outside_the_event_lock() {
     assert_completes_without_deadlock(|| {
         let event = Arc::new(AutoResetEvent::new());
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let reentrant_waker = || {
+            let event = event.clone();
+            let wakes = wakes.clone();
+            waker_on_wake(move || {
+                assert!(!event.try_wait());
+                wakes.fetch_add(1, Ordering::Relaxed);
+            })
+        };
         let mut first = Box::pin(event.wait());
         let mut second = pin!(event.wait());
         assert!(poll_once(first.as_mut()).is_pending());
         event.set();
-        {
-            let waker = Waker::from(Arc::new(ReentrantWaker(event.clone())));
-            assert!(
-                second
-                    .as_mut()
-                    .poll(&mut Context::from_waker(&waker))
-                    .is_pending()
-            );
-        }
+        assert!(poll_with(second.as_mut(), &reentrant_waker()).is_pending());
         drop(first); // The cancellation handoff wakes the second waiter.
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
         assert!(poll_once(second.as_mut()).is_ready());
 
         let mut wait = pin!(event.wait());
-        {
-            let waker = Waker::from(Arc::new(ReentrantWaker(event.clone())));
-            assert!(
-                wait.as_mut()
-                    .poll(&mut Context::from_waker(&waker))
-                    .is_pending()
-            );
-        }
+        assert!(poll_with(wait.as_mut(), &reentrant_waker()).is_pending());
         event.set();
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
         assert!(poll_once(wait.as_mut()).is_ready());
 
+        let drops = Arc::new(AtomicUsize::new(0));
         let mut cancelled = Box::pin(event.wait());
-        for _ in 0..2 {
-            let waker = Waker::from(Arc::new(ReentrantWaker(event.clone())));
-            assert!(
-                cancelled
-                    .as_mut()
-                    .poll(&mut Context::from_waker(&waker))
-                    .is_pending()
-            );
+        for expected_drops in 0..2 {
+            let waker = waker_on_drop({
+                let event = event.clone();
+                let drops = drops.clone();
+                move || {
+                    assert!(!event.try_wait());
+                    drops.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+            assert!(poll_with(cancelled.as_mut(), &waker).is_pending());
+            drop(waker);
+            assert_eq!(drops.load(Ordering::Relaxed), expected_drops);
         }
         drop(cancelled); // Both replaced and cancelled registrations release their last waker.
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
     });
 }
 

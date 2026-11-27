@@ -85,11 +85,19 @@ fn wake_callbacks_can_send_into_the_same_channel() {
         let (tx, mut rx) = mpsc::bounded(2);
         let waker = waker_on_wake({
             let tx = tx.clone();
-            move || tx.try_send(2).unwrap()
+            move || {
+                tx.try_send(2).unwrap();
+                // Polling `reserve` on a now-full channel enters the control lock, deadlocking if
+                // waking the receiver still held that lock.
+                assert!(poll_once(pin!(tx.reserve())).is_pending());
+            }
         });
-        assert!(poll_with(pin!(rx.recv()), &waker).is_pending());
-        tx.try_send(1).unwrap();
-        assert_eq!(rx.try_recv(), Ok(1));
+        {
+            let mut recv = pin!(rx.recv());
+            assert!(poll_with(recv.as_mut(), &waker).is_pending());
+            tx.try_send(1).unwrap();
+            assert_eq!(poll_once(recv.as_mut()), Poll::Ready(Ok(1)));
+        }
         assert_eq!(rx.try_recv(), Ok(2));
 
         let (tx, mut rx) = mpsc::unbounded();
@@ -97,9 +105,12 @@ fn wake_callbacks_can_send_into_the_same_channel() {
             let tx = tx.clone();
             move || tx.send(2).unwrap()
         });
-        assert!(poll_with(pin!(rx.recv()), &waker).is_pending());
-        tx.send(1).unwrap();
-        assert_eq!(rx.try_recv(), Ok(1));
+        {
+            let mut recv = pin!(rx.recv());
+            assert!(poll_with(recv.as_mut(), &waker).is_pending());
+            tx.send(1).unwrap();
+            assert_eq!(poll_once(recv.as_mut()), Poll::Ready(Ok(1)));
+        }
         assert_eq!(rx.try_recv(), Ok(2));
     });
 }
@@ -115,13 +126,16 @@ fn bounded_waiter_waker_replacement_and_cancellation_can_reenter() {
                 let tx = tx.clone();
                 let drops = drops.clone();
                 move || {
-                    assert_eq!(tx.try_send(9), Err(mpsc::TrySendError::Full(9)));
+                    // Polling `reserve` on a full channel enters the control lock to register and
+                    // cancel a waiter, deadlocking if waker destruction ran under that lock.
+                    assert!(poll_once(pin!(tx.reserve())).is_pending());
                     drops.fetch_add(1, Ordering::Relaxed);
                 }
             });
             let mut send = Box::pin(tx.send(1));
             assert!(poll_with(send.as_mut(), &waker).is_pending());
             drop(waker);
+            assert_eq!(drops.load(Ordering::Relaxed), 0);
             if replace {
                 assert!(poll_once(send.as_mut()).is_pending());
                 assert_eq!(drops.load(Ordering::Relaxed), 1);
