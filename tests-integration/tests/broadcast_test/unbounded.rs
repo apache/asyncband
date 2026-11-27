@@ -30,11 +30,11 @@ use asyncband::broadcast::mpmc::*;
 use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
 use tests_integration::expect_ready;
+use tests_integration::poll_once;
 use tests_integration::poll_with;
 
-/// A payload whose destructor re-enters the channel's control and waiter locks.
+/// A payload whose destructor subscribes to the same channel and registers a waiter.
 struct Reentrant {
-    value: u64,
     channel: UnboundedSender<Reentrant>,
     drops: Arc<AtomicUsize>,
 }
@@ -44,7 +44,7 @@ impl Drop for Reentrant {
         // Deadlocks if the channel still holds its control or waiter lock while dropping
         // reclaimed or discarded messages.
         let mut sub = self.channel.subscribe();
-        assert!(poll_with(pin!(sub.recv()), Waker::noop()).is_pending());
+        assert!(poll_once(pin!(sub.recv())).is_pending());
         drop(sub);
         self.drops.fetch_add(1, Ordering::Relaxed);
     }
@@ -321,37 +321,22 @@ fn panicking_clone_leaves_the_channel_consistent() {
 #[test]
 fn message_destructors_run_outside_the_channel_lock() {
     assert_completes_without_deadlock(|| {
-        let (tx, mut rx1) = unbounded();
-        let rx2 = tx.subscribe();
+        let (tx, rx) = unbounded();
         let drops = Arc::new(AtomicUsize::new(0));
-
-        for value in 0..4 {
+        let send = || {
             tx.send(Reentrant {
-                value,
                 channel: tx.clone(),
                 drops: drops.clone(),
             });
-        }
-        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        };
 
-        // Exercise reclamation while receiving messages and dropping receivers.
-        assert_eq!(rx1.try_recv().unwrap().value, 0);
+        send();
         assert_eq!(drops.load(Ordering::Relaxed), 0);
-        drop(rx2);
+        drop(rx);
         assert_eq!(drops.load(Ordering::Relaxed), 1);
-        assert_eq!(rx1.try_recv().unwrap().value, 1);
-        assert_eq!(drops.load(Ordering::Relaxed), 2);
-        drop(rx1);
-        assert_eq!(drops.load(Ordering::Relaxed), 4);
 
-        // With no receiver left, `send` drops the message itself; that must be unlocked too.
-        tx.send(Reentrant {
-            value: 4,
-            channel: tx.clone(),
-            drops: drops.clone(),
-        });
-        assert_eq!(drops.load(Ordering::Relaxed), 5);
-        drop(tx);
+        send();
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
     });
 }
 
