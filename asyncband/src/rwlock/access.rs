@@ -256,7 +256,7 @@ impl<O: Owner> ReadAccess<O> {
 struct AccessRequest<A: AccessToken> {
     owner: Option<A::Owner>,
     waiter_id: Option<WaiterId>,
-    _marker: PhantomData<fn() -> A>,
+    marker: PhantomData<fn() -> A>,
 }
 
 impl<A: AccessToken> AccessRequest<A> {
@@ -265,7 +265,7 @@ impl<A: AccessToken> AccessRequest<A> {
         let mut request = Self {
             owner: Some(owner),
             waiter_id: None,
-            _marker: PhantomData,
+            marker: PhantomData,
         };
         poll_fn(move |cx| request.poll(cx.waker()))
     }
