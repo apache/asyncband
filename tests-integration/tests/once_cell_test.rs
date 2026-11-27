@@ -54,6 +54,7 @@ async fn dropping_the_cell_drops_its_value() {
     assert!(dropped.load(Ordering::Acquire));
 }
 
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_callers_publish_one_value() {
     const TASKS: usize = 100;

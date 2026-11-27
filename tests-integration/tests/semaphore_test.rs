@@ -240,7 +240,7 @@ fn reduce_permits_takes_priority_over_pending_acquires() {
 fn concurrent_releases_conserve_permits() {
     const PERMITS: usize = 3;
     const THREADS: usize = 8;
-    const ITERATIONS: usize = 4_000;
+    const ITERATIONS: usize = if cfg!(miri) { 64 } else { 4_000 };
 
     fn next(state: &mut u64) -> usize {
         *state = state

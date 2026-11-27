@@ -67,6 +67,7 @@ async fn concurrent_compute_runs_once() {
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
 
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_growth_keeps_every_entry() {
     let map = Arc::new(OnceMap::new());

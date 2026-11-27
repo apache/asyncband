@@ -24,6 +24,7 @@ use asyncband::blocking::FutureExt;
 use asyncband::mutex::Mutex;
 use asyncband::oneshot;
 
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_primitives_compose_across_modules() {
     let barrier = Arc::new(Barrier::new(3));

@@ -64,6 +64,7 @@ fn max_readers_limits_concurrent_readers() {
     assert!(rwlock.try_write().is_some());
 }
 
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_readers_and_writers_preserve_values() {
     const READERS: usize = 50;

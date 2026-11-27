@@ -51,6 +51,7 @@ async fn call_once_runs_only_one_initializer() {
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
 
+#[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_callers_run_one_initializer() {
     const TASKS: usize = 100;
