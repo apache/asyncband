@@ -257,35 +257,25 @@ fn wake_and_waker_destruction_happen_outside_the_event_lock() {
     assert_completes_without_deadlock(|| {
         let event = Arc::new(AutoResetEvent::new());
         let wakes = Arc::new(AtomicUsize::new(0));
+        let reentrant_waker = || {
+            let event = event.clone();
+            let wakes = wakes.clone();
+            waker_on_wake(move || {
+                assert!(!event.try_wait());
+                wakes.fetch_add(1, Ordering::Relaxed);
+            })
+        };
         let mut first = Box::pin(event.wait());
         let mut second = pin!(event.wait());
         assert!(poll_once(first.as_mut()).is_pending());
         event.set();
-        let waker = waker_on_wake({
-            let event = event.clone();
-            let wakes = wakes.clone();
-            move || {
-                assert!(!event.try_wait());
-                wakes.fetch_add(1, Ordering::Relaxed);
-            }
-        });
-        assert!(poll_with(second.as_mut(), &waker).is_pending());
-        drop(waker);
+        assert!(poll_with(second.as_mut(), &reentrant_waker()).is_pending());
         drop(first); // The cancellation handoff wakes the second waiter.
         assert_eq!(wakes.load(Ordering::Relaxed), 1);
         assert!(poll_once(second.as_mut()).is_ready());
 
         let mut wait = pin!(event.wait());
-        let waker = waker_on_wake({
-            let event = event.clone();
-            let wakes = wakes.clone();
-            move || {
-                assert!(!event.try_wait());
-                wakes.fetch_add(1, Ordering::Relaxed);
-            }
-        });
-        assert!(poll_with(wait.as_mut(), &waker).is_pending());
-        drop(waker);
+        assert!(poll_with(wait.as_mut(), &reentrant_waker()).is_pending());
         event.set();
         assert_eq!(wakes.load(Ordering::Relaxed), 2);
         assert!(poll_once(wait.as_mut()).is_ready());
