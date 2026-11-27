@@ -92,7 +92,6 @@ use crate::pool::RecycleCancelledStrategy;
 use crate::pool::RetainResult;
 use crate::pool::state::ObjectState;
 use crate::pool::state::PoolCore;
-use crate::pool::state::UnreadyObject;
 
 /// The configuration of [`Pool`].
 #[derive(Clone, Copy, Debug)]
@@ -306,26 +305,10 @@ impl<M: ManageObject> Pool<M> {
     /// Cancelling while [`ManageObject::is_recyclable`] is checking an idle object
     /// follows [`PoolConfig::recycle_cancelled_strategy`].
     pub async fn get(self: &Arc<Self>) -> Result<Object<M>, M::Error> {
-        if !self.permits.try_acquire(1) {
-            self.permits.acquire(1).await;
-        }
+        self.permits.acquire(1).await;
         let permit = CheckoutPermit(Some(&self.permits));
-        loop {
-            match self.core.pop() {
-                None => {
-                    let state = self.core.create_active().await?;
-                    return Ok(permit.into_object(state, self));
-                }
-                Some(state) => {
-                    let mut unready = UnreadyObject::new(&self.core, state);
-                    if unready.recycle().await.is_ok() {
-                        return Ok(permit.into_object(unready.into_ready(), self));
-                    }
-                    // A rejected object must be detached even when cancellation would restore it.
-                    unready.detach();
-                }
-            }
-        }
+        let state = self.core.acquire().await?;
+        Ok(permit.into_object(state, self))
     }
 
     /// Retains idle objects for which `f` returns `true`.
