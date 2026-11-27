@@ -82,9 +82,6 @@
 //! To keep a pending operation alive when another branch wins, call [`Receiver::into_future`]
 //! before selecting and borrow the resulting future as `&mut Recv`.
 
-mod receiver;
-mod sender;
-
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
@@ -94,10 +91,13 @@ use std::sync::atomic::fence;
 use std::task::Poll;
 use std::task::Waker;
 
+mod receiver;
 pub use self::receiver::Receiver;
 pub use self::receiver::Recv;
 pub use self::receiver::RecvError;
 pub use self::receiver::TryRecvError;
+
+mod sender;
 pub use self::sender::SendError;
 pub use self::sender::Sender;
 
@@ -140,7 +140,7 @@ const DISCONNECTED: u8 = 0b010;
 ///
 /// The state is no longer meaningful after an operation obtains exclusive ownership of the whole
 /// allocation, such as when `send` creates a `SendError`.
-struct Channel<T> {
+pub(crate) struct Channel<T> {
     state: AtomicU8,
     message: UnsafeCell<MaybeUninit<T>>,
     waker: UnsafeCell<MaybeUninit<Waker>>,

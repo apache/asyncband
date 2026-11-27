@@ -18,11 +18,15 @@
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::task::Wake;
 use std::task::Waker;
 use std::thread;
+#[cfg(not(miri))]
+use std::time::Duration;
 
 use super::*;
 use crate::broadcast::mpmc::unbounded::segment::HEAP_CAP;
@@ -271,7 +275,7 @@ fn try_recv_parks_without_consuming_caller_thread_token() {
         shared_producer.finish_inflight_publish_for_test(epoch, version, live_rcvs, 77usize);
     });
 
-    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
     let consumer = thread::spawn(move || {
         // Pre-arm the caller thread's unpark token and verify `try_recv` leaves it intact.
         thread::current().unpark();
@@ -282,10 +286,7 @@ fn try_recv_parks_without_consuming_caller_thread_token() {
     });
 
     #[cfg(not(miri))]
-    if done_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .is_err()
-    {
+    if done_rx.recv_timeout(Duration::from_secs(5)).is_err() {
         consumer.thread().unpark();
         let _ = consumer.join();
         panic!("try_recv consumed the caller thread's unpark token");
@@ -300,8 +301,6 @@ fn try_recv_parks_without_consuming_caller_thread_token() {
 
 #[test]
 fn sync_inflight_waiters_finish_before_async_waker_callbacks() {
-    use std::sync::Mutex;
-
     struct LockingWake {
         try_shared_lock: Arc<Mutex<()>>,
         try_cloned_lock: Arc<Mutex<()>>,

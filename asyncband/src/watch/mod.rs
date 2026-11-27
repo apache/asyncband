@@ -58,29 +58,32 @@
 //! # }
 //! ```
 
-mod error;
-
-#[cfg(test)]
-mod tests;
-
 use std::fmt;
 use std::future::Future;
 use std::mem;
 use std::pin::Pin;
+use std::process;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
-pub use self::error::RecvError;
-pub use self::error::SendError;
 use crate::internal::mutex::Mutex;
 use crate::internal::waker_batch::WakerBatch;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
+
+mod error;
+pub use self::error::RecvError;
+pub use self::error::SendError;
+
+#[cfg(test)]
+mod tests;
 
 /// Creates a watch channel with an initial value.
 ///
@@ -114,12 +117,12 @@ pub fn channel<T>(initial: T) -> (Sender<T>, Receiver<T>) {
 }
 
 #[cfg(target_has_atomic = "64")]
-struct Version(std::sync::atomic::AtomicU64);
+struct Version(AtomicU64);
 
 #[cfg(target_has_atomic = "64")]
 impl Version {
     const fn new(initial: u64) -> Self {
-        Self(std::sync::atomic::AtomicU64::new(initial))
+        Self(AtomicU64::new(initial))
     }
 
     #[inline]
@@ -171,14 +174,14 @@ impl<T> Shared<T> {
     #[inline]
     fn add_sender(&self) {
         if self.senders.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
-            std::process::abort();
+            process::abort();
         }
     }
 
     #[inline]
     fn add_receiver(&self) {
         if self.receivers.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
-            std::process::abort();
+            process::abort();
         }
     }
 

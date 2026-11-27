@@ -166,7 +166,7 @@ mod tests {
         static WAKE_AFTER_YIELD: RefCell<Option<Waker>> = const { RefCell::new(None) };
     }
 
-    pub(super) fn observe_yield() {
+    pub fn observe_yield() {
         YIELD_COUNT.with(|count| count.set(count.get() + 1));
         if let Some(waker) = WAKE_AFTER_YIELD.with(|waker| waker.borrow_mut().take()) {
             waker.wake();

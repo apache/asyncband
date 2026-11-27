@@ -59,7 +59,7 @@ impl<T> Drop for BoundedSender<T> {
 }
 
 impl<T> BoundedSender<T> {
-    pub(in crate::mpsc::bounded) fn new(shared: Arc<Shared<T>>) -> Self {
+    pub(crate) fn new(shared: Arc<Shared<T>>) -> Self {
         Self { shared }
     }
 

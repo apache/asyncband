@@ -54,11 +54,11 @@
 //! work assigned to that executor. Call these methods only from synchronous code, such as `main`,
 //! a dedicated thread, or a sync-to-async boundary.
 
-mod executor;
-mod parker;
-
 use std::future::IntoFuture;
 use std::time::Duration;
+
+mod executor;
+mod parker;
 
 /// Extension methods for waiting on a future from synchronous code.
 ///

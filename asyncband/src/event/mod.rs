@@ -29,7 +29,7 @@
 //! observe state changes independently.
 
 mod auto_reset;
-mod manual_reset;
-
 pub use self::auto_reset::AutoResetEvent;
+
+mod manual_reset;
 pub use self::manual_reset::ManualResetEvent;

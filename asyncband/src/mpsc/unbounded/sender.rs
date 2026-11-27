@@ -62,7 +62,7 @@ impl<T> Drop for UnboundedSender<T> {
 }
 
 impl<T> UnboundedSender<T> {
-    pub(super) fn new(shared: Arc<Mutex<State<T>>>) -> Self {
+    pub(crate) fn new(shared: Arc<Mutex<State<T>>>) -> Self {
         Self { shared }
     }
 

@@ -266,7 +266,7 @@ fn completed_leader_wakes_trailing_follower_while_head_follower_stays_paused() {
         release_rx.await.unwrap();
         "shared"
     }));
-    let mut paused_follower = std::pin::pin!(group.work("key", async || unreachable!()));
+    let mut paused_follower = pin!(group.work("key", async || unreachable!()));
     let mut trailing_follower = pin!(group.work("key", async || unreachable!()));
     let (paused_waker, paused_wakes) = WakeCounter::new();
     let (trailing_waker, trailing_wakes) = WakeCounter::new();

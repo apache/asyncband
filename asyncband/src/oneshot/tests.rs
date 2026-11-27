@@ -173,13 +173,13 @@ mod support {
     use std::task::Waker;
     use std::thread;
 
-    pub(super) struct DropProbe<T> {
+    pub struct DropProbe<T> {
         drop_count: Arc<AtomicUsize>,
         _value: T,
     }
 
     impl<T> DropProbe<T> {
-        pub(super) fn new(value: T) -> (Self, Arc<AtomicUsize>) {
+        pub fn new(value: T) -> (Self, Arc<AtomicUsize>) {
             let drop_count = Arc::new(AtomicUsize::new(0));
             (
                 Self {
@@ -198,23 +198,23 @@ mod support {
     }
 
     #[derive(Default)]
-    pub(super) struct WakerProbe {
+    pub struct WakerProbe {
         wake_count: AtomicU32,
     }
 
     impl WakerProbe {
-        pub(super) fn new() -> (Waker, Arc<Self>) {
+        pub fn new() -> (Waker, Arc<Self>) {
             let probe = Arc::new(Self::default());
             (Waker::from(probe.clone()), probe)
         }
 
-        pub(super) fn live_waker_count(this: &Arc<Self>) -> usize {
+        pub fn live_waker_count(this: &Arc<Self>) -> usize {
             // The returned probe owns one strong reference; every other reference belongs to a
             // live Waker created from it.
             Arc::strong_count(this) - 1
         }
 
-        pub(super) fn wake_count(&self) -> u32 {
+        pub fn wake_count(&self) -> u32 {
             self.wake_count.load(Ordering::Relaxed)
         }
     }
@@ -229,7 +229,7 @@ mod support {
         }
     }
 
-    pub(super) fn spawn_named<F, T>(name: &str, f: F) -> thread::JoinHandle<T>
+    pub fn spawn_named<F, T>(name: &str, f: F) -> thread::JoinHandle<T>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,

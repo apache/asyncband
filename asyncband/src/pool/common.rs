@@ -57,11 +57,11 @@ impl ObjectStatus {
         self.recycle_count
     }
 
-    pub(super) fn mark_recycled(&mut self) {
+    pub(crate) fn mark_recycled(&mut self) {
         self.recycle_count += 1;
     }
 
-    pub(super) fn mark_returned(&mut self) {
+    pub(crate) fn mark_returned(&mut self) {
         self.last_returned = Some(Instant::now());
     }
 }

@@ -15,7 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::pin::Pin;
 use std::pin::pin;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 
 use asyncband::mpsc;
@@ -330,9 +333,6 @@ fn bounded_recv_future_panics_if_polled_after_completion() {
 
 #[test]
 fn zero_sized_payloads_run_destructors_once_across_all_paths() {
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-
     static DROPS: AtomicUsize = AtomicUsize::new(0);
 
     #[derive(Debug, Eq, PartialEq)]
@@ -383,8 +383,6 @@ fn zero_sized_payloads_run_destructors_once_across_all_paths() {
 
 #[test]
 fn completed_send_future_can_move_by_value_after_payload_is_consumed() {
-    use std::pin::Pin;
-
     let (tx, mut rx) = mpsc::bounded(2);
     let mut boxed_send = tx.send(Box::new(42usize));
     assert_eq!(expect_ready(poll_once(Pin::new(&mut boxed_send))), Ok(()));

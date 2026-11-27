@@ -16,9 +16,12 @@
 // under the License.
 
 use std::fmt;
+use std::sync;
 use std::sync::PoisonError;
+#[cfg(test)]
+use std::sync::TryLockError;
 
-pub struct Mutex<T: ?Sized>(std::sync::Mutex<T>);
+pub struct Mutex<T: ?Sized>(sync::Mutex<T>);
 
 impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -28,17 +31,15 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
 
 impl<T> Mutex<T> {
     pub const fn new(t: T) -> Self {
-        Self(std::sync::Mutex::new(t))
+        Self(sync::Mutex::new(t))
     }
 
-    pub fn lock(&self) -> std::sync::MutexGuard<'_, T> {
+    pub fn lock(&self) -> sync::MutexGuard<'_, T> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     #[cfg(test)]
-    pub fn try_lock(&self) -> Option<std::sync::MutexGuard<'_, T>> {
-        use std::sync::TryLockError;
-
+    pub fn try_lock(&self) -> Option<sync::MutexGuard<'_, T>> {
         match self.0.try_lock() {
             Ok(guard) => Some(guard),
             Err(TryLockError::Poisoned(error)) => Some(error.into_inner()),

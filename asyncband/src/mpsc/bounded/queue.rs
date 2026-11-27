@@ -1279,7 +1279,10 @@ mod tests {
     use std::panic::AssertUnwindSafe;
     use std::panic::catch_unwind;
     use std::pin::pin;
+    use std::sync::mpsc;
     use std::thread;
+    #[cfg(not(miri))]
+    use std::time::Duration;
 
     use super::*;
     use crate::mpsc::BoundedReceiver;
@@ -1320,7 +1323,7 @@ mod tests {
             shared_producer.wake_receiver_for_slot(0);
         });
 
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
         let consumer = thread::spawn(move || {
             // Pre-arm the caller thread's unpark token and verify `try_recv` leaves it intact.
             thread::current().unpark();
@@ -1331,10 +1334,7 @@ mod tests {
         });
 
         #[cfg(not(miri))]
-        if done_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .is_err()
-        {
+        if done_rx.recv_timeout(Duration::from_secs(5)).is_err() {
             consumer.thread().unpark();
             panic!("try_recv timed out or consumed the caller thread's unpark token");
         }

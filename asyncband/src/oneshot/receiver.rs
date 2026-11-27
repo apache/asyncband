@@ -157,7 +157,7 @@ impl<T> Receiver<T> {
         }
     }
 
-    pub(super) fn new(channel_ptr: NonNull<Channel<T>>) -> Self {
+    pub(crate) fn new(channel_ptr: NonNull<Channel<T>>) -> Self {
         Self { channel_ptr }
     }
 }

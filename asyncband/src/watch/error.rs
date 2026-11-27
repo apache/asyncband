@@ -36,7 +36,7 @@ impl<T> SendError<T> {
         self.0
     }
 
-    pub(super) fn new(value: T) -> Self {
+    pub(crate) fn new(value: T) -> Self {
         Self(value)
     }
 }

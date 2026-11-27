@@ -48,14 +48,14 @@ impl<T> Drop for BoundedReceiver<T> {
 }
 
 impl<T> BoundedReceiver<T> {
-    pub(in crate::mpsc::bounded) fn new(shared: Arc<Shared<T>>) -> Self {
+    pub(crate) fn new(shared: Arc<Shared<T>>) -> Self {
         Self { shared, head: 0 }
     }
 
     /// Receives the next queued value without waiting for future sends, freeing one capacity slot.
     ///
     /// Only messages that have already claimed a queue slot are visible; held
-    /// [`Permit`](super::Permit)s and concurrent sends that have acquired capacity but not yet
+    /// [`Permit`](crate::mpsc::Permit)s and concurrent sends that have acquired capacity but not yet
     /// claimed a slot are not queued values, so [`TryRecvError::Empty`] may be returned while
     /// capacity is already full. If the sender that claimed the head slot is still copying its
     /// value, this call briefly waits for that slot write to finish before returning the message.
@@ -159,7 +159,7 @@ impl<T> BoundedReceiver<T> {
 
     /// Returns `true` if no queued value has claimed a slot for delivery.
     ///
-    /// Held [`Permit`](super::Permit)s, sends waiting for capacity, and concurrent sends that have
+    /// Held [`Permit`](crate::mpsc::Permit)s, sends waiting for capacity, and concurrent sends that have
     /// acquired capacity but not yet claimed a queue slot are not queued values. A `true` result
     /// may become stale as senders publish values. A `false` result means the head slot has been
     /// claimed, so the next receive on this receiver will observe a message, though

@@ -18,6 +18,7 @@
 use std::cell::Cell;
 use std::hint::black_box;
 use std::num::NonZeroUsize;
+use std::process;
 use std::sync::Barrier;
 use std::thread;
 use std::time::Duration;
@@ -231,7 +232,7 @@ impl Runner {
     pub fn finish(self) {
         if self.matched == 0 {
             eprintln!("No matching scenarios. Use --list for this target.");
-            std::process::exit(1);
+            process::exit(1);
         }
     }
 }

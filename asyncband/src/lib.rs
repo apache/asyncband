@@ -136,7 +136,6 @@
 //! **Apache Asyncband™**; see the [Apache Product Name Usage
 //! Guide](https://www.apache.org/foundation/marks/guide) and the [ASF Trademark
 //! Policy](https://www.apache.org/foundation/marks/).
-mod internal;
 
 #[cfg(feature = "barrier")]
 pub mod barrier;
@@ -186,6 +185,7 @@ pub mod waitgroup;
 #[cfg(feature = "watch")]
 pub mod watch;
 
+mod internal;
 #[cfg(all(
     test,
     any(feature = "once-map", feature = "phaser", feature = "singleflight")

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
@@ -264,7 +265,7 @@ fn concurrent_releases_conserve_permits() {
                     let now = held.fetch_add(n, Ordering::AcqRel) + n;
                     assert!(now <= PERMITS, "{now} permits held at once");
                     for _ in 0..next(state) % 8 {
-                        std::hint::spin_loop();
+                        hint::spin_loop();
                     }
                     held.fetch_sub(n, Ordering::AcqRel);
                 };
