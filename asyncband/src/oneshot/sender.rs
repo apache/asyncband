@@ -127,7 +127,7 @@ impl<T> Sender<T> {
         matches!(channel.state.load(Ordering::Relaxed), DISCONNECTED)
     }
 
-    pub(super) fn new(channel_ptr: NonNull<Channel<T>>) -> Self {
+    pub(crate) fn new(channel_ptr: NonNull<Channel<T>>) -> Self {
         Self { channel_ptr }
     }
 }
@@ -245,7 +245,7 @@ impl<T> Error for SendError<T> {}
 
 #[cfg(test)]
 impl<T> Sender<T> {
-    pub(super) fn channel_ptr(&self) -> NonNull<Channel<T>> {
+    pub(crate) fn channel_ptr(&self) -> NonNull<Channel<T>> {
         self.channel_ptr
     }
 }

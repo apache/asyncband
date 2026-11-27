@@ -61,7 +61,7 @@ impl<T: ?Sized> RwLock<T> {
 /// Created by [`RwLock::read`]. Dropping the guard releases its access.
 #[must_use = "dropping the guard releases its read access immediately"]
 pub struct RwLockReadGuard<'a, T: ?Sized> {
-    pub(super) access: ReadAccess<&'a RwLock<T>>,
+    pub(crate) access: ReadAccess<&'a RwLock<T>>,
 }
 
 unsafe impl<T: ?Sized + Sync> Send for RwLockReadGuard<'_, T> {}

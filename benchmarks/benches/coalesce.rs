@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::array;
 use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::convert::Infallible;
@@ -241,7 +242,7 @@ pub fn register(runner: &mut Runner) {
         let mut cx = bench_context();
         bencher.bench_local(|| {
             let open = Cell::new(false);
-            let [f0, f1, f2, f3] = std::array::from_fn(|_| {
+            let [f0, f1, f2, f3] = array::from_fn(|_| {
                 map.compute(0, async || {
                     GatedValue {
                         open: &open,
@@ -268,7 +269,7 @@ pub fn register(runner: &mut Runner) {
         let mut cx = bench_context();
         bencher.bench_local(|| {
             let open = Cell::new(false);
-            let [f0, f1, f2, f3] = std::array::from_fn(|_| {
+            let [f0, f1, f2, f3] = array::from_fn(|_| {
                 group.work(0, async || {
                     GatedValue {
                         open: &open,

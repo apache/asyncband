@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::array;
 use std::future::Future;
 use std::hint::black_box;
 use std::ops::Deref;
@@ -265,7 +266,7 @@ pub fn register(runner: &mut Runner) {
             let mutex = Arc::new(M::new_mutex(0usize));
             let mut expected = 0usize;
             bencher.bench_local(|| {
-                let handles: [_; 8] = std::array::from_fn(|_| {
+                let handles: [_; 8] = array::from_fn(|_| {
                     let mutex = Arc::clone(&mutex);
                     runtime.spawn(async move {
                         for _ in 0..512 {
@@ -347,7 +348,7 @@ pub fn register(runner: &mut Runner) {
             let lock = Arc::new(L::new_rwlock(0usize));
             let mut expected = 0usize;
             bencher.bench_local(|| {
-                let handles: [_; 8] = std::array::from_fn(|_| {
+                let handles: [_; 8] = array::from_fn(|_| {
                     let lock = Arc::clone(&lock);
                     runtime.spawn(async move {
                         for _ in 0..64 {
@@ -461,7 +462,7 @@ pub fn register(runner: &mut Runner) {
             let runtime = runtime::multi_thread(WORKERS);
             let sem = Arc::new(S::new_semaphore(4));
             bencher.bench_local(|| {
-                let handles: [_; 16] = std::array::from_fn(|_| {
+                let handles: [_; 16] = array::from_fn(|_| {
                     let sem = Arc::clone(&sem);
                     runtime.spawn(async move {
                         for _ in 0..64 {

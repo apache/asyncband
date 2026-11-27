@@ -47,7 +47,7 @@ impl<T> SendError<T> {
     }
 
     /// Creates a new `SendError` with the given message.
-    pub(super) fn new(msg: T) -> SendError<T> {
+    pub(crate) fn new(msg: T) -> SendError<T> {
         SendError(msg)
     }
 }

@@ -154,7 +154,10 @@ pub fn waker_on_drop(callback: impl FnOnce() + Send + 'static) -> Waker {
     struct OnDrop(Mutex<Option<Box<dyn FnOnce() + Send>>>);
 
     // Only destruction runs the callback; waking consumes the reference as usual.
-    #[allow(clippy::manual_noop_waker)]
+    #[expect(
+        clippy::manual_noop_waker,
+        reason = "waker runs its callback on final drop rather than wake"
+    )]
     impl Wake for OnDrop {
         fn wake(self: Arc<Self>) {}
     }

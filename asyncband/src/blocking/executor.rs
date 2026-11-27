@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use crate::blocking::parker::Parker;
 
-pub(super) fn block_on<F: IntoFuture>(future: F) -> F::Output {
+pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
     let mut future = pin!(future.into_future());
 
     with_parker(|parker, waker| {
@@ -33,7 +33,7 @@ pub(super) fn block_on<F: IntoFuture>(future: F) -> F::Output {
     })
 }
 
-pub(super) fn wait_timeout<F: IntoFuture>(future: F, timeout: Duration) -> Option<F::Output> {
+pub fn wait_timeout<F: IntoFuture>(future: F, timeout: Duration) -> Option<F::Output> {
     if timeout.is_zero() {
         let mut future = pin!(future.into_future());
         let mut context = Context::from_waker(Waker::noop());

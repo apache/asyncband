@@ -23,18 +23,20 @@
 //! attempts to send return their value in an error.
 
 mod bounded;
-mod error;
-mod queue;
-mod unbounded;
-
 pub use self::bounded::BoundedReceiver;
 pub use self::bounded::BoundedSender;
 pub use self::bounded::bounded;
+
+mod error;
 pub use self::error::RecvError;
 pub use self::error::SendError;
 pub use self::error::TryRecvError;
 pub use self::error::TrySendError;
+
+mod queue;
 pub use self::queue::Permit;
+
+mod unbounded;
 pub use self::unbounded::UnboundedReceiver;
 pub use self::unbounded::UnboundedSender;
 pub use self::unbounded::unbounded;

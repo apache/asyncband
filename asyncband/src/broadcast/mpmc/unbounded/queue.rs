@@ -57,7 +57,7 @@ const SHARDS: usize = 4;
 #[repr(C)]
 struct ExtraShardSlot {
     shard: Shard,
-    _sep: CacheSep,
+    sep: CacheSep,
 }
 
 type ExtraShards = [ExtraShardSlot; SHARDS - 1];
@@ -114,15 +114,15 @@ fn init_extra_shards_box(slot: &AtomicPtr<ExtraShards>) -> *mut ExtraShards {
     let boxed: Box<ExtraShards> = Box::new([
         ExtraShardSlot {
             shard: Shard::new(),
-            _sep: CacheSep::new(),
+            sep: CacheSep::new(),
         },
         ExtraShardSlot {
             shard: Shard::new(),
-            _sep: CacheSep::new(),
+            sep: CacheSep::new(),
         },
         ExtraShardSlot {
             shard: Shard::new(),
-            _sep: CacheSep::new(),
+            sep: CacheSep::new(),
         },
     ]);
     let raw = Box::into_raw(boxed);
@@ -189,20 +189,20 @@ pub struct Shared<T> {
     senders: AtomicUsize,
     tail_seg: AtomicPtr<Segment<T>>,
     extra_shards: AtomicPtr<ExtraShards>,
-    _marker: PhantomData<Arc<T>>,
-    _sep0: CacheSep,
+    marker: PhantomData<Arc<T>>,
+    sep0: CacheSep,
 
     tail: CounterU64,
-    _sep1: CacheSep,
+    sep1: CacheSep,
 
     /// Monotonic count of versions whose backlog slots have been reclaimed (plus any versions
     /// skipped while zero receivers existed). Paired with `tail` so `tail - reclaimed` gives
     /// retained backlog length without splitting state across multiple counters.
     reclaimed: CounterU64,
-    _sep2: CacheSep,
+    sep2: CacheSep,
 
     pub shard0: Shard,
-    _sep3: CacheSep,
+    sep3: CacheSep,
 
     // Waiter registration state: untouched when receivers do not park, and mutated together on a
     // single cache line when waiters register, wake, or cancel without invalidating the header.
@@ -263,14 +263,14 @@ impl<T> Shared<T> {
             senders: AtomicUsize::new(1),
             tail_seg: AtomicPtr::new(ptr::null_mut()),
             extra_shards: AtomicPtr::new(ptr::null_mut()),
-            _marker: PhantomData,
-            _sep0: CacheSep::new(),
+            marker: PhantomData,
+            sep0: CacheSep::new(),
             tail: CounterU64::new(0),
-            _sep1: CacheSep::new(),
+            sep1: CacheSep::new(),
             reclaimed: CounterU64::new(0),
-            _sep2: CacheSep::new(),
+            sep2: CacheSep::new(),
             shard0: Shard::new(),
-            _sep3: CacheSep::new(),
+            sep3: CacheSep::new(),
             has_waiters: AtomicBool::new(false),
             wake_gen: CounterU64::new(0),
             waiters: Mutex::new(Waiters::new()),

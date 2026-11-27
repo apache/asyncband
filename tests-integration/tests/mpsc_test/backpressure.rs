@@ -16,6 +16,9 @@
 // under the License.
 
 use std::pin::pin;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 
 use asyncband::mpsc;
@@ -114,10 +117,6 @@ fn bounded_receiver_drop_returns_values_to_all_blocked_senders() {
 
 #[test]
 fn large_pending_send_preserves_ownership_on_cancel_and_disconnect() {
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-
     #[derive(Debug)]
     struct Payload {
         bytes: [u8; 1024],

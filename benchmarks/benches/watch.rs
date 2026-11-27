@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::array;
 use std::future::Future;
 use std::hint::black_box;
 use std::pin::pin;
@@ -225,7 +226,7 @@ pub fn register(runner: &mut Runner) {
                         W::send(&writer_tx, black_box(value));
                     }
                 });
-                let readers: [_; CONCURRENT_READERS] = std::array::from_fn(|_| {
+                let readers: [_; CONCURRENT_READERS] = array::from_fn(|_| {
                     let rx = rx.clone();
                     runtime.spawn(async move {
                         let mut sum = 0usize;

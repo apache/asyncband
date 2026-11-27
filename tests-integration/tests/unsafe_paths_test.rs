@@ -178,14 +178,18 @@ fn owned_downgraded_shared_projection_preserves_interior_mutability() {
 
 struct AddressSensitiveFuture {
     address: Cell<usize>,
-    _pin: PhantomPinned,
+    #[expect(
+        dead_code,
+        reason = "opts out of Unpin so the future cannot be moved after pinning"
+    )]
+    pin: PhantomPinned,
 }
 
 impl AddressSensitiveFuture {
     fn new() -> Self {
         Self {
             address: Cell::new(0),
-            _pin: PhantomPinned,
+            pin: PhantomPinned,
         }
     }
 }

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
 use std::ptr;
@@ -88,8 +89,6 @@ fn test_guard_prevents_concurrent_access() {
 
 #[test]
 fn test_lock_panic_safety() {
-    use std::panic::AssertUnwindSafe;
-
     let mutex = Arc::new(Mutex::new(0));
     let mutex_clone = mutex.clone();
 
@@ -166,12 +165,13 @@ async fn test_mapped_mutex_guard_send() {
     #[derive(Debug)]
     struct TestStruct {
         field1: i32,
-        _field2: String,
+        #[expect(dead_code, reason = "exercises multi-field struct projection")]
+        field2: String,
     }
 
     let mutex = Arc::new(Mutex::new(TestStruct {
         field1: 2,
-        _field2: "oh".to_owned(),
+        field2: "oh".to_owned(),
     }));
 
     let mutex_clone = mutex.clone();

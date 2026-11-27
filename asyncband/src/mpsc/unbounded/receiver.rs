@@ -65,7 +65,7 @@ impl<T> Drop for UnboundedReceiver<T> {
 }
 
 impl<T> UnboundedReceiver<T> {
-    pub(super) fn new(shared: Arc<Mutex<State<T>>>) -> Self {
+    pub(crate) fn new(shared: Arc<Mutex<State<T>>>) -> Self {
         Self {
             shared,
             batch: Mutex::new(VecDeque::new()),

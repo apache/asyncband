@@ -15,14 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod bench;
-mod build;
-mod check;
-mod lint;
-mod miri;
-mod semver;
-mod test;
-
 use std::process;
 
 use clap::Parser;
@@ -35,6 +27,14 @@ use crate::lint::CommandLint;
 use crate::miri::CommandMiri;
 use crate::semver::CommandSemver;
 use crate::test::CommandTest;
+
+mod bench;
+mod build;
+mod check;
+mod lint;
+mod miri;
+mod semver;
+mod test;
 
 const PACKAGE_NAME: &str = "asyncband";
 

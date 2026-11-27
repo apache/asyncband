@@ -203,7 +203,7 @@ fn completion_unblocks_trailing_waiters_while_the_head_waiter_stays_paused() {
         ready.await.unwrap();
         99_u32
     }));
-    let mut paused_head = std::pin::pin!(cell.get_or_init(async || unreachable!()));
+    let mut paused_head = pin!(cell.get_or_init(async || unreachable!()));
     let mut trailing = pin!(cell.get_or_init(async || unreachable!()));
     let (paused_waker, paused_wakes) = WakeCounter::new();
     let (trailing_waker, trailing_wakes) = WakeCounter::new();

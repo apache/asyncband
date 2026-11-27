@@ -49,6 +49,8 @@ which = { version = "8.0.5" }
 
 [workspace.lints.rust]
 unknown_lints = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
 
 [workspace.lints.clippy]
 dbg_macro = "deny"

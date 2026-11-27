@@ -23,12 +23,13 @@ use std::task::Waker;
 use crate::internal::mutex::Mutex;
 use crate::mpsc::unbounded::buffer::Buffer;
 
-mod buffer;
 mod receiver;
-mod sender;
-
 pub use self::receiver::UnboundedReceiver;
+
+mod sender;
 pub use self::sender::UnboundedSender;
+
+mod buffer;
 
 /// Creates an unbounded mpsc channel. Sending never waits for capacity.
 ///
@@ -59,7 +60,7 @@ pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
 
 // Queue contents, endpoint liveness, and wake registration share one lock. Only the receiver
 // accesses its current batch; refilling that batch preserves the order of concurrent `send` calls.
-struct State<T> {
+pub struct State<T> {
     buffer: Buffer<T>,
     senders: usize,
     // True while the receiving endpoint is alive.

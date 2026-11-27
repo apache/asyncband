@@ -60,6 +60,7 @@ use std::marker::PhantomData;
 use std::mem;
 use std::ops::Deref;
 use std::pin::Pin;
+use std::process;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -238,7 +239,7 @@ impl Shared {
         // Borrowing a live participant keeps `participants` above zero. Registration publishes no
         // caller data; abort before wrapping `isize::MAX`.
         if self.participants.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
-            std::process::abort();
+            process::abort();
         }
         Self(self.0, PhantomData)
     }
@@ -264,7 +265,7 @@ impl Shared {
     #[inline]
     fn clone_ref(&self) -> Self {
         if self.refs.fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
-            std::process::abort();
+            process::abort();
         }
         Self(self.0, PhantomData)
     }

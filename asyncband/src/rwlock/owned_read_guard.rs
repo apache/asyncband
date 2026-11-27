@@ -62,7 +62,7 @@ impl<T: ?Sized> RwLock<T> {
 /// Created by [`RwLock::read_owned`]. Dropping the guard releases its access.
 #[must_use = "dropping the guard releases its read access immediately"]
 pub struct OwnedRwLockReadGuard<T: ?Sized> {
-    pub(super) access: ReadAccess<Arc<RwLock<T>>>,
+    pub(crate) access: ReadAccess<Arc<RwLock<T>>>,
 }
 
 impl<T: ?Sized + fmt::Debug> fmt::Debug for OwnedRwLockReadGuard<T> {

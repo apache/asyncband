@@ -15,10 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::hint::black_box;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
+use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -806,9 +809,6 @@ fn close_vs_try_recv_linearizability() {
 
 #[test]
 fn completed_recv_futures_can_move_by_value_after_payload_is_dropped() {
-    use std::hint::black_box;
-    use std::pin::Pin;
-
     let (waker, _) = WakeCounter::new();
     let (tx, mut rx) = unbounded();
 
@@ -829,8 +829,6 @@ fn completed_recv_futures_can_move_by_value_after_payload_is_dropped() {
 
 #[test]
 fn concurrent_drop_last_receiver_and_resubscribe_preserves_retained_count() {
-    use std::sync::Barrier;
-
     let rounds = if cfg!(miri) { 8 } else { 256 };
     for _ in 0..rounds {
         let (tx, rx1) = unbounded::<usize>();
@@ -869,8 +867,6 @@ fn concurrent_drop_last_receiver_and_resubscribe_preserves_retained_count() {
 
 #[test]
 fn concurrent_lagging_and_caught_up_drops_with_resubscribe_never_corrupt_inline_segment() {
-    use std::sync::Barrier;
-
     let rounds = if cfg!(miri) { 8 } else { 256 };
     for _ in 0..rounds {
         let (tx, rx_lag) = unbounded::<Box<usize>>();

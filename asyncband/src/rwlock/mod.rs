@@ -113,27 +113,35 @@ use std::num::NonZeroUsize;
 
 use crate::rwlock::access::LockState;
 
-mod access;
 mod mapped_read_guard;
-mod mapped_write_guard;
-mod owned_mapped_read_guard;
-mod owned_mapped_write_guard;
-mod owned_read_guard;
-mod owned_write_guard;
-mod read_guard;
-mod upgradable;
-mod write_guard;
-
 pub use self::mapped_read_guard::MappedRwLockReadGuard;
+
+mod mapped_write_guard;
 pub use self::mapped_write_guard::MappedRwLockWriteGuard;
+
+mod owned_mapped_read_guard;
 pub use self::owned_mapped_read_guard::OwnedMappedRwLockReadGuard;
+
+mod owned_mapped_write_guard;
 pub use self::owned_mapped_write_guard::OwnedMappedRwLockWriteGuard;
+
+mod owned_read_guard;
 pub use self::owned_read_guard::OwnedRwLockReadGuard;
+
+mod owned_write_guard;
 pub use self::owned_write_guard::OwnedRwLockWriteGuard;
+
+mod read_guard;
 pub use self::read_guard::RwLockReadGuard;
+
+mod upgradable;
 pub use self::upgradable::RwLockUpgradableReadGuard;
 pub use self::upgradable::UpgradableRwLock;
+
+mod write_guard;
 pub use self::write_guard::RwLockWriteGuard;
+
+mod access;
 
 /// A value with fair, asynchronous shared or exclusive access.
 ///

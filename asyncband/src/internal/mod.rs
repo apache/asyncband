@@ -18,29 +18,6 @@
 use std::mem;
 use std::task::Waker;
 
-/// Refreshes an occupied registration unless both wakers are known to wake the same task.
-#[inline]
-#[must_use = "drop the replaced waker after releasing the state lock"]
-pub fn update_waker(current: &mut Waker, waker: &Waker) -> Option<Waker> {
-    if current.will_wake(waker) {
-        None
-    } else {
-        Some(mem::replace(current, waker.clone()))
-    }
-}
-
-/// Retains the current task waker, returning any replaced registration for unlocked destruction.
-#[inline]
-#[must_use = "drop the replaced waker after releasing the state lock"]
-// Some feature subsets have no primitive that registers a single waker slot.
-#[allow(dead_code)]
-pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> {
-    match slot {
-        Some(current) => update_waker(current, waker),
-        None => slot.replace(waker.clone()),
-    }
-}
-
 #[cfg(any(
     feature = "barrier",
     feature = "broadcast",
@@ -64,25 +41,13 @@ pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> 
 // `WaitList` and `WakerSet` use different `Arena` operations. A single-primitive build therefore
 // leaves part of this shared API unused, while the all-feature build uses it.
 #[allow(dead_code)]
-pub(crate) mod arena;
+pub mod arena;
 
 #[cfg(any(feature = "once-map", feature = "singleflight"))]
 // `OnceMap` caches completed entries while `singleflight` detaches them on completion, so single-
 // feature builds leave the other primitive's table helpers unused.
 #[allow(dead_code)]
-pub(crate) mod coalesce;
-
-#[cfg(any(feature = "lazy-cell", feature = "once", feature = "once-cell"))]
-// `Once` does not reset or complete via `&mut self`, and `LazyCell` does not register pure
-// observers, so single-feature builds leave parts of `OnceState` unused.
-#[allow(dead_code)]
-pub(crate) mod once_state;
-
-#[cfg(any(feature = "lazy-cell", feature = "once-cell"))]
-// `LazyCell` and `OnceCell` use different subsets of `ValueCell`, so single-feature builds leave
-// some operations in the shared implementation unused.
-#[allow(dead_code)]
-pub(crate) mod value_cell;
+pub mod coalesce;
 
 #[cfg(any(
     feature = "barrier",
@@ -106,15 +71,21 @@ pub(crate) mod value_cell;
 ))]
 // Some primitives use only shared access, leaving `Mutex::get_mut` unused.
 #[allow(dead_code)]
-pub(crate) mod mutex;
+pub mod mutex;
+
+#[cfg(any(feature = "lazy-cell", feature = "once", feature = "once-cell"))]
+// `Once` does not reset or complete via `&mut self`, and `LazyCell` does not register pure
+// observers, so single-feature builds leave parts of `OnceState` unused.
+#[allow(dead_code)]
+pub mod once_state;
 
 #[cfg(any(feature = "broadcast", feature = "mpmc", feature = "spmc"))]
 // Channel families use different subsets of single- and batch-wakeup helpers.
 #[allow(dead_code)]
-pub(crate) mod retry_waiter;
+pub mod retry_waiter;
 
 #[cfg(feature = "waitgroup")]
-pub(crate) mod rwlock;
+pub mod rwlock;
 
 #[cfg(any(
     feature = "mutex",
@@ -125,7 +96,13 @@ pub(crate) mod rwlock;
 // Mutexes, pools, and rwlocks use acquire/release operations; the public semaphore also exposes
 // permit accounting. Single-primitive builds leave part of this API unused.
 #[allow(dead_code)]
-pub(crate) mod semaphore;
+pub mod semaphore;
+
+#[cfg(any(feature = "lazy-cell", feature = "once-cell"))]
+// `LazyCell` and `OnceCell` use different subsets of `ValueCell`, so single-feature builds leave
+// some operations in the shared implementation unused.
+#[allow(dead_code)]
+pub mod value_cell;
 
 #[cfg(any(
     feature = "broadcast",
@@ -144,7 +121,7 @@ pub(crate) mod semaphore;
 // The event and semaphore-backed primitives use different queue operations. A single-feature
 // build therefore leaves part of this shared API unused, while the all-feature build uses it.
 #[allow(dead_code)]
-pub(crate) mod waitlist;
+pub mod waitlist;
 
 #[cfg(any(
     feature = "barrier",
@@ -167,7 +144,7 @@ pub(crate) mod waitlist;
 ))]
 // Terminal-only primitives wake WakerSet directly, leaving WakerBatch::wake_all unused.
 #[allow(dead_code)]
-pub(crate) mod waker_batch;
+pub mod waker_batch;
 
 #[cfg(any(
     feature = "barrier",
@@ -184,4 +161,27 @@ pub(crate) mod waker_batch;
 ))]
 // Some feature subsets use only one constructor or one of the two notification paths.
 #[allow(dead_code)]
-pub(crate) mod wakerset;
+pub mod wakerset;
+
+/// Refreshes an occupied registration unless both wakers are known to wake the same task.
+#[inline]
+#[must_use = "drop the replaced waker after releasing the state lock"]
+pub fn update_waker(current: &mut Waker, waker: &Waker) -> Option<Waker> {
+    if current.will_wake(waker) {
+        None
+    } else {
+        Some(mem::replace(current, waker.clone()))
+    }
+}
+
+/// Retains the current task waker, returning any replaced registration for unlocked destruction.
+#[inline]
+#[must_use = "drop the replaced waker after releasing the state lock"]
+// Some feature subsets have no primitive that registers a single waker slot.
+#[allow(dead_code)]
+pub fn register_waker(slot: &mut Option<Waker>, waker: &Waker) -> Option<Waker> {
+    match slot {
+        Some(current) => update_waker(current, waker),
+        None => slot.replace(waker.clone()),
+    }
+}

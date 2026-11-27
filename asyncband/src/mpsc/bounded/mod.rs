@@ -21,13 +21,14 @@ use std::num::NonZeroUsize;
 
 use crate::mpsc::bounded::queue::Shared;
 
-mod queue;
 mod receiver;
-mod sender;
-
 pub use self::receiver::BoundedReceiver;
+
+mod sender;
 pub use self::sender::BoundedSender;
 pub use self::sender::Permit;
+
+mod queue;
 
 /// Creates a bounded mpsc channel with room for `buffer` queued messages.
 ///

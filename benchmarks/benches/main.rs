@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use benchmarks::harness::Runner;
+
 mod broadcast;
 mod coalesce;
 mod coordination;
@@ -23,8 +25,6 @@ mod mpmc;
 mod mpsc;
 mod oneshot;
 mod watch;
-
-use benchmarks::harness::Runner;
 
 fn main() {
     let mut runner = Runner::from_args();

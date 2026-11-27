@@ -18,6 +18,8 @@
 use std::array;
 use std::panic;
 use std::pin::pin;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::thread;
 
@@ -674,9 +676,6 @@ async fn observer_waits_without_becoming_a_party() {
 
 #[test]
 fn arrivals_publish_each_workers_writes_across_threads() {
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-
     let phaser = Phaser::new();
     let values = array::from_fn::<_, 4, _>(|_| AtomicUsize::new(0));
     let participants = phaser.register(values.len()).unwrap();

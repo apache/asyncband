@@ -18,6 +18,10 @@
 use std::cell::Cell;
 use std::mem;
 use std::pin::pin;
+use std::sync::Barrier;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
+use std::task::Poll;
 use std::thread;
 
 use asyncband::mpsc;
@@ -205,10 +209,6 @@ fn concurrent_cancellation_preserves_capacity_and_message_order() {
 
 #[test]
 fn concurrent_try_send_cannot_barge_when_waiter_enqueues_during_release() {
-    use std::sync::Barrier;
-    use std::sync::atomic::AtomicU8;
-    use std::sync::atomic::Ordering;
-
     let rounds = if cfg!(miri) { 12 } else { 512 };
     for round in 0..rounds {
         let (tx, mut rx) = mpsc::bounded(1);
@@ -256,10 +256,10 @@ fn concurrent_try_send_cannot_barge_when_waiter_enqueues_during_release() {
 
             start.wait();
             match poll_with(waiting.as_mut(), &waker) {
-                std::task::Poll::Pending => {
+                Poll::Pending => {
                     state.store(1, Ordering::Release);
                 }
-                std::task::Poll::Ready(res) => {
+                Poll::Ready(res) => {
                     state.store(2, Ordering::Release);
                     res.unwrap().send(1).unwrap();
                 }

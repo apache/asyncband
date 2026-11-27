@@ -16,9 +16,10 @@
 // under the License.
 
 use std::fmt;
+use std::sync;
 use std::sync::PoisonError;
 
-pub struct RwLock<T: ?Sized>(std::sync::RwLock<T>);
+pub struct RwLock<T: ?Sized>(sync::RwLock<T>);
 
 impl<T: ?Sized + fmt::Debug> fmt::Debug for RwLock<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -28,10 +29,10 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for RwLock<T> {
 
 impl<T> RwLock<T> {
     pub const fn new(t: T) -> Self {
-        Self(std::sync::RwLock::new(t))
+        Self(sync::RwLock::new(t))
     }
 
-    pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, T> {
+    pub fn write(&self) -> sync::RwLockWriteGuard<'_, T> {
         self.0.write().unwrap_or_else(PoisonError::into_inner)
     }
 }

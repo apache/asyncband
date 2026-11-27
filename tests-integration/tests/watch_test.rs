@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::array;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use std::pin::pin;
@@ -517,7 +518,7 @@ fn concurrent_readers_observe_coherent_snapshots_and_monotonic_updates() {
         fn new(sequence: usize) -> Self {
             Self {
                 sequence,
-                words: std::array::from_fn(|idx| sequence.wrapping_mul(31).wrapping_add(idx)),
+                words: array::from_fn(|idx| sequence.wrapping_mul(31).wrapping_add(idx)),
             }
         }
 
