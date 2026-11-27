@@ -155,3 +155,63 @@ fn overflow_in_permit_and_pending_send_releases_slot_unlocked() {
     assert!(woke.0.load(Ordering::Relaxed));
     assert!(waiting.as_mut().poll(&mut cx).is_ready());
 }
+
+fn publish(log: &mut Backlog<u64>, value: u64) -> Option<u64> {
+    let mut payload = Some(value);
+    log.publish(&mut payload, Arc::new);
+    payload
+}
+
+/// Drives every cursor-count mutation point — subscribing, publishing, receiving, and dropping —
+/// and checks the accounting after each step.
+#[test]
+fn cursor_accounting_holds_across_subscribe_receive_and_drop() {
+    let mut log = Backlog::<u64>::new(16);
+
+    let a = log.subscribe();
+    let b = log.subscribe();
+    log.assert_cursor_accounting();
+
+    // The first publication picks up the caught-up cursors; a subscription registered mid-backlog
+    // starts at the tail and counts against the next publication.
+    assert!(publish(&mut log, 1).is_none());
+    let c = log.subscribe();
+    assert!(publish(&mut log, 2).is_none());
+    assert!(publish(&mut log, 3).is_none());
+    log.assert_cursor_accounting();
+
+    assert_eq!(*log.receive(a).unwrap().msg, 1);
+    log.assert_cursor_accounting();
+
+    // Dropping a subscription parked mid-backlog only decrements that slot and reclaims nothing.
+    assert!(log.remove_receiver(c).is_empty());
+    log.assert_cursor_accounting();
+
+    // `a` drains to the tail, leaving zero-count slots behind the lagging `b`.
+    assert_eq!(*log.receive(a).unwrap().msg, 2);
+    assert_eq!(*log.receive(a).unwrap().msg, 3);
+    log.assert_cursor_accounting();
+    assert!(log.receive(a).is_none());
+
+    // Dropping a caught-up subscription reclaims nothing either.
+    let d = log.subscribe();
+    assert!(log.remove_receiver(d).is_empty());
+    log.assert_cursor_accounting();
+
+    // Dropping the lagging subscription releases the whole prefix it held back in one step.
+    assert_eq!(log.remove_receiver(b).len(), 3);
+    log.assert_cursor_accounting();
+
+    // A call to `receive` that catches up to the tail releases the head slot and moves the cursor
+    // back to `at_tail`.
+    assert!(publish(&mut log, 4).is_none());
+    let received = log.receive(a).unwrap();
+    assert_eq!(*received.msg, 4);
+    assert!(received.reclaimed);
+    log.assert_cursor_accounting();
+
+    // With no subscription left, a publication is discarded and nothing is counted.
+    assert!(log.remove_receiver(a).is_empty());
+    assert_eq!(publish(&mut log, 5), Some(5));
+    log.assert_cursor_accounting();
+}

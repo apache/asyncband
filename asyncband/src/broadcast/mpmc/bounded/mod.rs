@@ -106,16 +106,17 @@
 use std::fmt;
 use std::future::Future;
 use std::future::poll_fn;
+use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
+use crate::broadcast::mpmc::bounded::backlog::Backlog;
 use crate::broadcast::mpmc::common;
-use crate::broadcast::mpmc::common::Backlog;
-use crate::broadcast::mpmc::common::Inner;
 use crate::broadcast::mpmc::common::Received;
 use crate::broadcast::mpmc::error::RecvError;
 use crate::broadcast::mpmc::error::TryRecvError;
@@ -126,8 +127,10 @@ use crate::internal::retry_waiter::RetryWaiter;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::internal::waker_batch::WakerBatch;
+use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
+mod backlog;
 #[cfg(test)]
 mod tests;
 
@@ -161,7 +164,7 @@ pub fn bounded<T>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
         "broadcast bounded channel requires capacity > 0"
     );
 
-    let (inner, key) = Inner::with_first_subscription(Backlog::fixed(capacity), SendQueue::new());
+    let (inner, key) = Inner::with_first_subscription(capacity);
     let shared = Arc::new(Shared {
         inner,
         senders: AtomicUsize::new(1),
@@ -188,15 +191,108 @@ impl SendQueue {
     }
 }
 
-impl<T> Inner<T, SendQueue> {
+/// Buffer, receiver cursors, and parked channel waiters, all under one lock.
+///
+/// Checking the backlog and registering a waker share this lock with publishing and detaching
+/// registrations, so neither messages nor freed capacity can slip between a check and
+/// registration.
+struct Inner<T> {
+    log: Backlog<T>,
+    waiters: WakerSet,
+    send_waiters: SendQueue,
+}
+
+impl<T> Inner<T> {
+    /// Wraps the backlog in the channel lock and registers the subscription every constructor hands
+    /// out alongside its first sender.
+    fn with_first_subscription(capacity: usize) -> (Mutex<Self>, SlotId) {
+        let mut log = Backlog::new(capacity);
+        let key = log.subscribe();
+        let inner = Mutex::new(Self {
+            log,
+            waiters: WakerSet::new(),
+            send_waiters: SendQueue::new(),
+        });
+        (inner, key)
+    }
+
     #[inline]
     fn has_capacity(&self, capacity: usize) -> bool {
         self.log.retained() + self.send_waiters.reserved < capacity
     }
+
+    /// Receives without waiting while holding the channel lock.
+    #[inline]
+    fn try_receive(
+        &mut self,
+        senders: &AtomicUsize,
+        key: SlotId,
+    ) -> Result<Received<T>, TryRecvError> {
+        // Check this receiver's cursor while holding `inner` before observing the sender count.
+        // Senders append messages under the same lock before they can be dropped, so an empty
+        // result here means this receiver has no unread buffered message.
+        match self.log.receive(key) {
+            Some(received) => Ok(received),
+            None if senders.load(Ordering::Acquire) == 0 => Err(TryRecvError::Disconnected),
+            None => Err(TryRecvError::Empty),
+        }
+    }
+
+    /// Polls the receiving logic while holding the channel lock, returning any replaced waker for
+    /// unlocked destruction.
+    #[inline]
+    #[must_use = "drop the returned waker after releasing the channel lock"]
+    fn poll_receive(
+        &mut self,
+        senders: &AtomicUsize,
+        key: SlotId,
+        token: &mut Option<WakerToken>,
+        cx: &mut Context<'_>,
+    ) -> (Poll<Result<Received<T>, RecvError>>, Option<Waker>) {
+        match self.log.receive(key) {
+            Some(received) => {
+                *token = None;
+                (Poll::Ready(Ok(received)), None)
+            }
+            None if senders.load(Ordering::Acquire) == 0 => {
+                *token = None;
+                (Poll::Ready(Err(RecvError::Disconnected)), None)
+            }
+            None => {
+                let retired_waker = self.waiters.register(token, cx.waker());
+                (Poll::Pending, retired_waker)
+            }
+        }
+    }
+}
+
+/// Wakes every parked receiver so it can observe the channel's disconnected state.
+fn disconnect<T>(inner: &Mutex<Inner<T>>) {
+    let wakers = mem::take(&mut inner.lock().waiters);
+    wakers.wake_all();
+}
+
+/// Removes a cancelled `recv` future's waker registration, dropping the waker after unlocking.
+fn unregister<T>(
+    inner: &Mutex<Inner<T>>,
+    senders: &AtomicUsize,
+    key: SlotId,
+    token: &mut Option<WakerToken>,
+) {
+    let mut inner = inner.lock();
+    if inner.log.unread(key) != 0 || senders.load(Ordering::Acquire) == 0 {
+        // Publication or disconnection detached this registration under the channel lock.
+        *token = None;
+        return;
+    }
+
+    let waker = inner.waiters.unregister(token);
+    drop(inner);
+    drop(waker);
 }
 
 struct Shared<T> {
-    inner: Mutex<Inner<T, SendQueue>>,
+    inner: Mutex<Inner<T>>,
     /// Number of active senders.
     senders: AtomicUsize,
     /// The logical limit on the retained backlog.
@@ -288,7 +384,7 @@ impl<T> Drop for BoundedSender<T> {
         // Only parked receivers need waking. A parked producer borrows a live sender for the
         // lifetime of its `send` future, so the last sender cannot be dropping while one exists.
         if self.shared.senders.fetch_sub(1, Ordering::AcqRel) == 1 {
-            common::disconnect(&self.shared.inner);
+            disconnect(&self.shared.inner);
         }
     }
 }
@@ -906,7 +1002,7 @@ impl<T> Drop for Recv<'_, T> {
             return;
         }
 
-        common::unregister(
+        unregister(
             &self.receiver.shared.inner,
             &self.receiver.shared.senders,
             self.receiver.key,
