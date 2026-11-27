@@ -63,6 +63,9 @@ use crate::internal::mutex::Mutex;
 use crate::internal::wakerset::WakerSet;
 use crate::internal::wakerset::WakerToken;
 
+#[cfg(test)]
+mod tests;
+
 /// Creates a single-use [`Completer`] and a cloneable [`Completion`] observer.
 pub fn new<T>() -> (Completer<T>, Completion<T>) {
     let shared = Arc::new(Shared {
