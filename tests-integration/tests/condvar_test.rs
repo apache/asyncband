@@ -22,6 +22,7 @@ use std::task::Waker;
 
 use asyncband::condvar::Condvar;
 use asyncband::mutex::Mutex;
+use tests_integration::WakeCounter;
 use tests_integration::assert_completes_without_deadlock;
 use tests_integration::expect_ready;
 use tests_integration::poll_once;
@@ -88,19 +89,26 @@ fn notify_all_is_not_buffered() {
 fn notify_one_wakes_one_waiter_at_a_time() {
     let mutex = Mutex::new(());
     let condvar = Condvar::new();
+    let (first_waker, first_wakes) = WakeCounter::new();
+    let (second_waker, second_wakes) = WakeCounter::new();
 
     let mut first = pin!(condvar.wait(mutex.try_lock().unwrap()));
-    assert!(poll_once(first.as_mut()).is_pending());
+    assert!(poll_with(first.as_mut(), &first_waker).is_pending());
 
     let mut second = pin!(condvar.wait(mutex.try_lock().unwrap()));
-    assert!(poll_once(second.as_mut()).is_pending());
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
 
     condvar.notify_one();
-    drop(expect_ready(poll_once(first.as_mut())));
-    assert!(poll_once(second.as_mut()).is_pending());
+    // Manual polling can observe the notified state even if no wake was delivered.
+    assert_eq!(first_wakes.count(), 1);
+    assert_eq!(second_wakes.count(), 0);
+    drop(expect_ready(poll_with(first.as_mut(), &first_waker)));
+    assert!(poll_with(second.as_mut(), &second_waker).is_pending());
 
     condvar.notify_one();
-    drop(expect_ready(poll_once(second.as_mut())));
+    assert_eq!(first_wakes.count(), 1);
+    assert_eq!(second_wakes.count(), 1);
+    drop(expect_ready(poll_with(second.as_mut(), &second_waker)));
 }
 
 #[cfg_attr(miri, ignore = "requires an OS-backed Tokio runtime")]
@@ -170,25 +178,31 @@ fn cancelling_notified_waiter_passes_notify_one_to_next_waiter() {
     for reacquire in [false, true] {
         let mutex = Mutex::new(());
         let condvar = Condvar::new();
+        let (first_waker, first_wakes) = WakeCounter::new();
+        let (second_waker, second_wakes) = WakeCounter::new();
 
         let mut first = Box::pin(condvar.wait(mutex.try_lock().unwrap()));
-        assert!(poll_once(first.as_mut()).is_pending());
+        assert!(poll_with(first.as_mut(), &first_waker).is_pending());
 
         let mut second = pin!(condvar.wait(mutex.try_lock().unwrap()));
-        assert!(poll_once(second.as_mut()).is_pending());
+        assert!(poll_with(second.as_mut(), &second_waker).is_pending());
 
         let held = mutex.try_lock().unwrap();
         condvar.notify_one();
+        assert_eq!(first_wakes.count(), 1);
+        assert_eq!(second_wakes.count(), 0);
 
         // Cancel either before the selected waiter is polled again or while it reacquires
         // the mutex. Both paths must pass the notification to the next waiter.
         if reacquire {
-            assert!(poll_once(first.as_mut()).is_pending());
+            assert!(poll_with(first.as_mut(), &first_waker).is_pending());
         }
         drop(first);
+        // The transfer itself must wake the next task, before polling it or releasing the mutex.
+        assert_eq!(second_wakes.count(), 1);
         drop(held);
 
-        drop(expect_ready(poll_once(second.as_mut())));
+        drop(expect_ready(poll_with(second.as_mut(), &second_waker)));
     }
 }
 
