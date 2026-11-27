@@ -402,33 +402,13 @@ pub fn register(runner: &mut Runner) {
         });
     });
 
-    const RECLAIM_ROUNDS: usize = 19_000_000;
-
-    runner.local(
-        "broadcast/unbounded/reclaim-peak1-live1",
-        RECLAIM_ROUNDS,
-        |bencher| {
-            let (tx, mut rx) = asyncband::broadcast::mpmc::unbounded::<usize>();
-            bencher.bench_local(|| {
-                tx.send(black_box(1usize));
-                *rx.try_recv().unwrap()
-            });
-        },
-    );
-
-    runner.local(
-        "broadcast/unbounded/reclaim-peak256-live1",
-        RECLAIM_ROUNDS,
-        |bencher| {
-            let (tx, mut rx) = asyncband::broadcast::mpmc::unbounded::<usize>();
-            let dropped: Vec<_> = (0..255).map(|_| tx.subscribe()).collect();
-            drop(dropped);
-            bencher.bench_local(|| {
-                tx.send(black_box(1usize));
-                *rx.try_recv().unwrap()
-            });
-        },
-    );
+    runner.local("broadcast/unbounded/try-roundtrip", 19_000_000, |bencher| {
+        let (tx, mut rx) = asyncband::broadcast::mpmc::unbounded::<usize>();
+        bencher.bench_local(|| {
+            tx.send(black_box(1usize));
+            *rx.try_recv().unwrap()
+        });
+    });
 
     runner.compare(
         "broadcast/bounded/tasks-1p4r-cap64",
