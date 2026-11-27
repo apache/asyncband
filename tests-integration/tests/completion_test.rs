@@ -205,7 +205,7 @@ fn cancelling_after_abandonment_does_not_retain_the_waker() {
 }
 
 #[test]
-fn wake_callbacks_run_outside_the_completion_lock() {
+fn wake_callbacks_can_reenter_terminal_waits() {
     assert_completes_without_deadlock(|| {
         let (completer, completion) = completion::new();
         let callback_completion = completion.clone();
