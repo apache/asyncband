@@ -50,7 +50,11 @@ impl Drop for CloseOnDrop {
 
 struct Member {
     // Fields drop in declaration order: close before withdrawing any arrival obligation.
-    _close: CloseOnDrop,
+    #[expect(
+        dead_code,
+        reason = "closes both phasers before withdrawing arrival obligations on drop"
+    )]
+    close: CloseOnDrop,
     ready: PhaserParticipant,
     resume: PhaserParticipant,
 }
@@ -58,7 +62,7 @@ struct Member {
 impl Member {
     fn register(ready: &Phaser, resume: &Phaser) -> Result<Self, Closed> {
         Ok(Self {
-            _close: CloseOnDrop([ready.clone(), resume.clone()]),
+            close: CloseOnDrop([ready.clone(), resume.clone()]),
             ready: ready.register_one()?,
             resume: resume.register_one()?,
         })

@@ -175,7 +175,8 @@ mod support {
 
     pub struct DropProbe<T> {
         drop_count: Arc<AtomicUsize>,
-        _value: T,
+        #[expect(dead_code, reason = "retains the payload until DropProbe is dropped")]
+        value: T,
     }
 
     impl<T> DropProbe<T> {
@@ -184,7 +185,7 @@ mod support {
             (
                 Self {
                     drop_count: drop_count.clone(),
-                    _value: value,
+                    value,
                 },
                 drop_count,
             )

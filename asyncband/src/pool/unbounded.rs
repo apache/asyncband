@@ -175,7 +175,7 @@ pub struct PoolStatus {
 /// [`NeverManageObject::is_recyclable`] accepts every object. Prefer the synchronous
 /// [`Pool::try_get`] method when the pool has no factory.
 pub struct NeverManageObject<T> {
-    _marker: PhantomData<fn() -> T>,
+    marker: PhantomData<fn() -> T>,
 }
 
 impl<T> Copy for NeverManageObject<T> {}
@@ -195,7 +195,7 @@ impl<T> fmt::Debug for NeverManageObject<T> {
 impl<T> Default for NeverManageObject<T> {
     fn default() -> Self {
         Self {
-            _marker: PhantomData,
+            marker: PhantomData,
         }
     }
 }

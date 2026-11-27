@@ -165,12 +165,13 @@ async fn test_mapped_mutex_guard_send() {
     #[derive(Debug)]
     struct TestStruct {
         field1: i32,
-        _field2: String,
+        #[expect(dead_code, reason = "exercises multi-field struct projection")]
+        field2: String,
     }
 
     let mutex = Arc::new(Mutex::new(TestStruct {
         field1: 2,
-        _field2: "oh".to_owned(),
+        field2: "oh".to_owned(),
     }));
 
     let mutex_clone = mutex.clone();

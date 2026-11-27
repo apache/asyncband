@@ -32,7 +32,10 @@ struct BenchTask;
 
 // This deliberately uses `Wake` rather than `Waker::noop()` so waiter registration and wake-up
 // exercise the reference-counting work performed by runtime task wakers.
-#[allow(clippy::manual_noop_waker)]
+#[expect(
+    clippy::manual_noop_waker,
+    reason = "exercises Arc reference-counting overhead of runtime task wakers"
+)]
 impl Wake for BenchTask {
     fn wake(self: Arc<Self>) {}
 }

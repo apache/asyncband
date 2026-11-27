@@ -38,11 +38,18 @@ use tests_integration::waker_on_drop;
 use tests_integration::waker_on_wake;
 
 struct HoldSender<S> {
-    _sender: S,
+    #[expect(
+        dead_code,
+        reason = "retains the sender inside the waker to form an ownership cycle"
+    )]
+    sender: S,
 }
 
 // This waker must own the sender so its final drop can break the tested reference cycle.
-#[allow(clippy::manual_noop_waker)]
+#[expect(
+    clippy::manual_noop_waker,
+    reason = "waker must own HoldSender to test cycle release on drop"
+)]
 impl<S: Send + Sync> Wake for HoldSender<S> {
     fn wake(self: Arc<Self>) {}
 }
@@ -50,7 +57,7 @@ impl<S: Send + Sync> Wake for HoldSender<S> {
 #[test]
 fn bounded_receiver_drop_releases_registered_waker() {
     let (tx, mut rx) = mpsc::bounded::<()>(1);
-    let holder = Arc::new(HoldSender { _sender: tx });
+    let holder = Arc::new(HoldSender { sender: tx });
     let retained = Arc::downgrade(&holder);
     let waker = Waker::from(holder);
     assert!(
@@ -66,7 +73,7 @@ fn bounded_receiver_drop_releases_registered_waker() {
 #[test]
 fn unbounded_receiver_drop_releases_registered_waker() {
     let (tx, mut rx) = mpsc::unbounded::<()>();
-    let holder = Arc::new(HoldSender { _sender: tx });
+    let holder = Arc::new(HoldSender { sender: tx });
     let retained = Arc::downgrade(&holder);
     let waker = Waker::from(holder);
     assert!(
@@ -249,7 +256,11 @@ fn bounded_disconnect_finishes_cleanup_when_a_value_destructor_panics() {
         id: usize,
         drops: Arc<[AtomicUsize; 5]>,
         panic_on_drop: bool,
-        _sender: Option<mpsc::BoundedSender<Value>>,
+        #[expect(
+            dead_code,
+            reason = "retains a sender clone to test cycle cleanup during unwind"
+        )]
+        sender: Option<mpsc::BoundedSender<Value>>,
     }
     impl Drop for Value {
         fn drop(&mut self) {
@@ -266,7 +277,7 @@ fn bounded_disconnect_finishes_cleanup_when_a_value_destructor_panics() {
                 id,
                 drops: drops.clone(),
                 panic_on_drop: id == 0,
-                _sender: Some(tx.clone()),
+                sender: Some(tx.clone()),
             })
             .is_ok()
         );
@@ -278,7 +289,7 @@ fn bounded_disconnect_finishes_cleanup_when_a_value_destructor_panics() {
                 id,
                 drops: drops.clone(),
                 panic_on_drop: false,
-                _sender: None,
+                sender: None,
             }))
         })
         .collect::<Vec<_>>();

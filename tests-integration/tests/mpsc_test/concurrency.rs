@@ -45,7 +45,11 @@ fn publication_racing_with_close_drops_every_payload_once() {
         bytes: [u8; 1024],
         drops: Arc<[AtomicUsize; 3]>,
         // Queued messages must not retain the channel through a sender cycle.
-        _sender: mpsc::BoundedSender<Payload>,
+        #[expect(
+            dead_code,
+            reason = "retains a sender clone to test cycle cleanup on close"
+        )]
+        sender: mpsc::BoundedSender<Payload>,
     }
 
     impl Drop for Payload {
@@ -64,7 +68,7 @@ fn publication_racing_with_close_drops_every_payload_once() {
                 let value = Payload {
                     bytes: [byte; 1024],
                     drops: drops.clone(),
-                    _sender: tx.clone(),
+                    sender: tx.clone(),
                 };
                 let start = &start;
                 scope.spawn(move || {

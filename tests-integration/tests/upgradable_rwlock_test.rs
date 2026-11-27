@@ -66,7 +66,7 @@ fn upgrade_mutate_and_downgrade_without_unlocking() {
 }
 
 #[test]
-#[allow(
+#[expect(
     clippy::replace_box,
     reason = "Exercise allocation replacement through shared readers."
 )]
@@ -116,7 +116,7 @@ fn upgraded_writer_can_downgrade_then_map_shared_interior_mutability() {
 }
 
 #[test]
-#[allow(
+#[expect(
     clippy::replace_box,
     reason = "Exercise allocation replacement through shared readers."
 )]

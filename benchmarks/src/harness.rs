@@ -66,9 +66,11 @@ struct Options {
     /// Include individual elapsed times in their original order.
     #[arg(long)]
     raw: bool,
-    // Cargo passes this flag to harness-free executables.
-    #[arg(long = "bench", hide = true)]
-    _bench: bool,
+    // Cargo passes `--bench` to harness-free executables; `clap`'s derive macro counts as a read
+    // on MSRV 1.86 while newer compilers flag the field as write-only.
+    #[arg(long, hide = true)]
+    #[allow(dead_code)]
+    bench: bool,
 }
 
 /// Fixed-workload benchmark runner with interleaved peer execution and rotation.

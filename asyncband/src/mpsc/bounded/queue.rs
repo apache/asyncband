@@ -328,7 +328,7 @@ struct SlotRing<T> {
     raw_ptr: AtomicPtr<u8>,
     capacity: NonZeroUsize,
     index_mask: usize,
-    _marker: PhantomData<UnsafeCell<T>>,
+    marker: PhantomData<UnsafeCell<T>>,
 }
 
 impl<T> Drop for SlotRing<T> {
@@ -368,7 +368,7 @@ impl<T> SlotRing<T> {
             raw_ptr: AtomicPtr::new(raw_ptr),
             capacity,
             index_mask,
-            _marker: PhantomData,
+            marker: PhantomData,
         }
     }
 
