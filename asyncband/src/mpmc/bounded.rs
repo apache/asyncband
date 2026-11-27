@@ -22,17 +22,19 @@ use crate::mpmc::RecvError;
 use crate::mpmc::SendError;
 use crate::mpmc::TryRecvError;
 use crate::mpmc::TrySendError;
-use crate::mpmc::queue::Permit;
-use crate::mpmc::queue::Shared;
+use crate::mpmc::bounded_queue::Permit;
+use crate::mpmc::bounded_queue::Shared;
 
 /// Creates a bounded multi-producer, multi-consumer queue.
 ///
 /// Queued values, held permits, and capacity granted to waiting senders occupy at most `capacity`
 /// slots. Pending `send` and `reserve` operations receive capacity in wait-queue order. Sending
-/// waits for a receiver to free capacity when none is available.
+/// waits for a receiver to free capacity when none is available. Storage may be preallocated;
+/// capacity one and large capacities retain lazily allocated storage.
 ///
-/// The `try_*` methods do not wait for capacity or messages, but may briefly block on an internal
-/// mutex.
+/// The `try_*` methods do not wait for capacity or messages, but may wait to acquire internal
+/// mutexes. Operations are not lock-free. No lock is held across an await point, while waking
+/// tasks, or while dropping messages.
 ///
 /// # Panics
 ///
@@ -40,7 +42,7 @@ use crate::mpmc::queue::Shared;
 #[track_caller]
 pub fn bounded<T>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
     assert!(capacity > 0, "mpmc bounded queue requires capacity > 0");
-    let shared = Arc::new(Shared::bounded(capacity));
+    let shared = Arc::new(Shared::new(capacity));
     (
         BoundedSender {
             shared: shared.clone(),
@@ -175,7 +177,7 @@ impl<T> BoundedSender<T> {
     /// assert!(sender.is_disconnected());
     /// ```
     pub fn is_disconnected(&self) -> bool {
-        !self.shared.has_receivers()
+        self.shared.is_disconnected()
     }
 }
 
@@ -257,7 +259,7 @@ impl<T> BoundedReceiver<T> {
     /// assert_eq!(receiver.try_recv(), Ok(1));
     /// ```
     pub fn is_disconnected(&self) -> bool {
-        !self.shared.has_senders()
+        self.shared.is_disconnected()
     }
 
     /// Returns `true` if no queued value is waiting to be received.

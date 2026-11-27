@@ -410,6 +410,26 @@ fn channel_endpoints_and_permits_preserve_traits_for_send_payloads() {
 }
 
 #[test]
+fn competing_channel_endpoints_preserve_legacy_traits() {
+    fn assert_traits<T: Send + Sync + Unpin + UnwindSafe + RefUnwindSafe>() {}
+
+    macro_rules! assert_payload {
+        ($payload:ty) => {
+            assert_traits::<mpmc::BoundedSender<$payload>>();
+            assert_traits::<mpmc::BoundedReceiver<$payload>>();
+            assert_traits::<mpmc::Permit<'static, $payload>>();
+            assert_traits::<spmc::BoundedSender<$payload>>();
+            assert_traits::<spmc::BoundedReceiver<$payload>>();
+        };
+    }
+
+    assert_payload!(i32);
+    assert_payload!(Cell<u8>);
+    assert_payload!(&'static mut i32);
+    assert_payload!(PhantomPinned);
+}
+
+#[test]
 fn unbounded_manual_manager_traits_do_not_depend_on_the_object() {
     fn assert_copy<T: Copy>() {}
     fn assert_debug<T: fmt::Debug>() {}

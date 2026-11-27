@@ -27,6 +27,8 @@ All significant changes to this project will be documented in this file.
 
 * Shrink `mpsc::BoundedSender::{send, reserve}` and `mpsc::BoundedReceiver::recv` futures, make them `Unpin`, and speed up `mpsc::bounded` across single- and multi-producer sends, receives, reservation roundtrips, and backpressure handoffs and cancellations; capacity-1 task handoffs are roughly unchanged, and each channel uses more baseline and per-slot memory.
 * Shrink `broadcast::mpmc::UnboundedReceiver::{recv, recv_cloned}` futures, make them `Unpin`, and speed up `broadcast::mpmc::unbounded` publishing, shared and cloned receiving, zero-receiver discards, empty probes, and waiting receiver deliveries and cancellations across single- and multi-subscriber workloads; active channels retain more memory per channel even at low backlog, and dropping a lagging receiver while other subscriptions remain active scales with its unread messages.
+* Speed up `mpmc::bounded` in multi-producer, multi-consumer task and OS-thread workloads, including reserved sends, and when one producer feeds many OS-thread consumers; single-producer async workloads can be slower, especially on x86-64 Linux, capacity-one queues are slightly slower and their immediately ready async `send` and `recv` round trips notably slower, and queues other than capacity-one and very large queues preallocate their message storage, which stays allocated until every sender and receiver is dropped.
+* Speed up `spmc::bounded` with competing consumers; capacity-one workloads may be slightly slower, and queues other than capacity-one and very large queues preallocate their message storage, which stays allocated until the sender and every receiver are dropped.
 
 ## v0.8.1
 

@@ -29,6 +29,78 @@ use tests_integration::poll_once;
 use tests_integration::poll_with;
 
 #[test]
+fn large_logical_capacities_keep_lazy_storage_and_reservation_semantics() {
+    for capacity in [1 << 21, usize::MAX] {
+        let (sender, receiver) = mpmc::bounded(capacity);
+        let held = sender.try_reserve().unwrap();
+        sender.try_send(1).unwrap();
+        held.send(2).unwrap();
+        drop(sender);
+        assert!(receiver.is_disconnected());
+        assert_eq!(receiver.try_recv(), Ok(1));
+        assert_eq!(receiver.try_recv(), Ok(2));
+        assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
+    }
+}
+
+#[test]
+fn large_payload_fallback_preserves_exact_capacity_and_cancelled_grants() {
+    let (sender, receiver) = mpmc::bounded::<[u8; 32769]>(2);
+    let held = sender.try_reserve().unwrap();
+    sender.try_send([7; 32769]).unwrap();
+    let (waker, wakes) = WakeCounter::new();
+    {
+        let mut waiting = pin!(sender.reserve());
+        assert!(poll_with(waiting.as_mut(), &waker).is_pending());
+        drop(held);
+        assert_eq!(wakes.count(), 1);
+        assert!(matches!(sender.try_reserve(), Err(TrySendError::Full(()))));
+        // Cancelling the detached grant returns its capacity to the channel.
+    }
+    sender.try_reserve().unwrap().send([8; 32769]).unwrap();
+    assert!(matches!(
+        sender.try_send([9; 32769]),
+        Err(TrySendError::Full(_))
+    ));
+    assert_eq!(receiver.try_recv().unwrap(), [7; 32769]);
+    assert_eq!(receiver.try_recv().unwrap(), [8; 32769]);
+}
+
+#[test]
+fn queued_reservations_keep_order_on_both_bounded_backends() {
+    for capacity in [1, 2, 3] {
+        let (sender, receiver) = mpmc::bounded(capacity);
+        // Keep one effective slot while exercising both ring and lazy-storage backends.
+        let held: Vec<_> = (1..capacity)
+            .map(|_| sender.try_reserve().unwrap())
+            .collect();
+        sender.try_send(0).unwrap();
+        let mut first = pin!(sender.reserve());
+        let mut second = pin!(sender.send(2));
+        let (first_waker, first_wakes) = WakeCounter::new();
+        let (second_waker, second_wakes) = WakeCounter::new();
+        assert!(poll_with(first.as_mut(), &first_waker).is_pending());
+        assert!(poll_with(second.as_mut(), &second_waker).is_pending());
+        assert_eq!(receiver.try_recv(), Ok(0));
+        assert_eq!((first_wakes.count(), second_wakes.count()), (1, 0));
+        assert!(matches!(sender.try_reserve(), Err(TrySendError::Full(()))));
+        expect_ready(poll_once(first.as_mut()))
+            .unwrap()
+            .send(1)
+            .unwrap();
+        assert_eq!(receiver.try_recv(), Ok(1));
+        assert_eq!(second_wakes.count(), 1);
+        expect_ready(poll_once(second.as_mut())).unwrap();
+        assert_eq!(receiver.try_recv(), Ok(2));
+        drop(held);
+        for value in 0..capacity {
+            sender.try_send(value).unwrap();
+        }
+        assert_eq!(sender.try_send(capacity), Err(TrySendError::Full(capacity)));
+    }
+}
+
+#[test]
 fn permits_and_messages_share_exact_capacity_without_reserving_message_order() {
     let (sender, receiver) = mpmc::bounded(3);
     let competing = receiver.clone();
@@ -161,25 +233,30 @@ fn cancelling_a_granted_send_wakes_the_next_waiter_before_dropping_its_value() {
         }
     }
 
-    let (sender, receiver) = mpmc::bounded(1);
-    let held = sender.try_reserve().unwrap();
-    let (waiting_waker, waiting_wakes) = WakeCounter::new();
-    let wakes_at_drop = Arc::new(AtomicUsize::new(usize::MAX));
-    let mut cancelled = Box::pin(sender.send(Some(ObserveDrop {
-        wakes: waiting_wakes.clone(),
-        seen: wakes_at_drop.clone(),
-    })));
-    let mut waiting = pin!(sender.reserve());
-    let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
-    assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
-    assert!(poll_with(waiting.as_mut(), &waiting_waker).is_pending());
-    drop(held);
-    assert_eq!((cancelled_wakes.count(), waiting_wakes.count()), (1, 0));
-    drop(cancelled);
-    assert_eq!(wakes_at_drop.load(Ordering::Relaxed), 1);
-    let permit = expect_ready(poll_with(waiting.as_mut(), &waiting_waker)).unwrap();
-    permit.send(None).unwrap();
-    assert!(receiver.try_recv().unwrap().is_none());
+    for capacity in [1, 3] {
+        let (sender, receiver) = mpmc::bounded(capacity);
+        let _extra: Vec<_> = (1..capacity)
+            .map(|_| sender.try_reserve().unwrap())
+            .collect();
+        let held = sender.try_reserve().unwrap();
+        let (waiting_waker, waiting_wakes) = WakeCounter::new();
+        let wakes_at_drop = Arc::new(AtomicUsize::new(usize::MAX));
+        let mut cancelled = Box::pin(sender.send(Some(ObserveDrop {
+            wakes: waiting_wakes.clone(),
+            seen: wakes_at_drop.clone(),
+        })));
+        let mut waiting = pin!(sender.reserve());
+        let (cancelled_waker, cancelled_wakes) = WakeCounter::new();
+        assert!(poll_with(cancelled.as_mut(), &cancelled_waker).is_pending());
+        assert!(poll_with(waiting.as_mut(), &waiting_waker).is_pending());
+        drop(held);
+        assert_eq!((cancelled_wakes.count(), waiting_wakes.count()), (1, 0));
+        drop(cancelled);
+        assert_eq!(wakes_at_drop.load(Ordering::Relaxed), 1);
+        let permit = expect_ready(poll_with(waiting.as_mut(), &waiting_waker)).unwrap();
+        permit.send(None).unwrap();
+        assert!(receiver.try_recv().unwrap().is_none());
+    }
 }
 
 #[test]
@@ -192,51 +269,61 @@ fn cancelling_an_ungranted_send_drops_its_value_without_taking_capacity() {
         }
     }
 
-    let (sender, receiver) = mpmc::bounded(1);
-    let held = sender.try_reserve().unwrap();
-    let drops = Arc::new(AtomicUsize::new(0));
-    let mut cancelled = Box::pin(sender.send(Some(CountDrop(drops.clone()))));
-    let mut waiting = pin!(sender.reserve());
-    let (waker, wakes) = WakeCounter::new();
-    assert!(poll_once(cancelled.as_mut()).is_pending());
-    assert!(poll_with(waiting.as_mut(), &waker).is_pending());
-    drop(cancelled);
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
-    assert_eq!(wakes.count(), 0);
-    drop(held);
-    assert_eq!(wakes.count(), 1);
-    expect_ready(poll_with(waiting.as_mut(), &waker))
-        .unwrap()
-        .send(None)
-        .unwrap();
-    assert!(receiver.try_recv().unwrap().is_none());
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    for capacity in [1, 3] {
+        let (sender, receiver) = mpmc::bounded(capacity);
+        let _extra: Vec<_> = (1..capacity)
+            .map(|_| sender.try_reserve().unwrap())
+            .collect();
+        let held = sender.try_reserve().unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut cancelled = Box::pin(sender.send(Some(CountDrop(drops.clone()))));
+        let mut waiting = pin!(sender.reserve());
+        let (waker, wakes) = WakeCounter::new();
+        assert!(poll_once(cancelled.as_mut()).is_pending());
+        assert!(poll_with(waiting.as_mut(), &waker).is_pending());
+        drop(cancelled);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(wakes.count(), 0);
+        drop(held);
+        assert_eq!(wakes.count(), 1);
+        expect_ready(poll_with(waiting.as_mut(), &waker))
+            .unwrap()
+            .send(None)
+            .unwrap();
+        assert!(receiver.try_recv().unwrap().is_none());
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
 }
 
 #[test]
 fn last_receiver_drop_fails_pending_and_granted_reservations() {
-    let (sender, receiver) = mpmc::bounded::<usize>(1);
-    let competing = receiver.clone();
-    sender.try_send(0).unwrap();
-    let mut granted = pin!(sender.reserve());
-    let mut pending = pin!(sender.reserve());
-    let (first_waker, first_wakes) = WakeCounter::new();
-    let (second_waker, second_wakes) = WakeCounter::new();
-    assert!(poll_with(granted.as_mut(), &first_waker).is_pending());
-    assert!(poll_with(pending.as_mut(), &second_waker).is_pending());
-    drop(receiver);
-    assert_eq!((first_wakes.count(), second_wakes.count()), (0, 0));
-    assert_eq!(competing.try_recv(), Ok(0));
-    assert_eq!((first_wakes.count(), second_wakes.count()), (1, 0));
-    drop(competing);
-    assert!(first_wakes.count() >= 1);
-    assert!(second_wakes.count() >= 1);
-    assert!(expect_ready(poll_with(granted.as_mut(), &first_waker)).is_err());
-    assert!(expect_ready(poll_with(pending.as_mut(), &second_waker)).is_err());
-    assert!(matches!(
-        sender.try_reserve(),
-        Err(TrySendError::Disconnected(()))
-    ));
+    for capacity in [1, 3] {
+        let (sender, receiver) = mpmc::bounded::<usize>(capacity);
+        let _held: Vec<_> = (1..capacity)
+            .map(|_| sender.try_reserve().unwrap())
+            .collect();
+        let competing = receiver.clone();
+        sender.try_send(0).unwrap();
+        let mut granted = pin!(sender.reserve());
+        let mut pending = pin!(sender.reserve());
+        let (first_waker, first_wakes) = WakeCounter::new();
+        let (second_waker, second_wakes) = WakeCounter::new();
+        assert!(poll_with(granted.as_mut(), &first_waker).is_pending());
+        assert!(poll_with(pending.as_mut(), &second_waker).is_pending());
+        drop(receiver);
+        assert_eq!((first_wakes.count(), second_wakes.count()), (0, 0));
+        assert_eq!(competing.try_recv(), Ok(0));
+        assert_eq!((first_wakes.count(), second_wakes.count()), (1, 0));
+        drop(competing);
+        assert!(first_wakes.count() >= 1);
+        assert!(second_wakes.count() >= 1);
+        assert!(expect_ready(poll_with(granted.as_mut(), &first_waker)).is_err());
+        assert!(expect_ready(poll_with(pending.as_mut(), &second_waker)).is_err());
+        assert!(matches!(
+            sender.try_reserve(),
+            Err(TrySendError::Disconnected(()))
+        ));
+    }
 }
 
 #[test]

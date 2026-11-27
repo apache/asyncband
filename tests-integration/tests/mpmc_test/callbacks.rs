@@ -27,20 +27,48 @@ use tests_integration::waker_on_drop;
 #[test]
 fn replacing_a_send_waker_allows_its_destructor_to_receive() {
     assert_completes_without_deadlock(|| {
-        let (sender, receiver) = mpmc::bounded(1);
-        sender.try_send(0).unwrap();
-        let reentrant = receiver.clone();
-        let first = waker_on_drop(move || assert_eq!(reentrant.try_recv(), Ok(0)));
-        let (second, second_wakes) = WakeCounter::new();
-        let mut send = pin!(sender.send(1));
+        for capacity in [1, 3] {
+            let (sender, receiver) = mpmc::bounded(capacity);
+            let _held: Vec<_> = (1..capacity)
+                .map(|_| sender.try_reserve().unwrap())
+                .collect();
+            sender.try_send(0).unwrap();
+            let reentrant = receiver.clone();
+            let first = waker_on_drop(move || assert_eq!(reentrant.try_recv(), Ok(0)));
+            let (second, second_wakes) = WakeCounter::new();
+            let mut send = pin!(sender.send(1));
 
-        assert!(poll_with(send.as_mut(), &first).is_pending());
-        drop(first);
-        // Replacing the stored waker frees capacity and wakes the newly registered task.
-        assert!(poll_with(send.as_mut(), &second).is_pending());
-        assert_eq!(second_wakes.count(), 1);
-        expect_ready(poll_with(send.as_mut(), &second)).unwrap();
-        assert_eq!(receiver.try_recv(), Ok(1));
+            assert!(poll_with(send.as_mut(), &first).is_pending());
+            drop(first);
+            // Replacing the stored waker frees capacity and wakes the newly registered task.
+            assert!(poll_with(send.as_mut(), &second).is_pending());
+            assert_eq!(second_wakes.count(), 1);
+            expect_ready(poll_with(send.as_mut(), &second)).unwrap();
+            assert_eq!(receiver.try_recv(), Ok(1));
+        }
+    });
+}
+
+#[test]
+fn replacing_a_bounded_receive_waker_allows_its_destructor_to_send() {
+    assert_completes_without_deadlock(|| {
+        for capacity in [1, 3] {
+            let (sender, receiver) = mpmc::bounded(capacity);
+            let reentrant = sender.clone();
+            let first = waker_on_drop(move || reentrant.try_send(1).unwrap());
+            let (second, second_wakes) = WakeCounter::new();
+            let mut recv = pin!(receiver.recv());
+            assert!(poll_with(recv.as_mut(), &first).is_pending());
+            drop(first);
+            let outcome = poll_with(recv.as_mut(), &second);
+            assert_eq!(second_wakes.count(), 1);
+            let outcome = if outcome.is_pending() {
+                poll_with(recv.as_mut(), &second)
+            } else {
+                outcome
+            };
+            assert_eq!(expect_ready(outcome), Ok(1));
+        }
     });
 }
 

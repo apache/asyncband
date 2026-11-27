@@ -27,6 +27,7 @@ use asyncband::spmc::TryRecvError;
 use tests_integration::poll_once;
 
 // Public queue contracts. The other suites cover notifications, cancellation, and concurrency.
+mod bounded;
 mod concurrency;
 mod notification;
 
