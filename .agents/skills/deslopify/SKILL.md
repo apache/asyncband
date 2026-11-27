@@ -1,5 +1,5 @@
 ---
-name: dislopify
+name: deslopify
 description: Run a read-only simplification survey of Asyncband primitives, tests, benchmarks, and supporting code, or implement findings a maintainer selected from a previous round.
 ---
 
@@ -22,7 +22,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Dislopify
+# Deslopify
 
 ## Survey
 
