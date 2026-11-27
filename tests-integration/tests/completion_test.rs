@@ -20,6 +20,8 @@ use std::pin::pin;
 use std::ptr;
 use std::sync::Arc;
 use std::sync::Barrier;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::task::Waker;
 use std::thread;
@@ -207,26 +209,33 @@ fn cancelling_after_abandonment_does_not_retain_the_waker() {
 #[test]
 fn wake_callbacks_can_reenter_terminal_waits() {
     assert_completes_without_deadlock(|| {
+        let wakes = Arc::new(AtomicUsize::new(0));
         let (completer, completion) = completion::new();
         let callback_completion = completion.clone();
+        let callback_wakes = wakes.clone();
         let waker = waker_on_wake(move || {
             assert_eq!(FutureExt::block_on(callback_completion.wait()), Ok(&13));
+            callback_wakes.fetch_add(1, Ordering::Relaxed);
         });
         let mut wait = Box::pin(completion.wait());
 
         assert!(poll_with(wait.as_mut(), &waker).is_pending());
         completer.complete(13).unwrap();
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
         assert_eq!(poll_with(wait.as_mut(), &waker), Poll::Ready(Ok(&13)));
         drop(wait);
 
         let (completer, completion) = completion::new::<usize>();
         let callback_completion = completion.clone();
+        let callback_wakes = wakes.clone();
         let waker = waker_on_wake(move || {
             assert!(FutureExt::block_on(callback_completion.wait()).is_err());
+            callback_wakes.fetch_add(1, Ordering::Relaxed);
         });
         let mut wait = pin!(completion.wait());
         assert!(poll_with(wait.as_mut(), &waker).is_pending());
         drop(completer);
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
         assert!(matches!(
             poll_with(wait.as_mut(), &waker),
             Poll::Ready(Err(_))

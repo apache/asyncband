@@ -21,6 +21,7 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::task::Waker;
@@ -362,26 +363,34 @@ fn replaced_values_are_dropped_outside_the_channel_lock() {
 fn wake_callbacks_run_outside_the_channel_lock() {
     assert_completes_without_deadlock(|| {
         let (tx, mut rx) = watch::channel(0);
+        let wakes = Arc::new(AtomicUsize::new(0));
         let callback_sender = tx.clone();
+        let callback_wakes = wakes.clone();
         let waker = waker_on_wake(move || {
             let mut sub = callback_sender.subscribe();
             let mut sub_changed = pin!(sub.changed());
             assert!(poll_with(sub_changed.as_mut(), Waker::noop()).is_pending());
+            callback_wakes.fetch_add(1, Ordering::Relaxed);
         });
         let mut changed = Box::pin(rx.changed());
 
         assert!(poll_with(changed.as_mut(), &waker).is_pending());
         tx.send(1).unwrap();
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
         assert_eq!(poll_with(changed.as_mut(), &waker), Poll::Ready(Ok(())));
         drop(changed);
 
         let observer = rx.clone();
+        let callback_wakes = wakes.clone();
         let waker = waker_on_wake(move || {
+            assert_eq!(observer.get(), 1);
             assert!(observer.is_disconnected());
+            callback_wakes.fetch_add(1, Ordering::Relaxed);
         });
         let mut changed = pin!(rx.changed());
         assert!(poll_with(changed.as_mut(), &waker).is_pending());
         drop(tx);
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
         assert_eq!(
             poll_with(changed.as_mut(), &waker),
             Poll::Ready(Err(watch::RecvError::Disconnected))
@@ -393,24 +402,34 @@ fn wake_callbacks_run_outside_the_channel_lock() {
 fn replaced_wakers_are_dropped_outside_the_channel_lock() {
     assert_completes_without_deadlock(|| {
         let (tx, mut rx) = watch::channel(0);
+        let drops = Arc::new(AtomicUsize::new(0));
         let replace_sender = tx.clone();
+        let replace_drops = drops.clone();
         let old_waker = waker_on_drop(move || {
             let mut sub = replace_sender.subscribe();
             let mut sub_changed = pin!(sub.changed());
             assert!(poll_with(sub_changed.as_mut(), Waker::noop()).is_pending());
+            replace_drops.fetch_add(1, Ordering::Relaxed);
         });
-        let mut changed = pin!(rx.changed());
+        let mut changed = Box::pin(rx.changed());
         assert!(poll_with(changed.as_mut(), &old_waker).is_pending());
         drop(old_waker);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
 
         let cancel_sender = tx.clone();
+        let cancel_drops = drops.clone();
         let cancelled_waker = waker_on_drop(move || {
             let mut sub = cancel_sender.subscribe();
             let mut sub_changed = pin!(sub.changed());
             assert!(poll_with(sub_changed.as_mut(), Waker::noop()).is_pending());
+            cancel_drops.fetch_add(1, Ordering::Relaxed);
         });
         assert!(poll_with(changed.as_mut(), &cancelled_waker).is_pending());
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
         drop(cancelled_waker);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        drop(changed);
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
     });
 }
 
