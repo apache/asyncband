@@ -21,6 +21,7 @@
 //! the token into the new guard.
 
 use std::future::poll_fn;
+use std::marker::PhantomData;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -191,6 +192,42 @@ impl<T: ?Sized> ExclusiveOwner for Arc<RwLock<T>> {
     }
 }
 
+/// Internal permit-acquisition strategy for an access token.
+trait AccessToken: Sized {
+    type Owner: Owner;
+
+    fn permits(owner: &Self::Owner) -> usize;
+    fn from_acquired(owner: Self::Owner) -> Self;
+}
+
+impl<O: Owner> AccessToken for ReadAccess<O> {
+    type Owner = O;
+
+    #[inline]
+    fn permits(owner: &Self::Owner) -> usize {
+        owner.reader_permits()
+    }
+
+    #[inline]
+    fn from_acquired(owner: Self::Owner) -> Self {
+        Self { owner }
+    }
+}
+
+impl<O: ExclusiveOwner> AccessToken for WriteAccess<O> {
+    type Owner = O;
+
+    #[inline]
+    fn permits(owner: &Self::Owner) -> usize {
+        owner.writer_permits()
+    }
+
+    #[inline]
+    fn from_acquired(owner: Self::Owner) -> Self {
+        Self::new(owner)
+    }
+}
+
 /// Owns one read slot.
 pub struct ReadAccess<O: Owner> {
     owner: O,
@@ -199,20 +236,12 @@ pub struct ReadAccess<O: Owner> {
 impl<O: Owner> ReadAccess<O> {
     #[inline]
     pub fn acquire(owner: O) -> impl Future<Output = Self> {
-        let mut request = ReadRequest {
-            owner: Some(owner),
-            waiter_id: None,
-        };
-        poll_fn(move |cx| request.poll(cx.waker()))
+        AccessRequest::acquire(owner)
     }
 
     #[inline]
     pub fn try_acquire(owner: O) -> Option<Self> {
-        if owner.semaphore().try_acquire(owner.reader_permits()) {
-            Some(Self { owner })
-        } else {
-            None
-        }
+        AccessRequest::try_acquire(owner)
     }
 
     /// Returns the owner that the slot was acquired from.
@@ -224,35 +253,54 @@ impl<O: Owner> ReadAccess<O> {
 
 // Keep the owner and its queue registration together so waiting does not also need a
 // self-referential future borrowing the owner's semaphore.
-struct ReadRequest<O: Owner> {
-    owner: Option<O>,
+struct AccessRequest<A: AccessToken> {
+    owner: Option<A::Owner>,
     waiter_id: Option<WaiterId>,
+    _marker: PhantomData<fn() -> A>,
 }
 
-impl<O: Owner> ReadRequest<O> {
+impl<A: AccessToken> AccessRequest<A> {
     #[inline]
-    fn poll(&mut self, waker: &Waker) -> Poll<ReadAccess<O>> {
+    fn acquire(owner: A::Owner) -> impl Future<Output = A> {
+        let mut request = Self {
+            owner: Some(owner),
+            waiter_id: None,
+            _marker: PhantomData,
+        };
+        poll_fn(move |cx| request.poll(cx.waker()))
+    }
+
+    #[inline]
+    fn try_acquire(owner: A::Owner) -> Option<A> {
+        if owner.semaphore().try_acquire(A::permits(&owner)) {
+            Some(A::from_acquired(owner))
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn poll(&mut self, waker: &Waker) -> Poll<A> {
         let owner = self
             .owner
             .as_ref()
-            .expect("read acquisition polled after completion");
+            .expect("access acquisition polled after completion");
         ready!(
             owner
                 .semaphore()
-                .poll_acquire(owner.reader_permits(), &mut self.waiter_id, waker)
+                .poll_acquire(A::permits(owner), &mut self.waiter_id, waker)
         );
-        Poll::Ready(ReadAccess {
-            owner: self.owner.take().unwrap(),
-        })
+        let owner = self.owner.take().unwrap();
+        Poll::Ready(A::from_acquired(owner))
     }
 }
 
-impl<O: Owner> Drop for ReadRequest<O> {
+impl<A: AccessToken> Drop for AccessRequest<A> {
     #[inline]
     fn drop(&mut self) {
         if let Some(id) = self.waiter_id {
             let owner = self.owner.as_ref().unwrap();
-            owner.semaphore().cancel_acquire(owner.reader_permits(), id);
+            owner.semaphore().cancel_acquire(A::permits(owner), id);
         }
     }
 }
@@ -282,6 +330,18 @@ pub struct WriteAccess<O: ExclusiveOwner> {
 }
 
 impl<O: ExclusiveOwner> WriteAccess<O> {
+    /// Acquires exclusive permits asynchronously from `owner`.
+    #[inline]
+    pub fn acquire(owner: O) -> impl Future<Output = Self> {
+        AccessRequest::acquire(owner)
+    }
+
+    /// Attempts to acquire exclusive permits immediately from `owner`.
+    #[inline]
+    pub fn try_acquire(owner: O) -> Option<Self> {
+        AccessRequest::try_acquire(owner)
+    }
+
     /// Takes over exclusive permits already acquired from `owner`.
     #[inline]
     pub fn new(owner: O) -> Self {

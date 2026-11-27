@@ -45,28 +45,14 @@ impl<T: ?Sized> RwLock<T> {
     /// Dropping a pending future removes the request and returns any permits already assigned to
     /// it. Retrying joins the back of the queue.
     pub async fn write(&self) -> RwLockWriteGuard<'_, T> {
-        self.state
-            .semaphore()
-            .acquire(self.state.writer_permits())
-            .await;
-        RwLockWriteGuard {
-            access: WriteAccess::new(self),
-        }
+        let access = WriteAccess::acquire(self).await;
+        RwLockWriteGuard { access }
     }
 
     /// Returns a write guard immediately, or `None` when exclusive access is unavailable.
     pub fn try_write(&self) -> Option<RwLockWriteGuard<'_, T>> {
-        if self
-            .state
-            .semaphore()
-            .try_acquire(self.state.writer_permits())
-        {
-            Some(RwLockWriteGuard {
-                access: WriteAccess::new(self),
-            })
-        } else {
-            None
-        }
+        let access = WriteAccess::try_acquire(self)?;
+        Some(RwLockWriteGuard { access })
     }
 }
 
