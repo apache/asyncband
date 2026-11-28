@@ -57,7 +57,6 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::ptr::NonNull;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -67,10 +66,8 @@ use crate::broadcast::mpmc::error::RecvError;
 use crate::broadcast::mpmc::error::TryRecvError;
 use crate::broadcast::mpmc::unbounded::queue::Shared;
 use crate::broadcast::mpmc::unbounded::queue::Subscription;
-use crate::broadcast::mpmc::unbounded::segment::Shard;
 
 mod queue;
-mod segment;
 mod waiters;
 
 #[cfg(test)]
@@ -91,14 +88,14 @@ mod tests;
 /// assert_eq!(*receiver.try_recv().unwrap(), "ready");
 /// ```
 pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
-    let (shared, sub) = Shared::with_first_subscription();
-    let shard = NonNull::from(&shared.shard0);
-    let sender = UnboundedSender {
-        shared: shared.clone(),
-        shard,
-    };
-    let receiver = UnboundedReceiver::from_subscription(shared, sub);
-    (sender, receiver)
+    let (shared, sub) = Shared::channel();
+    (
+        UnboundedSender {
+            shared: shared.clone(),
+            shard: 0,
+        },
+        UnboundedReceiver { shared, sub },
+    )
 }
 
 /// A publishing handle for an unbounded broadcast channel.
@@ -107,13 +104,8 @@ pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
 /// drain the values already published for it and then observes disconnection.
 pub struct UnboundedSender<T> {
     shared: Arc<Shared<T>>,
-    shard: NonNull<Shard>,
+    shard: usize,
 }
-
-// SAFETY: `shard` points into `shared` (`Arc<Shared<T>>`), and `Shared<T>` is `Send + Sync` iff
-// `T: Send + Sync`.
-unsafe impl<T: Send + Sync> Send for UnboundedSender<T> {}
-unsafe impl<T: Send + Sync> Sync for UnboundedSender<T> {}
 
 impl<T> Clone for UnboundedSender<T> {
     #[inline]
@@ -215,7 +207,10 @@ impl<T> UnboundedSender<T> {
     #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn subscribe(&self) -> UnboundedReceiver<T> {
         let sub = self.shared.subscribe();
-        UnboundedReceiver::from_subscription(self.shared.clone(), sub)
+        UnboundedReceiver {
+            shared: self.shared.clone(),
+            sub,
+        }
     }
 }
 
@@ -247,11 +242,6 @@ impl<T> Drop for UnboundedReceiver<T> {
 }
 
 impl<T> UnboundedReceiver<T> {
-    #[inline]
-    fn from_subscription(shared: Arc<Shared<T>>, sub: Subscription<T>) -> Self {
-        Self { shared, sub }
-    }
-
     /// Waits for this receiver's next value and returns the channel's shared `Arc<T>`.
     ///
     /// Receiving never clones `T`. The `Arc` outlives the value's stay in the backlog, so a
@@ -439,7 +429,10 @@ impl<T> UnboundedReceiver<T> {
     #[must_use = "the receiver is dropped immediately if it is not retained"]
     pub fn resubscribe(&self) -> Self {
         let sub = self.shared.subscribe();
-        Self::from_subscription(self.shared.clone(), sub)
+        Self {
+            shared: self.shared.clone(),
+            sub,
+        }
     }
 
     /// Returns this receiver's unread value count.
@@ -543,11 +536,8 @@ impl<T> Recv<'_, T> {
 impl<T> Drop for Recv<'_, T> {
     #[inline(always)]
     fn drop(&mut self) {
-        let Some(receiver) = self.receiver.take() else {
-            return;
-        };
-        if receiver.sub.has_waiter() {
-            receiver.shared.clear_sub_waiter_fast(&mut receiver.sub);
+        if let Some(receiver) = self.receiver.take() {
+            receiver.shared.cancel_recv(&mut receiver.sub);
         }
     }
 }

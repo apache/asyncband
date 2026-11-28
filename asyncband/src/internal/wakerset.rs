@@ -21,6 +21,7 @@
 //! their tokens must be cleared rather than passed back to the set. Returned wakers must be woken
 //! or dropped after releasing the lock.
 
+use std::num::NonZeroUsize;
 use std::task::Waker;
 
 use crate::internal::arena::Arena;
@@ -33,6 +34,18 @@ use crate::internal::waker_batch::WakerBatch;
 /// Removing the registration, calling [`WakerSet::take_all`], or replacing the set invalidates it.
 #[derive(Debug)]
 pub struct WakerToken(SlotId);
+
+impl WakerToken {
+    #[inline]
+    pub fn into_raw(self) -> NonZeroUsize {
+        self.0.into_raw()
+    }
+
+    #[inline]
+    pub fn from_raw(raw: NonZeroUsize) -> Self {
+        Self(SlotId::from_raw(raw))
+    }
+}
 
 /// Cancellable waker storage without an implicit lifecycle or generation.
 #[derive(Debug)]
