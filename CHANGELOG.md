@@ -23,6 +23,10 @@ All significant changes to this project will be documented in this file.
 
 ## Unreleased
 
+### New features
+
+* Add an opt-in `cancellation` feature with explicit cancellation sources and cloneable tokens for sticky, cooperative stop requests.
+
 ### Performance improvements
 
 * Shrink `mpsc::BoundedSender::{send, reserve}` and `mpsc::BoundedReceiver::recv` futures, make them `Unpin`, and speed up `mpsc::bounded` across single- and multi-producer sends, receives, reservation roundtrips, and backpressure handoffs and cancellations; capacity-1 task handoffs are roughly unchanged, and each channel uses more baseline and per-slot memory.

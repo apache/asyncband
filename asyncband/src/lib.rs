@@ -66,6 +66,7 @@
 //! |                      | [`ManualResetEvent`](event::ManualResetEvent)  | `event`        | Signal current and future waits until explicitly reset.                                                         |
 //! |                      | [`AutoResetEvent`](event::AutoResetEvent)      | `event`        | Retain one signal and release one waiter per consumed signal.                                                   |
 //! |                      | [`Latch`](latch::Latch)                        | `latch`        | Wait until a fixed one-way countdown reaches zero.                                                              |
+//! |                      | [cancellation]                                 | `cancellation` | Request a sticky cooperative stop signal to cloneable observers.                                                |
 //! |                      | [`Phaser`](phaser::Phaser)                     | `phaser`       | Coordinate repeated phases with a dynamic participant set.                                                      |
 //! |                      | [`WaitGroup`](waitgroup::WaitGroup)            | `waitgroup`    | Dynamically register participants and wait until all have completed.                                            |
 //! |                      | [`Shutdown`](shutdown::Shutdown)               | `shutdown`     | Request shutdown and wait until all completion guards are dropped.                                              |
@@ -143,6 +144,8 @@ pub mod barrier;
 pub mod blocking;
 #[cfg(feature = "broadcast")]
 pub mod broadcast;
+#[cfg(feature = "cancellation")]
+pub mod cancellation;
 #[cfg(feature = "completion")]
 pub mod completion;
 #[cfg(feature = "condvar")]
