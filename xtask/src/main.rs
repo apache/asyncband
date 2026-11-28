@@ -97,7 +97,11 @@ fn find_command(cmd: &str) -> process::Command {
 fn ensure_installed(bin: &str, crate_name: &str) {
     if which::which(bin).is_err() {
         let mut cmd = find_command("cargo");
-        cmd.args(["install", crate_name]);
+        if which::which("cargo-binstall").is_ok() {
+            cmd.args(["binstall", "--no-confirm", "--locked", crate_name]);
+        } else {
+            cmd.args(["install", "--locked", crate_name]);
+        }
         run_command(cmd);
     }
 }
