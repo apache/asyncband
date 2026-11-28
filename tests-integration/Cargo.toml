@@ -27,6 +27,7 @@ asyncband = { workspace = true, features = [
   "barrier",
   "blocking",
   "broadcast",
+  "cancellation",
   "completion",
   "condvar",
   "event",
