@@ -29,9 +29,8 @@ use std::thread;
 use std::time::Duration;
 
 use super::*;
-use crate::broadcast::mpmc::unbounded::segment::HEAP_CAP;
-use crate::broadcast::mpmc::unbounded::segment::INLINE_CAP;
-use crate::broadcast::mpmc::unbounded::segment::MsgSlot;
+use crate::broadcast::mpmc::unbounded::queue::MsgSlot;
+use crate::broadcast::mpmc::unbounded::queue::SEG_CAP;
 
 #[test]
 #[should_panic(expected = "broadcast channel version counter overflowed")]
@@ -91,51 +90,53 @@ fn overflow_drops_payload_outside_the_channel_lock() {
 fn partial_and_full_drain_reclaims_burst_segments_without_waiting_for_idle() {
     let (tx, mut rx) = unbounded();
 
-    let burst = INLINE_CAP + HEAP_CAP * 8;
+    let burst = SEG_CAP * 8;
     for i in 0..burst {
         tx.send(i);
     }
     let peak_capacity = tx.shared.buffer_capacity();
     assert_eq!(peak_capacity, burst);
 
-    // Draining the inline segment plus half the heap segments reclaims retired prefix segments
-    // immediately even while the backlog stays non-empty.
-    let first_half = INLINE_CAP + HEAP_CAP * 4;
+    // Draining half the segments reclaims retired prefix segments immediately even while the
+    // backlog remains non-empty.
+    let first_half = SEG_CAP * 4;
     for i in 0..first_half {
         assert_eq!(rx.try_recv().as_deref(), Ok(&i));
     }
     assert_eq!(tx.retained_message_count(), burst - first_half);
     assert!(tx.shared.buffer_capacity() <= peak_capacity * 3 / 4);
 
-    // Draining the rest leaves only the active tail segment plus at most one pooled spare segment.
+    // Draining the rest leaves at most the active tail segment and the next linked segment.
     for i in first_half..burst {
         assert_eq!(rx.try_recv().as_deref(), Ok(&i));
     }
     assert_eq!(tx.retained_message_count(), 0);
-    assert!(tx.shared.buffer_capacity() <= INLINE_CAP + 2 * HEAP_CAP);
+    assert!(tx.shared.buffer_capacity() <= 2 * SEG_CAP);
 }
 
 #[test]
-fn single_segment_bursts_reuse_the_spare_segment() {
+fn multi_segment_bursts_bound_retained_segments_and_release_on_disconnect() {
     let (tx, mut rx) = unbounded();
 
     for _ in 0..4 {
-        for i in 0..HEAP_CAP {
+        for i in 0..(SEG_CAP * 2) {
             tx.send(i);
         }
-        for i in 0..HEAP_CAP {
+        for i in 0..(SEG_CAP * 2) {
             assert_eq!(rx.try_recv().as_deref(), Ok(&i));
         }
-        assert!(tx.shared.buffer_capacity() <= INLINE_CAP + 2 * HEAP_CAP);
+        assert!(tx.shared.buffer_capacity() <= 2 * SEG_CAP);
     }
 
-    // Disconnecting after an already-drained burst releases the cached spare segment too.
+    // Disconnecting after an already-drained burst releases the tail segment immediately.
     drop(tx);
-    assert!(rx.shared.buffer_capacity() <= INLINE_CAP + HEAP_CAP);
+    assert!(rx.shared.buffer_capacity() <= SEG_CAP);
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+    assert_eq!(rx.shared.buffer_capacity(), 0);
 }
 
 #[test]
-fn dropping_all_receivers_reclaims_heap_segments_even_across_unwind() {
+fn dropping_all_receivers_reclaims_all_segments_even_across_unwind() {
     struct Bomb(bool);
 
     impl Drop for Bomb {
@@ -147,7 +148,7 @@ fn dropping_all_receivers_reclaims_heap_segments_even_across_unwind() {
     }
 
     let (tx, rx) = unbounded();
-    let burst = HEAP_CAP * 4;
+    let burst = SEG_CAP * 4;
     for i in 0..burst {
         tx.send(Bomb(i == burst / 2));
     }
@@ -156,48 +157,42 @@ fn dropping_all_receivers_reclaims_heap_segments_even_across_unwind() {
     let unwind = catch_unwind(AssertUnwindSafe(|| drop(rx)));
     assert!(unwind.is_err());
 
-    // Idle senders must not retain heap segments once all receivers have closed.
+    // Idle senders retain zero segment allocations once all receivers have closed.
     assert_eq!(tx.retained_message_count(), 0);
-    assert_eq!(tx.shared.buffer_capacity(), INLINE_CAP);
+    assert_eq!(tx.shared.buffer_capacity(), 0);
 
     let mut fresh = tx.subscribe();
-    for _ in 0..INLINE_CAP {
+    for _ in 0..8 {
         tx.send(Bomb(false));
         assert!(!fresh.try_recv().unwrap().0);
     }
     drop(fresh);
-    assert_eq!(tx.shared.buffer_capacity(), INLINE_CAP);
+    assert_eq!(tx.shared.buffer_capacity(), 0);
 
     let fresh = tx.subscribe();
-    for _ in 0..INLINE_CAP {
+    for _ in 0..8 {
         tx.send(Bomb(false));
     }
     drop(fresh);
-    assert_eq!(tx.shared.buffer_capacity(), INLINE_CAP);
+    assert_eq!(tx.shared.buffer_capacity(), 0);
 }
 
 #[test]
-fn draining_after_sender_disconnect_reclaims_heap_segments_immediately() {
-    for burst in [
-        INLINE_CAP,
-        INLINE_CAP + HEAP_CAP,
-        HEAP_CAP * 4,
-        INLINE_CAP + HEAP_CAP * 4,
-    ] {
+fn draining_after_sender_disconnect_reclaims_all_segments_immediately() {
+    for burst in [8, SEG_CAP, SEG_CAP + 8, SEG_CAP * 4, SEG_CAP * 4 + 8] {
         let (tx, mut rx) = unbounded();
         for i in 0..burst {
             tx.send(i);
         }
-        if burst > INLINE_CAP {
-            assert!(rx.shared.buffer_capacity() >= burst);
-        }
+        assert!(rx.shared.buffer_capacity() >= burst);
 
         drop(tx);
         for i in 0..burst {
             assert_eq!(rx.try_recv().as_deref(), Ok(&i));
         }
+        assert_eq!(rx.shared.buffer_capacity(), 0);
         assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
-        assert_eq!(rx.shared.buffer_capacity(), INLINE_CAP);
+        assert_eq!(rx.shared.buffer_capacity(), 0);
     }
 }
 
@@ -206,7 +201,10 @@ fn layout_holds_across_payload_size_table() {
     fn check_payload<T>() {
         assert_eq!(size_of::<MsgSlot<T>>(), 2 * size_of::<usize>());
         assert_eq!(size_of::<UnboundedSender<T>>(), 2 * size_of::<usize>());
-        assert_eq!(size_of::<Subscription<T>>(), 4 * size_of::<usize>() + 16);
+        assert_eq!(
+            size_of::<UnboundedReceiver<T>>(),
+            4 * size_of::<usize>() + 16
+        );
         assert_eq!(size_of::<RecvShared<'_, T>>(), size_of::<usize>());
         assert_eq!(size_of::<RecvCloned<'_, T>>(), size_of::<usize>());
         assert!(align_of::<Shared<T>>() <= 16);
@@ -233,7 +231,7 @@ fn poll_recv_never_blocks_when_publisher_is_preempted_mid_slot() {
     }
 
     let (tx, mut rx) = unbounded();
-    let (epoch, version, live_rcvs) = tx.shared.begin_inflight_publish_for_test();
+    let (version, live_rcvs) = tx.shared.begin_inflight_publish_for_test();
 
     let wake1 = Arc::new(CountWake(AtomicUsize::new(0)));
     let waker1 = Waker::from(wake1.clone());
@@ -244,15 +242,13 @@ fn poll_recv_never_blocks_when_publisher_is_preempted_mid_slot() {
     let mut cx2 = Context::from_waker(&waker2);
 
     let mut fut = pin!(rx.recv());
-    // Must return `Pending` immediately on the same thread instead of spinning on `slot.state`.
     assert!(fut.as_mut().poll(&mut cx1).is_pending());
-    // Re-polling with a replacement waker updates the registration in place without spurious wake.
     assert!(fut.as_mut().poll(&mut cx2).is_pending());
     assert_eq!(wake1.0.load(Ordering::SeqCst), 0);
     assert_eq!(wake2.0.load(Ordering::SeqCst), 0);
 
     tx.shared
-        .finish_inflight_publish_for_test(epoch, version, live_rcvs, 42usize);
+        .finish_inflight_publish_for_test(version, live_rcvs, 42usize);
     assert_eq!(wake1.0.load(Ordering::SeqCst), 0);
     assert_eq!(wake2.0.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -264,20 +260,19 @@ fn poll_recv_never_blocks_when_publisher_is_preempted_mid_slot() {
 #[test]
 fn try_recv_parks_without_consuming_caller_thread_token() {
     let (tx, mut rx) = unbounded();
-    let (epoch, version, live_rcvs) = tx.shared.begin_inflight_publish_for_test();
+    let (version, live_rcvs) = tx.shared.begin_inflight_publish_for_test();
     assert!(!rx.is_empty());
 
     let shared_producer = tx.shared.clone();
     let publisher = thread::spawn(move || {
-        while !shared_producer.has_waiters_for_test() {
+        while !shared_producer.wake.has_waiters() {
             thread::yield_now();
         }
-        shared_producer.finish_inflight_publish_for_test(epoch, version, live_rcvs, 77usize);
+        shared_producer.finish_inflight_publish_for_test(version, live_rcvs, 77usize);
     });
 
     let (done_tx, done_rx) = mpsc::channel();
     let consumer = thread::spawn(move || {
-        // Pre-arm the caller thread's unpark token and verify `try_recv` leaves it intact.
         thread::current().unpark();
         assert_eq!(rx.try_recv().as_deref(), Ok(&77));
         thread::park();
@@ -309,8 +304,6 @@ fn sync_inflight_waiters_finish_before_async_waker_callbacks() {
 
     impl Wake for LockingWake {
         fn wake(self: Arc<Self>) {
-            // If `wake_all_waiters` invokes async wakers before unparking synchronous in-flight
-            // slot waiters, acquiring these locks deadlocks with `try_recv` and `try_recv_cloned`.
             drop(self.try_shared_lock.lock().unwrap());
             drop(self.try_cloned_lock.lock().unwrap());
             self.woke.fetch_add(1, Ordering::SeqCst);
@@ -322,7 +315,7 @@ fn sync_inflight_waiters_finish_before_async_waker_callbacks() {
     let mut rx_try_cloned = tx.subscribe();
     let mut rx_probe = tx.subscribe();
 
-    let (epoch, version, live_rcvs) = tx.shared.begin_inflight_publish_for_test();
+    let (version, live_rcvs) = tx.shared.begin_inflight_publish_for_test();
 
     let try_shared_lock = Arc::new(Mutex::new(()));
     let try_cloned_lock = Arc::new(Mutex::new(()));
@@ -334,8 +327,6 @@ fn sync_inflight_waiters_finish_before_async_waker_callbacks() {
     let waker = Waker::from(wake_state.clone());
     let mut cx = Context::from_waker(&waker);
 
-    // Occupy `Waiters::slot0` first with an async `Waker` whose `wake` callback acquires the
-    // caller locks held across synchronous `try_recv` and `try_recv_cloned`.
     let mut fut = rx_async.recv();
     assert!(Pin::new(&mut fut).poll(&mut cx).is_pending());
 
@@ -353,12 +344,12 @@ fn sync_inflight_waiters_finish_before_async_waker_callbacks() {
         rx_try_cloned
     });
 
-    while tx.shared.sync_inflight_waiters_for_test() < 2 {
+    while tx.shared.wake.sync_waiter_count() < 2 {
         thread::yield_now();
     }
 
     tx.shared
-        .finish_inflight_publish_for_test(epoch, version, live_rcvs, 91usize);
+        .finish_inflight_publish_for_test(version, live_rcvs, 91usize);
 
     assert_eq!(wake_state.woke.load(Ordering::SeqCst), 1);
     assert_eq!(rx_probe.try_recv().as_deref(), Ok(&91));

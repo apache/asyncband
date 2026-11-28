@@ -30,11 +30,23 @@ pub struct SlotId(NonZeroUsize);
 
 impl SlotId {
     fn from_index(index: usize) -> Self {
-        // `Slot<T>` is non-zero-sized, so a Vec of slots cannot reach `usize::MAX` elements.
+        // `Slot<T>` is non-zero-sized, so a Vec of slots cannot reach `usize::MAX - 1` elements,
+        // leaving both `0` and `usize::MAX` available as outer niche sentinels.
         let encoded = index
             .checked_add(1)
-            .expect("arena index must fit in a non-zero usize");
+            .filter(|&v| v < usize::MAX)
+            .expect("arena index must fit below usize::MAX");
         Self(NonZeroUsize::new(encoded).expect("encoded arena index must be non-zero"))
+    }
+
+    #[inline]
+    pub fn into_raw(self) -> NonZeroUsize {
+        self.0
+    }
+
+    #[inline]
+    pub fn from_raw(raw: NonZeroUsize) -> Self {
+        Self(raw)
     }
 
     fn index(self) -> usize {

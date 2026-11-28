@@ -18,7 +18,7 @@
 use std::fmt;
 use std::sync;
 use std::sync::PoisonError;
-#[cfg(test)]
+#[cfg(any(test, feature = "broadcast"))]
 use std::sync::TryLockError;
 
 pub struct Mutex<T: ?Sized>(sync::Mutex<T>);
@@ -38,7 +38,7 @@ impl<T> Mutex<T> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "broadcast"))]
     pub fn try_lock(&self) -> Option<sync::MutexGuard<'_, T>> {
         match self.0.try_lock() {
             Ok(guard) => Some(guard),

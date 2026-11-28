@@ -88,7 +88,7 @@ impl<T> BoundedReceiver<T> {
         let base = self.shared.claim_read_slot(head)?;
         self.head = head + 1;
         // SAFETY: `claim_read_slot` confirmed readiness of `base` at `head`.
-        Ok(unsafe { self.shared.read_claimed_slot(base) })
+        Ok(unsafe { self.shared.read_claimed_slot_with(base, |value| value) })
     }
 
     /// Waits for and receives the next queued value, freeing one capacity slot.
@@ -203,7 +203,11 @@ impl<T> Future for Recv<'_, T> {
             Poll::Ready(Ok(base)) => {
                 receiver.head = head + 1;
                 // SAFETY: `poll_claim_read_slot` confirmed readiness of `base` at `head`.
-                let out = unsafe { receiver.shared.read_claimed_slot_poll(base) };
+                let out = unsafe {
+                    receiver
+                        .shared
+                        .read_claimed_slot_with(base, |value| Poll::Ready(Ok(value)))
+                };
                 this.receiver = None;
                 out
             }

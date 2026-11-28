@@ -49,6 +49,11 @@ pub mod arena;
 #[allow(dead_code)]
 pub mod coalesce;
 
+#[cfg(any(feature = "mpmc", feature = "mpsc"))]
+// `mpmc` and `mpsc` register waiters differently while sharing grant and teardown transitions.
+#[allow(dead_code)]
+pub mod grant_waiter;
+
 #[cfg(any(
     feature = "barrier",
     feature = "blocking",
