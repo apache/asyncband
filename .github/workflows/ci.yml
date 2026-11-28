@@ -66,8 +66,10 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
           cargo binstall --no-confirm --locked typos-cli hawkeye
-          curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d > ~/.cargo/bin/taplo
-          chmod +x ~/.cargo/bin/taplo
+          cargo binstall --no-confirm --locked \
+            --pkg-url "{ repo }/releases/download/{ version }/taplo-{ target-family }-{ target-arch }.gz" \
+            --pkg-fmt gz \
+            taplo-cli
       - run: cargo x lint
       - name: Check feature matrix
         run: cargo x check
