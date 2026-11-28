@@ -22,6 +22,9 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
@@ -57,9 +60,21 @@ jobs:
           --allow-downgrade
           --no-self-update
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
-        with:
-          tool: typos-cli,taplo-cli,hawkeye
+      - name: Install tools
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          mkdir -p "${cargo_bin}"
+          command -v cargo-binstall >/dev/null || \
+            curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall --no-confirm --locked typos-cli hawkeye
+          (command -v taplo >/dev/null && taplo --version >/dev/null 2>&1) || {
+            curl -L --proto '=https' --tlsv1.2 -sSf https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz \
+              | gzip -d > "${cargo_bin}/taplo"
+            chmod +x "${cargo_bin}/taplo"
+          }
       - run: cargo x lint
       - name: Check feature matrix
         run: cargo x check
