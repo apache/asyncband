@@ -23,9 +23,9 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
+use crate::internal::grant_waiter::GrantWaiter;
 use crate::internal::mutex::Mutex;
 use crate::internal::retry_waiter::RetryWaiter;
-use crate::internal::update_waker;
 use crate::internal::waitlist::WaitList;
 use crate::internal::waitlist::WaiterId;
 use crate::mpmc::RecvError;
@@ -48,7 +48,7 @@ struct State<T> {
     senders: usize,
     receivers: usize,
     recv_waiters: WaitList<RetryWaiter>,
-    send_waiters: WaitList<SendWaiter>,
+    send_waiters: WaitList<GrantWaiter>,
 }
 
 impl<T> State<T> {
@@ -98,43 +98,6 @@ impl<T> State<T> {
         } else {
             Err(TryRecvError::Empty)
         }
-    }
-}
-
-/// A grant assigns capacity to a detached waiter node until its future claims or releases it.
-enum SendWaiter {
-    Waiting(Waker),
-    Granted,
-}
-
-impl WaitList<SendWaiter> {
-    /// Registers an operation waiting for capacity or refreshes its waker without losing its place.
-    #[must_use = "drop the replaced waker after releasing the queue lock"]
-    fn register_waiter(&mut self, id: &mut Option<WaiterId>, current: &Waker) -> Option<Waker> {
-        if let Some(queued) = *id {
-            let SendWaiter::Waiting(waker) = self.waiter_mut(queued) else {
-                unreachable!("a granted waiter must be claimed before registration");
-            };
-            return update_waker(waker, current);
-        }
-        *id = Some(self.push_back(SendWaiter::Waiting(current.clone())));
-        None
-    }
-
-    fn grant_one(&mut self) -> Option<Waker> {
-        let (_, waiter) = self.unlink_first_waiter()?;
-        let SendWaiter::Waiting(waker) = mem::replace(waiter, SendWaiter::Granted) else {
-            unreachable!("only waiting operations remain linked");
-        };
-        Some(waker)
-    }
-
-    fn take_waiting_waker(&mut self) -> Option<Waker> {
-        let (id, _) = self.unlink_first_waiter()?;
-        let SendWaiter::Waiting(waker) = self.remove_unlinked_waiter(id) else {
-            unreachable!("only waiting operations remain linked");
-        };
-        Some(waker)
     }
 }
 
@@ -345,7 +308,7 @@ impl<'a, T> Reserve<'a, T> {
         }
         // A previous poll queued this reservation; a released slot may now belong to it.
         if let Some(id) = self.waiter {
-            if matches!(state.send_waiters.waiter_mut(id), SendWaiter::Granted) {
+            if matches!(state.send_waiters.waiter_mut(id), GrantWaiter::Granted) {
                 let retired = state.send_waiters.remove_unlinked_waiter(id);
                 self.waiter = None;
                 drop(state);
@@ -386,7 +349,7 @@ impl<T> Drop for Reserve<'_, T> {
             }
             let retired = state.send_waiters.remove(id);
             // A grant already owns a slot, so returning it does not require a capacity check.
-            let waker = if matches!(retired, SendWaiter::Granted) {
+            let waker = if matches!(retired, GrantWaiter::Granted) {
                 state.release()
             } else {
                 None
