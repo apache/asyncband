@@ -64,17 +64,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
-          mkdir -p "${cargo_bin}"
-          command -v cargo-binstall >/dev/null || \
-            curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          curl -fsSL https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
           cargo binstall --no-confirm --locked typos-cli hawkeye
-          (command -v taplo >/dev/null && taplo --version >/dev/null 2>&1) || {
-            curl -L --proto '=https' --tlsv1.2 -sSf https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz \
-              | gzip -d > "${cargo_bin}/taplo"
-            chmod +x "${cargo_bin}/taplo"
-          }
+          curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d > ~/.cargo/bin/taplo
+          chmod +x ~/.cargo/bin/taplo
       - run: cargo x lint
       - name: Check feature matrix
         run: cargo x check
